@@ -17,3 +17,14 @@ Publication and remaining access limitations are recorded below after verificati
 5. To export issues including discussion, use the GitHub API with pagination, including each issue's comments. Keep exports under planning/exports and inspect them for sensitive content before committing. Export Project fields/items with project-scoped authentication. The initial issue snapshot alone is not a complete ongoing discussion backup.
 
 When renaming, update origin, wiki source links, publication records and any future workflows. GitHub redirects are useful but should not be the sole migration plan.
+
+## Verified publication status — 2026-10-31
+
+- Public repository created, MIT license recognized, main branch pushed.
+- Issues #1–#6 created; identities recorded in planning/github-issues.json.
+- Wiki and Projects features enabled in repository settings.
+- GitHub Project board is **not created**: the active token lacks project permissions. The roadmap and issue definitions are committed; issue #6 tracks completion.
+- GitHub wiki is **not published yet**: cloning its separate remote returns Repository not found until initial wiki creation. Create a first Home page at https://github.com/kylek-dev/arena-prototype/wiki, then run `./scripts/sync-wiki.sh`. All intended pages are already public under docs/wiki.
+- `python3 scripts/export-github.py` exports current issues, comments and selected repository settings to planning/exports. Run at milestones and commit reviewed changes. This does not back up attachments, pull request reviews, project fields or wiki history; those require separate exports/clones.
+
+The authentication blocker is a missing OAuth scope, not a request for task approval. Repository settings enabling Projects do not create a Project board.
