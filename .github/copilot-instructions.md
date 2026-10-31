@@ -1,0 +1,1 @@
+Follow the root AGENTS.md and applicable design decisions. Keep gameplay rules headless and renderer-independent. Use scripts/check.sh to validate Rust changes. Never introduce third-party game assets or claim unobserved browser results.

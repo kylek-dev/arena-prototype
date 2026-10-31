@@ -1,0 +1,12 @@
+[workspace]
+resolver = "3"
+members = ["crates/arena-sim", "crates/arena-headless"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.99"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

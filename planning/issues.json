@@ -1,0 +1,32 @@
+[
+  {
+    "key": "browser-spike",
+    "title": "Evaluate Bevy browser rendering and AI development workflow",
+    "body_file": "planning/issues/browser-spike.md"
+  },
+  {
+    "key": "combat-contract",
+    "title": "Define 3D movement and combat command contracts",
+    "body_file": "planning/issues/combat-contract.md"
+  },
+  {
+    "key": "network-duel",
+    "title": "Implement an authoritative two-client network duel",
+    "body_file": "planning/issues/network-duel.md"
+  },
+  {
+    "key": "team-play",
+    "title": "Design and playtest two original kits in 2v2",
+    "body_file": "planning/issues/team-play.md"
+  },
+  {
+    "key": "asset-policy",
+    "title": "Choose original art direction and production asset licensing",
+    "body_file": "planning/issues/asset-policy.md"
+  },
+  {
+    "key": "github-metadata",
+    "title": "Complete GitHub Projects and wiki synchronization",
+    "body_file": "planning/issues/github-metadata.md"
+  }
+]
