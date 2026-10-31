@@ -191,3 +191,5 @@ mod tests {
         assert_eq!(*first.fighters(), before);
     }
 }
+
+pub mod arena;

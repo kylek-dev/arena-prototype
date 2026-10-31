@@ -11,4 +11,4 @@ Source plans live here; GitHub Issues hold discussion and execution state. GitHu
 | 4: team play | 2v2, round flow, rematch, simple guest lobby | Four-player sessions and structured feedback |
 | 5: identity and persistence | Original art direction, accounts and match history | Provenance inventory and operational recovery checks |
 
-Stage 0 implementation passes local checks. Publication status is recorded in docs/GITHUB.md. Stage 1 begins with choosing the engine version and evaluating the recommendation; the table does not commit to a release date.
+Stage 0 is published. Stage 1 now has an implemented Bevy browser practice client with shared rules, a DOM HUD, and automated browser checks. Hardware performance, Safari coverage, and a real network/load baseline remain open; see docs/research/browser-spike.md. The table does not commit to a release date.

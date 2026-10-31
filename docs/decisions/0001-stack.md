@@ -10,7 +10,7 @@ Original 3D tactical arena combat; browser delivery; high AI development usage; 
 
 Evaluate **Rust + Bevy + WASM** first, with **Axum + Tokio** for an authoritative match server. Share a pure Rust rules crate between native tests, server, and eventually client prediction. Use ordinary HTML/CSS for surrounding account/lobby pages; decide whether the in-match HUD belongs in Bevy or the DOM during the client spike.
 
-Wenilla pins Bevy 0.18.1, while Bevy's current quick start shows 0.19. Do not inherit a version merely because Wenilla uses it. Pick an engine version and compatible plugins during the browser spike, pin the lockfile, and use matching documentation. No Bevy dependency has been selected yet.
+Wenilla pins Bevy 0.18.1, while Bevy's current quick start shows 0.19. Do not inherit a version merely because Wenilla uses it. Pick an engine version and compatible plugins during the browser spike, pin the lockfile, and use matching documentation. [ADR 0002](0002-browser-spike.md) pins Bevy 0.19.0 for the browser experiment; that does not accept the production stack.
 
 | Option | Why it fits | Main cost / question |
 | --- | --- | --- |

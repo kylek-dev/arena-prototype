@@ -2,7 +2,7 @@
 
 Temporary project name. An original, browser-first competitive arena game, inspired by the tactical depth of team arena combat. All characters, worldbuilding, art, audio, and ability identities will be our own.
 
-**Status:** research and executable headless foundation. No playable browser client or multiplayer service yet.
+**Status:** browser practice prototype plus a shared, tested Rust simulation. Solo play against a stationary opponent; multiplayer is not implemented.
 
 ## Start here
 
@@ -10,6 +10,7 @@ Temporary project name. An original, browser-first competitive arena game, inspi
 - [Technology recommendation and alternatives](docs/decisions/0001-stack.md)
 - [Wenilla investigation](docs/research/wenilla.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [Build and play in the browser](docs/BROWSER.md)
 - [Roadmap](planning/ROADMAP.md)
 - [Published wiki](https://github.com/kylek-dev/arena-prototype/wiki) ([versioned source](docs/wiki/Home.md))
 - [Public Project board](https://github.com/users/kylek-dev/projects/3)
@@ -26,6 +27,17 @@ cargo run -p arena-headless
 ```
 
 The dependency-free simulation resolves a scripted duel at fixed ticks. It is a foundation for rule tests and replays, not a claim that the full combat or network design is implemented.
+
+## Browser prototype
+
+See [browser development](docs/BROWSER.md) for setup. With the pinned Rust/WASM tools installed:
+
+```sh
+./scripts/build-web.sh
+npm run serve
+```
+
+Open http://127.0.0.1:8000. WASD moves, right-drag orbits, Tab selects, 1 attacks, and R resets.
 
 ## License
 

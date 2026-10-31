@@ -1,0 +1,128 @@
+{
+  "date": "2026-10-31",
+  "environment": {
+    "os": "Ubuntu 24.04 / WSL2 Linux 6.6.87.2",
+    "cpu": "AMD Ryzen 7 9800X3D",
+    "ramGiB": 30,
+    "viewport": "1440x900",
+    "transport": "uncompressed localhost HTTP; no network shaping",
+    "gpu": "software renderers; not representative hardware acceptance"
+  },
+  "checks": {
+    "rustRuleTests": 7,
+    "browserInteractionTests": 6,
+    "browsers": [
+      "Chromium 149.0.7827.55",
+      "Firefox 151.0"
+    ]
+  },
+  "build": {
+    "profile": "web (size optimized, thin LTO, debug names stripped)",
+    "wasmBytes": 27042976,
+    "wasmGzipBytes": 5896097,
+    "jsBindingsBytes": 101044,
+    "featurePruningBuildScriptSeconds": 145,
+    "featurePruningBuildCache": "partially warm; not a controlled clean build",
+    "incrementalEditSeconds": null
+  },
+  "runs": [
+    {
+      "test": "practice-camera-orbit-zoom-focus-loss-and-frame-diagnostics-chromium",
+      "browser": "149.0.7827.55",
+      "viewport": "1440x900",
+      "graphics": {
+        "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+      },
+      "metrics": {
+        "firstStateMs": 478.7000000476837,
+        "frameSamples": 23,
+        "frameP50Ms": 283.2999999999993,
+        "frameP95Ms": 516.6999999999998,
+        "errors": [],
+        "renderer": "Bevy / WebGL2"
+      },
+      "resources": [
+        {
+          "name": "http://127.0.0.1:8000/style.css",
+          "transferSize": 7369,
+          "encodedBodySize": 7069,
+          "duration": 2.4000000953674316
+        },
+        {
+          "name": "http://127.0.0.1:8000/shell.js",
+          "transferSize": 7567,
+          "encodedBodySize": 7267,
+          "duration": 2.8000001907348633
+        },
+        {
+          "name": "http://127.0.0.1:8000/pkg/arena_client.js",
+          "transferSize": 101344,
+          "encodedBodySize": 101044,
+          "duration": 1.7000000476837158
+        },
+        {
+          "name": "http://127.0.0.1:8000/pkg/snippets/arena-client-4ce7e1f2258ded19/inline0.js",
+          "transferSize": 462,
+          "encodedBodySize": 162,
+          "duration": 2.799999952316284
+        },
+        {
+          "name": "http://127.0.0.1:8000/pkg/arena_client_bg.wasm",
+          "transferSize": 27043276,
+          "encodedBodySize": 27042976,
+          "duration": 98.5
+        }
+      ]
+    },
+    {
+      "test": "practice-camera-orbit-zoom-focus-loss-and-frame-diagnostics-firefox",
+      "browser": "151.0",
+      "viewport": "1440x900",
+      "graphics": {
+        "version": "WebGL 2.0",
+        "renderer": "llvmpipe, or similar"
+      },
+      "metrics": {
+        "firstStateMs": 940,
+        "frameSamples": 25,
+        "frameP50Ms": 49.779999999999745,
+        "frameP95Ms": 66.65999999999985,
+        "errors": [],
+        "renderer": "Bevy / WebGL2"
+      },
+      "resources": [
+        {
+          "name": "http://127.0.0.1:8000/shell.js",
+          "transferSize": 7567,
+          "encodedBodySize": 7267,
+          "duration": 11
+        },
+        {
+          "name": "http://127.0.0.1:8000/style.css",
+          "transferSize": 8821,
+          "encodedBodySize": 8521,
+          "duration": 11
+        },
+        {
+          "name": "http://127.0.0.1:8000/pkg/arena_client.js",
+          "transferSize": 101344,
+          "encodedBodySize": 101044,
+          "duration": 2
+        },
+        {
+          "name": "http://127.0.0.1:8000/pkg/snippets/arena-client-4ce7e1f2258ded19/inline0.js",
+          "transferSize": 462,
+          "encodedBodySize": 162,
+          "duration": 3
+        },
+        {
+          "name": "http://127.0.0.1:8000/pkg/arena_client_bg.wasm",
+          "transferSize": 27043276,
+          "encodedBodySize": 27042976,
+          "duration": 114
+        }
+      ]
+    }
+  ]
+}

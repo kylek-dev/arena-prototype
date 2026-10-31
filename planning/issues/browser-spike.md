@@ -8,3 +8,8 @@ Acceptance criteria:
 - Record accept/reject evidence and the Babylon.js fallback decision.
 
 See docs/decisions/0001-stack.md. No production art required.
+
+
+## Implementation update — 2026-10-31
+
+The browser practice scene is implemented with pinned Bevy/WASM tools, shared Rust arena rules, plain HTML/CSS HUD, camera and ray targeting, cooldown/range/line-of-sight feedback, round completion, and reset. See docs/BROWSER.md and docs/research/browser-spike.md for verification and measurements. The production stack decision remains proposed. This issue stays open for representative hardware performance, Safari coverage where available, realistic network load/startup measurements, and incremental build evaluation.

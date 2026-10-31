@@ -19,12 +19,15 @@ Build an original browser-first arena combat game. Arena Prototype is a placehol
 
 ## Verification
 
-Run `./scripts/check.sh` for Rust changes. Add behavioral tests for game rules, exploit boundaries, replay order, and regressions. Rendering changes will need browser evidence once a client exists. Use `cargo run -p arena-headless` for the scripted scenario.
+Run `./scripts/check.sh` for Rust changes. Add behavioral tests for game rules, exploit boundaries, replay order, and regressions. For client changes, also run the WASM Clippy check and browser checks documented in docs/BROWSER.md. Rendering changes need observed browser evidence. Use `cargo run -p arena-headless` for the scripted scenario.
 
 ## Repository map
 
 - crates/arena-sim: pure fixed-tick rules and tests
 - crates/arena-headless: executable scenario runner
+- crates/arena-client: Bevy rendering and narrow browser bridge
+- web: HTML/CSS HUD and browser input
+- tests/browser: Playwright interaction checks
 - docs/research: dated findings with source links
 - docs/decisions: proposals, evidence, and accepted decisions
 - docs/wiki: versioned wiki pages
