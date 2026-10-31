@@ -1,0 +1,17 @@
+{
+  "full_name": "kylek-dev/arena-prototype",
+  "html_url": "https://github.com/kylek-dev/arena-prototype",
+  "description": "Temporary home for an original browser arena game: open design, Rust simulation, and browser engine research",
+  "visibility": "public",
+  "default_branch": "main",
+  "has_issues": true,
+  "has_wiki": true,
+  "has_projects": true,
+  "license": {
+    "key": "mit",
+    "name": "MIT License",
+    "spdx_id": "MIT",
+    "url": "https://api.github.com/licenses/mit",
+    "node_id": "MDc6TGljZW5zZTEz"
+  }
+}

@@ -28,3 +28,5 @@ When renaming, update origin, wiki source links, publication records and any fut
 - `python3 scripts/export-github.py` exports current issues, comments and selected repository settings to planning/exports. Run at milestones and commit reviewed changes. This does not back up attachments, pull request reviews, project fields or wiki history; those require separate exports/clones.
 
 The authentication blocker is a missing OAuth scope, not a request for task approval. Repository settings enabling Projects do not create a Project board.
+
+Initial GitHub Actions CI passed: https://github.com/kylek-dev/arena-prototype/actions/runs/41241261338. Local export verified six issues with comment arrays. The export script supports the installed older gh CLI without --slurp.
