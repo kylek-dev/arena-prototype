@@ -11,7 +11,8 @@ Temporary project name. An original, browser-first competitive arena game, inspi
 - [Wenilla investigation](docs/research/wenilla.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Roadmap](planning/ROADMAP.md)
-- [Wiki source](docs/wiki/Home.md)
+- [Published wiki](https://github.com/kylek-dev/arena-prototype/wiki) ([versioned source](docs/wiki/Home.md))
+- [Public Project board](https://github.com/users/kylek-dev/projects/3)
 - [AI and contributor instructions](AGENTS.md)
 - [GitHub publishing and backups](docs/GITHUB.md)
 
