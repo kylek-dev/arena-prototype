@@ -3,7 +3,9 @@ const canvas = document.querySelector('#arena');
 const element = (id) => document.getElementById(id);
 const held = new Set();
 let attack = false, select = false, clear = false, reset = false;
-let orbitX = 0, orbitY = 0, zoom = 0, click = null, dragging = false;
+let orbitX = 0, orbitY = 0, zoom = 0, click = null;
+let mouseButtons = 0, gesture = null, pointerWasLocked = false;
+let steerPending = false, freeLookPending = false;
 let state = null;
 let lastHud = 0;
 let lastFeedback = '';
@@ -15,7 +17,20 @@ element('debug-toggle').setAttribute('aria-expanded', String(debugEnabled));
 const keys = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Digit1', 'Tab', 'Escape', 'KeyR']);
 const gameplayFocused = () => document.activeElement === canvas;
 const focusGame = () => canvas.focus({ preventScroll: true });
-function releaseInput() { held.clear(); dragging = false; attack = false; select = false; clear = false; orbitX = 0; orbitY = 0; zoom = 0; click = null; }
+function endMouseGesture() {
+  mouseButtons = 0;
+  gesture = null;
+  canvas.style.cursor = '';
+  if (document.pointerLockElement === canvas) document.exitPointerLock();
+}
+function releaseInput() {
+  held.clear();
+  endMouseGesture();
+  attack = select = clear = false;
+  orbitX = orbitY = zoom = 0;
+  steerPending = freeLookPending = false;
+  click = null;
+}
 window.addEventListener('blur', releaseInput);
 canvas.addEventListener('blur', releaseInput);
 document.addEventListener('visibilitychange', () => { if (document.hidden) releaseInput(); });
@@ -37,17 +52,53 @@ window.addEventListener('keydown', (event) => {
 });
 window.addEventListener('keyup', (event) => { held.delete(event.code); });
 canvas.addEventListener('contextmenu', (event) => event.preventDefault());
-canvas.addEventListener('pointerdown', (event) => {
+// Mouse events report each button in a chord; pointerdown only reports the
+// first press. Pointer lock keeps dragging unlimited and hides the OS cursor.
+canvas.addEventListener('mousedown', (event) => {
+  if (event.button !== 0 && event.button !== 2) return;
+  event.preventDefault();
   focusGame();
-  if (event.button === 2) { dragging = true; canvas.setPointerCapture(event.pointerId); }
-  if (event.button === 0) {
+  if (mouseButtons === 0) {
     const rect = canvas.getBoundingClientRect();
-    click = [event.clientX - rect.left, event.clientY - rect.top];
+    gesture = { x: event.clientX - rect.left, y: event.clientY - rect.top, distance: 0, usedChord: false, startedLeft: event.button === 0 };
+    // CSS also hides the cursor if a browser refuses pointer lock. Mouse
+    // dragging still works within the page in that fallback.
+    canvas.style.cursor = 'none';
+    try {
+      const request = canvas.requestPointerLock?.();
+      request?.catch(() => {}); // Denial is a nonfatal drag fallback.
+    } catch { /* Older implementations can throw instead of returning a promise. */ }
   }
+  mouseButtons = event.buttons & 3;
+  if (mouseButtons & 2) steerPending = true;
+  if (mouseButtons === 3 && gesture) gesture.usedChord = true;
 });
-canvas.addEventListener('pointermove', (event) => { if (dragging) { orbitX += event.movementX; orbitY += event.movementY; } });
-canvas.addEventListener('pointerup', (event) => { if (event.button === 2) dragging = false; });
-canvas.addEventListener('lostpointercapture', () => { dragging = false; });
+document.addEventListener('mousemove', (event) => {
+  // Pointer lock can emit cursor-warp events with no buttons held. They
+  // are not drag input, and counting them can jerk or undo the camera orbit.
+  if (!mouseButtons || !gesture || !(event.buttons & mouseButtons)) return;
+  gesture.distance += Math.hypot(event.movementX, event.movementY);
+  if (gesture.distance < 4) return; // Preserve an ordinary click for targeting.
+  orbitX += event.movementX;
+  orbitY += event.movementY;
+  if (mouseButtons & 2) steerPending = true;
+  else freeLookPending = true;
+});
+document.addEventListener('mouseup', (event) => {
+  if (!mouseButtons || (event.button !== 0 && event.button !== 2)) return;
+  mouseButtons = event.buttons & 3;
+  if (mouseButtons !== 0) return; // Releasing one button keeps the other mode active.
+  if (event.button === 0 && gesture?.startedLeft && !gesture.usedChord && gesture.distance < 4) {
+    click = [gesture.x, gesture.y];
+  }
+  endMouseGesture();
+});
+document.addEventListener('pointerlockchange', () => {
+  const locked = document.pointerLockElement === canvas;
+  if (locked && mouseButtons === 0) document.exitPointerLock(); // Late async grant after mouse-up.
+  if (!locked && pointerWasLocked && mouseButtons !== 0) releaseInput(); // Escape or lock loss.
+  pointerWasLocked = locked;
+});
 canvas.addEventListener('wheel', (event) => { event.preventDefault(); zoom += event.deltaY; }, { passive: false });
 element('attack').addEventListener('click', () => { attack = true; focusGame(); });
 element('reset').addEventListener('click', () => { releaseInput(); reset = true; focusGame(); });
@@ -75,9 +126,10 @@ window.addEventListener('error', (event) => showError(event.message));
 window.addEventListener('unhandledrejection', (event) => showError(event.reason?.message ?? event.reason));
 window.arenaShell = {
   readInput() {
-    const input = [Number(held.has('KeyD')) - Number(held.has('KeyA')), Number(held.has('KeyS')) - Number(held.has('KeyW')), Number(attack), Number(select), Number(clear), Number(reset), orbitX, orbitY, zoom, click?.[0] ?? -1, click?.[1] ?? -1];
+    const input = [Number(held.has('KeyD')) - Number(held.has('KeyA')), mouseButtons === 3 ? -1 : Number(held.has('KeyS')) - Number(held.has('KeyW')), Number(attack), Number(select), Number(clear), Number(reset), orbitX, orbitY, zoom, click?.[0] ?? -1, click?.[1] ?? -1, Number(Boolean(mouseButtons & 2) || steerPending), Number(mouseButtons === 1 || freeLookPending)];
     attack = select = clear = reset = false;
     orbitX = orbitY = zoom = 0; click = null;
+    steerPending = freeLookPending = false;
     return input;
   },
   onState(next) {

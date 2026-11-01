@@ -6,6 +6,7 @@ Temporary project name. An original, browser-first competitive arena game, inspi
 
 ## Start here
 
+- [Fresh-machine developer setup](docs/DEVELOPMENT.md)
 - [Game direction](docs/GAME.md)
 - [Technology recommendation and alternatives](docs/decisions/0001-stack.md)
 - [Wenilla investigation](docs/research/wenilla.md)
@@ -37,7 +38,7 @@ See [browser development](docs/BROWSER.md) for setup. With the pinned Rust/WASM 
 npm run serve
 ```
 
-Open http://127.0.0.1:8000. WASD moves, right-drag orbits, Tab selects, 1 attacks, and R resets.
+Open http://127.0.0.1:8000. WASD moves; left-drag looks; right-drag turns; both mouse buttons walk and steer. Tab selects, 1 attacks, and R resets.
 
 ## License
 

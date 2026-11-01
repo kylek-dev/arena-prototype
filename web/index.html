@@ -10,7 +10,7 @@
 </head>
 <body>
   <main id="game" aria-label="Arena practice scene">
-    <canvas id="arena" tabindex="0" aria-label="Arena. WASD to move, right-drag to orbit, Tab to target, 1 to attack."></canvas>
+    <canvas id="arena" tabindex="0" aria-label="Arena. WASD to move. Left-drag to look, right-drag to turn, both mouse buttons to walk. Tab to target, 1 to attack."></canvas>
     <header class="topbar">
       <a class="brand" href="https://github.com/kylek-dev/arena-prototype" target="_blank" rel="noreferrer"><span class="brand-mark" aria-hidden="true">A</span><span>ARENA<span class="brand-sub">PROTOTYPE / 001</span></span></a>
       <div class="session"><span class="live-dot"></span> PRACTICE <span class="divider">/</span> <span class="muted">LOCAL · SOLO</span></div>
@@ -26,8 +26,8 @@
       <div class="health-track"><div id="target-health" class="health-fill enemy"></div></div>
       <span id="target-detail" class="unit-detail">No target · press Tab or click Sentinel</span>
     </section>
-    <div class="arena-label"><span class="label-line"></span> THE TESTING GROUND <span class="label-line"></span></div>
-    <section class="help" aria-label="Controls"><span class="eyebrow">CONTROLS</span><div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span>Move</span></div><div><kbd>RMB</kbd><span>Drag to orbit</span><kbd>SCROLL</kbd><span>Zoom</span></div><div><kbd>TAB</kbd><span>Target</span><kbd>ESC</kbd><span>Clear</span></div><p>Stationary opponent. No multiplayer yet.</p></section>
+    <div class="arena-label"><span class="label-line"></span> THE TESTING GROUND TEST <span class="label-line"></span></div>
+    <section class="help" aria-label="Controls"><span class="eyebrow">CONTROLS</span><div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span>Move</span></div><div><kbd>LMB</kbd><span>Look</span><kbd>RMB</kbd><span>Turn</span></div><div><kbd>LMB + RMB</kbd><span>Walk & steer</span><kbd>SCROLL</kbd><span>Zoom</span></div><div><kbd>TAB</kbd><span>Target</span><kbd>ESC</kbd><span>Clear</span></div><p>Stationary opponent. No multiplayer yet.</p></section>
     <section class="combat-hud" aria-label="Combat actions">
       <p id="feedback" role="status" aria-live="polite">Loading the arena…</p>
       <div class="action-row"><button id="attack" class="ability" disabled aria-label="Pulse attack (1)"><kbd>1</kbd><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M27 4 12 27h11l-2 17 16-25H26z"/></svg><span id="cooldown" class="cooldown"></span></button><div class="ability-description"><strong>Pulse</strong><span>25 damage <span class="divider">/</span> 6 m range</span><span id="attack-status">Select a target</span></div></div>

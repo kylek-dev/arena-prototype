@@ -399,7 +399,7 @@
     "assignee": null,
     "assignees": [],
     "author_association": "OWNER",
-    "body": "Build the first browser graybox and evaluate ADR 0001 before accepting the full stack.\n\nAcceptance criteria:\n- Pin an engine version and version-specific documentation.\n- Render an original primitive arena, character, follow camera, movement and target indicator.\n- Report build time, download size, time to interact, frame times, console errors and named browser/device coverage.\n- Document one AI-assisted code change verified through compiler/tests and browser observation.\n- Record accept/reject evidence and the Babylon.js fallback decision.\n\nSee docs/decisions/0001-stack.md. No production art required.\n\n\n## Implementation update \u2014 2026-10-31\n\nThe browser practice scene is implemented with pinned Bevy/WASM tools, shared Rust arena rules, plain HTML/CSS HUD, camera and ray targeting, cooldown/range/line-of-sight feedback, round completion, and reset. See docs/BROWSER.md and docs/research/browser-spike.md for verification and measurements. The production stack decision remains proposed. This issue stays open for representative hardware performance, Safari coverage where available, realistic network load/startup measurements, and incremental build evaluation.\n",
+    "body": "Build the first browser graybox and evaluate ADR 0001 before accepting the full stack.\n\nAcceptance criteria:\n- Pin an engine version and version-specific documentation.\n- Render an original primitive arena, character, follow camera, movement and target indicator.\n- Report build time, download size, time to interact, frame times, console errors and named browser/device coverage.\n- Document one AI-assisted code change verified through compiler/tests and browser observation.\n- Record accept/reject evidence and the Babylon.js fallback decision.\n\nSee docs/decisions/0001-stack.md. No production art required.\n\n\n## Implementation update \u2014 2026-10-31\n\nThe browser practice scene is implemented with pinned Bevy/WASM tools, shared Rust arena rules, plain HTML/CSS HUD, camera and ray targeting, cooldown/range/line-of-sight feedback, round completion, and reset. See docs/BROWSER.md and docs/research/browser-spike.md for verification and measurements. The production stack decision remains proposed. This issue stays open for representative hardware performance, Safari coverage where available, realistic network load/startup measurements, and incremental build evaluation.\n\nMouse-control follow-up: left-drag free-look, right-drag character steering, both-button forward movement in either press order, hidden/locked cursor, partial-release transitions, and capture-loss cancellation are implemented. Ordinary clicks still target. Browser regression coverage includes those transitions and held keyboard movement on mouse release; docs/BROWSER.md records the controls and automation approach.\n",
     "closed_at": null,
     "closed_by": null,
     "comments": 0,
@@ -444,7 +444,7 @@
     },
     "timeline_url": "https://api.github.com/repos/kylek-dev/arena-prototype/issues/1/timeline",
     "title": "Evaluate Bevy browser rendering and AI development workflow",
-    "updated_at": "2026-10-31T23:34:01Z",
+    "updated_at": "2026-10-31T23:56:58Z",
     "url": "https://api.github.com/repos/kylek-dev/arena-prototype/issues/1",
     "user": {
       "avatar_url": "https://avatars.githubusercontent.com/u/4893616?v=4",

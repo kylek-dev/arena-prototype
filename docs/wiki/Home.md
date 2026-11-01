@@ -2,6 +2,7 @@
 
 Temporary title for an original browser arena game. The main repository is the canonical home of code, research, design decisions and these wiki sources.
 
+- [Fresh-machine developer setup](https://github.com/kylek-dev/arena-prototype/blob/main/docs/DEVELOPMENT.md)
 - [Game direction](https://github.com/kylek-dev/arena-prototype/blob/main/docs/GAME.md)
 - [Technology proposal](https://github.com/kylek-dev/arena-prototype/blob/main/docs/decisions/0001-stack.md)
 - [Wenilla investigation](https://github.com/kylek-dev/arena-prototype/blob/main/docs/research/wenilla.md)

@@ -9,6 +9,7 @@ struct Practice {
     arena: Arena,
     previous: [Vec3; 2],
     movement: Vec2,
+    facing: f32,
     selected: bool,
     attack: bool,
     feedback: &'static str,
@@ -23,6 +24,7 @@ impl Default for Practice {
             arena,
             previous,
             movement: Vec2::ZERO,
+            facing: 0.0,
             selected: false,
             attack: false,
             feedback: "Select the opponent to begin",
@@ -257,9 +259,21 @@ fn read_controls(
     orbit.yaw -= input.orbit_x * 0.005;
     orbit.pitch = (orbit.pitch + input.orbit_y * 0.004).clamp(0.25, 1.2);
     orbit.distance = (orbit.distance + input.zoom * 0.01).clamp(6.0, 22.0);
-    let rotation = Quat::from_rotation_y(orbit.yaw);
+    if input.steer {
+        practice.facing = orbit.yaw;
+    }
+    // Free-look changes the view without steering even a moving character.
+    let movement_yaw = if input.free_look && !input.steer {
+        practice.facing
+    } else {
+        orbit.yaw
+    };
+    let rotation = Quat::from_rotation_y(movement_yaw);
     let movement = rotation * Vec3::new(input.x, 0.0, input.z).clamp_length_max(1.0);
     practice.movement = Vec2::new(movement.x, movement.z);
+    if !input.steer && !input.free_look && practice.movement.length_squared() > 0.001 {
+        practice.facing = (-movement.x).atan2(-movement.z);
+    }
     if input.select {
         practice.selected = true;
         practice.feedback = "Opponent selected";
@@ -372,9 +386,8 @@ fn present(
     });
     for (fighter, mut transform) in &mut fighters {
         transform.translation = positions[fighter.0];
-        if fighter.0 == 0 && practice.movement.length_squared() > 0.001 {
-            transform.rotation =
-                Quat::from_rotation_y((-practice.movement.x).atan2(-practice.movement.y));
+        if fighter.0 == 0 {
+            transform.rotation = Quat::from_rotation_y(practice.facing);
         }
     }
     if let Ok(mut camera) = cameras.single_mut() {
@@ -438,12 +451,13 @@ fn publish(
         })
         .unwrap_or(Vec2::splat(-1.0));
     platform::publish(&format!(
-        r#"{{"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}}}}"#,
+        r#"{{"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}}}}"#,
         practice.arena.tick(),
         practice.frames,
         player.position.x,
         player.position.z,
         player.health,
+        practice.facing,
         target.position.x,
         target.position.z,
         target.health,
@@ -474,6 +488,8 @@ struct Input {
     orbit_y: f32,
     zoom: f32,
     click: Option<Vec2>,
+    steer: bool,
+    free_look: bool,
 }
 #[cfg(target_arch = "wasm32")]
 mod platform {
@@ -500,6 +516,8 @@ mod platform {
             orbit_x: number(6),
             orbit_y: number(7),
             zoom: number(8),
+            steer: number(11) != 0.0,
+            free_look: number(12) != 0.0,
             click: if number(9) >= 0.0 {
                 Some(Vec2::new(number(9), number(10)))
             } else {
