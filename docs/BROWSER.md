@@ -1,6 +1,6 @@
 # Browser development
 
-This is a local solo practice scene. Start the original Rust headless example with `cargo run -p arena-headless`, or build the browser client below. No third-party game assets or credentials are required.
+This is a local solo practice scene. Start the original Rust headless example with `cargo run -p arena-headless`, or build the browser client below. The public build runs with a procedural character and needs no optional downloads or credentials. To use the local PixelLabs reference model, follow [the asset setup instructions](../assets/characters/README.md), then rebuild.
 
 ## Build and play
 
@@ -55,3 +55,7 @@ For an incremental build timing, change a small client detail and rerun the buil
 To attempt the optional Firefox checks with its installed runtime dependencies: `ARENA_TEST_FIREFOX=1 npm run test:browser -- --project=firefox`. This is optional coverage, not part of the default Chromium CI job.
 
 The mouse adapter tracks `mousedown`/`mouseup` because `pointerdown` fires only on the first button press in a chord ([MDN](https://developer.mozilla.org/en-US/docs/Web/API/Element/mousedown_event)). Cursor capture uses the [Pointer Lock API](https://developer.mozilla.org/en-US/docs/Web/API/Pointer_Lock_API); zero-button recentering events are ignored instead of being treated as drags.
+
+## Character asset
+
+Bevy's glTF loader and PNG support load the optional local player model. The build generates an availability manifest, and the browser loads the model only when present. Loading waits for the character scene; failure retains the capsule with a visible notice. The model follows movement, facing and reset but has no embedded skeleton or animations. Use `window.arenaDebug.state.character` with `?debug=1` to inspect status and spawned mesh count. Source geometry/textures are preserved, and the downloadable GLB remains outside public Git history under its separate license.

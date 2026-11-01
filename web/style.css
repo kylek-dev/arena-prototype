@@ -525,3 +525,15 @@ kbd {
   color:#9bafba;
   text-shadow:0 1px 4px #000
 }
+
+.model-notice {
+  position: absolute;
+  top: 235px;
+  left: 34px;
+  color: var(--orange);
+  font-size: 11px;
+  background: #0b1620e0;
+  padding: 8px 12px;
+  border-radius: 4px;
+  pointer-events: none;
+}

@@ -21,6 +21,7 @@
       <div class="health-track"><div id="player-health" class="health-fill"></div></div>
       <span class="unit-detail">Equalized loadout</span>
     </section>
+    <p id="model-notice" class="model-notice" role="status" hidden>Character unavailable · showing placeholder.</p>
     <section class="unit target-card" aria-label="Target status">
       <span class="eyebrow orange">PRACTICE OPPONENT</span><div class="unit-heading"><strong>Sentinel</strong><span id="target-health-value">100 / 100</span></div>
       <div class="health-track"><div id="target-health" class="health-fill enemy"></div></div>
@@ -34,7 +35,7 @@
       <div class="round-progress"><span id="round-title">Practice round</span><span id="round-progress">0 / 4 hits</span></div>
     </section>
     <aside id="debug" hidden aria-label="Development diagnostics"><span class="eyebrow">DEVELOPMENT SNAPSHOT</span><pre id="debug-state">Waiting for simulation…</pre><p>Shared Rust rules · 30 Hz<br>Bevy 0.19 · WASM · WebGL2</p></aside>
-    <div id="loading" class="loading"><div><span class="eyebrow">ARENA PROTOTYPE</span><h1>A small arena.<br>A first experiment.</h1><p id="loading-message">Loading the Rust / WebAssembly client…</p><div class="loading-line"></div><p class="muted">Original primitives. One opponent. No account needed.</p></div></div>
+    <div id="loading" class="loading"><div><span class="eyebrow">ARENA PROTOTYPE</span><h1>A small arena.<br>A first experiment.</h1><p id="loading-message">Loading the Rust / WebAssembly client…</p><div class="loading-line"></div><p class="muted">One arena. One opponent. No account needed.</p></div></div>
   </main>
   <script type="module" src="./shell.js"></script>
 </body>

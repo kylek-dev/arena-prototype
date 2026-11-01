@@ -1,0 +1,59 @@
+{
+  "file": "pixellabs-undead-3417.glb",
+  "sha256": "651580acc0af6f9eec78111f2444e6f7dc6eba740c32272ba07f95b4147c5832",
+  "bytes": 37463660,
+  "title": "Undead, Grim Reaper, Dark Fantasy",
+  "creator": "PixelLabs",
+  "source_url": "https://pixabay.com/3d-models/undead-grim-reaper-dark-fantasy-glb-3417/",
+  "license": "Pixabay Content License (not MIT)",
+  "license_summary_url": "https://pixabay.com/service/license-summary/",
+  "license_terms_url": "https://pixabay.com/service/terms/",
+  "distribution": "Optional local download; raw GLB excluded from public repository",
+  "attribution": "Source does not require attribution under the supplied terms; creator/source recorded here",
+  "ai_provenance": {
+    "source_marks_ai_generated": true,
+    "generation_tool": null,
+    "prompt": null,
+    "exporter_metadata": "Khronos glTF Blender I/O v4.0.43"
+  },
+  "inspection": {
+    "format": "glTF 2.0 binary",
+    "meshes": 1,
+    "vertices": 38402,
+    "triangles": 49990,
+    "skeletons": 0,
+    "animations": 0,
+    "textures": [
+      {
+        "role": "normal",
+        "width": 4096,
+        "height": 4096,
+        "format": "PNG"
+      },
+      {
+        "role": "base_color",
+        "width": 4096,
+        "height": 4096,
+        "format": "PNG"
+      },
+      {
+        "role": "metallic_roughness",
+        "width": 4096,
+        "height": 4096,
+        "format": "PNG"
+      }
+    ]
+  },
+  "integration": {
+    "actor": "player",
+    "height_m": 1.9,
+    "position_and_facing": "parented to existing player entity",
+    "changes_to_original_file": "none",
+    "source_scene_height_m": 0.975076,
+    "source_scene_center_xz_m": [
+      0.030199,
+      0.0908975
+    ],
+    "forward_correction_y_radians": 3.141592653589793
+  }
+}

@@ -135,7 +135,14 @@ window.arenaShell = {
   onState(next) {
     state = next;
     if (metrics.firstStateMs === null) metrics.firstStateMs = performance.now() - started;
-    if (next.frames > 10 && !metrics.errors.length && !element('loading').hidden) {
+    const characterReady = next.character?.status === 'ready';
+    const characterFailed = next.character?.status === 'failed';
+    const usingPlaceholder = next.character?.status === 'placeholder';
+    if (!characterReady && !characterFailed && !usingPlaceholder && !metrics.errors.length) {
+      element('loading-message').textContent = 'Loading the character model and textures…';
+    }
+    element('model-notice').hidden = !characterFailed;
+    if (next.frames > 10 && (characterReady || characterFailed || usingPlaceholder) && !metrics.errors.length && !element('loading').hidden) {
       element('loading').hidden = true;
       if (document.activeElement === document.body) focusGame();
     }
@@ -175,6 +182,10 @@ if (debugEnabled) {
 try {
   // The loader owns the existing context; the engine requests WebGL2 itself.
   if (!('WebAssembly' in window)) throw new Error('WebAssembly is unavailable.');
+  const assetResponse = await fetch(new URL('./assets/character.json', import.meta.url));
+  if (!assetResponse.ok) throw new Error('Asset configuration is missing. Run scripts/build-web.sh.');
+  const assetConfig = await assetResponse.json();
+  window.arenaShell.hasCharacterModel = assetConfig.available === true;
   const { default: init } = await import('./pkg/arena_client.js');
   await init();
 } catch (error) {
