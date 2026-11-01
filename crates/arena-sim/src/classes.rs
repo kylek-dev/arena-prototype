@@ -1,5 +1,5 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Classe {
+pub enum Class {
     Necromancer,
     PlagueDoctor,
     Gladiator,
@@ -15,24 +15,44 @@ pub enum Role {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Ressource {
+pub enum Resource {
     Mana,
     Energy,
     Rage,
+    Toxicity,
+    Momentum,
+    Dread,
     Blood,
-    Pain,
+    Suffering,
+    LifeEssence,
 }
 
-
-impl Classe {
-    pub fn ressource(&self) -> Ressource {
+impl Class {
+    pub fn resources(&self) -> Vec<Resource> {
         match self {
-            Self::Necromancer => Ressource::Mana,
-            Self::PlagueDoctor => Ressource::Mana,
-            Self::Gladiator => Ressource::Rage,
-            Self::Nightblade => Ressource::Energy,
-            Self::Bloodbinder => Ressource::Blood,
-            Self::Wildkeeper => Ressource::Mana,
+
+            Self::Necromancer => vec![Resource::Suffering],
+
+
+            Self::PlagueDoctor => vec![
+                Resource::Mana,
+                Resource::Toxicity,
+            ],
+
+            Self::Gladiator => vec![Resource::Momentum],
+
+
+            Self::Nightblade => vec![
+                Resource::Energy,
+                Resource::Dread,
+            ],
+
+            // Generator spells cost HP and build Blood.
+            // Spenders consume Blood to cast powerful spells.
+            Self::Bloodbinder => vec![Resource::Blood],
+
+            // Companion attacks and basic nature spells generate Life Essence.
+            Self::Wildkeeper => vec![Resource::LifeEssence],
         }
     }
 }
