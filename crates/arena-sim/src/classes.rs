@@ -47,11 +47,10 @@ impl Class {
                 Resource::Dread,
             ],
 
-            // Generator spells cost HP and build Blood.
-            // Spenders consume Blood to cast powerful spells.
+       
             Self::Bloodbinder => vec![Resource::Blood],
 
-            // Companion attacks and basic nature spells generate Life Essence.
+     
             Self::Wildkeeper => vec![Resource::LifeEssence],
         }
     }

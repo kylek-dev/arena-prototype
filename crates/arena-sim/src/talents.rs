@@ -3,7 +3,10 @@ use crate::spells::SpellId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TalentId {
-    // Add your own talent IDs here when you define your talents.
+
+
+
+
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

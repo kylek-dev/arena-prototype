@@ -35,7 +35,7 @@ pub enum DamageCategory {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SummonId {
-    // Add your own summon IDs here when you define your summons.
+
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,7 +46,7 @@ pub struct ResourceAmount {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpellEffect {
-    // Effects performed by active spells.
+
     Damage {
         amount: u16,
         categories: Vec<DamageCategory>,
@@ -74,7 +74,6 @@ pub enum SpellEffect {
         amount: u16,
     },
 
-    // Modifiers supplied by unlocked passive spells.
     IncreaseSpellDamage {
         spell: SpellId,
         percentage: u16,
@@ -94,14 +93,13 @@ pub enum SpellEffect {
         spell: SpellId,
         original: SummonId,
         replacement: SummonId,
-        chance_percentage: u8, // 0 through 100. Roll once per summon.
+        chance_percentage: u8,
     },
     AddDamageOverTime {
         spell: SpellId,
-        // Total extra damage as a percentage of the spell's direct damage,
-        // after damage bonuses. Spread this total across the whole duration.
+   
         percentage: u16,
-        // Optional duration override. Combat code must define the fallback.
+   
         duration_ticks: Option<u32>,
         tick_interval_ticks: u32,
     },
