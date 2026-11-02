@@ -1,0 +1,144 @@
+
+# Proposed test abilities.
+# Names, damage and cooldowns are subject to balancing.
+
+# NECROMANCER - Caster specialization
+
+[[abilities]]
+id = "necromancer_soul_rot"
+class = "Necromancer"
+name = "Soul Rot"
+cast_time_ms = 0
+cooldown_ms = 0
+gcd_ms = 1500
+resource = "Pain"
+resource_cost = 15
+range = 30.0
+needs_los = true
+target_type = "Enemy"
+school = "Shadow"
+animation_clip = "cast_shadow"
+vfx_id = "soul_rot"
+icon_id = "soul_rot"
+
+[[abilities.effects]]
+type = "DamageOverTime"
+amount = 12
+duration_ms = 12000
+tick_interval_ms = 2000
+
+[[abilities.effects]]
+type = "GenerateResource"
+resource = "Souls"
+amount = 1
+trigger = "OnDotTick"
+
+
+[[abilities]]
+id = "necromancer_grim_harvest"
+class = "Necromancer"
+name = "Grim Harvest"
+cast_time_ms = 0
+cooldown_ms = 12000
+gcd_ms = 1500
+resource = "Pain"
+resource_cost = 25
+range = 10.0
+needs_los = true
+target_type = "Cone"
+school = "Shadow"
+animation_clip = "grim_harvest"
+vfx_id = "grim_harvest"
+icon_id = "grim_harvest"
+cone_angle = 90.0
+
+[[abilities.effects]]
+type = "Damage"
+amount = 60
+
+[[abilities.effects]]
+type = "Summon"
+unit = "Ghoul"
+count = 1
+per_target_hit = true
+resource = "Souls"
+resource_cost = 1
+max_summons = 3
+
+
+# PLAGUE DOCTOR
+
+[[abilities]]
+id = "plague_doctor_toxic_dart"
+class = "PlagueDoctor"
+name = "Toxic Dart"
+cast_time_ms = 0
+cooldown_ms = 6000
+gcd_ms = 1500
+resource = "Mana"
+resource_cost = 15
+range = 25.0
+needs_los = true
+target_type = "Enemy"
+school = "Nature"
+animation_clip = "cast_toxic"
+vfx_id = "toxic_dart"
+icon_id = "toxic_dart"
+
+[[abilities.effects]]
+type = "Damage"
+amount = 45
+
+
+# GLADIATOR
+
+[[abilities]]
+id = "gladiator_decapitate"
+class = "Gladiator"
+name = "Decapitate"
+cast_time_ms = 0
+cooldown_ms = 8000
+gcd_ms = 1500
+resource = "Momentum"
+resource_cost = 35
+range = 3.0
+needs_los = true
+target_type = "Enemy"
+school = "Physical"
+animation_clip = "decapitate"
+vfx_id = "decapitate"
+icon_id = "decapitate"
+
+[abilities.condition]
+type = "TargetHealthPercentage"
+above = 80
+below = 20
+operator = "OR"
+
+[[abilities.effects]]
+type = "Damage"
+amount = 100
+
+
+# WILDKEEPER
+
+[[abilities]]
+id = "wildkeeper_renewal"
+class = "Wildkeeper"
+name = "Renewal"
+cast_time_ms = 1200
+cooldown_ms = 8000
+gcd_ms = 1500
+resource = "Mana"
+resource_cost = 25
+range = 30.0
+needs_los = true
+target_type = "Ally"
+school = "Nature"
+animation_clip = "cast_heal"
+vfx_id = "renewal"
+icon_id = "renewal"
+
+[[abilities.effects]]
+type = "Heal"
+amount = 70
