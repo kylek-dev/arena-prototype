@@ -2,6 +2,8 @@
 
 Date: 2026-11-06. **Status: accepted**, following the user's request to keep automatic CI fast after dependency updates. Supersedes ADR 0004's requirement to compile the client on every PR and main push; its unit-test and manual E2E policy remains unchanged.
 
+The dispatch-only full-build policy below is superseded by [ADR 0006](0006-selective-client-builds.md), which adds automatic full builds for relevant changes while retaining the fast checks on every PR.
+
 ## Evidence
 
 The unit-first change was not reverted by the Dependabot merges. However, ADR 0004 retained whole-workspace native Clippy, WASM Clippy, and the optimized web build. Updating Bevy invalidates compiled dependency caches, making those steps expensive even without rendered tests. In [run 42335547002](https://github.com/kylek-dev/arena-prototype/actions/runs/42335547002), the browser job took 6m39s; native Clippy alone took 2m30s and WASM Clippy 2m24s. Both restored older caches and recompiled Bevy 0.20.1. The Rust rules tests finished in under a second, and 24 JavaScript unit tests passed. This is compilation cost, not a return of automatic Playwright tests.

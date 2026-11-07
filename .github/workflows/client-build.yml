@@ -1,13 +1,37 @@
-name: Full client build (manual)
+name: Full client build
 on:
+  push:
+    branches: [main]
+  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.filter.outputs.build }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Test build-change detection
+        run: python3 scripts/test-client-build-needed.py
+      - name: Detect client build inputs
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: bash scripts/client-build-needed.sh >> "$GITHUB_OUTPUT"
   native:
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -25,6 +49,8 @@ jobs:
       - name: Verify entire workspace including client
         run: bash scripts/check.sh
   wasm:
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -53,3 +79,26 @@ jobs:
         with:
           name: browser-build
           path: web/
+  # Always report a required check, even when both expensive jobs are skipped.
+  client-build:
+    needs: [changes, native, wasm]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful builds or an intentional no-build decision
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          BUILD_NEEDED: ${{ needs.changes.outputs.build }}
+          NATIVE_RESULT: ${{ needs.native.result }}
+          WASM_RESULT: ${{ needs.wasm.result }}
+        run: |
+          test "$CHANGES_RESULT" = success
+          if [[ "$BUILD_NEEDED" == true ]]; then
+            test "$NATIVE_RESULT" = success
+            test "$WASM_RESULT" = success
+          else
+            test "$BUILD_NEEDED" = false
+            test "$NATIVE_RESULT" = skipped
+            test "$WASM_RESULT" = skipped
+          fi

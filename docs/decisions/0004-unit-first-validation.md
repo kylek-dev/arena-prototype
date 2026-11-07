@@ -6,7 +6,7 @@ Date: 2026-11-06. **Status: accepted**, following the user's preference for rapi
 
 Run deterministic Rust simulation tests and Node 24 built-in unit tests as the ordinary development and CI gates. Extract browser input intent into `web/input.js`, independent of DOM events, graphics, OS clocks, or network I/O. Test explicit key/button transitions and input sampling directly, including both chord orders, partial release, cancellation, click suppression, and the JS-to-Rust array contract. Keep `web/shell.js` responsible for DOM bindings, focus, cursor capture, loading, and HUD presentation.
 
-Originally retained native linting, WASM Clippy, the web build, and the headless scenario in CI. [ADR 0005](0005-lightweight-ci.md) supersedes this compilation policy: automatic CI now checks rules and input without compiling the renderer; full client builds are manually dispatched. The required job names `rust` and `browser` remain unchanged. CI neither installs nor launches Playwright browsers.
+Originally retained native linting, WASM Clippy, the web build, and the headless scenario in CI. [ADR 0005](0005-lightweight-ci.md) separates fast rules/input CI from full client builds; [ADR 0006](0006-selective-client-builds.md) runs full builds automatically for relevant changes and on manual dispatch. The required job names `rust` and `browser` remain unchanged. CI neither installs nor launches Playwright browsers.
 
 Humans review E2E behavior before merging/releasing client changes, using the checklist in docs/BROWSER.md. Keep the existing Playwright suite and pinned dependency as an optional, explicitly invoked diagnostic tool. Do not run it automatically during implementation or CI. No new test dependencies are needed for the default JavaScript loop.
 
