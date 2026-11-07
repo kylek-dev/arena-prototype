@@ -49,9 +49,9 @@ cargo clippy -p arena-client --target wasm32-unknown-unknown --locked -- -D warn
 
 CI runs Rust rules/headless linting and tests, workspace formatting, JavaScript syntax checks, and input unit tests on PRs and pushes to `main`; superseded runs for the same PR are cancelled. The required `browser` job keeps its existing name but now runs JavaScript checks only. Neither automatic job compiles Bevy or WASM.
 
-The separate `Full client build` workflow automatically runs on PRs and main pushes that change Rust crates, Cargo manifests/locks, the Rust toolchain, `.cargo` configuration, assets, scripts, or workflow files. It performs full native workspace checks, WASM Clippy, and the web build, uploading `browser-build`. Docs-only and JavaScript-only changes skip it. It does not install or launch a browser.
+The separate `Full client build` workflow checks changed files on every PR and main push. Changes to Rust crates, Cargo manifests/locks, the Rust toolchain, `.cargo` configuration, assets, scripts, or workflow files trigger full native workspace checks, WASM Clippy, and the web build, uploading `browser-build`. Docs-only and JavaScript-only changes skip those expensive jobs. The required `client-build` check passes only when both builds succeed or change detection confirms neither is needed; detection failures block it too. It does not install or launch a browser.
 
-Before release, or to check any branch on demand, run the complete local checks above or dispatch `gh workflow run client-build.yml --ref YOUR_BRANCH`. The always-required `rust` and `browser` checks alone do not establish client compilation; verify the separate full-build outcome when applicable, and record human review separately. See [ADR 0006](decisions/0006-selective-client-builds.md).
+Before release, or to check any branch on demand, run the complete local checks above or dispatch `gh workflow run client-build.yml --ref YOUR_BRANCH`, which always requests full builds. A successful `client-build` check on an unrelated change means compilation was intentionally skipped, not observed to pass. Record human review separately. See [ADR 0006](decisions/0006-selective-client-builds.md).
 
 ## Manual E2E acceptance
 
