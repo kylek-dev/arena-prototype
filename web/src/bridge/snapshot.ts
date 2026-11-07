@@ -5,6 +5,7 @@ export type Snapshot = {
   player: Entity & { x: number; z: number };
   target: Entity & { x: number; z: number };
   selected: boolean;
+  selectedPlayer?: boolean;
   distance: number;
   range: number;
   cooldown: number;
@@ -57,6 +58,7 @@ export function adaptSnapshot(raw: unknown): Snapshot {
   }
   if (
     typeof r.selected !== "boolean" ||
+    (r.selectedPlayer !== undefined && typeof r.selectedPlayer !== "boolean") ||
     typeof r.won !== "boolean" ||
     typeof r.feedback !== "string" ||
     typeof r.attackStatus !== "string"

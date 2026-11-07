@@ -235,6 +235,16 @@ test('the Rust bridge input array keeps its positional contract and drains delta
   input.wheel(-30);
   down(input, 2, 2);
   move(input, 2, 10, 5);
-  assert.deepEqual(input.readInput(), [0, -1, 1, 1, 0, 0, 10, 5, 120, -1, -1, 1, 0]);
-  assert.deepEqual(input.readInput(), [0, -1, 0, 0, 0, 0, 0, 0, 0, -1, -1, 1, 0]);
+  assert.deepEqual(input.readInput(), [0, -1, 1, 1, 0, 0, 10, 5, 120, -1, -1, 1, 0, 0]);
+  assert.deepEqual(input.readInput(), [0, -1, 0, 0, 0, 0, 0, 0, 0, -1, -1, 1, 0, 0]);
+});
+
+test('self selection uses the appended bridge field and drains or cancels once', () => {
+  const input = new InputState();
+  input.selectPlayer = true;
+  assert.equal(input.readInput()[13], 1);
+  assert.equal(input.readInput()[13], 0);
+  input.selectPlayer = true;
+  input.cancel();
+  assert.equal(input.readInput()[13], 0);
 });

@@ -5,6 +5,7 @@
 @import "../features/action-bars/action-bars.css";
 @import "../features/combat-errors/combat-errors.css";
 @import "../ui/panels.css";
+@import "../ui/tooltip.css";
 @import "../features/diagnostics/diagnostics.css";
 @import "../features/loading/loading.css";
 @import "./overrides.css";

@@ -20,6 +20,12 @@ No gear advantage in the first playtests. Use equalized loadouts and fast rematc
 4. What makes this world memorable? Develop original factions, silhouettes and materials after the graybox loop proves useful.
 5. What should players learn after a loss? Plan readable combat events, a death recap, and eventually replays.
 
+## Effects terminology
+
+The agreed terminology is **Effects**, with **Positive Effects** for beneficial effects and **Negative Effects** for harmful effects. Use these names instead of buffs/debuffs, boons/afflictions, or auras for this concept.
+
+This establishes naming only. Effect mechanics, duration, stacking, removal, and presentation remain undecided; an Effects system is not implemented yet.
+
 ## Defer
 
 Open world, MMO progression, loot economy, matchmaking ratings, monetization, guilds, mod scripting, mobile controls, runtime generative AI, and production art. These are outside the first playable milestone.

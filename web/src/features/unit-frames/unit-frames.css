@@ -12,7 +12,7 @@
   flex-direction: column;
   gap: 8px;
 }
-.opponent-entry {
+.unit-entry {
   padding: 0;
   border: 0;
   background: transparent;
@@ -22,8 +22,8 @@
   cursor: pointer;
   border-radius: var(--radius-3);
 }
-.opponent-entry:hover .unit-frame,
-.opponent-entry:focus-visible .unit-frame {
+.unit-entry:hover .unit-frame,
+.unit-entry:focus-visible .unit-frame {
   border-color: var(--accent-9);
 }
 .unit-heading {

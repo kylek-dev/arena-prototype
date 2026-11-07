@@ -15,7 +15,7 @@ export function GameMenu() {
         Settings
       </Button>
       <Button variant="surface" color="gray" onClick={() => setPanel("spellbook")}>
-        Spellbook
+        Spells
       </Button>
       <Button
         variant="surface"

@@ -1,9 +1,9 @@
-import { PULSE, availability } from "../../domain/abilities/catalog";
 import { useConfigSelector, updateConfig } from "../../state/config";
 import { engine } from "../../state/session";
 import { useStore } from "../../state/store";
 import { beginSpellPress } from "../../runtime/spell-drag";
 import { Hint } from "../../ui/Tooltip";
+import { SpellDetails } from "../abilities/SpellDetails";
 import { Button } from "@radix-ui/themes";
 
 export function Spellbook() {
@@ -20,25 +20,17 @@ export function Spellbook() {
           Unlock spell dragging
         </Button>
       )}
-      <div className="spellbook-grid" aria-label="Known spells">
+      <div className="spellbook-grid" role="group" aria-label="Known spells">
         <Hint
           text={
-            <>
-              <strong>{PULSE.name}</strong>
-              <p>{PULSE.description}</p>
-              {state && (
-                <p>
-                  {state.pulse.damage} damage · {state.pulse.range} m · {state.pulse.cooldown} s
-                  recharge
-                </p>
-              )}
-              <p>{availability(state)}</p>
-              <p>
-                {locked
+            <SpellDetails
+              state={state}
+              instruction={
+                locked
                   ? "Assignments are locked. Unlock in Settings → Action bars."
-                  : "Drag onto an action slot. This copies Pulse and never casts it."}
-              </p>
-            </>
+                  : "Drag onto an action slot. This copies Pulse and never casts it."
+              }
+            />
           }
         >
           <button
@@ -52,7 +44,6 @@ export function Spellbook() {
             <span className="spell-symbol" aria-hidden="true">
               ϟ
             </span>
-            <small>Pulse</small>
           </button>
         </Hint>
       </div>
