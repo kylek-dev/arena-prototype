@@ -2,8 +2,8 @@ import { defineConfig } from '@playwright/test';
 // Keep CSS and render coordinates at the same density. Fractional density
 // changes picking behavior in the current Bevy browser adapter.
 const size = process.env.ARENA_TEST_VIEWPORT ?? '800x600';
-if (!['640x500', '800x600', '1024x768'].includes(size)) {
-  throw new Error('ARENA_TEST_VIEWPORT must be 640x500, 800x600, or 1024x768');
+if (!['800x600', '1024x768'].includes(size)) {
+  throw new Error('ARENA_TEST_VIEWPORT must be 800x600 or 1024x768');
 }
 const [width, height] = size.split('x').map(Number);
 export default defineConfig({

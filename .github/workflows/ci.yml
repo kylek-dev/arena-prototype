@@ -9,7 +9,7 @@ on:
         description: Browser viewport (1024x768 for comparison)
         type: choice
         default: '800x600'
-        options: ['640x500', '800x600', '1024x768']
+        options: ['800x600', '1024x768']
 permissions:
   contents: read
 concurrency:

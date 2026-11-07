@@ -70,7 +70,7 @@ test('camera orbit, zoom, focus loss and frame diagnostics', async ({ page, brow
   await page.setViewportSize({ width: 1024, height: 768 });
   const errors = await ready(page);
   const before = await state(page);
-  await page.mouse.move(400, 300);
+  await page.mouse.move(...inputAnchor(page));
   await mouseButton(page, 'right', true, 2);
   // Small movements avoid absolute-coordinate injection overshooting the
   // virtual screen while the browser is pointer-locked.
@@ -122,6 +122,8 @@ test('debug bridge is opt-in and load failures remain visible', async ({ page })
 });
 
 const locked = (page) => page.evaluate(() => document.pointerLockElement?.id ?? null);
+// Stay in the canvas between the status cards and action bar at every viewport.
+const inputAnchor = (page) => [page.viewportSize().width / 2, page.viewportSize().height / 2];
 async function nextFrames(page, count = 2) {
   const frame = (await state(page)).frames;
   await expect.poll(async () => (await state(page)).frames).toBeGreaterThan(frame + count);
@@ -152,8 +154,9 @@ async function dragMotion(page, x, y, buttons) {
 }
 async function mouseButton(page, button, down, buttons) {
   if (page.context().browser().browserType().name() === 'chromium') {
+    const [x, y] = inputAnchor(page);
     await chromiumInput(page, {
-      type: down ? 'mousePressed' : 'mouseReleased', x: 400, y: 300,
+      type: down ? 'mousePressed' : 'mouseReleased', x, y,
       button, buttons, clickCount: 1, pointerType: 'mouse',
     });
   } else {
@@ -161,7 +164,7 @@ async function mouseButton(page, button, down, buttons) {
   }
 }
 async function beginDrag(page, button) {
-  await page.mouse.move(400, 300);
+  await page.mouse.move(...inputAnchor(page));
   await mouseButton(page, button, true, button === 'left' ? 1 : 2);
   await expect.poll(() => locked(page)).toBe('arena');
   expect(await page.locator('#arena').evaluate((canvas) => getComputedStyle(canvas).cursor)).toBe('none');
