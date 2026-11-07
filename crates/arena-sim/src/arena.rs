@@ -5,6 +5,9 @@
 use crate::TICKS_PER_SECOND;
 
 pub const MOVE_PER_TICK: i32 = 160;
+/// Millimetres/tick and millimetres/tick² (30 Hz): ~0.77 s airtime, 1.32 m apex.
+pub const JUMP_SPEED: i32 = 220;
+pub const GRAVITY: i32 = 20;
 pub const BODY_RADIUS: i32 = 450;
 // Half-extents of the playable floor, in millimetres.
 pub const ARENA_X: i32 = 18_000;
@@ -68,6 +71,10 @@ pub const PILLARS: [Pillar; 4] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Combatant {
     pub position: Position,
+    pub height: i32,
+    pub vertical_velocity: i32,
+    /// Actual ground displacement at takeoff; no air steering or speed stacking.
+    pub momentum: Position,
     pub health: u16,
     pub ready_at: u64,
 }
@@ -83,6 +90,9 @@ pub enum ArenaCommand {
         actor: usize,
         target: usize,
     },
+    Jump {
+        actor: usize,
+    },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rejection {
@@ -90,6 +100,7 @@ pub enum Rejection {
     InvalidTarget,
     InvalidMovement,
     AlreadyMoved,
+    Airborne,
     MatchOver,
     Cooldown,
     OutOfRange,
@@ -97,6 +108,9 @@ pub enum Rejection {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArenaEvent {
+    Jumped {
+        actor: usize,
+    },
     Moved {
         actor: usize,
     },
@@ -125,11 +139,17 @@ impl Default for Arena {
                     position: Position { x: 0, z: 5_500 },
                     health: 100,
                     ready_at: 0,
+                    height: 0,
+                    vertical_velocity: 0,
+                    momentum: Position { x: 0, z: 0 },
                 },
                 Combatant {
                     position: Position { x: 0, z: -3_500 },
                     health: 100,
                     ready_at: 0,
+                    height: 0,
+                    vertical_velocity: 0,
+                    momentum: Position { x: 0, z: 0 },
                 },
             ],
             winner: None,
@@ -173,6 +193,17 @@ impl Arena {
     pub fn step(&mut self, commands: &[ArenaCommand]) -> Vec<ArenaEvent> {
         let mut events = Vec::new();
         let mut moved = [false; 2];
+        // Existing airborne momentum resolves before this tick's ordered commands.
+        // Ground momentum expires without a Move, preventing stale running jumps.
+        if self.winner.is_none() {
+            for fighter in &mut self.fighters {
+                if fighter.height > 0 {
+                    fighter.position = slide(fighter.position, fighter.momentum);
+                } else {
+                    fighter.momentum = Position { x: 0, z: 0 };
+                }
+            }
+        }
         for &command in commands {
             if self.winner.is_some() {
                 events.push(ArenaEvent::Rejected(Rejection::MatchOver));
@@ -193,35 +224,34 @@ impl Arena {
                         continue;
                     }
                     moved[actor] = true;
+                    if self.fighters[actor].height > 0 {
+                        continue;
+                    }
                     let length = ((i64::from(x).pow(2) + i64::from(z).pow(2)) as u64)
                         .isqrt()
                         .max(1000) as i32;
                     let dx = i32::from(x) * MOVE_PER_TICK / length;
                     let dz = i32::from(z) * MOVE_PER_TICK / length;
-                    let p = &mut self.fighters[actor].position;
-                    // Axis-separated collision permits sliding; maximum step is smaller
-                    // than pillar thickness, so a valid command cannot tunnel through.
-                    let next = Position {
-                        x: (p.x + dx).clamp(-ARENA_X + BODY_RADIUS, ARENA_X - BODY_RADIUS),
-                        z: p.z,
+                    let fighter = &mut self.fighters[actor];
+                    let before = fighter.position;
+                    fighter.position = slide(before, Position { x: dx, z: dz });
+                    fighter.momentum = Position {
+                        x: fighter.position.x - before.x,
+                        z: fighter.position.z - before.z,
                     };
-                    if !PILLARS
-                        .iter()
-                        .any(|pillar| pillar.contains(next, BODY_RADIUS))
-                    {
-                        *p = next;
-                    }
-                    let next = Position {
-                        x: p.x,
-                        z: (p.z + dz).clamp(-ARENA_Z + BODY_RADIUS, ARENA_Z - BODY_RADIUS),
-                    };
-                    if !PILLARS
-                        .iter()
-                        .any(|pillar| pillar.contains(next, BODY_RADIUS))
-                    {
-                        *p = next;
-                    }
                     events.push(ArenaEvent::Moved { actor });
+                }
+                ArenaCommand::Jump { actor } => {
+                    let Some(fighter) = self.fighters.get_mut(actor) else {
+                        events.push(ArenaEvent::Rejected(Rejection::InvalidActor));
+                        continue;
+                    };
+                    if fighter.height > 0 || fighter.vertical_velocity > 0 {
+                        events.push(ArenaEvent::Rejected(Rejection::Airborne));
+                        continue;
+                    }
+                    fighter.vertical_velocity = JUMP_SPEED;
+                    events.push(ArenaEvent::Jumped { actor });
                 }
                 ArenaCommand::Attack { actor, target } => {
                     if let Err(reason) = self.can_attack(actor, target) {
@@ -243,9 +273,46 @@ impl Arena {
                 }
             }
         }
+        if self.winner.is_none() {
+            for fighter in &mut self.fighters {
+                if fighter.height > 0 || fighter.vertical_velocity > 0 {
+                    fighter.height = (fighter.height + fighter.vertical_velocity).max(0);
+                    fighter.vertical_velocity -= GRAVITY;
+                    if fighter.height == 0 {
+                        fighter.vertical_velocity = 0;
+                        fighter.momentum = Position { x: 0, z: 0 };
+                    }
+                }
+            }
+        }
         self.tick += 1;
         events
     }
+}
+
+// The same bounded footprint applies in the air: jumping cannot bypass cover.
+fn slide(mut p: Position, delta: Position) -> Position {
+    let next = Position {
+        x: (p.x + delta.x).clamp(-ARENA_X + BODY_RADIUS, ARENA_X - BODY_RADIUS),
+        z: p.z,
+    };
+    if !PILLARS
+        .iter()
+        .any(|pillar| pillar.contains(next, BODY_RADIUS))
+    {
+        p = next;
+    }
+    let next = Position {
+        x: p.x,
+        z: (p.z + delta.z).clamp(-ARENA_Z + BODY_RADIUS, ARENA_Z - BODY_RADIUS),
+    };
+    if !PILLARS
+        .iter()
+        .any(|pillar| pillar.contains(next, BODY_RADIUS))
+    {
+        p = next;
+    }
+    p
 }
 
 /// Segment-versus-rectangle tests use the same pillar footprints as collision.
@@ -294,6 +361,146 @@ mod tests {
         actor: 0,
         target: 1,
     };
+    const JUMP: ArenaCommand = ArenaCommand::Jump { actor: 0 };
+
+    #[test]
+    fn jump_preserves_takeoff_momentum_until_exact_landing() {
+        let mut arena = Arena::default();
+        arena.step(&[forward(), JUMP]);
+        let takeoff = arena.fighters[0].position;
+        assert_eq!(arena.fighters[0].height, JUMP_SPEED);
+        let mut apex = JUMP_SPEED;
+        let mut ticks = 1;
+        while arena.fighters[0].height > 0 {
+            // Opposite movement and repeated jump cannot steer, brake or boost.
+            assert!(
+                arena
+                    .step(&[
+                        ArenaCommand::Move {
+                            actor: 0,
+                            x: 0,
+                            z: 1000
+                        },
+                        JUMP
+                    ])
+                    .contains(&ArenaEvent::Rejected(Rejection::Airborne))
+            );
+            ticks += 1;
+            apex = apex.max(arena.fighters[0].height);
+            assert!(ticks < 30);
+        }
+        assert_eq!(ticks, 23);
+        assert_eq!(apex, 1320);
+        assert_eq!(arena.fighters[0].position.z, takeoff.z - 22 * MOVE_PER_TICK);
+        assert_eq!(arena.fighters[0].vertical_velocity, 0);
+        let landed = arena.fighters[0].position;
+        arena.step(&[]);
+        assert_eq!(arena.fighters[0].position, landed);
+        assert_eq!(arena.step(&[JUMP]), vec![ArenaEvent::Jumped { actor: 0 }]);
+    }
+
+    #[test]
+    fn stationary_jump_has_no_stale_momentum_and_cannot_double_jump() {
+        let mut arena = Arena::default();
+        arena.step(&[forward()]);
+        let before = arena.fighters[0].position;
+        assert_eq!(
+            arena.step(&[JUMP, JUMP]),
+            vec![
+                ArenaEvent::Jumped { actor: 0 },
+                ArenaEvent::Rejected(Rejection::Airborne),
+            ]
+        );
+        for _ in 0..30 {
+            arena.step(&[]);
+        }
+        assert_eq!(arena.fighters[0].position, before);
+        assert_eq!(arena.fighters[0].height, 0);
+        assert_eq!(
+            arena.step(&[ArenaCommand::Jump { actor: usize::MAX }]),
+            vec![ArenaEvent::Rejected(Rejection::InvalidActor)]
+        );
+        arena.winner = Some(1);
+        assert_eq!(
+            arena.step(&[JUMP]),
+            vec![ArenaEvent::Rejected(Rejection::MatchOver)]
+        );
+    }
+
+    #[test]
+    fn jumping_keeps_planar_combat_and_airborne_command_budgets() {
+        let mut arena = Arena::default();
+        arena.fighters[0].position = Position { x: 0, z: 0 };
+        arena.step(&[forward(), JUMP]);
+        assert_eq!(arena.can_attack(0, 1), Ok(()));
+        let before = arena.fighters[0].position;
+        let events = arena.step(&[
+            ArenaCommand::Move {
+                actor: 0,
+                x: i16::MAX,
+                z: 0,
+            },
+            forward(),
+            forward(),
+            ArenaCommand::Attack {
+                actor: 1,
+                target: 0,
+            },
+        ]);
+        assert_eq!(events[0], ArenaEvent::Rejected(Rejection::InvalidMovement));
+        assert_eq!(events[1], ArenaEvent::Rejected(Rejection::AlreadyMoved));
+        assert_eq!(arena.fighters[0].health, 75);
+        assert_eq!(arena.fighters[0].position.z, before.z - MOVE_PER_TICK);
+        assert!(arena.fighters[0].height > 0);
+        arena.winner = Some(1);
+        let frozen = arena.fighters;
+        arena.step(&[forward(), JUMP]);
+        assert_eq!(arena.fighters, frozen);
+        arena = Arena::default();
+        assert!(arena.fighters.iter().all(|f| f.height == 0
+            && f.vertical_velocity == 0
+            && f.momentum == Position { x: 0, z: 0 }));
+    }
+
+    #[test]
+    fn airborne_collision_speed_and_replay_are_bounded() {
+        for start in [
+            Position {
+                x: ARENA_X - BODY_RADIUS - 200,
+                z: 0,
+            },
+            Position { x: 4500, z: 5000 },
+        ] {
+            let mut a = Arena::default();
+            a.fighters[0].position = start;
+            let mut b = a.clone();
+            let mut previous = start;
+            for tick in 0..35 {
+                let mut commands = vec![ArenaCommand::Move {
+                    actor: 0,
+                    x: 1000,
+                    z: 1000,
+                }];
+                if tick == 0 {
+                    commands.push(JUMP);
+                }
+                assert_eq!(a.step(&commands), b.step(&commands));
+                assert_eq!(a, b);
+                let fighter = a.fighters[0];
+                assert!(
+                    fighter.position.distance_squared(previous) <= i64::from(MOVE_PER_TICK).pow(2)
+                );
+                assert!(fighter.position.x <= ARENA_X - BODY_RADIUS);
+                assert!(fighter.position.z <= ARENA_Z - BODY_RADIUS);
+                assert!(
+                    !PILLARS
+                        .iter()
+                        .any(|p| p.contains(fighter.position, BODY_RADIUS))
+                );
+                previous = fighter.position;
+            }
+        }
+    }
     #[test]
     fn attack_checks_range_cooldown_and_match_end() {
         let mut arena = Arena::default();

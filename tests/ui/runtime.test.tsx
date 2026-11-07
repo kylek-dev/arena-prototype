@@ -44,6 +44,30 @@ afterEach(() => {
 });
 
 describe("production input routing", () => {
+  it("routes a remappable one-shot jump and suppresses it during typing and menus", () => {
+    expect(key("Space").defaultPrevented).toBe(true);
+    expect(router.sample()[14]).toBe(1);
+    expect(router.sample()[14]).toBe(0);
+    key("Space", { repeat: true });
+    expect(router.sample()[14]).toBe(0);
+    release("Space");
+    updateConfig((c) => ({ ...c, bindings: bind(c.bindings, "jump", 0, chord({ code: "KeyJ" })) }));
+    key("Space");
+    expect(router.sample()[14]).toBe(0);
+    key("KeyJ");
+    expect(router.sample()[14]).toBe(1);
+    release("KeyJ");
+    key("KeyJ");
+    window.dispatchEvent(new Event("blur"));
+    expect(router.sample()[14]).toBe(0);
+    document.querySelector("input")!.focus();
+    key("KeyJ");
+    expect(router.sample()[14]).toBe(0);
+    canvas.focus();
+    interaction.set({ ...interaction.get(), panel: "menu" });
+    key("KeyJ");
+    expect(router.sample()[14]).toBe(0);
+  });
   it("highlights only the bound slot while held, even when casting is rejected or empty", () => {
     render(
       <Tooltip.Provider>

@@ -4,6 +4,7 @@ export type Bindings = Record<string, [Chord | null, Chord | null]>;
 export const movement = ["forward", "back", "left", "right"] as const;
 export const actions = [
   ...movement,
+  "jump",
   "nextTarget",
   "menu",
   "clearTarget",
@@ -62,6 +63,7 @@ export function defaults(bars: Bar[]): Bindings {
     back: "KeyS",
     left: "KeyA",
     right: "KeyD",
+    jump: "Space",
     nextTarget: "Tab",
     menu: "Escape",
     reset: "KeyR",

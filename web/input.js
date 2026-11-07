@@ -1,5 +1,5 @@
 // Deterministic browser intent state. No DOM, renderer, clocks, or game authority.
-const keys = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Digit1', 'Tab', 'Escape', 'KeyR']);
+const keys = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Digit1', 'Tab', 'Escape', 'KeyR', 'Space']);
 
 export class InputState {
   constructor() {
@@ -20,6 +20,7 @@ export class InputState {
       if (event.code === 'Tab') this.select = true;
       if (event.code === 'Escape') this.clear = true;
       if (event.code === 'KeyR') this.reset = true;
+      if (event.code === 'Space') this.jump = true;
     }
     return 'game';
   }
@@ -74,6 +75,7 @@ export class InputState {
     this.gesture = null;
     this.attack = this.select = this.clear = this.reset = false;
     this.selectPlayer = false;
+    this.jump = false;
     this.orbitX = this.orbitY = this.zoom = 0;
     this.steerPending = this.freeLookPending = false;
     this.click = null;
@@ -84,6 +86,8 @@ export class InputState {
     // persists; edge-triggered actions and accumulated deltas drain once.
     const input = [Number(this.held.has('KeyD')) - Number(this.held.has('KeyA')), this.mouseButtons === 3 ? -1 : Number(this.held.has('KeyS')) - Number(this.held.has('KeyW')), Number(this.attack), Number(this.select), Number(this.clear), Number(this.reset), this.orbitX, this.orbitY, this.zoom, this.click?.[0] ?? -1, this.click?.[1] ?? -1, Number((this.looking && Boolean(this.mouseButtons & 2)) || this.steerPending), Number((this.looking && this.mouseButtons === 1) || this.freeLookPending)];
     input.push(Number(this.selectPlayer));
+    input.push(Number(this.jump));
+    this.jump = false;
     this.selectPlayer = false;
     this.attack = this.select = this.clear = this.reset = false;
     this.orbitX = this.orbitY = this.zoom = 0;

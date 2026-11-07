@@ -41,7 +41,7 @@ npm ci
 npm run serve
 ```
 
-Open http://127.0.0.1:8000. WASD moves; left-drag looks; right-drag turns; both mouse buttons walk and steer. Tab selects, 1 attacks, and R resets.
+Open http://127.0.0.1:8000. WASD moves; Space jumps with takeoff momentum; left-drag looks; right-drag turns; both mouse buttons walk and steer. Tab selects, 1 attacks, and R resets.
 
 The React overlay adds target/focus frames, action bars, an icon-only draggable Pulse spellbook, remappable bindings, quick binding, direct layout editing and local profiles. Escape opens the bindable game menu; Shift+Escape clears target. Ordinary HUD clicks retain gameplay focus; typing/dialogs/editing own their keyboard input. Shift+Tab enters normal UI navigation. Layout frames and the editor window are movable. The interface uses Radix Themes with a neutral dark palette. Only Pulse and one stationary opponent exist. Use `npm run dev` for fast UI iteration after the first complete build; `npm run build` rebuilds only the frontend. See [frontend boundaries](docs/FRONTEND.md). Human rendered review of the revised overlay is pending.
 
