@@ -42,21 +42,9 @@
   outline-offset: 2px;
   filter: none;
 }
-.action-slot kbd {
-  display: block;
-  position: absolute;
-  top: 2px;
-  right: 3px;
-  font-size: 10px;
-  z-index: 2;
-}
 .spell-symbol {
   font-size: 33px;
   color: var(--indigo-11, #a4b3ff);
-}
-.action-slot small {
-  display: block;
-  font-size: 9px;
 }
 .cooldown {
   position: absolute;

@@ -41,6 +41,8 @@ The opponent is stationary and does not attack. Its health reaching zero ends th
 
 The practice-round box is removed; reset remains available through R and the game menu. A dedicated top-center area shows bold red errors only when an attempted spell cast fails (including missing target, range, line of sight, recharge or an authoritative rejection). Passive availability changes do not show errors. Messages expire after 2.5 seconds; repeated failed attempts restart that interval, while a valid cast attempt or reset clears them immediately. Empty slots and suspended gameplay/editing do not count as cast attempts. Startup failures and recovery remain in the loading panel, not the combat-error area. Human rendered review of these HUD changes is pending; automated DOM tests, frontend lint/format checks, WASM Clippy and the complete web build passed locally on 2026-11-07. No rendered/browser pass is claimed.
 
+Action-bar slots are icon-only: spell names, slot numbers and keybinding labels are not printed on the buttons. Tooltips retain spell details and bindings, accessible names retain slot identification, and cooldown/key-held feedback is unchanged. Human rendered review of this simplification is pending.
+
 ## Fast automated verification
 
 ```sh

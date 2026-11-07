@@ -70,12 +70,10 @@ export function ActionSlot({ slot, number }: { slot: Slot; number: number }) {
         }}
         onDragStart={(event) => event.preventDefault()}
       >
-        <kbd>{pair?.filter(Boolean).map(label).join(" / ")}</kbd>
         <span className="spell-symbol" aria-hidden="true">
           {slot.ability ? "ϟ" : "·"}
         </span>
         {cooling && <Cooldown />}
-        <small>{slot.ability ? "Pulse" : number}</small>
       </button>
     </Hint>
   );

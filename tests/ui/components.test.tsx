@@ -103,7 +103,21 @@ it("has an icon-only draggable spellbook with no assignment forms", () => {
   expect(preferences.get().profiles[0].config.bars[0].slots[0].ability).toBe("pulse");
 });
 
-it("shows shared cooldown and visible bindings, and selects quick-bind hover/focus", () => {
+it("keeps assigned and empty action slots icon-only with accessible names", () => {
+  render(
+    <Tooltip.Provider>
+      <ActionSlot slot={{ id: "bar-1-s1", ability: "pulse" }} number={1} />
+      <ActionSlot slot={{ id: "bar-1-s2", ability: null }} number={2} />
+    </Tooltip.Provider>,
+  );
+  const assigned = screen.getByRole("button", { name: "Slot 1 Pulse" });
+  const empty = screen.getByRole("button", { name: "Slot 2 empty" });
+  expect(assigned.textContent).toBe("ϟ");
+  expect(empty.textContent).toBe("·");
+  expect(preferences.get().profiles[0].config.bindings["slot:bar-1-s1"][0]?.code).toBe("Digit1");
+});
+
+it("shows shared cooldown and selects quick-bind hover/focus", () => {
   engine.set(snapshot({ cooldown: 0.6 }));
   interaction.set({ ...interaction.get(), quick: true });
   render(
@@ -113,7 +127,7 @@ it("shows shared cooldown and visible bindings, and selects quick-bind hover/foc
   );
   const slot = screen.getByRole("button", { name: "Slot 1 Pulse" });
   expect(screen.getByText("0.6")).toBeTruthy();
-  expect(screen.getByText("1", { selector: "kbd" })).toBeTruthy();
+  expect(slot.querySelector("kbd, small")).toBeNull();
   fireEvent.mouseEnter(slot);
   expect(interaction.get().hovered).toBe("bar-1-s1");
   fireEvent.mouseLeave(slot);
