@@ -1,0 +1,30 @@
+.loading {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  display: grid;
+  place-items: center;
+  background: var(--gray-1, #111113);
+  pointer-events: auto;
+  padding: 24px;
+}
+.loading > div {
+  max-width: 510px;
+}
+.loading h1 {
+  font-size: clamp(30px, 5vw, 50px);
+  font-weight: 600;
+  letter-spacing: -0.04em;
+}
+.loading-line {
+  height: 2px;
+  margin: 28px 0;
+  background: linear-gradient(90deg, transparent, var(--accent-9), transparent);
+  background-size: 200%;
+  animation: loading 2s linear infinite;
+}
+@keyframes loading {
+  to {
+    background-position: -200%;
+  }
+}

@@ -1,0 +1,22 @@
+.placed {
+  position: absolute;
+  transform-origin: top left;
+  pointer-events: auto;
+  width: max-content;
+}
+.placed.editing {
+  outline: 1px dashed var(--gray-9);
+  border-radius: 6px;
+  cursor: move;
+  touch-action: none;
+  z-index: 6;
+}
+.placed.editing > div {
+  pointer-events: none;
+}
+.placed.layout-selected {
+  outline: 2px solid var(--accent-9);
+}
+.placed.preview {
+  opacity: 0.6;
+}

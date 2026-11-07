@@ -3,26 +3,14 @@ import type { FrameRole } from "../../domain/preferences/schema";
 export function UnitFrame({
   role,
   unit,
-  selected,
-  focused,
-  preview,
 }: {
-  role: FrameRole;
+  role: Exclude<FrameRole, "opponents"> | "opponent";
   unit: Entity | null;
-  selected?: boolean;
-  focused?: boolean;
-  preview?: boolean;
 }) {
   return (
     <section className={`unit-frame ${role}`} aria-label={`${role} status`}>
-      <div className="eyebrow">
-        {role}
-        {selected ? " · selected" : ""}
-        {focused ? " · focus" : ""}
-      </div>
       <div className="unit-heading">
-        <strong>{unit?.name ?? (preview ? `${role} preview` : `No ${role}`)}</strong>
-        <span>{unit ? `${unit.health} / ${unit.maxHealth}` : "—"}</span>
+        <strong>{unit?.name ?? "—"}</strong>
       </div>
       <div
         className="health-track"
@@ -36,18 +24,21 @@ export function UnitFrame({
           className="health-fill"
           style={{ width: `${unit ? (unit.health / unit.maxHealth) * 100 : 0}%` }}
         />
+        <span className="bar-value">{unit ? `${unit.health}/${unit.maxHealth}` : "—"}</span>
       </div>
-      <small>
-        {preview
-          ? "Layout sample"
-          : unit
-            ? unit.health === 0
-              ? "Defeated"
-              : role === "player"
-                ? "Equalized practice loadout"
-                : "Practice opponent"
-            : "Select an opponent to begin"}
-      </small>
+      <div
+        className="resource-track"
+        role="meter"
+        aria-label={`${role} resource`}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={unit ? 100 : 0}
+        aria-valuetext="Placeholder · resources are not implemented"
+        title="Resource placeholder · no resource costs or regeneration yet"
+      >
+        <div className="resource-fill" style={{ width: unit ? "100%" : "0%" }} />
+        <span className="bar-value">{unit ? "100/100" : "—"}</span>
+      </div>
     </section>
   );
 }

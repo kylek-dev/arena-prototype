@@ -8,7 +8,7 @@ import {
   type Chord,
 } from "../bindings/model";
 import { clamp, layout, type Layout } from "../layout/model";
-export type FrameRole = "player" | "target" | "focus";
+export type FrameRole = "player" | "target" | "focus" | "opponents";
 export type Config = {
   bars: Bar[];
   bindings: Bindings;
@@ -23,7 +23,12 @@ export function defaultConfig(): Config {
   return {
     bars,
     bindings: defaults(bars),
-    frames: { player: layout(0.03, 0.15), target: layout(0.97, 0.15), focus: layout(0.97, 0.53) },
+    frames: {
+      player: layout(0.03, 0.04),
+      target: layout(0.19, 0.04),
+      focus: layout(0.7, 0.23),
+      opponents: layout(0.97, 0.24),
+    },
     assignmentsLocked: false,
   };
 }
@@ -140,6 +145,7 @@ export function validateConfig(value: unknown): Config {
       player: cleanLayout(frames.player, d.frames.player),
       target: cleanLayout(frames.target, d.frames.target),
       focus: cleanLayout(frames.focus, d.frames.focus),
+      opponents: cleanLayout(frames.opponents, d.frames.opponents),
     },
     assignmentsLocked: bool(r.assignmentsLocked, false),
   };

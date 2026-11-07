@@ -1,0 +1,72 @@
+.unit-frame {
+  width: 240px;
+  padding: 6px;
+  background: var(--gray-2);
+  background: color-mix(in srgb, var(--gray-2) 94%, transparent);
+  border: 1px solid var(--gray-7);
+  border-radius: var(--radius-3);
+  box-shadow: var(--shadow-3);
+}
+.opponent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.opponent-entry {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius-3);
+}
+.opponent-entry:hover .unit-frame,
+.opponent-entry:focus-visible .unit-frame {
+  border-color: var(--accent-9);
+}
+.unit-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin: 0px 0px 4px 2px;
+}
+.unit-heading strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.health-track,
+.resource-track {
+  position: relative;
+  height: 22px;
+  background: var(--gray-4);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 2px;
+}
+.bar-value {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 12px;
+  line-height: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 2px #000;
+}
+.health-fill {
+  height: 100%;
+  background: #5b9a7a;
+}
+.resource-fill {
+  height: 100%;
+  background: #438bdd;
+}
+.placed > div > .rt-Button,
+.placed > div > .row {
+  margin-top: 7px;
+}

@@ -1,0 +1,92 @@
+.action-bar {
+  display: grid;
+  gap: 4px;
+  padding: 5px;
+  background: color-mix(in srgb, var(--gray-2) 92%, transparent);
+  border: 1px solid var(--gray-6);
+  border-radius: var(--radius-3);
+  box-shadow: var(--shadow-3);
+}
+.action-slot {
+  position: relative;
+  width: var(--action-slot-size, 64px);
+  height: var(--action-slot-size, 64px);
+  box-sizing: border-box;
+  touch-action: none;
+  user-select: none;
+  padding: 2px;
+  background: var(--gray-4);
+  border-color: var(--gray-7);
+  border-radius: var(--radius-2);
+  overflow: hidden;
+}
+.action-slot.empty {
+  background: var(--gray-a2);
+  border-color: var(--gray-5);
+}
+.action-slot[aria-disabled="true"] {
+  filter: saturate(0.4);
+}
+.action-slot.key-held::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 2px #fff;
+  background: #fff2;
+  pointer-events: none;
+}
+.action-slot.binding-hover {
+  outline: 2px solid var(--accent-9);
+  outline-offset: 2px;
+  filter: none;
+}
+.action-slot kbd {
+  display: block;
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  font-size: 10px;
+  z-index: 2;
+}
+.spell-symbol {
+  font-size: 33px;
+  color: var(--indigo-11, #a4b3ff);
+}
+.action-slot small {
+  display: block;
+  font-size: 9px;
+}
+.cooldown {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: white;
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+  background: conic-gradient(from 0deg, transparent var(--cooldown-sweep, 0deg), #000b 0deg);
+  pointer-events: none;
+}
+.cooldown[hidden] {
+  display: none;
+}
+.spellbook-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.action-slot[data-spell-draggable="true"] {
+  cursor: grab;
+}
+.action-slot.drop-target {
+  outline: 2px solid var(--accent-9);
+}
+.spell-drag-preview {
+  position: fixed;
+  z-index: 60;
+  pointer-events: none !important;
+  text-align: center;
+  opacity: 0.85;
+}

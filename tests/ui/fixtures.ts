@@ -4,10 +4,10 @@ export function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   return {
     tick: 30,
     frames: 100,
-    player: { id: "practice-player", name: "Contender", x: 0, z: 0, health: 100, maxHealth: 100 },
+    player: { id: "practice-player", name: "Player", x: 0, z: 0, health: 100, maxHealth: 100 },
     target: {
       id: "practice-opponent",
-      name: "Sentinel",
+      name: "Enemy Bot",
       x: 100,
       z: 100,
       health: 75,

@@ -1,10 +1,9 @@
 import { useConfigSelector, updateConfig } from "../../state/config";
 import { engine, focus, interaction } from "../../state/session";
 import { useStore } from "../../state/store";
-import { dispatch } from "../../runtime/commands";
+import { interactOpponent } from "../../runtime/commands";
 import { Placed } from "../../ui/Placed";
 import { UnitFrame } from "./UnitFrame";
-import { Button } from "@radix-ui/themes";
 export function Frames() {
   const state = useStore(engine, (s) => s),
     focused = useStore(focus, (s) => s),
@@ -28,7 +27,7 @@ export function Frames() {
         const unit = editing
           ? {
               id: `sample-${role}`,
-              name: role === "player" ? "Contender" : "Sentinel",
+              name: role === "player" ? "Player" : "Enemy Bot",
               health: Math.round(maximum * 0.75),
               maxHealth: maximum,
             }
@@ -40,41 +39,40 @@ export function Frames() {
             value={frames[role]}
             onChange={(l) => updateConfig((c) => ({ ...c, frames: { ...c.frames, [role]: l } }))}
           >
-            <UnitFrame
-              role={role}
-              unit={unit ?? null}
-              selected={unit?.id === state?.target.id && state?.selected}
-              focused={unit?.id === focused}
-              preview={editing}
-            />
-            {!editing && role === "target" && (
-              <Button size="1" variant="ghost" color="gray" onClick={() => dispatch("setFocus")}>
-                Set focus
-              </Button>
-            )}
-            {!editing && role === "focus" && (
-              <div className="row">
-                <Button
-                  size="1"
-                  variant="ghost"
-                  color="gray"
-                  onClick={() => dispatch("targetFocus")}
-                >
-                  Target focus
-                </Button>
-                <Button
-                  size="1"
-                  variant="ghost"
-                  color="gray"
-                  onClick={() => dispatch("clearFocus")}
-                >
-                  Clear focus
-                </Button>
-              </div>
-            )}
+            <UnitFrame role={role} unit={unit ?? null} />
           </Placed>
         );
       })}
+      <Placed
+        id="opponents"
+        value={frames.opponents}
+        onChange={(l) => updateConfig((c) => ({ ...c, frames: { ...c.frames, opponents: l } }))}
+      >
+        <div className="opponent-list" role="group" aria-label="Opponents">
+          {(editing
+            ? [{ id: "sample-opponent", name: "Enemy Bot", health: 75, maxHealth: 100 }]
+            : state
+              ? [state.target]
+              : []
+          ).map((unit) => (
+            <button
+              key={unit.id}
+              type="button"
+              className="opponent-entry"
+              aria-label={`Target ${unit.name}`}
+              aria-pressed={state?.selected && state.target.id === unit.id}
+              title="Left-click to target; right-click to focus"
+              onClick={() => interactOpponent(unit.id, "target")}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                interactOpponent(unit.id, "focus");
+              }}
+            >
+              <UnitFrame role="opponent" unit={unit} />
+            </button>
+          ))}
+        </div>
+      </Placed>
     </>
   );
 }

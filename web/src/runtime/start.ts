@@ -1,5 +1,6 @@
 import { adaptSnapshot, needsImmediateDelivery } from "../bridge/snapshot";
 import { loadEngine } from "../bridge/loader";
+import { observeCastResult } from "./cast-feedback";
 import { engine, error, focus } from "../state/session";
 import { reconcileFocus } from "../domain/units/selection";
 import { installPointer } from "./pointer";
@@ -28,6 +29,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
         const next = adaptSnapshot(raw),
           previous = engine.get();
         recordState();
+        observeCastResult(next);
         focus.set(
           reconcileFocus(
             focus.get(),

@@ -75,8 +75,8 @@ export function adaptSnapshot(raw: unknown): Snapshot {
   }
   return {
     ...r,
-    player: { ...r.player, maxHealth, id: "practice-player", name: "Contender" },
-    target: { ...r.target, maxHealth, id: "practice-opponent", name: "Sentinel" },
+    player: { ...r.player, maxHealth, id: "practice-player", name: "Player" },
+    target: { ...r.target, maxHealth, id: "practice-opponent", name: "Enemy Bot" },
   };
 }
 declare global {

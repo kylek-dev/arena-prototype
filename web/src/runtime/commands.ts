@@ -1,5 +1,6 @@
 import { InputState } from "../../input.js";
-import { canActivate, isEngineReady } from "../domain/abilities/catalog";
+import { availability, canActivate, isEngineReady } from "../domain/abilities/catalog";
+import { beginCast, clearCastFeedback, rejectCast } from "./cast-feedback";
 import { nextTarget } from "../domain/units/selection";
 import { config } from "../state/config";
 import {
@@ -13,12 +14,28 @@ import {
   setPanel,
 } from "../state/session";
 export const input = new InputState();
+// The practice ABI exposes one opponent. Resolve identity before issuing intent;
+// focusing is independent of selection and must not select as a side effect.
+export function interactOpponent(id: string, action: "target" | "focus") {
+  const s = engine.get();
+  if (draggingSpell.get() || error.get() || blocksGameplay() || !isEngineReady(s)) return;
+  if (!s || s.target.id !== id) return;
+  if (action === "focus") focus.set(id);
+  else input.select = true;
+}
 export function activateSlot(id: string) {
   if (draggingSpell.get() || error.get() || blocksGameplay()) return;
   const slot = config()
     .bars.flatMap((b) => b.slots)
     .find((s) => s.id === id);
-  if (slot?.ability === "pulse" && canActivate(engine.get())) input.requestAttack();
+  const state = engine.get();
+  if (slot?.ability !== "pulse" || !isEngineReady(state)) return;
+  if (!canActivate(state)) {
+    rejectCast(availability(state));
+    return;
+  }
+  beginCast(state);
+  input.requestAttack();
 }
 export function dispatch(action: string) {
   const interfaceAction = ["menu", "settings", "spellbook", "quickBind", "layout"].includes(action);
@@ -49,6 +66,7 @@ export function dispatch(action: string) {
       if (s && focus.get() === s.target.id) input.select = true;
       break;
     case "reset":
+      clearCastFeedback();
       focus.set(null);
       input.requestReset();
       break;

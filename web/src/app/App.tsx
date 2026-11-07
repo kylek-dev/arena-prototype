@@ -9,7 +9,7 @@ import { GameMenu } from "../features/menu/GameMenu";
 import { QuickBinding } from "../features/keybindings/QuickBinding";
 import { BindingConflict } from "../features/keybindings/BindingsEditor";
 import { LayoutToolbar } from "../features/layout-editor/LayoutSettings";
-import { Practice } from "../features/practice/Practice";
+import { CombatErrors } from "../features/combat-errors/CombatErrors";
 import { Loading } from "../features/loading/Loading";
 import { Diagnostics } from "../features/diagnostics/Diagnostics";
 import { Modal } from "../ui/Dialog";
@@ -52,7 +52,7 @@ export function App() {
         <Frames />
         <ActionBars />
         <SpellDragPreview />
-        <Practice />
+        <CombatErrors />
         <QuickBinding />
         <LayoutToolbar />
         <Diagnostics />

@@ -1,5 +1,5 @@
 import * as Tooltip from "@radix-ui/react-tooltip";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { Modal } from "../../web/src/ui/Dialog";
@@ -12,7 +12,8 @@ import { BarSettings } from "../../web/src/features/settings/BarSettings";
 import { Loading } from "../../web/src/features/loading/Loading";
 import { Frames } from "../../web/src/features/unit-frames/Frames";
 import { LayoutSettings, LayoutToolbar } from "../../web/src/features/layout-editor/LayoutSettings";
-import { initial } from "../../web/src/domain/preferences/schema";
+import { initial, defaultConfig, validateConfig } from "../../web/src/domain/preferences/schema";
+import { input, interactOpponent } from "../../web/src/runtime/commands";
 import { engine, error, focus, interaction, selectedLayout } from "../../web/src/state/session";
 import { preferences, persistence, saveMessage } from "../../web/src/state/config";
 import { acceptBinding, pendingBinding } from "../../web/src/state/binding-capture";
@@ -30,6 +31,7 @@ beforeEach(() => {
   interaction.set({ panel: null, quick: false, layout: false, hovered: null, capture: null });
   pendingBinding.set(null);
   selectedLayout.set(null);
+  input.select = false;
 });
 
 afterEach(() => {
@@ -40,12 +42,15 @@ afterEach(() => {
 
 it("uses one unit frame for empty, dead, selected and focused units", () => {
   const { rerender } = render(<UnitFrame role="target" unit={null} />);
-  expect(screen.getByText("No target")).toBeTruthy();
-  const unit = { id: "e", name: "Sentinel", health: 0, maxHealth: 100 };
-  rerender(<UnitFrame role="focus" unit={unit} selected focused />);
-  expect(screen.getByText("Defeated")).toBeTruthy();
-  expect(screen.getByText("focus · selected · focus")).toBeTruthy();
-  expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe("0");
+  expect(screen.getByRole("region", { name: "target status" })).toBeTruthy();
+  const unit = { id: "e", name: "Enemy Bot", health: 0, maxHealth: 100 };
+  rerender(<UnitFrame role="focus" unit={unit} />);
+  expect(screen.getByText("Enemy Bot")).toBeTruthy();
+  expect(screen.getByText("0/100")).toBeTruthy();
+  expect(screen.queryByText("Defeated")).toBeNull();
+  expect(screen.getByRole("meter", { name: "focus health" }).getAttribute("aria-valuenow")).toBe(
+    "0",
+  );
 });
 
 it("traps modal focus and returns it to the opener", async () => {
@@ -176,17 +181,61 @@ it("renders actionable startup errors and a failed-character fallback notice", (
 });
 
 it("focus frame follows live health independently of actual target selection", async () => {
-  const user = userEvent.setup();
+  engine.set(snapshot({ selected: false }));
   render(<Frames />);
-  await user.click(screen.getByRole("button", { name: "Set focus" }));
+  const opponent = screen.getByRole("button", { name: "Target Enemy Bot" });
+  expect(fireEvent.contextMenu(opponent)).toBe(false);
   expect(focus.get()).toBe("practice-opponent");
+  expect(input.select).toBe(false);
   act(() =>
     engine.set(snapshot({ selected: false, target: { ...snapshot().target, health: 50 } })),
   );
   expect(screen.queryByRole("region", { name: "target status" })).toBeNull();
-  expect(screen.getByText("50 / 100")).toBeTruthy();
-  await user.click(screen.getByRole("button", { name: "Clear focus" }));
+  expect(
+    within(screen.getByRole("region", { name: "focus status" })).getByText("50/100"),
+  ).toBeTruthy();
+  expect(within(opponent).getByText("50/100")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Set focus" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Clear focus" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Target focus" })).toBeNull();
+  fireEvent.click(opponent);
+  expect(input.select).toBe(true);
+  act(() => focus.set(null));
   expect(screen.queryByRole("region", { name: "focus status" })).toBeNull();
+});
+
+it("guards opponent interactions while editing, blocked, unavailable or stale", () => {
+  render(<Frames />);
+  const opponent = screen.getByRole("button", { name: "Target Enemy Bot" });
+  for (const mode of [{ layout: true }, { quick: true }, { panel: "settings" as const }]) {
+    act(() => interaction.set({ ...interaction.get(), ...mode }));
+    fireEvent.click(opponent);
+    fireEvent.contextMenu(opponent);
+    expect(input.select).toBe(false);
+    expect(focus.get()).toBeNull();
+    act(() => interaction.set({ ...interaction.get(), layout: false, quick: false, panel: null }));
+  }
+  interactOpponent("missing", "focus");
+  expect(focus.get()).toBeNull();
+  act(() => engine.set(null));
+  interactOpponent("practice-opponent", "target");
+  expect(input.select).toBe(false);
+});
+
+it("adds opponent placement to older profiles without moving saved frames", () => {
+  const defaults = defaultConfig();
+  expect(defaults.frames.player.y).toBe(defaults.frames.target.y);
+  expect(defaults.frames.player.x).toBeLessThan(defaults.frames.target.x);
+  expect(defaults.frames.focus.x).toBeGreaterThan(defaults.frames.target.x);
+  expect(defaults.frames.focus.x).toBeLessThan(defaults.frames.opponents.x);
+  const saved = {
+    player: { ...defaults.frames.player, x: 0.2 },
+    target: defaults.frames.target,
+    focus: defaults.frames.focus,
+  };
+  const restored = validateConfig({ ...defaults, frames: saved });
+  expect(restored.frames.player).toEqual(saved.player);
+  expect(restored.frames.opponents).toEqual(defaults.frames.opponents);
 });
 
 it("edits visibility and scale, previews hidden frames and resets selected layout", async () => {
@@ -217,7 +266,8 @@ it("shows sample frames without selection/focus and drags the whole selected fra
   engine.set(snapshot({ selected: false }));
   interaction.set({ ...interaction.get(), layout: true });
   render(<Frames />);
-  expect(screen.getAllByText("Layout sample")).toHaveLength(3);
+  expect(screen.getAllByRole("meter")).toHaveLength(8);
+  expect(screen.getByRole("button", { name: "Edit opponents" })).toBeTruthy();
   const frame = screen.getByRole("button", { name: "Edit target" });
   const before = preferences.get().profiles[0].config.frames.target;
   fireEvent.pointerDown(frame, { button: 0, clientX: 600, clientY: 120, pointerId: 1 });

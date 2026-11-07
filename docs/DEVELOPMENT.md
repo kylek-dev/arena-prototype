@@ -110,4 +110,27 @@ Open http://localhost:8000. Keep that terminal running; Ctrl+C stops the server.
 - Rules-only test loop: `cargo test -p arena-sim`.
 - Scripted original headless example: `cargo run -p arena-headless`.
 
+## VS Code tasks
+
+Open the repository folder in VS Code (on Windows, use **WSL: Open Folder in WSL**). The tasks in [`.vscode/tasks.json`](../.vscode/tasks.json) use the same tools and prerequisites as the commands above; they do not install Rust or the WASM tooling automatically.
+
+- **Terminal → Run Build Task** (`Ctrl+Shift+B`): complete browser build, including Rust/WASM and frontend.
+- **Tasks: Run Test Task**: frontend/input tests by default. Rules-only and dependency-free input tasks are also available.
+- **Tasks: Run Task → Check: frontend**: types, lint, formatting and tests without compiling Rust.
+- **Check: complete project**: native/frontend checks, WASM Clippy and a complete browser build, in sequence. This does not run a browser or establish rendered acceptance.
+- **Dev: frontend hot reload** / **Dev: serve production build**: start a persistent server using an existing complete build. Use **Tasks: Terminate Task** to stop servers or the test watcher.
+- Other tasks install npm dependencies, run the headless scenario, run individual checks, watch tests, or explicitly format frontend/Rust files.
+
+Run **Setup: npm dependencies** once after cloning or when the lockfile changes, then **Build: complete browser client** before starting either server. Tasks do not run automatically when opening the folder; Playwright remains an explicitly manual diagnostic command.
+
+### Debugging with F5
+
+Select a configuration from **Run and Debug** in [`.vscode/launch.json`](../.vscode/launch.json):
+
+- **Browser: frontend hot reload** starts Vite, waits for readiness, then launches Chrome with the read-only diagnostics panel enabled. Uses VS Code's built-in JavaScript debugger; install Chrome first. TypeScript/JavaScript breakpoints use Vite's development source maps.
+- **Browser: production preview** serves the existing `dist/` build and opens Chrome. It does not rebuild; run the complete browser build after Rust changes or the frontend-only build after UI changes. Production source maps are not enabled, so use hot reload for source-level UI debugging.
+- **Rust: headless scenario (CodeLLDB)** builds and debugs `arena-headless`. Install the **CodeLLDB** extension (`vadimcn.vscode-lldb`) in the workspace environment (inside WSL when applicable).
+
+Browser launches require an existing complete browser build and do not debug Rust/WASM source. The servers use strict port 8000 to avoid silently debugging a different port; stop any other server on that port before switching configurations. Stopping the browser debugger may leave its server running; use **Tasks: Terminate Task** to stop it. Launching a browser is not a recorded manual acceptance pass.
+
 See [browser development](BROWSER.md) for controls, optional Firefox coverage, pointer-lock automation, and how measurements are collected. Ubuntu native/JavaScript tests and WASM compile checks run in GitHub Actions; E2E validation is manual; fresh macOS and Windows/WSL installations have not been exhaustively rehearsed on pristine machines.
