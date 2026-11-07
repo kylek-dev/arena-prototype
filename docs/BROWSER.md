@@ -40,7 +40,7 @@ npx playwright install --with-deps chromium
 npm run test:browser
 ```
 
-The Rust check script type-checks the client natively, tests headless rules, and checks browser-shell syntax. WASM Clippy checks its target-specific bridge. The functional browser suite runs at 1024×768 to keep software-GPU automation responsive; this is not a hardware performance acceptance benchmark. Browser tests verify actual inputs, ray selection, cooldown rejection, win/reset, camera/zoom, both mouse-button press orders, partial release, held keyboard movement, pointer-lock cancellation, focus loss, opt-in diagnostics, and visible loading failures. Chromium locked mouse input uses a persistent trusted CDP input session directly to avoid Playwright’s high-level drag interception stalls; Firefox uses Playwright mouse input. Neither path injects game state or synthetic DOM mouse events. Screenshots on failure and metrics are written to ignored test-results. Set `ARENA_TRACE=1` to retain failure traces when needed; continuous trace screencasting can severely slow pointer-lock tests on software GPUs. Playwright starts the local static server automatically; an existing server on port 8000 must serve this project's web directory.
+The Rust check script type-checks the client natively, tests headless rules, and checks browser-shell syntax. WASM Clippy checks its target-specific bridge. The functional browser suite uses an 800×600 viewport at normal pixel density to reduce software-GPU work. This is not a hardware performance acceptance benchmark. Set `ARENA_TEST_VIEWPORT=1024x768` for the previous viewport and timing comparisons; `640x500` is also available for experiments. Browser tests verify actual inputs, ray selection, cooldown rejection, win/reset, camera/zoom, both mouse-button press orders, partial release, held keyboard movement, pointer-lock cancellation, focus loss, opt-in diagnostics, and visible loading failures. Chromium locked mouse input uses a persistent trusted CDP input session directly to avoid Playwright’s high-level drag interception stalls; Firefox uses Playwright mouse input. Neither path injects game state or synthetic DOM mouse events. Screenshots on failure, graphics metrics, and a JSON report with per-test durations are written to ignored `test-results/`. CI uploads these as `browser-evidence`. Keep one browser worker: concurrent software-rendered games compete for CPU. Set `ARENA_TRACE=1` to retain failure traces when needed; continuous trace screencasting can severely slow pointer-lock tests on software GPUs. Playwright starts the local static server automatically; an existing server on port 8000 must serve this project's web directory.
 
 On Linux the Playwright browser needs system libraries; `install --with-deps` may require administrative access. Do not assume a successful download means the runtime libraries are present. On the development host, Chromium was run with locally extracted runtime libraries supplied through LD_LIBRARY_PATH; see the results report. This host workaround is not required on machines with Playwright's documented system dependencies installed.
 
@@ -59,3 +59,21 @@ The mouse adapter tracks `mousedown`/`mouseup` because `pointerdown` fires only 
 ## Character asset
 
 Bevy's glTF loader and PNG support load the optional local player model. The build generates an availability manifest, and the browser loads the model only when present. Loading waits for the character scene; failure retains the capsule with a visible notice. The model follows movement, facing and reset but has no embedded skeleton or animations. Use `window.arenaDebug.state.character` with `?debug=1` to inspect status and spawned mesh count. Source geometry/textures are preserved, and the downloadable GLB remains outside public Git history under its separate license.
+
+## Browser test timing
+
+Run the same built client sequentially at each viewport to compare rendering cost:
+
+```sh
+ARENA_TEST_VIEWPORT=1024x768 npm run test:browser
+# Copy test-results/results.json and metrics.json before the next run replaces them.
+ARENA_TEST_VIEWPORT=800x600 npm run test:browser
+```
+
+Keep the machine, browser version, build, and optional character availability the same. The JSON report records suite and individual test durations; `metrics.json` records frame intervals and renderer details. Browser timings exclude compilation and browser installation. Keep traces off for timing runs.
+
+CI runs on pull requests and pushes to `main`, with older runs for the same PR cancelled. Feature branch pushes without a PR do not run CI automatically. For a manual run, choose the branch and viewport in the CI workflow's Run workflow form, or use:
+
+```sh
+gh workflow run ci.yml --ref YOUR_BRANCH -f browser_viewport=800x600
+```

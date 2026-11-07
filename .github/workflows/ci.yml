@@ -1,7 +1,20 @@
 name: CI
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      browser_viewport:
+        description: Browser viewport (1024x768 for comparison)
+        type: choice
+        default: '800x600'
+        options: ['640x500', '800x600', '1024x768']
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   rust:
     runs-on: ubuntu-latest
@@ -54,6 +67,8 @@ jobs:
           npx playwright install --with-deps chromium
       - name: Test browser interactions
         run: npm run test:browser
+        env:
+          ARENA_TEST_VIEWPORT: ${{ inputs.browser_viewport || '800x600' }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
