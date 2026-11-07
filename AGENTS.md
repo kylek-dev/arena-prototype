@@ -6,6 +6,7 @@ Build an original browser-first arena combat game. Arena Prototype is a placehol
 
 ## Working agreement
 
+- Never push directly to `main`. Always create a working branch for changes, push that branch, and open a pull request targeting `main`, including for documentation and configuration changes. Do not bypass required reviews, status checks, or branch protections even if your credentials allow it.
 - Carry authorized tasks through implementation and relevant verification. Do not introduce repeated confirmation steps for ordinary reversible work.
 - Keep code, game rules, docs, and operational instructions readable as text. Prefer focused patches and ordinary open source tools over editor-only workflows.
 - Use pinned dependencies and their version-specific documentation. Do not guess APIs from a different Bevy release.
