@@ -9,6 +9,7 @@ export class InputState {
   }
 
   get dragging() { return this.mouseButtons !== 0; }
+  get looking() { return this.dragging && (this.gesture.distance >= 4 || this.gesture.usedChord); }
 
   keyDown(event, focused = true) {
     if (!focused || !keys.has(event.code) || event.ctrlKey || event.metaKey || event.altKey) return 'ignore';
@@ -32,8 +33,8 @@ export class InputState {
     if (button !== 0 && button !== 2) return false;
     if (!this.dragging) this.gesture = { x, y, distance: 0, usedChord: false, startedLeft: button === 0 };
     this.mouseButtons = buttons & 3;
-    if (this.mouseButtons & 2) this.steerPending = true;
     if (this.mouseButtons === 3 && this.gesture) this.gesture.usedChord = true;
+    if (this.looking && (this.mouseButtons & 2)) this.steerPending = true;
     return true;
   }
 
@@ -80,7 +81,7 @@ export class InputState {
   readInput() {
     // Positional ABI consumed by arena-client's platform bridge. Held input
     // persists; edge-triggered actions and accumulated deltas drain once.
-    const input = [Number(this.held.has('KeyD')) - Number(this.held.has('KeyA')), this.mouseButtons === 3 ? -1 : Number(this.held.has('KeyS')) - Number(this.held.has('KeyW')), Number(this.attack), Number(this.select), Number(this.clear), Number(this.reset), this.orbitX, this.orbitY, this.zoom, this.click?.[0] ?? -1, this.click?.[1] ?? -1, Number(Boolean(this.mouseButtons & 2) || this.steerPending), Number(this.mouseButtons === 1 || this.freeLookPending)];
+    const input = [Number(this.held.has('KeyD')) - Number(this.held.has('KeyA')), this.mouseButtons === 3 ? -1 : Number(this.held.has('KeyS')) - Number(this.held.has('KeyW')), Number(this.attack), Number(this.select), Number(this.clear), Number(this.reset), this.orbitX, this.orbitY, this.zoom, this.click?.[0] ?? -1, this.click?.[1] ?? -1, Number((this.looking && Boolean(this.mouseButtons & 2)) || this.steerPending), Number((this.looking && this.mouseButtons === 1) || this.freeLookPending)];
     this.attack = this.select = this.clear = this.reset = false;
     this.orbitX = this.orbitY = this.zoom = 0;
     this.click = null;

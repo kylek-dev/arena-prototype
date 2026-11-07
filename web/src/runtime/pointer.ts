@@ -4,9 +4,21 @@ import { isEngineReady } from "../domain/abilities/catalog";
 export function installPointer(canvas: HTMLCanvasElement, cancelKeyboard: () => void) {
   const controller = new AbortController(),
     options = { signal: controller.signal };
+  let captureRequested = false;
   const end = () => {
+    captureRequested = false;
     canvas.style.cursor = "";
     if (document.pointerLockElement === canvas) document.exitPointerLock();
+  };
+  const capture = () => {
+    if (!input.looking || captureRequested) return;
+    captureRequested = true;
+    canvas.style.cursor = "none";
+    try {
+      canvas.requestPointerLock?.()?.catch(() => {});
+    } catch {
+      /* nonfatal in-page fallback */
+    }
   };
   canvas.addEventListener("contextmenu", (e) => e.preventDefault(), options);
   canvas.addEventListener(
@@ -22,26 +34,25 @@ export function installPointer(canvas: HTMLCanvasElement, cancelKeyboard: () => 
         return;
       e.preventDefault();
       canvas.focus({ preventScroll: true });
-      const started = !input.dragging,
-        rect = canvas.getBoundingClientRect();
+      const rect = canvas.getBoundingClientRect();
       input.mouseDown({
         button: e.button,
         buttons: e.buttons,
         x: e.clientX - rect.left,
         y: e.clientY - rect.top,
       });
-      if (started) {
-        canvas.style.cursor = "none";
-        try {
-          canvas.requestPointerLock?.()?.catch(() => {});
-        } catch {
-          /* nonfatal in-page fallback */
-        }
-      }
+      capture();
     },
     options,
   );
-  document.addEventListener("mousemove", (e) => input.mouseMove(e), options);
+  document.addEventListener(
+    "mousemove",
+    (e) => {
+      input.mouseMove(e);
+      capture();
+    },
+    options,
+  );
   document.addEventListener(
     "mouseup",
     (e) => {
@@ -57,7 +68,7 @@ export function installPointer(canvas: HTMLCanvasElement, cancelKeyboard: () => 
       if (input.pointerLockChanged(document.pointerLockElement === canvas))
         document.exitPointerLock();
       if (was && interruptedGesture && document.pointerLockElement !== canvas) cancelKeyboard();
-      if (!input.dragging) canvas.style.cursor = "";
+      if (!input.dragging) end();
     },
     options,
   );
