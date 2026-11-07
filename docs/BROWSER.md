@@ -19,12 +19,25 @@ After one complete build, `npm run dev` provides frontend hot reload using the e
 Controls:
 
 - **WASD:** move relative to character facing. W/S move forward/backward; A/D strafe left/right. Movement never turns the character.
+- **Space:** jump, carrying takeoff momentum until landing (remappable in Settings → Bindings → movement). No air steering, double-jump, or automatic repeat while held. Walls/pillars still block movement; jumping does not avoid attacks or bypass cover. Existing custom Space bindings are preserved.
 - **Left-drag:** orbit the camera only. Character facing and movement direction remain independent of the camera, including after release or stopping and restarting movement.
 - **Right-drag:** orbit the camera and turn the character to face that direction.
 - **Left + right held:** walk forward while steering and turning with the camera.
 - **Wheel:** zoom. **Tab or ordinary left-click:** select. **Escape:** game menu. **Shift+Escape:** clear target.
 - **1 / Pulse:** attack. **R / Reset:** restart.
 - **F:** set focus from selected target. **O:** settings. **P:** spellbook. Bind clear/target focus and other interface commands in Settings.
+
+The camera automatically pulls in before hitting the floor, arena rims or pillars
+(including their bases/caps). Continue orbiting to move along/around obstructions;
+when the view clears, it smoothly returns to your chosen wheel zoom. Collision may
+bring it closer than the normal wheel minimum without changing that preference.
+Only camera contact triggers pillar collision: a distant pillar may sit between
+the camera and character without forcing zoom-in. Camera movement slides against
+either side of a pillar rather than passing through it; orbit around/over it to
+reach the other side.
+The pitch range includes low angles; floor collision keeps the eye above the map.
+**Human rendered review of camera collision is pending.** Rebuild the complete
+client with `./scripts/build-web.sh`; a frontend-only rebuild cannot add this change.
 
 Single-button presses leave the cursor and look/turn modes unchanged until cumulative movement reaches 4 pixels; ordinary left/right clicks do not request pointer lock or flash its browser notice. Crossing that drag threshold, or holding both buttons to walk, hides and locks the cursor. Releasing one button stops mouse-driven walking and keeps the remaining button’s look/turn mode; releasing both restores the cursor. Drags and button chords never count as targeting clicks. Lost pointer lock, focus loss, and tab hiding cancel held mouse movement. If a browser denies pointer lock, the cursor is hidden over the canvas and dragging works within the page.
 All live unit frames (player, target, focus and opponents) support left-click to target their represented unit and right-click to focus it. Player self-targeting is supported, but Pulse cannot attack the player. Layout mode instead selects/drags sample frames. Unit tags reserve Opponent1–3 and Team1–3; only one opponent and no teammates exist today. Rebuild the complete client for the appended self-selection bridge field. Human browser review of these interactions is pending.
@@ -86,8 +99,10 @@ E2E testing is a human review step, not an automated development or CI gate. Bui
 1. **Startup and assets:** a clean clone loads the procedural player with no missing model requests. If the optional character is installed, verify its appearance and movement. An unavailable configured model should retain a playable fallback and show a notice.
 2. **Combat loop:** WASD approaches the target; Tab and an ordinary click select it; 1 reports no target/out of range/recharge correctly, deals four hits to finish, and R or Reset starts a fresh round.
 3. **Mouse modes:** left drag changes only the view; hold W, left-drag, and release left-click to verify that character heading, walking direction, and camera angle remain unchanged. Stop, orbit the camera, release, then press each WASD key: movement must remain character-relative, with A/D strafing and S backing up without turning. Right drag turns without walking; both buttons walk and steer in either press order. Releasing either button stops mouse walking and retains the remaining look/turn mode. Releasing both restores the cursor. Drags/chords must not select a target.
+   **Jumping:** Space at rest jumps in place; WASD or both-button walking plus Space carries movement through the air. Releasing/reversing movement or turning midair must not redirect the jump. Check walls/pillars, exact landing, no held-Space repeat/double-jump, reset during flight, rebindings and typing/menu suppression. Review the follow camera and both procedural/optional characters. **Human rendered review of jumping is pending.** Rebuild the complete client; a frontend-only build cannot add the rule/engine change.
 4. **Cancellation and focus:** movement survives ordinary mouse release and HUD focus/clicks. Typing/modal/capture/editing owners, window blur, hiding and unexpected lock loss clear holds. Confirm canvas recovery never steals typing focus or Shift+Tab navigation and the spellbook stays open while moving. Verify Escape menu/rebinding and Shift+Escape clear. Independent focus follows current health and clears on reset; absent target/focus hide.
 5. **Presentation and errors:** inspect the HUD, arena, target indicator, model, and camera at desktop dimensions; check the console. `?debug=1` exposes read-only diagnostics, while `/` does not expose `arenaDebug`. Loading failures must remain visible.
+   **Camera collision:** orbit behind each pillar at low/high angles and walk/steer alongside its faces/corners. A pillar well between the eye and player must not force zoom-in; actual camera contact must stop/slide against the near or far face without clipping or tunneling. Include pillar bases/caps and arena rims. Pitch down to floor contact and continue orbiting, then raise the view. The camera should pull in at contact, remain responsive along surfaces and ease back to the chosen zoom when clear. Repeat while jumping, at minimum/maximum wheel zoom, after reset and with rapid direction changes. Check close character views and intended viewport aspect ratios. Human rendered review of this contact-only revision remains pending.
 6. **Configuration:** remap movement and both binding entries, exercise Replace/Cancel, reserved shortcuts and capture cancellation. Quick-hover/focus binding must not cast, reset, select or move. Tab must navigate UI normally.
 7. **Spell placement:** default unlocked without warning, catalog-copy, slot move/swap/Shift-copy, cancelled/invalid drops and slot-to-canvas removal (binding retained). Confirm icon sizes and no assignment forms. Drags must never turn the camera or cast. Lock to protect assignments; verify shared click/key mapping and cooldown.
    Icons and bar tracks now use a shared 64×64 px base size. Check the captured-pointer ghost/target outline, short click versus drag, release over icon text/cooldown layers, fast drags, Escape cancellation and outside release. If a saved profile is locked, explicitly use Unlock spell dragging in the spellbook. Native HTML drag events are no longer used.

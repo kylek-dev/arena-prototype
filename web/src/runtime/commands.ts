@@ -66,6 +66,9 @@ export function dispatch(action: string) {
     return;
   }
   switch (action) {
+    case "jump":
+      input.jump = true;
+      break;
     case "menu":
       setPanel(interaction.get().panel === "menu" ? null : "menu");
       break;

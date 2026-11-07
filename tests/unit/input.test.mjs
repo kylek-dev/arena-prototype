@@ -11,6 +11,24 @@ const move = (input, buttons, movementX = 12, movementY = 5) => input.mouseMove(
 
 const idle = sample(new InputState());
 
+test('Space appends a one-shot jump without changing existing ABI fields', () => {
+  const input = new InputState();
+  const before = input.readInput();
+  input.keyDown({ code: 'Space' });
+  const jumped = input.readInput();
+  assert.deepEqual(jumped.slice(0, 14), before.slice(0, 14));
+  assert.equal(jumped[14], 1);
+  assert.equal(input.readInput()[14], 0);
+  input.keyDown({ code: 'Space', repeat: true });
+  assert.equal(input.readInput()[14], 0);
+  input.keyUp('Space');
+  input.keyDown({ code: 'Space' });
+  assert.equal(input.readInput()[14], 1);
+  input.keyDown({ code: 'Space' });
+  input.cancel();
+  assert.equal(input.readInput()[14], 0);
+});
+
 test('keyboard movement persists between samples and opposing keys cancel', () => {
   const input = new InputState();
   input.keyDown({ code: 'KeyW' });
@@ -235,8 +253,8 @@ test('the Rust bridge input array keeps its positional contract and drains delta
   input.wheel(-30);
   down(input, 2, 2);
   move(input, 2, 10, 5);
-  assert.deepEqual(input.readInput(), [0, -1, 1, 1, 0, 0, 10, 5, 120, -1, -1, 1, 0, 0]);
-  assert.deepEqual(input.readInput(), [0, -1, 0, 0, 0, 0, 0, 0, 0, -1, -1, 1, 0, 0]);
+  assert.deepEqual(input.readInput(), [0, -1, 1, 1, 0, 0, 10, 5, 120, -1, -1, 1, 0, 0, 0]);
+  assert.deepEqual(input.readInput(), [0, -1, 0, 0, 0, 0, 0, 0, 0, -1, -1, 1, 0, 0, 0]);
 });
 
 test('self selection uses the appended bridge field and drains or cancels once', () => {

@@ -38,7 +38,7 @@ export function BindingsEditor() {
   const group = (a: string) =>
     a.startsWith("slot:")
       ? "slots"
-      : ["forward", "back", "left", "right"].includes(a)
+      : ["forward", "back", "left", "right", "jump"].includes(a)
         ? "movement"
         : ["menu", "settings", "spellbook", "quickBind", "layout"].includes(a)
           ? "interface"

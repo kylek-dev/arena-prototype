@@ -94,6 +94,14 @@ export function validateConfig(value: unknown): Config {
   const safeBars = bars.length ? bars : d.bars;
   const bindings = defaults(safeBars);
   const rawBindings = { ...record(r.bindings) };
+  // Existing custom Space assignments take precedence over the new default.
+  if (
+    !("jump" in rawBindings) &&
+    Object.values(rawBindings).some(
+      (pair) => Array.isArray(pair) && pair.some((c) => same(record(c) as Chord, bindings.jump[0])),
+    )
+  )
+    rawBindings.jump = [null, null];
   // Additive migration for profiles saved before the Escape menu existed.
   // Move only the old default clear-target Escape; preserve other custom uses.
   if (!("menu" in rawBindings)) {

@@ -15,6 +15,17 @@ import { Persistence } from "../../web/src/domain/preferences/persistence";
 import { nextTarget, reconcileFocus } from "../../web/src/domain/units/selection";
 
 describe("bindings", () => {
+  it("adds Space jump to old profiles without taking existing custom bindings", () => {
+    const old = initial().profiles[0].config;
+    delete old.bindings.jump;
+    expect(validateConfig(old).bindings.jump[0]).toEqual(chord({ code: "Space" }));
+    old.bindings["slot:bar-1-s1"] = [chord({ code: "Space" }), null];
+    const migrated = validateConfig(old);
+    expect(migrated.bindings.jump).toEqual([null, null]);
+    expect(migrated.bindings["slot:bar-1-s1"][0]).toEqual(chord({ code: "Space" }));
+    migrated.bindings.jump = [null, null];
+    expect(validateConfig(migrated).bindings.jump).toEqual([null, null]);
+  });
   it("requires explicit conflict replacement and preserves the original", () => {
     const bindings = defaults([newBar("one")]);
     const value = chord({ code: "KeyW" });

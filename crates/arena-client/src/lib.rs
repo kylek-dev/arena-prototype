@@ -1,5 +1,6 @@
 //! Bevy presentation adapter for the shared arena rules. DOM integration is
 //! isolated in `platform`; rules remain usable in native headless tests.
+mod camera;
 mod character;
 mod graphics;
 mod hover;
@@ -7,7 +8,7 @@ mod hover;
 use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::{
     ARENA_X, ARENA_Z, ATTACK_COOLDOWN, ATTACK_DAMAGE, ATTACK_RANGE, Arena, ArenaCommand,
-    ArenaEvent, PILLARS, Position,
+    ArenaEvent, Combatant, PILLARS, Position,
 };
 use bevy::{asset::AssetMetaCheck, core_pipeline::tonemapping::Tonemapping, prelude::*};
 
@@ -19,6 +20,7 @@ struct Practice {
     facing: f32,
     selected: Option<usize>,
     attack: bool,
+    jump: bool,
     feedback: &'static str,
     flash: f32,
     frames: u32,
@@ -26,7 +28,7 @@ struct Practice {
 impl Default for Practice {
     fn default() -> Self {
         let arena = Arena::default();
-        let previous = arena.fighters().map(|f| world(f.position));
+        let previous = arena.fighters().map(fighter_world);
         Self {
             arena,
             previous,
@@ -34,6 +36,7 @@ impl Default for Practice {
             facing: 0.0,
             selected: None,
             attack: false,
+            jump: false,
             feedback: "Select the opponent to begin",
             flash: 0.0,
             frames: 0,
@@ -45,6 +48,7 @@ struct Orbit {
     yaw: f32,
     pitch: f32,
     distance: f32,
+    eye: Option<Vec3>,
 }
 impl Default for Orbit {
     fn default() -> Self {
@@ -52,6 +56,7 @@ impl Default for Orbit {
             yaw: 0.0,
             pitch: 0.65,
             distance: 13.0,
+            eye: None,
         }
     }
 }
@@ -100,6 +105,9 @@ pub fn run() {
 fn world(position: Position) -> Vec3 {
     Vec3::new(position.x as f32 / 1000.0, 0.0, position.z as f32 / 1000.0)
 }
+fn fighter_world(fighter: Combatant) -> Vec3 {
+    world(fighter.position) + Vec3::Y * (fighter.height as f32 / 1000.0)
+}
 fn material(materials: &mut Assets<StandardMaterial>, color: Color) -> Handle<StandardMaterial> {
     materials.add(StandardMaterial {
         base_color: color,
@@ -135,12 +143,18 @@ fn setup(
     commands.spawn((
         Mesh3d(cube.clone()),
         MeshMaterial3d(dark.clone()),
-        Transform::from_xyz(0.0, -0.5, 0.0).with_scale(Vec3::new(width + 2.0, 0.8, depth + 2.0)),
+        camera::solid_floor(Transform::from_xyz(0.0, -0.5, 0.0).with_scale(Vec3::new(
+            width + 2.0,
+            0.8,
+            depth + 2.0,
+        ))),
     ));
     commands.spawn((
         Mesh3d(cube.clone()),
         MeshMaterial3d(stone.clone()),
-        Transform::from_xyz(0.0, -0.08, 0.0).with_scale(Vec3::new(width, 0.16, depth)),
+        camera::solid_floor(
+            Transform::from_xyz(0.0, -0.08, 0.0).with_scale(Vec3::new(width, 0.16, depth)),
+        ),
     ));
     // Thin seams make camera movement and scale readable without external textures.
     for x in (-ARENA_X + 2000..ARENA_X).step_by(2000) {
@@ -168,12 +182,12 @@ fn setup(
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(edge.clone()),
-            Transform::from_xyz(x, 0.25, z).with_scale(Vec3::new(sx, 0.5, sz)),
+            camera::solid_box(Transform::from_xyz(x, 0.25, z).with_scale(Vec3::new(sx, 0.5, sz))),
         ));
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(line.clone()),
-            Transform::from_xyz(x, 0.51, z).with_scale(Vec3::new(sx, 0.025, sz)),
+            camera::solid_box(Transform::from_xyz(x, 0.51, z).with_scale(Vec3::new(sx, 0.025, sz))),
         ));
     }
     for pillar in PILLARS {
@@ -182,31 +196,40 @@ fn setup(
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(edge.clone()),
-            Transform::from_translation(p + Vec3::Y * 0.12).with_scale(Vec3::new(
-                size + 0.35,
-                0.24,
-                size + 0.35,
-            )),
+            camera::solid_box(
+                Transform::from_translation(p + Vec3::Y * 0.12).with_scale(Vec3::new(
+                    size + 0.35,
+                    0.24,
+                    size + 0.35,
+                )),
+            ),
         ));
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(stone.clone()),
-            Transform::from_translation(p + Vec3::Y * 2.0).with_scale(Vec3::new(size, 4.0, size)),
+            camera::solid_box(
+                Transform::from_translation(p + Vec3::Y * 2.0)
+                    .with_scale(Vec3::new(size, 4.0, size)),
+            ),
         ));
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(line.clone()),
-            Transform::from_translation(p + Vec3::Y * 4.03).with_scale(Vec3::new(
-                size + 0.14,
-                0.14,
-                size + 0.14,
-            )),
+            camera::solid_box(
+                Transform::from_translation(p + Vec3::Y * 4.03).with_scale(Vec3::new(
+                    size + 0.14,
+                    0.14,
+                    size + 0.14,
+                )),
+            ),
         ));
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(teal.clone()),
-            Transform::from_translation(p + Vec3::new(0.0, 3.3, size / 2.0 + 0.006))
-                .with_scale(Vec3::new(0.55, 0.06, 0.02)),
+            camera::solid_box(
+                Transform::from_translation(p + Vec3::new(0.0, 3.3, size / 2.0 + 0.006))
+                    .with_scale(Vec3::new(0.55, 0.06, 0.02)),
+            ),
         ));
     }
     let circle = meshes.add(Circle::new(0.65));
@@ -318,7 +341,7 @@ fn read_controls(
         *orbit = Orbit::default();
     }
     orbit.yaw -= input.orbit_x * 0.005;
-    orbit.pitch = (orbit.pitch + input.orbit_y * 0.004).clamp(0.25, 1.2);
+    orbit.pitch = (orbit.pitch + input.orbit_y * 0.004).clamp(-1.2, 1.2);
     orbit.distance = (orbit.distance + input.zoom * 0.01).clamp(6.0, 22.0);
     update_movement(&mut practice, &orbit, &input);
     update_selection(&mut practice, &input);
@@ -339,6 +362,7 @@ fn read_controls(
     if input.attack {
         practice.attack = true;
     }
+    practice.jump |= input.jump;
 }
 // Explicit frame intents resolve opponent, player, then clear; canvas picking
 // follows them. Selection is presentation intent, never permission to deal damage.
@@ -368,12 +392,16 @@ fn update_movement(practice: &mut Practice, orbit: &Orbit, input: &Input) {
 }
 
 fn simulate(mut practice: ResMut<Practice>) {
-    practice.previous = practice.arena.fighters().map(|f| world(f.position));
+    practice.previous = practice.arena.fighters().map(fighter_world);
     let mut commands = vec![ArenaCommand::Move {
         actor: 0,
         x: (practice.movement.x * 1000.0) as i16,
         z: (practice.movement.y * 1000.0) as i16,
     }];
+    if practice.jump {
+        practice.jump = false;
+        commands.push(ArenaCommand::Jump { actor: 0 });
+    }
     if practice.attack {
         practice.attack = false;
         if let Some(target) = practice.selected {
@@ -389,6 +417,8 @@ fn simulate(mut practice: ResMut<Practice>) {
                 practice.flash = 0.18;
             }
             ArenaEvent::Won { .. } => practice.feedback = "Round complete · reset to play again",
+            // A second press in flight is harmless, not a spell-cast error.
+            ArenaEvent::Rejected(arena_sim::arena::Rejection::Airborne) => (),
             ArenaEvent::Rejected(reason) => {
                 practice.feedback = match reason {
                     arena_sim::arena::Rejection::OutOfRange => "Out of range · move closer",
@@ -407,7 +437,8 @@ fn simulate(mut practice: ResMut<Practice>) {
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn present(
     mut practice: ResMut<Practice>,
-    orbit: Res<Orbit>,
+    mut orbit: ResMut<Orbit>,
+    obstacles: Query<&camera::Obstacle>,
     fixed: Res<Time<Fixed>>,
     time: Res<Time>,
     mut fighters: Query<
@@ -444,7 +475,7 @@ fn present(
 ) {
     let positions: [Vec3; 2] = std::array::from_fn(|i| {
         practice.previous[i].lerp(
-            world(practice.arena.fighters()[i].position),
+            fighter_world(practice.arena.fighters()[i]),
             fixed.overstep_fraction(),
         )
     });
@@ -456,13 +487,21 @@ fn present(
     }
     if let Ok(mut camera) = cameras.single_mut() {
         let focus = positions[0] + Vec3::Y;
-        let offset = Quat::from_rotation_y(orbit.yaw)
-            * Vec3::new(
-                0.0,
-                orbit.pitch.sin() * orbit.distance,
-                orbit.pitch.cos() * orbit.distance,
-            );
-        *camera = Transform::from_translation(focus + offset).looking_at(focus, Vec3::Y);
+        let direction =
+            Quat::from_rotation_y(orbit.yaw) * Vec3::new(0.0, orbit.pitch.sin(), orbit.pitch.cos());
+        let obstacles: Vec<_> = obstacles.iter().copied().collect();
+        let eye = camera::resolve_eye(
+            focus,
+            direction,
+            orbit.distance,
+            orbit.eye,
+            time.delta_secs(),
+            &obstacles,
+        );
+        orbit.eye = Some(eye);
+        // Keep a valid view direction even if the focus is inside an obstacle.
+        let view = (focus - eye).try_normalize().unwrap_or(-direction);
+        *camera = Transform::from_translation(eye).looking_to(view, Vec3::Y);
     }
     if let Ok((mut transform, mut visibility)) = ring.single_mut() {
         transform.translation = positions[practice.selected.unwrap_or(1)] + Vec3::Y * 0.03;
@@ -576,6 +615,7 @@ struct Input {
     x: f32,
     z: f32,
     attack: bool,
+    jump: bool,
     select: bool,
     select_player: bool,
     clear: bool,
@@ -621,6 +661,7 @@ mod platform {
             x: number(0),
             z: number(1),
             attack: number(2) != 0.0,
+            jump: number(14) == 1.0,
             select: number(3) != 0.0,
             select_player: number(13) == 1.0,
             clear: number(4) != 0.0,
@@ -644,6 +685,89 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presentation_retracts_and_recovers_without_changing_requested_zoom() {
+        let mut app = App::new();
+        app.init_resource::<Practice>()
+            .insert_resource(Orbit {
+                pitch: 0.0,
+                ..default()
+            })
+            .init_resource::<Time>()
+            .init_resource::<Time<Fixed>>()
+            .add_systems(Update, present);
+        let focus = app.world().resource::<Practice>().previous[0] + Vec3::Y;
+        let camera = app
+            .world_mut()
+            .spawn((Camera::default(), Transform::default()))
+            .id();
+        let blocker = app
+            .world_mut()
+            .spawn(camera::solid_box(
+                Transform::from_translation(focus + Vec3::Z * 13.0)
+                    .with_scale(Vec3::new(3.0, 4.0, 3.0)),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(std::time::Duration::from_secs_f32(1.0 / 60.0));
+        app.world_mut().run_schedule(Update);
+        let eye = app.world().get::<Transform>(camera).unwrap();
+        assert!((eye.translation.distance(focus) - 11.19).abs() < 1e-5);
+        assert_eq!(app.world().resource::<Orbit>().distance, 13.0);
+
+        app.world_mut().despawn(blocker);
+        app.world_mut().run_schedule(Update);
+        let recovering = app
+            .world()
+            .get::<Transform>(camera)
+            .unwrap()
+            .translation
+            .distance(focus);
+        assert!(recovering > 11.19 && recovering < 13.0);
+        for _ in 0..180 {
+            app.world_mut().run_schedule(Update);
+        }
+        assert!(
+            (app.world()
+                .get::<Transform>(camera)
+                .unwrap()
+                .translation
+                .distance(focus)
+                - 13.0)
+                .abs()
+                < 0.001
+        );
+        assert_eq!(app.world().resource::<Orbit>().distance, 13.0);
+    }
+
+    #[test]
+    fn queued_jump_drains_once_and_presentation_uses_rule_height() {
+        let mut app = App::new();
+        app.init_resource::<Practice>()
+            .add_systems(FixedUpdate, simulate);
+        {
+            let mut practice = app.world_mut().resource_mut::<Practice>();
+            practice.movement = Vec2::new(0.0, -1.0);
+            practice.jump = true;
+        }
+        app.world_mut().run_schedule(FixedUpdate);
+        let practice = app.world().resource::<Practice>();
+        assert!(!practice.jump);
+        let fighter = practice.arena.fighters()[0];
+        assert_eq!(fighter.height, arena_sim::arena::JUMP_SPEED);
+        assert_eq!(fighter_world(fighter).y, fighter.height as f32 / 1000.0);
+        assert_eq!(practice.previous[0].y, 0.0);
+        app.world_mut().resource_mut::<Practice>().movement = Vec2::ZERO;
+        app.world_mut().run_schedule(FixedUpdate);
+        let practice = app.world().resource::<Practice>();
+        assert_eq!(
+            practice.arena.fighters()[0].position.z,
+            fighter.position.z - arena_sim::arena::MOVE_PER_TICK
+        );
+        assert!(practice.previous[0].y > 0.0);
+    }
 
     #[test]
     fn frame_selection_supports_self_without_authorizing_self_damage() {

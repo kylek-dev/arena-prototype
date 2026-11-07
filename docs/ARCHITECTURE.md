@@ -26,6 +26,10 @@ Durable replay files, interrupts, teams, networking and server validation are no
 
 ## Intended boundaries
 
+[ADR 0014](decisions/0014-camera-collision.md) adds presentation-only orbit-camera collision against bounds attached to static map boxes. Eye contact retracts the camera, while a padded eye-motion sweep slides along surfaces and prevents tunneling; distant pillars may obscure the player without forcing zoom-in. Floor constraints prevent below-map views, and eased recovery restores the separate requested zoom. No simulation or input ABI changes are involved. Human browser review of the contact-only revision is pending.
+
+[ADR 0013](decisions/0013-momentum-jumping.md) adds simulation-owned momentum jumping: integer height/gravity, carried takeoff displacement, no air steering or double-jump, and the existing planar collision/combat footprint. The client interpolates height; remappable Space appends a one-shot intent at input index 14. Human browser review is pending.
+
 [ADR 0012](decisions/0012-graphics-quality.md) adds device-local Off/4× MSAA and Low/High procedural detail through a separate optional graphics callback. Preferences apply only to presentation and persist independently of HUD profiles; simulation and combat input ordering are unchanged.
 
 ```mermaid
