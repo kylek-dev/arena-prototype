@@ -6,8 +6,9 @@ use crate::TICKS_PER_SECOND;
 
 pub const MOVE_PER_TICK: i32 = 160;
 pub const BODY_RADIUS: i32 = 450;
-pub const ARENA_X: i32 = 12_000;
-pub const ARENA_Z: i32 = 9_000;
+// Half-extents of the playable floor, in millimetres.
+pub const ARENA_X: i32 = 18_000;
+pub const ARENA_Z: i32 = 14_000;
 pub const ATTACK_RANGE: i32 = 6_000;
 pub const ATTACK_COOLDOWN: u64 = TICKS_PER_SECOND;
 pub const ATTACK_DAMAGE: u16 = 25;
@@ -36,14 +37,31 @@ impl Pillar {
             && (point.z - self.center.z).abs() <= self.half_size + padding
     }
 }
-pub const PILLARS: [Pillar; 2] = [
+pub const PILLARS: [Pillar; 4] = [
     Pillar {
-        center: Position { x: -3_500, z: 0 },
-        half_size: 900,
+        center: Position {
+            x: -7_000,
+            z: -5_000,
+        },
+        half_size: 1_500,
     },
     Pillar {
-        center: Position { x: 3_500, z: 0 },
-        half_size: 900,
+        center: Position {
+            x: 7_000,
+            z: -5_000,
+        },
+        half_size: 1_500,
+    },
+    Pillar {
+        center: Position {
+            x: -7_000,
+            z: 5_000,
+        },
+        half_size: 1_500,
+    },
+    Pillar {
+        center: Position { x: 7_000, z: 5_000 },
+        half_size: 1_500,
     },
 ];
 
@@ -349,27 +367,60 @@ mod tests {
     }
     #[test]
     fn pillars_block_movement_and_attacks() {
-        let mut arena = Arena::default();
-        arena.fighters[0].position = Position { x: 3500, z: 3000 };
-        arena.fighters[1].position = Position { x: 3500, z: -2500 };
-        assert_eq!(arena.can_attack(0, 1), Err(Rejection::LineOfSight));
-        for _ in 0..100 {
-            arena.step(&[forward()]);
+        for pillar in PILLARS {
+            for (x, z) in [(0, 1), (0, -1), (1, 0), (-1, 0)] {
+                let mut arena = Arena::default();
+                arena.fighters[0].position = Position {
+                    x: pillar.center.x + x * 2_500,
+                    z: pillar.center.z + z * 2_500,
+                };
+                arena.fighters[1].position = Position {
+                    x: pillar.center.x - x * 2_500,
+                    z: pillar.center.z - z * 2_500,
+                };
+                assert_eq!(arena.can_attack(0, 1), Err(Rejection::LineOfSight));
+                for _ in 0..100 {
+                    arena.step(&[ArenaCommand::Move {
+                        actor: 0,
+                        x: -1000 * x as i16,
+                        z: -1000 * z as i16,
+                    }]);
+                    assert!(!pillar.contains(arena.fighters()[0].position, BODY_RADIUS));
+                }
+                let stopped = arena.fighters()[0].position;
+                let clearance =
+                    (stopped.x - pillar.center.x).abs() + (stopped.z - pillar.center.z).abs();
+                assert!(clearance > pillar.half_size + BODY_RADIUS);
+                assert!(clearance <= pillar.half_size + BODY_RADIUS + MOVE_PER_TICK);
+            }
+            // A segment touching the edge is blocked too.
+            assert!(!line_of_sight(
+                Position {
+                    x: pillar.center.x + pillar.half_size,
+                    z: pillar.center.z + 2500
+                },
+                Position {
+                    x: pillar.center.x + pillar.half_size,
+                    z: pillar.center.z - 2500
+                }
+            ));
         }
-        assert!(arena.fighters()[0].position.z > 1350);
         assert!(line_of_sight(
-            Position { x: 0, z: 5000 },
-            Position { x: 0, z: -5000 }
+            Position { x: 0, z: ARENA_Z },
+            Position { x: 0, z: -ARENA_Z }
         ));
-        assert!(!line_of_sight(
-            Position { x: 2600, z: 2000 },
-            Position { x: 2600, z: -2000 }
+        assert!(line_of_sight(
+            Position { x: -ARENA_X, z: 0 },
+            Position { x: ARENA_X, z: 0 }
         ));
     }
     #[test]
     fn replay_and_world_bounds_are_repeatable() {
+        // Use the open middle lane so this tests the wall, not a pillar.
         let mut a = Arena::default();
+        a.fighters[0].position = Position { x: 0, z: 0 };
         let mut b = Arena::default();
+        b.fighters[0].position = Position { x: 0, z: 0 };
         for _ in 0..200 {
             let commands = [
                 ArenaCommand::Move {
@@ -383,5 +434,37 @@ mod tests {
             assert_eq!(a, b);
         }
         assert_eq!(a.fighters()[0].position.x, ARENA_X - BODY_RADIUS);
+    }
+
+    #[test]
+    fn all_walls_bound_movement_and_spawns_are_clear() {
+        let initial = Arena::default();
+        for fighter in initial.fighters() {
+            assert!(fighter.position.x.abs() < ARENA_X - BODY_RADIUS);
+            assert!(fighter.position.z.abs() < ARENA_Z - BODY_RADIUS);
+            assert!(
+                !PILLARS
+                    .iter()
+                    .any(|p| p.contains(fighter.position, BODY_RADIUS))
+            );
+        }
+        for (x, z) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+            let mut arena = Arena::default();
+            arena.fighters[0].position = Position { x: 0, z: 0 };
+            for _ in 0..200 {
+                arena.step(&[ArenaCommand::Move {
+                    actor: 0,
+                    x: x * 1000,
+                    z: z * 1000,
+                }]);
+            }
+            assert_eq!(
+                arena.fighters()[0].position,
+                Position {
+                    x: i32::from(x) * (ARENA_X - BODY_RADIUS),
+                    z: i32::from(z) * (ARENA_Z - BODY_RADIUS),
+                }
+            );
+        }
     }
 }

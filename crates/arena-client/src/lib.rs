@@ -1,11 +1,13 @@
 //! Bevy presentation adapter for the shared arena rules. DOM integration is
 //! isolated in `platform`; rules remain usable in native headless tests.
 mod character;
+mod graphics;
+mod hover;
 
 use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::{
-    ATTACK_COOLDOWN, ATTACK_DAMAGE, ATTACK_RANGE, Arena, ArenaCommand, ArenaEvent, PILLARS,
-    Position,
+    ARENA_X, ARENA_Z, ATTACK_COOLDOWN, ATTACK_DAMAGE, ATTACK_RANGE, Arena, ArenaCommand,
+    ArenaEvent, PILLARS, Position,
 };
 use bevy::{asset::AssetMetaCheck, core_pipeline::tonemapping::Tonemapping, prelude::*};
 
@@ -90,7 +92,7 @@ pub fn run() {
                 }),
         )
         .add_systems(Startup, setup)
-        .add_systems(PreUpdate, read_controls)
+        .add_systems(PreUpdate, (graphics::apply, read_controls))
         .add_systems(FixedUpdate, simulate)
         .add_systems(Update, (character::check_loading, present, publish).chain())
         .run();
@@ -126,38 +128,42 @@ fn setup(
     });
     let line = material(&mut materials, Color::srgb(0.37, 0.44, 0.46));
     let cube = meshes.add(Cuboid::from_size(Vec3::ONE));
+    let half_x = ARENA_X as f32 / 1000.0;
+    let half_z = ARENA_Z as f32 / 1000.0;
+    let width = half_x * 2.0;
+    let depth = half_z * 2.0;
     commands.spawn((
         Mesh3d(cube.clone()),
         MeshMaterial3d(dark.clone()),
-        Transform::from_xyz(0.0, -0.5, 0.0).with_scale(Vec3::new(26.0, 0.8, 20.0)),
+        Transform::from_xyz(0.0, -0.5, 0.0).with_scale(Vec3::new(width + 2.0, 0.8, depth + 2.0)),
     ));
     commands.spawn((
         Mesh3d(cube.clone()),
         MeshMaterial3d(stone.clone()),
-        Transform::from_xyz(0.0, -0.08, 0.0).with_scale(Vec3::new(24.0, 0.16, 18.0)),
+        Transform::from_xyz(0.0, -0.08, 0.0).with_scale(Vec3::new(width, 0.16, depth)),
     ));
     // Thin seams make camera movement and scale readable without external textures.
-    for x in -5..=5 {
+    for x in (-ARENA_X + 2000..ARENA_X).step_by(2000) {
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(edge.clone()),
-            Transform::from_xyz(x as f32 * 2.0, 0.006, 0.0)
-                .with_scale(Vec3::new(0.025, 0.01, 18.0)),
+            Transform::from_xyz(x as f32 / 1000.0, 0.006, 0.0)
+                .with_scale(Vec3::new(0.025, 0.01, depth)),
         ));
     }
-    for z in -4..=4 {
+    for z in (-ARENA_Z + 1000..ARENA_Z).step_by(2000) {
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(edge.clone()),
-            Transform::from_xyz(0.0, 0.007, z as f32 * 2.0)
-                .with_scale(Vec3::new(24.0, 0.01, 0.025)),
+            Transform::from_xyz(0.0, 0.007, z as f32 / 1000.0)
+                .with_scale(Vec3::new(width, 0.01, 0.025)),
         ));
     }
     for (x, z, sx, sz) in [
-        (0.0, -9.2, 24.8, 0.4),
-        (0.0, 9.2, 24.8, 0.4),
-        (-12.2, 0.0, 0.4, 18.0),
-        (12.2, 0.0, 0.4, 18.0),
+        (0.0, -half_z - 0.2, width + 0.8, 0.4),
+        (0.0, half_z + 0.2, width + 0.8, 0.4),
+        (-half_x - 0.2, 0.0, 0.4, depth),
+        (half_x + 0.2, 0.0, 0.4, depth),
     ] {
         commands.spawn((
             Mesh3d(cube.clone()),
@@ -172,31 +178,41 @@ fn setup(
     }
     for pillar in PILLARS {
         let p = world(pillar.center);
+        let size = pillar.half_size as f32 / 1000.0 * 2.0;
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(edge.clone()),
-            Transform::from_translation(p + Vec3::Y * 0.12).with_scale(Vec3::new(2.15, 0.24, 2.15)),
+            Transform::from_translation(p + Vec3::Y * 0.12).with_scale(Vec3::new(
+                size + 0.35,
+                0.24,
+                size + 0.35,
+            )),
         ));
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(stone.clone()),
-            Transform::from_translation(p + Vec3::Y * 1.6).with_scale(Vec3::new(1.8, 3.2, 1.8)),
+            Transform::from_translation(p + Vec3::Y * 2.0).with_scale(Vec3::new(size, 4.0, size)),
         ));
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(line.clone()),
-            Transform::from_translation(p + Vec3::Y * 3.23).with_scale(Vec3::new(1.94, 0.14, 1.94)),
+            Transform::from_translation(p + Vec3::Y * 4.03).with_scale(Vec3::new(
+                size + 0.14,
+                0.14,
+                size + 0.14,
+            )),
         ));
         commands.spawn((
             Mesh3d(cube.clone()),
             MeshMaterial3d(teal.clone()),
-            Transform::from_translation(p + Vec3::new(0.0, 2.65, 0.906))
+            Transform::from_translation(p + Vec3::new(0.0, 3.3, size / 2.0 + 0.006))
                 .with_scale(Vec3::new(0.55, 0.06, 0.02)),
         ));
     }
     let circle = meshes.add(Circle::new(0.65));
-    let body = meshes.add(Capsule3d::new(0.32, 0.7));
-    let head = meshes.add(Sphere::new(0.23).mesh().uv(16, 12));
+    let character_meshes = graphics::CharacterMeshes::new(&mut meshes);
+    let [body, head] = character_meshes.handles(true).clone();
+    commands.insert_resource(character_meshes);
     for (index, accent) in [(0, teal.clone()), (1, orange.clone())] {
         commands
             .spawn((
@@ -236,8 +252,18 @@ fn setup(
                             .with_scale(Vec3::new(0.16, 0.04, 0.4)),
                     ),
                 ] {
+                    let part = if mesh == body {
+                        Some(graphics::CharacterPart::Body)
+                    } else if mesh == head {
+                        Some(graphics::CharacterPart::Head)
+                    } else {
+                        None
+                    };
                     let mut visual =
                         parent.spawn((Mesh3d(mesh), MeshMaterial3d(material), transform));
+                    if let Some(part) = part {
+                        visual.insert(part);
+                    }
                     if index == 0 {
                         visual.insert(character::CharacterFallback);
                     }
@@ -277,7 +303,7 @@ fn setup(
     commands.spawn((
         Camera3d::default(),
         Tonemapping::None,
-        Msaa::Off,
+        platform::read_graphics().msaa,
         Transform::from_translation(focus + Vec3::new(0.0, 7.8, 10.3)).looking_at(focus, Vec3::Y),
     ));
 }
@@ -466,6 +492,7 @@ fn publish(
     orbit: Res<Orbit>,
     character: Res<character::CharacterModel>,
     cameras: Query<(&Camera, &GlobalTransform)>,
+    visuals: Query<(&FighterVisual, &GlobalTransform)>,
 ) {
     let fighters = practice.arena.fighters();
     let player = fighters[0];
@@ -490,8 +517,28 @@ fn publish(
                 .ok()
         })
         .unwrap_or(Vec2::splat(-1.0));
+    let hovered = platform::read_hover()
+        .and_then(|cursor| {
+            cameras
+                .single()
+                .ok()
+                .and_then(|(camera, transform)| camera.viewport_to_world(transform, cursor).ok())
+        })
+        .and_then(|ray| {
+            hover::pick(
+                ray,
+                visuals
+                    .iter()
+                    .map(|(unit, transform)| (unit.0, transform.translation())),
+            )
+        });
+    let hovered = match hovered {
+        Some(0) => "\"Player\"",
+        Some(1) => "\"Opponent1\"",
+        _ => "null",
+    };
     platform::publish(&format!(
-        r#"{{"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"selectedPlayer":{},"distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":false}},"maxHealth":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}}}}"#,
+        r#"{{"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"selectedPlayer":{},"hoveredUnit":{},"distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":false}},"maxHealth":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}}}}"#,
         practice.arena.tick(),
         practice.frames,
         player.position.x,
@@ -505,6 +552,7 @@ fn publish(
         screen.y,
         practice.selected.is_some(),
         practice.selected == Some(0),
+        hovered,
         distance,
         ATTACK_RANGE / 1000,
         cooldown,
@@ -544,15 +592,27 @@ mod platform {
     use bevy::prelude::Vec2;
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen(
-        inline_js = "export function arena_has_character() { return globalThis.arenaShell.hasCharacterModel === true; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); }"
+        inline_js = "export function arena_has_character() { return globalThis.arenaShell.hasCharacterModel === true; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); }"
     )]
     extern "C" {
         fn arena_has_character() -> bool;
         fn arena_input() -> js_sys::Array;
+        fn arena_hover() -> js_sys::Array;
+        fn arena_graphics() -> js_sys::Array;
         fn arena_state(json: &str);
     }
     pub fn has_character_model() -> bool {
         arena_has_character()
+    }
+    pub fn read_graphics() -> super::graphics::Settings {
+        let values = arena_graphics();
+        super::graphics::Settings::from_values(values.get(0).as_f64(), values.get(1).as_f64())
+    }
+    pub fn read_hover() -> Option<Vec2> {
+        let a = arena_hover();
+        let x = a.get(0).as_f64()? as f32;
+        let y = a.get(1).as_f64()? as f32;
+        (x.is_finite() && y.is_finite() && x >= 0.0 && y >= 0.0).then_some(Vec2::new(x, y))
     }
     pub fn read_input() -> Input {
         let a = arena_input();
@@ -739,6 +799,13 @@ mod tests {
 }
 #[cfg(not(target_arch = "wasm32"))]
 mod platform {
+    pub fn read_graphics() -> super::graphics::Settings {
+        // Exercise the same defaults as an older browser shell with no callback.
+        super::graphics::Settings::from_values(None, None)
+    }
+    pub fn read_hover() -> Option<bevy::prelude::Vec2> {
+        None
+    }
     pub fn has_character_model() -> bool {
         false
     }

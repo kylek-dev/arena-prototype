@@ -4,7 +4,7 @@ export function UnitFrame({
   role,
   unit,
 }: {
-  role: Exclude<FrameRole, "opponents"> | "opponent";
+  role: Exclude<FrameRole, "opponents" | "unitTooltip"> | "opponent";
   unit: Entity | null;
 }) {
   return (
@@ -34,7 +34,6 @@ export function UnitFrame({
         aria-valuemax={100}
         aria-valuenow={unit ? 100 : 0}
         aria-valuetext="Placeholder · resources are not implemented"
-        title="Resource placeholder · no resource costs or regeneration yet"
       >
         <div className="resource-fill" style={{ width: unit ? "100%" : "0%" }} />
         <span className="bar-value">{unit ? "100/100" : "—"}</span>

@@ -4,9 +4,10 @@ import { useStore } from "../../state/store";
 import { interactUnit, unitRoster } from "../../runtime/commands";
 import { resolveUnit, type UnitTag } from "../../domain/units/tags";
 import type { Entity } from "../../domain/units/selection";
-import type { ComponentProps } from "react";
+import { useEffect, type ComponentProps } from "react";
 import { Placed } from "../../ui/Placed";
 import { UnitFrame } from "./UnitFrame";
+import { hoveredFrame } from "../../runtime/unit-hover";
 
 function TaggedFrame({
   tag,
@@ -21,6 +22,13 @@ function TaggedFrame({
   editing: boolean;
   selected: boolean;
 }) {
+  const hovered = useStore(hoveredFrame, (s) => s === tag);
+  useEffect(
+    () => () => {
+      if (hoveredFrame.get() === tag) hoveredFrame.set(null);
+    },
+    [tag, unit?.id],
+  );
   const frame = <UnitFrame role={role} unit={unit} />;
   if (editing) return frame;
   return (
@@ -28,13 +36,21 @@ function TaggedFrame({
       type="button"
       className="unit-entry"
       data-unit-tag={tag}
+      aria-describedby={hovered ? "unit-tooltip" : undefined}
       aria-pressed={selected}
       aria-label={
         tag.startsWith("Opponent")
           ? `Target ${unit?.name ?? tag}`
           : `Target ${tag}: ${unit?.name ?? "—"}`
       }
-      title="Left-click to target; right-click to focus"
+      onMouseEnter={() => hoveredFrame.set(unit ? tag : null)}
+      onMouseLeave={() => {
+        if (hoveredFrame.get() === tag) hoveredFrame.set(null);
+      }}
+      onFocus={() => hoveredFrame.set(unit ? tag : null)}
+      onBlur={() => {
+        if (hoveredFrame.get() === tag) hoveredFrame.set(null);
+      }}
       disabled={!unit}
       onClick={() => interactUnit(tag, "target")}
       onContextMenu={(e) => {

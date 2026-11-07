@@ -1,6 +1,7 @@
 import { TooltipProvider } from "../ui/Tooltip";
 import { Theme } from "@radix-ui/themes";
 import { Frames } from "../features/unit-frames/Frames";
+import { UnitTooltip } from "../features/unit-frames/UnitTooltip";
 import { ActionBars } from "../features/action-bars/ActionBars";
 import { Spellbook } from "../features/spellbook/Spellbook";
 import { SpellDragPreview } from "../features/spellbook/SpellDragPreview";
@@ -50,6 +51,7 @@ export function App() {
           </p>
         )}
         <Frames />
+        <UnitTooltip />
         <ActionBars />
         <SpellDragPreview />
         <CombatErrors />
