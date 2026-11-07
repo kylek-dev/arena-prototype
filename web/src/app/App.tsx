@@ -27,7 +27,7 @@ export function App() {
   const menuBindings = useConfigSelector((c) => c.bindings.menu);
   const menuKey = menuBindings?.find(Boolean);
   const title =
-    mode.panel === "menu" ? "Game menu" : mode.panel === "settings" ? "Settings" : "Spellbook";
+    mode.panel === "menu" ? "Game menu" : mode.panel === "settings" ? "Settings" : "Spells";
 
   return (
     <Theme
@@ -61,17 +61,13 @@ export function App() {
           <Modal
             key={mode.panel}
             title={title}
-            description={
-              mode.panel === "spellbook"
-                ? "Drag a spell onto a slot. Drag a slotted spell onto the arena to remove it."
-                : undefined
-            }
+            description={mode.panel === "spellbook" ? "Drag a spell onto a slot." : undefined}
             modal={mode.panel !== "spellbook"}
             className={
               mode.panel === "menu"
                 ? "menu-dialog"
                 : mode.panel === "spellbook"
-                  ? `spellbook-dialog ${dragging ? "drag-through" : ""}`
+                  ? `spellbook-dialog window-area-left ${dragging ? "drag-through" : ""}`
                   : ""
             }
             escapeBlocked={!!mode.capture || !!pending}

@@ -29,6 +29,18 @@
   transform: translateX(-50%);
   max-height: calc(100dvh - 200px);
 }
+/* Opt-in window area: below the unit frames, clear of the bottom action bar. */
+.window-area-left {
+  --window-left: clamp(12px, 3.5vw, 56px);
+  --window-top: clamp(140px, 18dvh, 180px);
+  top: var(--window-top);
+  left: var(--window-left);
+  transform: none;
+  box-sizing: border-box;
+  width: min(520px, calc(100vw - var(--window-left) - 12px));
+  height: min(480px, calc(100dvh - var(--window-top) - 108px));
+  max-height: calc(100dvh - var(--window-top) - 12px);
+}
 .dialog-heading {
   display: flex;
   align-items: center;

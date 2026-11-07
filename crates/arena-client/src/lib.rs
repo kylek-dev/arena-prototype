@@ -15,7 +15,7 @@ struct Practice {
     previous: [Vec3; 2],
     movement: Vec2,
     facing: f32,
-    selected: bool,
+    selected: Option<usize>,
     attack: bool,
     feedback: &'static str,
     flash: f32,
@@ -30,7 +30,7 @@ impl Default for Practice {
             previous,
             movement: Vec2::ZERO,
             facing: 0.0,
-            selected: false,
+            selected: None,
             attack: false,
             feedback: "Select the opponent to begin",
             flash: 0.0,
@@ -295,14 +295,7 @@ fn read_controls(
     orbit.pitch = (orbit.pitch + input.orbit_y * 0.004).clamp(0.25, 1.2);
     orbit.distance = (orbit.distance + input.zoom * 0.01).clamp(6.0, 22.0);
     update_movement(&mut practice, &orbit, &input);
-    if input.select {
-        practice.selected = true;
-        practice.feedback = "Opponent selected";
-    }
-    if input.clear {
-        practice.selected = false;
-        practice.feedback = "Target cleared";
-    }
+    update_selection(&mut practice, &input);
     if let Some(cursor) = input.click
         && let Ok((camera, transform)) = cameras.single()
         && let Ok(ray) = camera.viewport_to_world(transform, cursor)
@@ -310,7 +303,7 @@ fn read_controls(
         let to_target = world(practice.arena.fighters()[1].position) + Vec3::Y - ray.origin;
         let along = to_target.dot(*ray.direction);
         let hit = along > 0.0 && (to_target - *ray.direction * along).length_squared() < 0.9 * 0.9;
-        practice.selected = hit;
+        practice.selected = hit.then_some(1);
         practice.feedback = if hit {
             "Opponent selected"
         } else {
@@ -319,6 +312,22 @@ fn read_controls(
     }
     if input.attack {
         practice.attack = true;
+    }
+}
+// Explicit frame intents resolve opponent, player, then clear; canvas picking
+// follows them. Selection is presentation intent, never permission to deal damage.
+fn update_selection(practice: &mut Practice, input: &Input) {
+    if input.select {
+        practice.selected = Some(1);
+        practice.feedback = "Opponent selected";
+    }
+    if input.select_player {
+        practice.selected = Some(0);
+        practice.feedback = "Player selected";
+    }
+    if input.clear {
+        practice.selected = None;
+        practice.feedback = "Target cleared";
     }
 }
 fn update_movement(practice: &mut Practice, orbit: &Orbit, input: &Input) {
@@ -341,11 +350,8 @@ fn simulate(mut practice: ResMut<Practice>) {
     }];
     if practice.attack {
         practice.attack = false;
-        if practice.selected {
-            commands.push(ArenaCommand::Attack {
-                actor: 0,
-                target: 1,
-            });
+        if let Some(target) = practice.selected {
+            commands.push(ArenaCommand::Attack { actor: 0, target });
         } else {
             practice.feedback = "Select a target first";
         }
@@ -433,8 +439,8 @@ fn present(
         *camera = Transform::from_translation(focus + offset).looking_at(focus, Vec3::Y);
     }
     if let Ok((mut transform, mut visibility)) = ring.single_mut() {
-        transform.translation = positions[1] + Vec3::Y * 0.03;
-        *visibility = if practice.selected {
+        transform.translation = positions[practice.selected.unwrap_or(1)] + Vec3::Y * 0.03;
+        *visibility = if practice.selected.is_some() {
             Visibility::Visible
         } else {
             Visibility::Hidden
@@ -467,11 +473,12 @@ fn publish(
     let distance = (player.position.distance_squared(target.position) as f64).sqrt() / 1000.0;
     let cooldown =
         player.ready_at.saturating_sub(practice.arena.tick()) as f64 / TICKS_PER_SECOND as f64;
-    let attack_status = match practice.arena.can_attack(0, 1) {
+    let attack_status = match practice.arena.can_attack(0, practice.selected.unwrap_or(1)) {
         Ok(()) => "Ready",
         Err(arena_sim::arena::Rejection::OutOfRange) => "Out of range",
         Err(arena_sim::arena::Rejection::Cooldown) => "Recharging",
         Err(arena_sim::arena::Rejection::LineOfSight) => "Line of sight blocked",
+        Err(arena_sim::arena::Rejection::InvalidTarget) => "Invalid target",
         _ => "Round complete",
     };
     let screen = cameras
@@ -484,7 +491,7 @@ fn publish(
         })
         .unwrap_or(Vec2::splat(-1.0));
     platform::publish(&format!(
-        r#"{{"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":false}},"maxHealth":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}}}}"#,
+        r#"{{"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"selectedPlayer":{},"distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":false}},"maxHealth":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}}}}"#,
         practice.arena.tick(),
         practice.frames,
         player.position.x,
@@ -496,7 +503,8 @@ fn publish(
         target.health,
         screen.x,
         screen.y,
-        practice.selected,
+        practice.selected.is_some(),
+        practice.selected == Some(0),
         distance,
         ATTACK_RANGE / 1000,
         cooldown,
@@ -521,6 +529,7 @@ struct Input {
     z: f32,
     attack: bool,
     select: bool,
+    select_player: bool,
     clear: bool,
     reset: bool,
     orbit_x: f32,
@@ -553,6 +562,7 @@ mod platform {
             z: number(1),
             attack: number(2) != 0.0,
             select: number(3) != 0.0,
+            select_player: number(13) == 1.0,
             clear: number(4) != 0.0,
             reset: number(5) != 0.0,
             orbit_x: number(6),
@@ -574,6 +584,50 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_selection_supports_self_without_authorizing_self_damage() {
+        let mut practice = Practice::default();
+        update_selection(
+            &mut practice,
+            &Input {
+                select_player: true,
+                ..default()
+            },
+        );
+        assert_eq!(practice.selected, Some(0));
+        assert_eq!(
+            practice.arena.can_attack(0, 0),
+            Err(arena_sim::arena::Rejection::InvalidTarget)
+        );
+        let before = *practice.arena.fighters();
+        assert!(matches!(
+            practice.arena.step(&[ArenaCommand::Attack {
+                actor: 0,
+                target: 0
+            }])[0],
+            ArenaEvent::Rejected(arena_sim::arena::Rejection::InvalidTarget)
+        ));
+        assert_eq!(*practice.arena.fighters(), before);
+        update_selection(
+            &mut practice,
+            &Input {
+                select: true,
+                ..default()
+            },
+        );
+        assert_eq!(practice.selected, Some(1));
+        update_selection(
+            &mut practice,
+            &Input {
+                select: true,
+                select_player: true,
+                clear: true,
+                ..default()
+            },
+        );
+        assert_eq!(practice.selected, None);
+    }
 
     #[test]
     fn pulse_presentation_metadata_matches_the_practice_rules() {

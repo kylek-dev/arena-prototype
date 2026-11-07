@@ -20,7 +20,7 @@ export function Spellbook() {
           Unlock spell dragging
         </Button>
       )}
-      <div className="spellbook-grid" aria-label="Known spells">
+      <div className="spellbook-grid" role="group" aria-label="Known spells">
         <Hint
           text={
             <SpellDetails
@@ -44,7 +44,6 @@ export function Spellbook() {
             <span className="spell-symbol" aria-hidden="true">
               ϟ
             </span>
-            <small>Pulse</small>
           </button>
         </Hint>
       </div>

@@ -1,5 +1,5 @@
 import type { Slot } from "../../domain/action-bars/model";
-import { availability } from "../../domain/abilities/catalog";
+import { actionTint, availability } from "../../domain/abilities/catalog";
 import { label } from "../../domain/bindings/model";
 import { useConfigSelector } from "../../state/config";
 import { engine, heldSlots, interaction, spellDragPreview } from "../../state/session";
@@ -47,7 +47,7 @@ export function ActionSlot({ slot, number }: { slot: Slot; number: number }) {
           <TooltipCard
             title="Empty slot"
             shortcut={pair?.filter(Boolean).map(label).join(" / ") || "Unbound"}
-            description="Place a spell from the spellbook."
+            description="Place a spell from Spells."
             footer={locked ? "Assignments locked. Unlock in Settings → Action bars." : undefined}
           />
         )
@@ -56,6 +56,7 @@ export function ActionSlot({ slot, number }: { slot: Slot; number: number }) {
       <button
         className={`action-slot ${mode.quick && mode.hovered === slot.id ? "binding-hover" : ""} ${dropTarget ? "drop-target" : ""} ${slot.ability ? "" : "empty"} ${keyHeld ? "key-held" : ""}`}
         data-spell-drop-slot={slot.id}
+        data-unusable={slot.ability ? actionTint(state) : undefined}
         data-spell-draggable={!locked && !!slot.ability && !mode.quick && !mode.layout}
         aria-label={`Slot ${number} ${slot.ability ? "Pulse" : "empty"}`}
         aria-disabled={!slot.ability || status !== "Ready"}
@@ -78,7 +79,6 @@ export function ActionSlot({ slot, number }: { slot: Slot; number: number }) {
           {slot.ability ? "ϟ" : "·"}
         </span>
         {cooling && <Cooldown />}
-        <small>{slot.ability ? "Pulse" : number}</small>
       </button>
     </Hint>
   );

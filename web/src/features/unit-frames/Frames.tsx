@@ -1,27 +1,63 @@
 import { useConfigSelector, updateConfig } from "../../state/config";
 import { engine, focus, interaction } from "../../state/session";
 import { useStore } from "../../state/store";
-import { interactOpponent } from "../../runtime/commands";
+import { interactUnit, unitRoster } from "../../runtime/commands";
+import { resolveUnit, type UnitTag } from "../../domain/units/tags";
+import type { Entity } from "../../domain/units/selection";
+import type { ComponentProps } from "react";
 import { Placed } from "../../ui/Placed";
 import { UnitFrame } from "./UnitFrame";
+
+function TaggedFrame({
+  tag,
+  role,
+  unit,
+  editing,
+  selected,
+}: {
+  tag: UnitTag;
+  role: ComponentProps<typeof UnitFrame>["role"];
+  unit: Entity | null;
+  editing: boolean;
+  selected: boolean;
+}) {
+  const frame = <UnitFrame role={role} unit={unit} />;
+  if (editing) return frame;
+  return (
+    <button
+      type="button"
+      className="unit-entry"
+      data-unit-tag={tag}
+      aria-pressed={selected}
+      aria-label={
+        tag.startsWith("Opponent")
+          ? `Target ${unit?.name ?? tag}`
+          : `Target ${tag}: ${unit?.name ?? "—"}`
+      }
+      title="Left-click to target; right-click to focus"
+      disabled={!unit}
+      onClick={() => interactUnit(tag, "target")}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        interactUnit(tag, "focus");
+      }}
+    >
+      {frame}
+    </button>
+  );
+}
+
 export function Frames() {
   const state = useStore(engine, (s) => s),
     focused = useStore(focus, (s) => s),
     editing = useStore(interaction, (s) => s.layout);
   const frames = useConfigSelector((c) => c.frames);
+  const selectedId = state ? unitRoster(state, focused).target?.id : null;
   return (
     <>
       {(["player", "target", "focus"] as const).map((role) => {
-        const liveUnit =
-          role === "player"
-            ? state?.player
-            : role === "target"
-              ? state?.selected
-                ? state.target
-                : null
-              : state?.target.id === focused
-                ? state.target
-                : null;
+        const tag = { player: "Player", target: "Target", focus: "Focus" }[role] as UnitTag;
+        const liveUnit = state ? resolveUnit(tag, unitRoster(state, focused)) : null;
         if (!editing && role !== "player" && !liveUnit) return null;
         const maximum = state?.player.maxHealth ?? 100;
         const unit = editing
@@ -39,7 +75,13 @@ export function Frames() {
             value={frames[role]}
             onChange={(l) => updateConfig((c) => ({ ...c, frames: { ...c.frames, [role]: l } }))}
           >
-            <UnitFrame role={role} unit={unit ?? null} />
+            <TaggedFrame
+              tag={tag}
+              role={role}
+              unit={unit ?? null}
+              editing={editing}
+              selected={!!unit && unit.id === selectedId}
+            />
           </Placed>
         );
       })}
@@ -55,21 +97,14 @@ export function Frames() {
               ? [state.target]
               : []
           ).map((unit) => (
-            <button
+            <TaggedFrame
               key={unit.id}
-              type="button"
-              className="opponent-entry"
-              aria-label={`Target ${unit.name}`}
-              aria-pressed={state?.selected && state.target.id === unit.id}
-              title="Left-click to target; right-click to focus"
-              onClick={() => interactOpponent(unit.id, "target")}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                interactOpponent(unit.id, "focus");
-              }}
-            >
-              <UnitFrame role="opponent" unit={unit} />
-            </button>
+              tag="Opponent1"
+              role="opponent"
+              unit={unit}
+              editing={editing}
+              selected={unit.id === selectedId}
+            />
           ))}
         </div>
       </Placed>

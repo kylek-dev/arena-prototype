@@ -4,6 +4,14 @@ Repository: https://github.com/kylek-dev/arena-prototype (temporary name).
 
 Code, design records, research, wiki sources and issue definitions belong in the main Git repository. GitHub issue discussion, Projects and the GitHub wiki are separate data stores; a normal code clone does not back them up.
 
+## Local-only default
+
+Develop and verify locally. Ordinary edits, intermediate milestones and local commits do not require a push or pull request. Keep work local until it is complete and the user requests publication; permission to edit or commit locally is not permission to publish.
+
+When pushing completed work, always push to a new working branch and open a pull request targeting `main`, including for documentation and configuration changes. A request to push completed work authorizes this branch-and-PR workflow. Never push directly to `main` or bypass required reviews, status checks or branch protections.
+
+Publishing the wiki, changing issues/projects and manually triggering remote workflows require separate user authorization. The commands below are reference procedures, not standing authorization to run them.
+
 ## Initial publication
 
 The public repository, wiki, and Project are published. The authenticated account now has the required project access. Do not store tokens in this repo.

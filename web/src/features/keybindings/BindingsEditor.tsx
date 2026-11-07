@@ -5,6 +5,7 @@ import { captureMessage, acceptBinding, pendingBinding } from "../../state/bindi
 import { interaction } from "../../state/session";
 import { useStore } from "../../state/store";
 import { Modal } from "../../ui/Dialog";
+const actionName = (action: string) => (action === "spellbook" ? "Spells" : action);
 export function BindingConflict() {
   const pending = useStore(pendingBinding, (s) => s);
   return (
@@ -13,7 +14,7 @@ export function BindingConflict() {
         <p>
           {label(pending.value)} is assigned to{" "}
           {pending.conflicts
-            .map((c) => `${c.action} (${c.entry === 0 ? "primary" : "secondary"})`)
+            .map((c) => `${actionName(c.action)} (${c.entry === 0 ? "primary" : "secondary"})`)
             .join(", ")}
           . Replace those bindings?
         </p>
@@ -63,11 +64,11 @@ export function BindingsEditor() {
         </select>
       </label>
       <p role="status">
-        {capture ? `Press a key for ${capture.action} · Escape cancels` : message}
+        {capture ? `Press a key for ${actionName(capture.action)} · Escape cancels` : message}
       </p>
       {capture && (
         <Modal
-          title={`Bind ${capture.action}`}
+          title={`Bind ${actionName(capture.action)}`}
           description={`Press a physical key for the ${capture.entry === 0 ? "primary" : "secondary"} binding. Shift chords are supported. ${capture.action === "menu" ? "Escape can be assigned here; use Cancel to leave." : "Escape cancels."} Browser/OS shortcuts remain reserved.`}
           className="capture-dialog"
           escapeBlocked
@@ -83,16 +84,16 @@ export function BindingsEditor() {
         {actionList(bars)
           .filter(
             (a) =>
-              a.toLowerCase().includes(search.toLowerCase()) &&
+              actionName(a).toLowerCase().includes(search.toLowerCase()) &&
               (category === "all" || group(a) === category),
           )
           .map((action) => (
             <div className="binding-row" key={action}>
-              <strong>{action}</strong>
+              <strong>{actionName(action)}</strong>
               {([0, 1] as const).map((entry) => (
                 <div className="row" key={entry}>
                   <button
-                    aria-label={`Bind ${action} ${entry === 0 ? "primary" : "secondary"}`}
+                    aria-label={`Bind ${actionName(action)} ${entry === 0 ? "primary" : "secondary"}`}
                     className={
                       capture?.action === action && capture.entry === entry ? "selected" : ""
                     }
@@ -104,7 +105,7 @@ export function BindingsEditor() {
                     {label(bindings[action]?.[entry])}
                   </button>
                   <button
-                    aria-label={`Clear ${action} ${entry === 0 ? "primary" : "secondary"}`}
+                    aria-label={`Clear ${actionName(action)} ${entry === 0 ? "primary" : "secondary"}`}
                     onClick={() => acceptBinding(action, entry, null)}
                   >
                     Clear

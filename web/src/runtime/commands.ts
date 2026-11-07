@@ -2,6 +2,8 @@ import { InputState } from "../../input.js";
 import { availability, canActivate, isEngineReady } from "../domain/abilities/catalog";
 import { beginCast, clearCastFeedback, rejectCast } from "./cast-feedback";
 import { nextTarget } from "../domain/units/selection";
+import { resolveUnit, type UnitTag, type UnitRoster } from "../domain/units/tags";
+import type { Snapshot } from "../bridge/snapshot";
 import { config } from "../state/config";
 import {
   draggingSpell,
@@ -14,14 +16,31 @@ import {
   setPanel,
 } from "../state/session";
 export const input = new InputState();
-// The practice ABI exposes one opponent. Resolve identity before issuing intent;
-// focusing is independent of selection and must not select as a side effect.
-export function interactOpponent(id: string, action: "target" | "focus") {
+export function unitRoster(s: Snapshot, focused: string | null): UnitRoster {
+  return {
+    player: s.player,
+    target: s.selected ? (s.selectedPlayer ? s.player : s.target) : null,
+    focus: focused,
+    opponents: [s.target],
+    team: [],
+  };
+}
+export function interactUnit(tag: UnitTag, action: "target" | "focus") {
+  const s = engine.get();
+  if (!s) return;
+  const unit = resolveUnit(tag, unitRoster(s, focus.get()));
+  if (unit) interactEntity(unit.id, action);
+}
+// Local practice identities only; focus never changes selection as a side effect.
+export function interactEntity(id: string, action: "target" | "focus") {
   const s = engine.get();
   if (draggingSpell.get() || error.get() || blocksGameplay() || !isEngineReady(s)) return;
-  if (!s || s.target.id !== id) return;
+  if (!s || (s.target.id !== id && s.player.id !== id)) return;
   if (action === "focus") focus.set(id);
-  else input.select = true;
+  else {
+    input.select = s.target.id === id;
+    input.selectPlayer = s.player.id === id;
+  }
 }
 export function activateSlot(id: string) {
   if (draggingSpell.get() || error.get() || blocksGameplay()) return;
@@ -57,13 +76,13 @@ export function dispatch(action: string) {
       input.clear = true;
       break;
     case "setFocus":
-      if (s?.selected) focus.set(s.target.id);
+      if (s?.selected) focus.set(s.selectedPlayer ? s.player.id : s.target.id);
       break;
     case "clearFocus":
       focus.set(null);
       break;
     case "targetFocus":
-      if (s && focus.get() === s.target.id) input.select = true;
+      interactUnit("Focus", "target");
       break;
     case "reset":
       clearCastFeedback();
