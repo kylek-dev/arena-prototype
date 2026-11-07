@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 arena-sim = { path = "../arena-sim" }
-bevy = { version = "=0.19.0", default-features = false, features = [
+bevy = { version = "=0.20.1", default-features = false, features = [
   "default_app", "bevy_pbr", "bevy_gltf", "png", "std", "bevy_winit", "webgl2", "x11", "multi_threaded"
 ] }
 
