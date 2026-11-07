@@ -1,6 +1,12 @@
 import { test, expect } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 
+// Asset loading has dedicated coverage in character.spec.mjs. Keep input tests
+// reproducible whether or not the developer has the optional local model.
+test.beforeEach(async ({ page }) => {
+  await page.route('**/assets/character.json', (route) => route.fulfill({ json: { available: false } }));
+});
+
 async function ready(page) {
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -59,9 +65,12 @@ test('move, target, attack, finish and reset through real browser controls', asy
 });
 
 test('camera orbit, zoom, focus loss and frame diagnostics', async ({ page, browser }, info) => {
+  // Retain desktop-sized rendering evidence while other input checks use the
+  // smaller viewport selected in the test configuration.
+  await page.setViewportSize({ width: 1024, height: 768 });
   const errors = await ready(page);
   const before = await state(page);
-  await page.mouse.move(400, 300);
+  await page.mouse.move(...inputAnchor(page));
   await mouseButton(page, 'right', true, 2);
   // Small movements avoid absolute-coordinate injection overshooting the
   // virtual screen while the browser is pointer-locked.
@@ -71,8 +80,12 @@ test('camera orbit, zoom, focus loss and frame diagnostics', async ({ page, brow
   await page.mouse.wheel(0, -200);
   await expect.poll(async () => (await state(page)).camera.distance).toBeLessThan(before.camera.distance);
   await page.locator('#arena').focus();
+  const walkingFrom = (await state(page)).player;
   await page.keyboard.down('w');
-  await page.waitForTimeout(300);
+  await expect.poll(async () => {
+    const player = (await state(page)).player;
+    return Math.hypot(player.x - walkingFrom.x, player.z - walkingFrom.z);
+  }).toBeGreaterThan(100);
   await page.getByRole('button', { name: 'Diagnostics' }).click();
   const focusFrame = (await state(page)).frames;
   await expect.poll(async () => (await state(page)).frames).toBeGreaterThan(focusFrame + 1);
@@ -88,7 +101,7 @@ test('camera orbit, zoom, focus loss and frame diagnostics', async ({ page, brow
   const graphics = await page.evaluate(() => {
     const gl = document.querySelector('#arena').getContext('webgl2');
     const debug = gl?.getExtension('WEBGL_debug_renderer_info');
-    return gl ? { version: gl.getParameter(gl.VERSION), renderer: debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER) } : null;
+    return gl ? { version: gl.getParameter(gl.VERSION), renderer: debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER), pixelRatio: devicePixelRatio, renderWidth: gl.drawingBufferWidth, renderHeight: gl.drawingBufferHeight } : null;
   });
   await writeFile(info.outputPath('metrics.json'), JSON.stringify({ browser: browser.version(), viewport: page.viewportSize(), graphics, metrics, resources }, null, 2));
   await page.screenshot({ path: info.outputPath('practice.png') });
@@ -109,9 +122,16 @@ test('debug bridge is opt-in and load failures remain visible', async ({ page })
 });
 
 const locked = (page) => page.evaluate(() => document.pointerLockElement?.id ?? null);
+// Stay in the canvas between the status cards and action bar at every viewport.
+const inputAnchor = (page) => [page.viewportSize().width / 2, page.viewportSize().height / 2];
 async function nextFrames(page, count = 2) {
   const frame = (await state(page)).frames;
   await expect.poll(async () => (await state(page)).frames).toBeGreaterThan(frame + count);
+}
+async function nextTicks(page, count = 3) {
+  const tick = (await state(page)).tick;
+  await page.waitForFunction(({ tick, count }) => window.arenaDebug.state.tick > tick + count,
+    { tick, count }, { timeout: 30_000 });
 }
 // Chromium's high-level drag interception can stall during pointer lock.
 // Keep one CDP input session per page so pressed buttons survive transitions.
@@ -123,7 +143,7 @@ async function chromiumInput(page, event) {
     session = await page.context().newCDPSession(page);
     inputSessions.set(page, session);
   }
-  await session.send('Input.dispatchMouseEvent', event);
+  await test.step(`mouse ${event.type} (${event.buttons})`, () => session.send('Input.dispatchMouseEvent', event));
 }
 async function dragMotion(page, x, y, buttons) {
   if (page.context().browser().browserType().name() === 'chromium') {
@@ -134,8 +154,9 @@ async function dragMotion(page, x, y, buttons) {
 }
 async function mouseButton(page, button, down, buttons) {
   if (page.context().browser().browserType().name() === 'chromium') {
+    const [x, y] = inputAnchor(page);
     await chromiumInput(page, {
-      type: down ? 'mousePressed' : 'mouseReleased', x: 400, y: 300,
+      type: down ? 'mousePressed' : 'mouseReleased', x, y,
       button, buttons, clickCount: 1, pointerType: 'mouse',
     });
   } else {
@@ -143,7 +164,7 @@ async function mouseButton(page, button, down, buttons) {
   }
 }
 async function beginDrag(page, button) {
-  await page.mouse.move(400, 300);
+  await page.mouse.move(...inputAnchor(page));
   await mouseButton(page, button, true, button === 'left' ? 1 : 2);
   await expect.poll(() => locked(page)).toBe('arena');
   expect(await page.locator('#arena').evaluate((canvas) => getComputedStyle(canvas).cursor)).toBe('none');
@@ -210,24 +231,28 @@ for (const [first, second] of [['left', 'right'], ['right', 'left']]) {
     const before = await state(page);
     await beginDrag(page, first);
     await mouseButton(page, second, true, 3);
-    // Hold real input for a defined interval. Repeated DevTools state polling
-    // while a software-GPU Chromium has both buttons captured can stall it.
-    await page.waitForTimeout(400);
+    // Observe progress inside the browser with one DevTools request. Repeated
+    // round trips while both buttons are captured can stall software-GPU Chromium.
+    await page.waitForFunction((z) => window.arenaDebug.state.player.z < z - 300,
+      before.player.z, { timeout: 30_000 });
     await dragMotion(page, 80, 15, 3);
-    await page.waitForTimeout(400);
+    await page.waitForFunction(() => Math.abs(window.arenaDebug.state.player.x) > 100,
+      undefined, { timeout: 30_000 });
     await mouseButton(page, first, false, second === 'right' ? 2 : 1);
-    await page.waitForTimeout(600); // Allow the last fixed input sample to settle.
+    await nextTicks(page); // The released input must have reached the simulation.
     const stopped = await state(page);
     expect(await locked(page)).toBe('arena');
     expect(stopped.player.z).toBeLessThan(before.player.z - 300);
     expect(Math.abs(stopped.player.x)).toBeGreaterThan(100);
     expect(stopped.player.yaw).toBeCloseTo(stopped.camera.yaw, 4);
-    await page.waitForTimeout(1500);
+    await nextTicks(page);
     const waiting = await state(page);
     expect(waiting.frames).toBeGreaterThan(stopped.frames);
+    expect(waiting.tick).toBeGreaterThan(stopped.tick);
     expect(waiting.player).toEqual(stopped.player);
     await dragMotion(page, 40, 10, second === 'right' ? 2 : 1);
-    await page.waitForTimeout(350);
+    await page.waitForFunction((yaw) => window.arenaDebug.state.camera.yaw !== yaw,
+      stopped.camera.yaw, { timeout: 30_000 });
     await mouseButton(page, second, false, 0);
     await expectReleased(page);
     await expect.poll(async () => (await state(page)).camera.yaw).not.toBe(stopped.camera.yaw);

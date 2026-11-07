@@ -39,7 +39,7 @@ For wiki recovery, initialize a replacement wiki and run `./scripts/sync-wiki.sh
 
 ## Repository security — verified 2026-11-01
 
-`main` requires a pull request, one write-access approval, approval of the latest reviewable push, dismissal of stale approvals, resolved review conversations, and up-to-date `rust` and `browser` checks from the GitHub Actions app (15368). Rules apply to admins; force pushes and branch deletion are blocked. Your own PR needs another collaborator's approval. CODEOWNERS requests owner attention for sensitive paths but is not an additional merge requirement.
+`main` requires a pull request, one write-access approval, approval of the latest reviewable push, dismissal of stale approvals, resolved review conversations, and up-to-date `rust` and `browser` checks from the GitHub Actions app (15368). The `rust` job includes deterministic Rust/JavaScript tests; `browser` retains its required check name but now performs WASM Clippy and compilation only. E2E review is manual (ADR 0004). Rules apply to admins; force pushes and branch deletion are blocked. Your own PR needs another collaborator's approval. CODEOWNERS requests owner attention for sensitive paths but is not an additional merge requirement.
 
 Actions has read-only default tokens and cannot approve PRs. Only GitHub-owned actions and `Swatinem/rust-cache` are allowed, with full commit SHA pinning required. All external fork contributors require workflow approval. Review their workflow and executable changes before approving a run. CI disables persisted checkout credentials and limits each job to 30 minutes. Changes to the action allowlist require an admin settings update as well as a reviewed workflow change.
 
