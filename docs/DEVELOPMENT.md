@@ -78,20 +78,19 @@ rustup show active-toolchain
 rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.122 --locked
 
-# Install the exact JavaScript dependencies and a browser for automated checks.
-npm ci
-npx playwright install --with-deps chromium
+# Input unit tests use Node 24 directly; no browser installation is required.
+npm test
 
-# Native lint/rules checks, browser-specific Rust checks, then the browser build.
+# Native and JavaScript unit checks, WASM checks, then the browser build.
 ./scripts/check.sh
 cargo clippy -p arena-client --target wasm32-unknown-unknown --locked -- -D warnings
 ./scripts/build-web.sh
 
-# Starts its own temporary local server and runs the Chromium interaction checks.
-npm run test:browser
+# Start the game for manual E2E review (see docs/BROWSER.md).
+npm run serve
 ```
 
-Playwright's Linux system dependency installation can request sudo. It does not mean a separate game engine needs installation. The first Rust build compiles dependencies and takes longer than subsequent work; generated output stays outside version control.
+The first Rust build compiles dependencies and takes longer than subsequent work; generated output stays outside version control.
 
 The optional PixelLabs reference character has a separate download and license; see [character setup](../assets/characters/README.md). It is not required to build or test a clean clone.
 
@@ -105,7 +104,8 @@ Open http://localhost:8000. Keep that terminal running; Ctrl+C stops the server.
 
 - Rust rules/client changes: rerun the relevant checks and `./scripts/build-web.sh`, then reload the browser.
 - HTML/CSS/JavaScript changes in web/: reload the browser; no Rust rebuild is needed.
+- Input unit-test loop: `npm run test:watch`; one pass: `npm test`.
 - Rules-only test loop: `cargo test -p arena-sim`.
 - Scripted original headless example: `cargo run -p arena-headless`.
 
-See [browser development](BROWSER.md) for controls, optional Firefox coverage, pointer-lock automation, and how measurements are collected. Ubuntu native/WASM checks and browser checks run in GitHub Actions; fresh macOS and Windows/WSL installations have not been exhaustively rehearsed on pristine machines.
+See [browser development](BROWSER.md) for controls, optional Firefox coverage, pointer-lock automation, and how measurements are collected. Ubuntu native/JavaScript tests and WASM compile checks run in GitHub Actions; E2E validation is manual; fresh macOS and Windows/WSL installations have not been exhaustively rehearsed on pristine machines.
