@@ -76,13 +76,13 @@ it.each([0, 2])("button %i clicks never capture the cursor or activate look mode
   const buttons = button === 0 ? 1 : 2;
   canvas.dispatchEvent(new MouseEvent("mousedown", { button, buttons, clientX: 25, clientY: 40 }));
   move(buttons, 2);
-  expect(router.sample().slice(11)).toEqual([0, 0]);
+  expect(router.sample().slice(11, 13)).toEqual([0, 0]);
   expect(canvas.style.cursor).toBe("");
   document.dispatchEvent(new MouseEvent("mouseup", { button, buttons: 0 }));
   expect(canvas.requestPointerLock).not.toHaveBeenCalled();
   const sample = router.sample();
   expect(sample.slice(9, 11)).toEqual(button === 0 ? [25, 40] : [-1, -1]);
-  expect(sample.slice(11)).toEqual([0, 0]);
+  expect(sample.slice(11, 13)).toEqual([0, 0]);
 });
 
 it.each([0, 2])("button %i captures only once after crossing the drag threshold", (button) => {
@@ -95,7 +95,7 @@ it.each([0, 2])("button %i captures only once after crossing the drag threshold"
   move(buttons, 10);
   expect(canvas.requestPointerLock).toHaveBeenCalledTimes(1);
   expect(canvas.style.cursor).toBe("none");
-  expect(router.sample().slice(11)).toEqual(button === 0 ? [0, 1] : [1, 0]);
+  expect(router.sample().slice(11, 13)).toEqual(button === 0 ? [0, 1] : [1, 0]);
   document.dispatchEvent(new MouseEvent("mouseup", { button, buttons: 0 }));
   expect(canvas.style.cursor).toBe("");
   expect(router.sample().slice(9, 11)).toEqual([-1, -1]);
