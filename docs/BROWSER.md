@@ -47,7 +47,9 @@ cargo clippy -p arena-client --target wasm32-unknown-unknown --locked -- -D warn
 ./scripts/build-web.sh
 ```
 
-CI runs native/JavaScript tests and WASM compilation on PRs and pushes to `main`; superseded runs for the same PR are cancelled. The required `browser` job keeps its existing name but only performs WASM Clippy, builds the client, and uploads `browser-build`. It does not install or launch a browser. Run it manually with `gh workflow run ci.yml --ref YOUR_BRANCH` when needed before opening a PR. See [ADR 0004](decisions/0004-unit-first-validation.md).
+CI runs Rust rules/headless linting and tests, workspace formatting, JavaScript syntax checks, and input unit tests on PRs and pushes to `main`; superseded runs for the same PR are cancelled. The required `browser` job keeps its existing name but now runs JavaScript checks only. Neither automatic job compiles Bevy or WASM.
+
+For client/engine dependency changes and before release, run the complete local checks above or dispatch `gh workflow run client-build.yml --ref YOUR_BRANCH` (once the workflow exists on the default branch). That opt-in workflow performs full native workspace checks, WASM Clippy, and the web build, uploading `browser-build`. It does not install or launch a browser. A green automatic CI run does not establish client compilation; record full-build and human review outcomes separately. See [ADR 0005](decisions/0005-lightweight-ci.md).
 
 ## Manual E2E acceptance
 
