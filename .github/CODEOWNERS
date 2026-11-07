@@ -1,0 +1,7 @@
+# Request maintainer review for security-sensitive changes.
+# Ownership requests are advisory; branch protection requires one write-access approval.
+/.github/ @kylek-dev
+/scripts/ @kylek-dev
+/SECURITY.md @kylek-dev
+/AGENTS.md @kylek-dev
+/docs/decisions/ @kylek-dev
