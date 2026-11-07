@@ -1,10 +1,32 @@
-name: Full client build (manual)
+name: Full client build
 on:
+  # Keep these filters in sync. Shared Rust rules also affect the client.
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - 'rust-toolchain*'
+      - '.cargo/**'
+      - 'assets/**'
+      - 'scripts/**'
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - 'crates/**'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - 'rust-toolchain*'
+      - '.cargo/**'
+      - 'assets/**'
+      - 'scripts/**'
+      - '.github/workflows/**'
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
   native:

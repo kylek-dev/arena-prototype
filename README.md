@@ -29,7 +29,7 @@ cargo run -p arena-headless
 
 The dependency-free simulation resolves a scripted duel at fixed ticks. It is a foundation for rule tests and replays, not a claim that the full combat or network design is implemented.
 
-Fast input tests: `npm test` or `npm run test:watch` with Node 24; rules tests: `cargo test -p arena-sim`. Automatic CI checks rules and input; full client builds are opt-in ([CI policy](docs/decisions/0005-lightweight-ci.md)). E2E review is manual; see [validation policy](docs/decisions/0004-unit-first-validation.md).
+Fast input tests: `npm test` or `npm run test:watch` with Node 24; rules tests: `cargo test -p arena-sim`. CI checks rules and input on every PR; full client builds run for Rust/dependency/build changes or on demand ([CI policy](docs/decisions/0006-selective-client-builds.md)). E2E review is manual; see [validation policy](docs/decisions/0004-unit-first-validation.md).
 
 ## Browser prototype
 
