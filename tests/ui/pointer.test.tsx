@@ -1,0 +1,159 @@
+import { afterEach, beforeEach, expect, it } from "vitest";
+import { initial } from "../../web/src/domain/preferences/schema";
+import { preferences, persistence, updateConfig } from "../../web/src/state/config";
+import { draggingSpell, engine, error, interaction } from "../../web/src/state/session";
+import { snapshot } from "./fixtures";
+import { installInput } from "../../web/src/runtime/input-router";
+import { installPointer } from "../../web/src/runtime/pointer";
+import { endDrag, installSpellDragging } from "../../web/src/runtime/spell-drag";
+import { input } from "../../web/src/runtime/commands";
+import { armSpell, moveSpell, dropSpell, hitTarget } from "./drag-fixture";
+import { fireEvent } from "@testing-library/react";
+
+let router: ReturnType<typeof installInput>;
+let pointer: ReturnType<typeof installPointer>;
+let canvas: HTMLCanvasElement;
+let lockedElement: Element | null = null;
+let stopDrop: () => void;
+
+beforeEach(() => {
+  document.body.innerHTML = '<canvas tabindex="0"></canvas><button id="spell">Pulse</button>';
+  canvas = document.querySelector("canvas")!;
+  preferences.set(initial());
+  engine.set(snapshot());
+  error.set("");
+  interaction.set({ panel: null, capture: null, quick: false, layout: false, hovered: null });
+  input.cancel();
+  endDrag();
+  lockedElement = null;
+  Object.defineProperty(document, "pointerLockElement", {
+    configurable: true,
+    get: () => lockedElement,
+  });
+  document.exitPointerLock = () => {
+    lockedElement = null;
+  };
+  pointer = installPointer(canvas, () => router.cancel());
+  router = installInput(canvas, pointer.end);
+  stopDrop = installSpellDragging(canvas);
+  hitTarget(canvas);
+  canvas.focus();
+});
+
+afterEach(() => {
+  router.dispose();
+  pointer.dispose();
+  endDrag();
+  stopDrop();
+  clearTimeout(persistence.timer);
+});
+
+function lock() {
+  lockedElement = canvas;
+  document.dispatchEvent(new Event("pointerlockchange"));
+}
+
+function unlock() {
+  lockedElement = null;
+  document.dispatchEvent(new Event("pointerlockchange"));
+}
+
+function walk() {
+  window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW", bubbles: true }));
+}
+
+it("ordinary mouse release and unlock preserve held keyboard movement", () => {
+  walk();
+  canvas.dispatchEvent(new MouseEvent("mousedown", { button: 2, buttons: 2 }));
+  lock();
+  document.dispatchEvent(new MouseEvent("mouseup", { button: 2, buttons: 0 }));
+  unlock();
+  expect(router.sample()[1]).toBe(-1);
+});
+
+it("unexpected lock loss cancels both keyboard and mouse input", () => {
+  walk();
+  canvas.dispatchEvent(new MouseEvent("mousedown", { button: 2, buttons: 2 }));
+  lock();
+  unlock();
+  expect(router.sample().slice(0, 6)).toEqual([0, 0, 0, 0, 0, 0]);
+  expect(input.dragging).toBe(false);
+});
+
+it("drag transactions clear held movement, suppress casts and cancel without placement", () => {
+  walk();
+  armSpell(document.getElementById("spell")!, { ability: "pulse", source: "bar-1-s1" });
+  moveSpell();
+  expect(draggingSpell.get()).toBe(true);
+  window.dispatchEvent(new KeyboardEvent("keydown", { code: "Digit1" }));
+  expect(router.sample().slice(0, 6)).toEqual([0, 0, 0, 0, 0, 0]);
+  endDrag();
+  expect(preferences.get().profiles[0].config.bars[0].slots[0].ability).toBe("pulse");
+});
+
+it("exclusive UI modes prevent canvas gestures", () => {
+  interaction.set({ ...interaction.get(), layout: true });
+  canvas.dispatchEvent(new MouseEvent("mousedown", { button: 0, buttons: 1 }));
+  expect(input.dragging).toBe(false);
+});
+
+it("dropping a slotted spell on canvas removes its assignment, not its binding", () => {
+  const bindings = preferences.get().profiles[0].config.bindings;
+  armSpell(document.getElementById("spell")!, { ability: "pulse", source: "bar-1-s1" });
+  moveSpell();
+  dropSpell();
+  expect(preferences.get().profiles[0].config.bars[0].slots[0].ability).toBeNull();
+  expect(preferences.get().profiles[0].config.bindings).toBe(bindings);
+  expect(draggingSpell.get()).toBe(false);
+  expect(router.sample().slice(0, 6)).toEqual([0, 0, 0, 0, 0, 0]);
+});
+
+it("catalog-to-canvas and cancelled drops are no-ops", () => {
+  const bars = preferences.get().profiles[0].config.bars;
+  armSpell(document.getElementById("spell")!, { ability: "pulse" });
+  moveSpell();
+  dropSpell();
+  expect(preferences.get().profiles[0].config.bars).toBe(bars);
+  armSpell(document.getElementById("spell")!, { ability: "pulse", source: "bar-1-s1" });
+  moveSpell();
+  endDrag();
+  dropSpell();
+  expect(preferences.get().profiles[0].config.bars).toBe(bars);
+});
+
+it("does not discard an assignment if it becomes locked during a drag", () => {
+  armSpell(document.getElementById("spell")!, { ability: "pulse", source: "bar-1-s1" });
+  moveSpell();
+  updateConfig((c) => ({ ...c, assignmentsLocked: true }));
+  dropSpell();
+  expect(preferences.get().profiles[0].config.bars[0].slots[0].ability).toBe("pulse");
+});
+
+it("Escape and pointer cancellation leave assignments unchanged and suppress the trailing click", () => {
+  const source = document.getElementById("spell")!;
+  source.addEventListener("click", () => input.requestAttack());
+  armSpell(source, { ability: "pulse", source: "bar-1-s1" });
+  moveSpell();
+  window.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape", cancelable: true }));
+  fireEvent.click(source);
+  expect(router.sample()[2]).toBe(0);
+  expect(preferences.get().profiles[0].config.bars[0].slots[0].ability).toBe("pulse");
+  armSpell(source, { ability: "pulse", source: "bar-1-s1" });
+  moveSpell();
+  fireEvent.pointerCancel(document, { pointerId: 1 });
+  dropSpell();
+  expect(preferences.get().profiles[0].config.bars[0].slots[0].ability).toBe("pulse");
+  expect(draggingSpell.get()).toBe(false);
+});
+
+it("leaves a below-threshold press as a click rather than removing the spell", () => {
+  const source = document.getElementById("spell")!;
+  source.addEventListener("click", () => input.requestAttack());
+  armSpell(source, { ability: "pulse", source: "bar-1-s1" });
+  moveSpell(102, 101);
+  expect(draggingSpell.get()).toBe(false);
+  dropSpell(false, 102, 101);
+  fireEvent.click(source);
+  expect(router.sample()[2]).toBe(1);
+  expect(preferences.get().profiles[0].config.bars[0].slots[0].ability).toBe("pulse");
+});

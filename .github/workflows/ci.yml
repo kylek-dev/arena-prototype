@@ -43,7 +43,11 @@ jobs:
           node-version: '24'
       - name: Check JavaScript syntax
         run: |
-          node --check web/shell.js
           node --check web/input.js
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run format:check
       - name: Test browser input (no browser or WASM build)
         run: npm test
+      - run: npm run build

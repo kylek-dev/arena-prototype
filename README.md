@@ -29,18 +29,21 @@ cargo run -p arena-headless
 
 The dependency-free simulation resolves a scripted duel at fixed ticks. It is a foundation for rule tests and replays, not a claim that the full combat or network design is implemented.
 
-Fast input tests: `npm test` or `npm run test:watch` with Node 24; rules tests: `cargo test -p arena-sim`. CI checks rules and input on every PR; full client builds run for Rust/dependency/build changes or on demand ([CI policy](docs/decisions/0006-selective-client-builds.md)). E2E review is manual; see [validation policy](docs/decisions/0004-unit-first-validation.md).
+Run `npm ci`, then `npm test` or `npm run test:watch` with Node 24 for input, domain and focused DOM tests. `npm run test:input` remains dependency-free. Rules tests: `cargo test -p arena-sim`. CI checks rules and the frontend on every PR; full Rust client builds remain selective ([CI policy](docs/decisions/0006-selective-client-builds.md), [React ADR](docs/decisions/0007-react-combat-ui.md)). E2E review remains manual.
 
 ## Browser prototype
 
 See [browser development](docs/BROWSER.md) for setup. With the pinned Rust/WASM tools installed:
 
 ```sh
+npm ci
 ./scripts/build-web.sh
 npm run serve
 ```
 
 Open http://127.0.0.1:8000. WASD moves; left-drag looks; right-drag turns; both mouse buttons walk and steer. Tab selects, 1 attacks, and R resets.
+
+The React overlay adds target/focus frames, action bars, an icon-only draggable Pulse spellbook, remappable bindings, quick binding, direct layout editing and local profiles. Escape opens the bindable game menu; Shift+Escape clears target. Ordinary HUD clicks retain gameplay focus; typing/dialogs/editing own their keyboard input. Shift+Tab enters normal UI navigation. Layout frames and the editor window are movable. The interface uses Radix Themes with a neutral dark palette. Only Pulse and one stationary opponent exist. Use `npm run dev` for fast UI iteration after the first complete build; `npm run build` rebuilds only the frontend. See [frontend boundaries](docs/FRONTEND.md). Human rendered review of the revised overlay is pending.
 
 ## License
 

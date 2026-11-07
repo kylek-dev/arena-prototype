@@ -78,7 +78,8 @@ rustup show active-toolchain
 rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.122 --locked
 
-# Input unit tests use Node 24 directly; no browser installation is required.
+# Install pinned frontend tools; no browser installation is required.
+npm ci
 npm test
 
 # Native and JavaScript unit checks, WASM checks, then the browser build.
@@ -103,8 +104,9 @@ npm run serve
 Open http://localhost:8000. Keep that terminal running; Ctrl+C stops the server. Open `/?debug=1` for read-only game state and diagnostics.
 
 - Rust rules/client changes: rerun the relevant checks and `./scripts/build-web.sh`, then reload the browser.
-- HTML/CSS/JavaScript changes in web/: reload the browser; no Rust rebuild is needed.
-- Input unit-test loop: `npm run test:watch`; one pass: `npm test`.
+- React/TypeScript/CSS changes: `npm run dev` for hot reload using the existing generated engine; no Rust rebuild. `npm run build` rebuilds production UI only.
+- Frontend checks: `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm test`; write readable formatting with `npm run format`.
+- Input/domain/DOM watch loop: `npm run test:watch`; dependency-free legacy input loop: `npm run test:input:watch`.
 - Rules-only test loop: `cargo test -p arena-sim`.
 - Scripted original headless example: `cargo run -p arena-headless`.
 
