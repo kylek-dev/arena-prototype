@@ -1,5 +1,7 @@
 # Browser test runtime investigation
 
+Historical report: automated rendered checks were subsequently replaced as development/CI gates by [ADR 0004](../decisions/0004-unit-first-validation.md). E2E review is now manual.
+
 Date: 2026-11-06. Scope: functional test turnaround, not hardware performance acceptance.
 
 ## Evidence and method

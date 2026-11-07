@@ -29,20 +29,51 @@ Click the canvas to return keyboard focus after using other controls. Shift+Tab 
 
 The opponent is stationary and does not attack. Its health reaching zero ends the round. Walls and the two square pillars block movement. Pillars also block Pulse's line of sight. The HUD shows attack rejection feedback, range, target health, and cooldown.
 
-## Verify
+## Fast automated verification
+
+```sh
+npm test
+npm run test:watch
+cargo test -p arena-sim --locked
+```
+
+`npm test` runs the production `web/input.js` state machine through Node's built-in test runner. It needs Node 24, with no npm install, browser, server, assets, renderer, or WASM build. Tests cover keyboard filtering, repeated actions, movement, click/drag thresholds, both button orders, partial release, held keyboard movement, cancellation, lock loss/late grants/denial, and the positional Rust input contract. Rust tests validate damage, cooldowns, range, collision, line of sight, command budgets, replay order, and terminal rounds.
+
+For the complete code checks and a browser build:
 
 ```sh
 ./scripts/check.sh
 cargo clippy -p arena-client --target wasm32-unknown-unknown --locked -- -D warnings
+./scripts/build-web.sh
+```
+
+CI runs native/JavaScript tests and WASM compilation on PRs and pushes to `main`; superseded runs for the same PR are cancelled. The required `browser` job keeps its existing name but only performs WASM Clippy, builds the client, and uploads `browser-build`. It does not install or launch a browser. Run it manually with `gh workflow run ci.yml --ref YOUR_BRANCH` when needed before opening a PR. See [ADR 0004](decisions/0004-unit-first-validation.md).
+
+## Manual E2E acceptance
+
+E2E testing is a human review step, not an automated development or CI gate. Build, run `npm run serve`, and review these scenarios in the intended browser:
+
+1. **Startup and assets:** a clean clone loads the procedural player with no missing model requests. If the optional character is installed, verify its appearance and movement. An unavailable configured model should retain a playable fallback and show a notice.
+2. **Combat loop:** WASD approaches the target; Tab and an ordinary click select it; 1 reports no target/out of range/recharge correctly, deals four hits to finish, and R or Reset starts a fresh round.
+3. **Mouse modes:** left drag changes only the view; right drag turns without walking; both buttons walk and steer in either press order. Releasing either button stops mouse walking and retains the remaining look/turn mode. Releasing both restores the cursor. Drags/chords must not select a target.
+4. **Cancellation and focus:** held keyboard movement survives ordinary mouse release; loss of capture, canvas/window focus, or tab visibility clears held input. Shift+Tab leaves the canvas and browser shortcuts work. Wheel zoom remains usable.
+5. **Presentation and errors:** inspect the HUD, arena, target indicator, model, and camera at desktop dimensions; check the console. `?debug=1` exposes read-only diagnostics, while `/` does not expose `arenaDebug`. Loading failures must remain visible.
+
+Record browser/device, scenarios, console errors, and actual review status in the PR. Unit tests and a successful build do not establish DOM wiring, pointer-lock permissions, GPU rendering, ray picking, or browser compatibility. Rendering/input integration review remains pending until a person performs it.
+
+## Optional Playwright diagnostics
+
+The existing suite is retained for a person to invoke explicitly when useful; agents and CI should not run it automatically:
+
+```sh
 npm ci
 npx playwright install --with-deps chromium
-./scripts/build-web.sh
 npm run test:browser
 ```
 
-The Rust check script type-checks the client natively, tests headless rules, and checks browser-shell syntax. WASM Clippy checks its target-specific bridge. The functional browser suite uses an 800×600 viewport at normal pixel density to reduce software-GPU work. This is not a hardware performance acceptance benchmark. Set `ARENA_TEST_VIEWPORT=1024x768` for the previous viewport and timing comparisons. General control tests use the procedural character even when a local model is installed; dedicated character tests cover the optional model separately. Browser tests verify actual inputs, ray selection, cooldown rejection, win/reset, camera/zoom, both mouse-button press orders, partial release, held keyboard movement, pointer-lock cancellation, focus loss, opt-in diagnostics, and visible loading failures. Chromium locked mouse input uses a persistent trusted CDP input session directly to avoid Playwright’s high-level drag interception stalls; Firefox uses Playwright mouse input. Neither path injects game state or synthetic DOM mouse events. Screenshots on failure, graphics metrics, and a JSON report with per-test durations are written to ignored `test-results/`. CI uploads these as `browser-evidence`. Keep one browser worker: concurrent software-rendered games compete for CPU. Set `ARENA_TRACE=1` to retain failure traces when needed; continuous trace screencasting can severely slow pointer-lock tests on software GPUs. Playwright starts the local static server automatically; an existing server on port 8000 must serve this project's web directory.
+This command builds on an existing web build and starts its own static server. The default interaction viewport is 800×600 at normal density; the diagnostic scenario retains 1024×768. Use `ARENA_TEST_VIEWPORT=1024x768` for all scenarios at desktop dimensions. General control scenarios force the procedural character; character scenarios cover the optional asset separately. Artifacts and per-test timings stay in ignored `test-results/` and are not uploaded by CI. Keep one worker and tracing off for software-GPU diagnostics; use `ARENA_TRACE=1` only when a trace is useful. These runs are not hardware performance benchmarks.
 
-On Linux the Playwright browser needs system libraries; `install --with-deps` may require administrative access. Do not assume a successful download means the runtime libraries are present. On the development host, Chromium was run with locally extracted runtime libraries supplied through LD_LIBRARY_PATH; see the results report. This host workaround is not required on machines with Playwright's documented system dependencies installed.
+On Linux, Playwright may require system libraries and sudo for `--with-deps`. Browser installation is optional for the normal unit-test loop. To opt into Firefox diagnostics, install its browser/runtime dependencies, then use `ARENA_TEST_FIREFOX=1 npm run test:browser -- --project=firefox`.
 
 ## Inspect and measure
 
@@ -52,28 +83,12 @@ The JavaScript shell-to-engine adapter exists to support this practice scene. No
 
 For an incremental build timing, change a small client detail and rerun the build script; it prints wall time and module size. Record the profile, machine, dependency cache, and what changed. Fresh dependency compilation, warmed no-change builds and real incremental edits are different measurements. Shipping bindings strip WASM debug names; use `ARENA_DEBUG_SYMBOLS=1 ./scripts/build-web.sh` to retain them for readable crash stacks at the cost of download size.
 
-To attempt the optional Firefox checks with its installed runtime dependencies: `ARENA_TEST_FIREFOX=1 npm run test:browser -- --project=firefox`. This is optional coverage, not part of the default Chromium CI job.
-
 The mouse adapter tracks `mousedown`/`mouseup` because `pointerdown` fires only on the first button press in a chord ([MDN](https://developer.mozilla.org/en-US/docs/Web/API/Element/mousedown_event)). Cursor capture uses the [Pointer Lock API](https://developer.mozilla.org/en-US/docs/Web/API/Pointer_Lock_API); zero-button recentering events are ignored instead of being treated as drags.
 
 ## Character asset
 
 Bevy's glTF loader and PNG support load the optional local player model. The build generates an availability manifest, and the browser loads the model only when present. Loading waits for the character scene; failure retains the capsule with a visible notice. The model follows movement, facing and reset but has no embedded skeleton or animations. Use `window.arenaDebug.state.character` with `?debug=1` to inspect status and spawned mesh count. Source geometry/textures are preserved, and the downloadable GLB remains outside public Git history under its separate license.
 
-## Browser test timing
+## Historical browser test timing
 
-Run the same built client sequentially at each viewport to compare rendering cost:
-
-```sh
-ARENA_TEST_VIEWPORT=1024x768 npm run test:browser
-# Copy test-results/results.json and metrics.json before the next run replaces them.
-ARENA_TEST_VIEWPORT=800x600 npm run test:browser
-```
-
-Keep the machine, browser version, build, and optional character availability the same. The JSON report records suite and individual test durations; `metrics.json` records frame intervals and renderer details. Browser timings exclude compilation and browser installation. The diagnostic scenario always uses 1024×768, including during smaller-viewport runs, so desktop screenshot and frame-metric coverage remains. Keep traces off for timing runs. See the [runtime investigation](research/browser-test-runtime.md) for measured results and rejected approaches.
-
-CI runs on pull requests and pushes to `main`, with older runs for the same PR cancelled. Feature branch pushes without a PR do not run CI automatically. For a manual run, choose the branch and viewport in the CI workflow's Run workflow form, or use:
-
-```sh
-gh workflow run ci.yml --ref YOUR_BRANCH -f browser_viewport=800x600
-```
+The previous E2E runtime investigation and rejected optimization experiments are recorded in [browser-test-runtime.md](research/browser-test-runtime.md). Those rendered timings predate the unit-first policy and do not describe the current CI gates.
