@@ -141,7 +141,7 @@ test('right clicks, middle buttons, and idle releases cannot select a target', (
   input.mouseUp({ button: 1, buttons: 2 });
   assert.equal(input.dragging, true);
   input.mouseUp({ button: 2, buttons: 0 });
-  assert.deepEqual(sample(input), { ...idle, steer: 1 });
+  assert.deepEqual(sample(input), idle);
 });
 
 test('zero-button recentering and unrelated motion do not change look intent', () => {
@@ -150,7 +150,7 @@ test('zero-button recentering and unrelated motion do not change look intent', (
   down(input, 0, 1);
   move(input, 0, 2000, 2000);
   move(input, 2, 2000, 2000);
-  assert.deepEqual(sample(input), { ...idle, freeLook: 1 });
+  assert.deepEqual(sample(input), idle);
 });
 
 test('a short drag drained after release retains its last steering intent for one sample', () => {

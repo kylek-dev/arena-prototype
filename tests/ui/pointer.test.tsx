@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { initial } from "../../web/src/domain/preferences/schema";
 import { preferences, persistence, updateConfig } from "../../web/src/state/config";
 import { draggingSpell, engine, error, interaction } from "../../web/src/state/session";
@@ -61,6 +61,55 @@ function unlock() {
 function walk() {
   window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW", bubbles: true }));
 }
+
+function move(buttons: number, movementX: number) {
+  const event = new MouseEvent("mousemove", { buttons });
+  Object.defineProperties(event, {
+    movementX: { value: movementX },
+    movementY: { value: 0 },
+  });
+  document.dispatchEvent(event);
+}
+
+it.each([0, 2])("button %i clicks never capture the cursor or activate look modes", (button) => {
+  canvas.requestPointerLock = vi.fn().mockResolvedValue(undefined);
+  const buttons = button === 0 ? 1 : 2;
+  canvas.dispatchEvent(new MouseEvent("mousedown", { button, buttons, clientX: 25, clientY: 40 }));
+  move(buttons, 2);
+  expect(router.sample().slice(11, 13)).toEqual([0, 0]);
+  expect(canvas.style.cursor).toBe("");
+  document.dispatchEvent(new MouseEvent("mouseup", { button, buttons: 0 }));
+  expect(canvas.requestPointerLock).not.toHaveBeenCalled();
+  const sample = router.sample();
+  expect(sample.slice(9, 11)).toEqual(button === 0 ? [25, 40] : [-1, -1]);
+  expect(sample.slice(11, 13)).toEqual([0, 0]);
+});
+
+it.each([0, 2])("button %i captures only once after crossing the drag threshold", (button) => {
+  canvas.requestPointerLock = vi.fn().mockResolvedValue(undefined);
+  const buttons = button === 0 ? 1 : 2;
+  canvas.dispatchEvent(new MouseEvent("mousedown", { button, buttons }));
+  move(buttons, 2);
+  expect(canvas.requestPointerLock).not.toHaveBeenCalled();
+  move(buttons, 2);
+  move(buttons, 10);
+  expect(canvas.requestPointerLock).toHaveBeenCalledTimes(1);
+  expect(canvas.style.cursor).toBe("none");
+  expect(router.sample().slice(11, 13)).toEqual(button === 0 ? [0, 1] : [1, 0]);
+  document.dispatchEvent(new MouseEvent("mouseup", { button, buttons: 0 }));
+  expect(canvas.style.cursor).toBe("");
+  expect(router.sample().slice(9, 11)).toEqual([-1, -1]);
+  move(0, 10);
+  expect(canvas.requestPointerLock).toHaveBeenCalledTimes(1);
+});
+
+it("a stationary two-button chord still captures immediately to walk and steer", () => {
+  canvas.requestPointerLock = vi.fn().mockResolvedValue(undefined);
+  canvas.dispatchEvent(new MouseEvent("mousedown", { button: 0, buttons: 1 }));
+  canvas.dispatchEvent(new MouseEvent("mousedown", { button: 2, buttons: 3 }));
+  expect(canvas.requestPointerLock).toHaveBeenCalledTimes(1);
+  expect(router.sample()[1]).toBe(-1);
+});
 
 it("ordinary mouse release and unlock preserve held keyboard movement", () => {
   walk();
