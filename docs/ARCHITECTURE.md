@@ -6,6 +6,8 @@
 
 The browser spike adds `arena_sim::arena`: planar movement with integer coordinates, normalized movement limits, wall/pillar collision, range and line-of-sight checks, cooldowns and round completion. `arena-client` presents these rules in a Bevy 3D scene with camera-relative movement and a plain HTML HUD. Browser input is sampled before fixed updates; positions interpolate for rendering. See [ADR 0002](decisions/0002-browser-spike.md).
 
+The optional glTF character is a presentation child of the existing player entity, normalized to the arena scale. A generated asset manifest lets clean clones use the procedural fallback without fetching a missing/private download. Loading state is exposed through the existing debug snapshot; collision and game rules do not depend on model geometry. See [asset provenance](../assets/characters/README.md).
+
 Durable replay files, interrupts, teams, networking and server validation are not implemented. The public simulation API is provisional.
 
 ## Intended boundaries

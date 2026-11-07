@@ -93,6 +93,8 @@ npm run test:browser
 
 Playwright's Linux system dependency installation can request sudo. It does not mean a separate game engine needs installation. The first Rust build compiles dependencies and takes longer than subsequent work; generated output stays outside version control.
 
+The optional PixelLabs reference character has a separate download and license; see [character setup](../assets/characters/README.md). It is not required to build or test a clean clone.
+
 ## Run and iterate
 
 ```sh

@@ -6,7 +6,7 @@ Date: 2026-10-31. **Status: accepted for the spike only.** ADR 0001's full produ
 
 Use Bevy **0.19.0** with its exact top-level dependency and committed Cargo.lock (which resolves compatible engine components to 0.19.1). This is a deliberate experiment on a documented release, not a claim that 0.19 is the newest engine. Pin wasm-bindgen crate and CLI to **0.2.122**, js-sys to **0.3.99**, Playwright to **1.61.1**, and Rust to **1.99.1**. Review upgrades deliberately rather than mixing tutorials across engine versions.
 
-Use **WebGL2** for this simple arena. Unlike Wenilla's world renderer, these primitives do not require WebGPU storage-buffer features. This makes broad browser support a reasonable goal, but each browser/GPU still needs observed validation. No custom shaders, physics plugins, Lua, external assets, or engine editor are needed.
+Use **WebGL2** for this simple arena. Unlike Wenilla's world renderer, these primitives do not require WebGPU storage-buffer features. This makes broad browser support a reasonable goal, but each browser/GPU still needs observed validation. No custom shaders, physics plugins, Lua, or engine editor are needed. An optional user-supplied stock GLB is supported locally through Bevy glTF/PNG features; the public build retains procedural fallback visuals. Its separate license/provenance is recorded under assets/characters.
 
 Keep the HUD in plain HTML/CSS. The browser handles input focus, readable text, accessible buttons, error presentation, and diagnostics. Bevy handles the canvas, camera, meshes, materials, and interpolation. A narrow JS/WASM adapter transfers input and structured state; gameplay rules do not depend on the browser. This avoids a UI-framework dependency for one practice screen.
 

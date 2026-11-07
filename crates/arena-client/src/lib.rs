@@ -1,8 +1,10 @@
 //! Bevy presentation adapter for the shared arena rules. DOM integration is
 //! isolated in `platform`; rules remain usable in native headless tests.
+mod character;
+
 use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::{ATTACK_RANGE, Arena, ArenaCommand, ArenaEvent, PILLARS, Position};
-use bevy::{core_pipeline::tonemapping::Tonemapping, prelude::*};
+use bevy::{asset::AssetMetaCheck, core_pipeline::tonemapping::Tonemapping, prelude::*};
 
 #[derive(Resource)]
 struct Practice {
@@ -66,20 +68,28 @@ pub fn run() {
         .insert_resource(Time::<Fixed>::from_hz(TICKS_PER_SECOND as f64))
         .init_resource::<Practice>()
         .init_resource::<Orbit>()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Arena Prototype".into(),
-                canvas: Some("#arena".into()),
-                fit_canvas_to_parent: true,
-                prevent_default_event_handling: false,
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(AssetPlugin {
+                    // These static GLBs use default loader settings, with no .meta sidecars.
+                    meta_check: AssetMetaCheck::Never,
+                    ..default()
+                })
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Arena Prototype".into(),
+                        canvas: Some("#arena".into()),
+                        fit_canvas_to_parent: true,
+                        prevent_default_event_handling: false,
+                        ..default()
+                    }),
+                    ..default()
+                }),
+        )
         .add_systems(Startup, setup)
         .add_systems(PreUpdate, read_controls)
         .add_systems(FixedUpdate, simulate)
-        .add_systems(Update, (present, publish).chain())
+        .add_systems(Update, (character::check_loading, present, publish).chain())
         .run();
 }
 fn world(position: Position) -> Vec3 {
@@ -96,7 +106,11 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
 ) {
+    let player_scene = platform::has_character_model()
+        .then(|| asset_server.load(GltfAssetLabel::Scene(0).from_asset(character::MODEL_PATH)));
+    commands.insert_resource(character::CharacterModel::new(player_scene.clone()));
     let stone = material(&mut materials, Color::srgb(0.28, 0.34, 0.38));
     let edge = material(&mut materials, Color::srgb(0.13, 0.19, 0.23));
     let dark = material(&mut materials, Color::srgb(0.06, 0.10, 0.14));
@@ -194,26 +208,44 @@ fn setup(
                     Transform::from_xyz(0.0, 0.015, 0.0)
                         .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
                 ));
-                parent.spawn((
-                    Mesh3d(body.clone()),
-                    MeshMaterial3d(accent.clone()),
-                    Transform::from_xyz(0.0, 0.95, 0.0),
-                ));
-                parent.spawn((
-                    Mesh3d(head.clone()),
-                    MeshMaterial3d(line.clone()),
-                    Transform::from_xyz(0.0, 1.7, 0.0),
-                ));
-                parent.spawn((
-                    Mesh3d(cube.clone()),
-                    MeshMaterial3d(dark.clone()),
-                    Transform::from_xyz(0.0, 1.35, -0.32).with_scale(Vec3::new(0.5, 0.13, 0.2)),
-                ));
-                parent.spawn((
-                    Mesh3d(cube.clone()),
-                    MeshMaterial3d(accent.clone()),
-                    Transform::from_xyz(0.0, 0.10, -0.55).with_scale(Vec3::new(0.16, 0.04, 0.4)),
-                ));
+                // Keep the capsule as a loading/error fallback. The model is
+                // parented to FighterVisual so movement, facing and reset apply.
+                for (mesh, material, transform) in [
+                    (
+                        body.clone(),
+                        accent.clone(),
+                        Transform::from_xyz(0.0, 0.95, 0.0),
+                    ),
+                    (
+                        head.clone(),
+                        line.clone(),
+                        Transform::from_xyz(0.0, 1.7, 0.0),
+                    ),
+                    (
+                        cube.clone(),
+                        dark.clone(),
+                        Transform::from_xyz(0.0, 1.35, -0.32).with_scale(Vec3::new(0.5, 0.13, 0.2)),
+                    ),
+                    (
+                        cube.clone(),
+                        accent.clone(),
+                        Transform::from_xyz(0.0, 0.10, -0.55)
+                            .with_scale(Vec3::new(0.16, 0.04, 0.4)),
+                    ),
+                ] {
+                    let mut visual =
+                        parent.spawn((Mesh3d(mesh), MeshMaterial3d(material), transform));
+                    if index == 0 {
+                        visual.insert(character::CharacterFallback);
+                    }
+                }
+                if let Some(scene) = &player_scene
+                    && index == 0
+                {
+                    parent
+                        .spawn((WorldAssetRoot(scene.clone()), character::model_transform()))
+                        .observe(character::on_ready);
+                }
             });
     }
     commands.spawn((
@@ -426,6 +458,7 @@ fn present(
 fn publish(
     practice: Res<Practice>,
     orbit: Res<Orbit>,
+    character: Res<character::CharacterModel>,
     cameras: Query<(&Camera, &GlobalTransform)>,
 ) {
     let fighters = practice.arena.fighters();
@@ -451,7 +484,7 @@ fn publish(
         })
         .unwrap_or(Vec2::splat(-1.0));
     platform::publish(&format!(
-        r#"{{"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}}}}"#,
+        r#"{{"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":false}}}}"#,
         practice.arena.tick(),
         practice.frames,
         player.position.x,
@@ -472,7 +505,9 @@ fn publish(
         practice.arena.winner().is_some(),
         orbit.yaw,
         orbit.pitch,
-        orbit.distance
+        orbit.distance,
+        character.status(),
+        character.meshes
     ));
 }
 
@@ -497,11 +532,15 @@ mod platform {
     use bevy::prelude::Vec2;
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen(
-        inline_js = "export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); }"
+        inline_js = "export function arena_has_character() { return globalThis.arenaShell.hasCharacterModel === true; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); }"
     )]
     extern "C" {
+        fn arena_has_character() -> bool;
         fn arena_input() -> js_sys::Array;
         fn arena_state(json: &str);
+    }
+    pub fn has_character_model() -> bool {
+        arena_has_character()
     }
     pub fn read_input() -> Input {
         let a = arena_input();
@@ -531,6 +570,9 @@ mod platform {
 }
 #[cfg(not(target_arch = "wasm32"))]
 mod platform {
+    pub fn has_character_model() -> bool {
+        false
+    }
     pub fn read_input() -> super::Input {
         super::Input::default()
     }

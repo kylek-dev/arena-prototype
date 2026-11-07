@@ -42,4 +42,4 @@ Open http://127.0.0.1:8000. WASD moves; left-drag looks; right-drag turns; both 
 
 ## License
 
-Original code and documentation are MIT licensed; see [LICENSE](LICENSE). No third-party game code or assets are bundled. Future asset contributions require explicit provenance and licensing in [assets/README.md](assets/README.md). The project name is provisional and does not establish a final brand.
+Original code and documentation are MIT licensed; see [LICENSE](LICENSE). The optional downloaded character has separate terms and is excluded from public Git history; see [asset provenance](assets/README.md). The build uses a procedural fallback when that local download is absent. Asset contributions require explicit provenance and licensing. The project name is provisional and does not establish a final brand.
