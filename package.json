@@ -3,10 +3,36 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test tests/unit/*.test.mjs",
-    "test:watch": "node --test --watch tests/unit/*.test.mjs",
+    "test": "node --test tests/unit/*.test.mjs && vitest run",
+    "test:input": "node --test tests/unit/*.test.mjs",
+    "test:watch": "node scripts/watch-tests.mjs",
+    "test:input:watch": "node --test --watch tests/unit/*.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome lint web/src tests/domain tests/ui",
+    "format": "biome format --write web/src tests/domain tests/ui *.json *.ts",
+    "format:check": "biome format web/src tests/domain tests/ui *.json *.ts",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
     "test:browser": "playwright test",
-    "serve": "python3 -m http.server 8000 --directory web --bind 127.0.0.1"
+    "serve": "vite preview --host 127.0.0.1 --port 8000"
   },
-  "devDependencies": { "@playwright/test": "1.64.1" }
+  "devDependencies": {
+    "@biomejs/biome": "2.3.4",
+    "@playwright/test": "1.64.1",
+    "@testing-library/react": "16.3.0",
+    "@testing-library/user-event": "14.6.1",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "jsdom": "27.2.0",
+    "typescript": "5.9.3",
+    "vite": "7.3.7",
+    "vitest": "4.1.12"
+  },
+  "dependencies": {
+    "@radix-ui/react-dialog": "1.1.15",
+    "@radix-ui/react-tooltip": "1.2.8",
+    "@radix-ui/themes": "3.3.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  }
 }

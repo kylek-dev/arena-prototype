@@ -23,11 +23,11 @@ test('move, target, attack, finish and reset through real browser controls', asy
   const errors = await ready(page);
   expect((await state(page)).selected).toBe(false);
   await page.keyboard.press('1');
-  await expect(page.locator('#feedback')).toHaveText('Select a target first');
+  await expect(page.locator('#attack-status')).toHaveText('Select a target');
   await page.keyboard.press('Tab');
   await expect.poll(async () => (await state(page)).selected).toBe(true);
   await page.keyboard.press('1');
-  await expect(page.locator('#feedback')).toHaveText('Out of range · move closer');
+  await expect(page.locator('#attack-status')).toHaveText('Out of range');
   expect((await state(page)).target.health).toBe(100);
   await page.keyboard.down('w');
   try {
@@ -38,7 +38,7 @@ test('move, target, attack, finish and reset through real browser controls', asy
   const approached = await state(page);
   expect(approached.player.z).toBeLessThan(2500);
   expect(approached.distance).toBeLessThan(6);
-  await page.keyboard.press('Escape');
+  await page.keyboard.press('Shift+Escape');
   await expect.poll(async () => (await state(page)).selected).toBe(false);
   const target = (await state(page)).target;
   await page.mouse.click(target.screenX, target.screenY);
@@ -46,7 +46,7 @@ test('move, target, attack, finish and reset through real browser controls', asy
   await page.keyboard.press('1');
   await expect.poll(async () => (await state(page)).target.health).toBe(75);
   await page.keyboard.press('1');
-  await expect(page.locator('#feedback')).toHaveText('Pulse is recharging');
+  await expect(page.locator('#attack-status')).toContainText('Recharging');
   expect((await state(page)).target.health).toBe(75);
   for (const health of [50, 25, 0]) {
     await expect.poll(async () => (await state(page)).cooldown).toBe(0);
@@ -54,9 +54,9 @@ test('move, target, attack, finish and reset through real browser controls', asy
     await expect.poll(async () => (await state(page)).target.health).toBe(health);
   }
   expect((await state(page)).won).toBe(true);
-  await expect(page.locator('#round-title')).toHaveText('Round complete · R to reset');
+  await expect(page.locator('#round-title')).toHaveText('Round complete');
   await page.screenshot({ path: info.outputPath('round-complete.png') });
-  await page.getByRole('button', { name: 'Reset R', exact: true }).click();
+  await page.getByRole('button', { name: 'Reset practice', exact: true }).click();
   await expect.poll(async () => (await state(page)).target.health).toBe(100);
   expect((await state(page)).player.z).toBe(5500);
   expect((await state(page)).won).toBe(false);
@@ -64,7 +64,7 @@ test('move, target, attack, finish and reset through real browser controls', asy
   expect(errors).toEqual([]);
 });
 
-test('camera orbit, zoom, focus loss and frame diagnostics', async ({ page, browser }, info) => {
+test('camera orbit, zoom, menu input suspension and frame diagnostics', async ({ page, browser }, info) => {
   // Retain desktop-sized rendering evidence while other input checks use the
   // smaller viewport selected in the test configuration.
   await page.setViewportSize({ width: 1024, height: 768 });
@@ -86,7 +86,9 @@ test('camera orbit, zoom, focus loss and frame diagnostics', async ({ page, brow
     const player = (await state(page)).player;
     return Math.hypot(player.x - walkingFrom.x, player.z - walkingFrom.z);
   }).toBeGreaterThan(100);
-  await page.getByRole('button', { name: 'Diagnostics' }).click();
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Toggle diagnostics' }).click();
+  await page.getByRole('button', { name: 'Resume', exact: true }).click();
   const focusFrame = (await state(page)).frames;
   await expect.poll(async () => (await state(page)).frames).toBeGreaterThan(focusFrame + 1);
   const stopped = (await state(page)).player;
