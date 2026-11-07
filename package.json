@@ -3,6 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "test": "node --test tests/unit/*.test.mjs",
+    "test:watch": "node --test --watch tests/unit/*.test.mjs",
     "test:browser": "playwright test",
     "serve": "python3 -m http.server 8000 --directory web --bind 127.0.0.1"
   },
