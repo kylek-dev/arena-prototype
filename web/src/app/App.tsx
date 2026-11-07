@@ -1,4 +1,4 @@
-import * as Tooltip from "@radix-ui/react-tooltip";
+import { TooltipProvider } from "../ui/Tooltip";
 import { Theme } from "@radix-ui/themes";
 import { Frames } from "../features/unit-frames/Frames";
 import { ActionBars } from "../features/action-bars/ActionBars";
@@ -39,7 +39,7 @@ export function App() {
       radius="medium"
       panelBackground="solid"
     >
-      <Tooltip.Provider delayDuration={300}>
+      <TooltipProvider disabled={dragging || mode.quick || mode.layout || !!mode.capture}>
         <button id="menu-access" className="menu-access" onClick={() => setPanel("menu")}>
           Open game menu
         </button>
@@ -87,7 +87,7 @@ export function App() {
           </Modal>
         )}
         <BindingConflict />
-      </Tooltip.Provider>
+      </TooltipProvider>
     </Theme>
   );
 }

@@ -1,0 +1,63 @@
+.tooltip {
+  z-index: 50;
+  box-sizing: border-box;
+  max-width: min(320px, calc(100vw - 24px));
+  max-height: var(--radix-tooltip-content-available-height);
+  overflow: auto;
+  overflow-wrap: anywhere;
+  background: var(--gray-3);
+  color: var(--gray-12);
+  border: 1px solid var(--gray-7);
+  border-radius: var(--radius-3);
+  box-shadow: var(--shadow-4);
+  padding: 14px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.tooltip-arrow {
+  fill: var(--gray-7);
+}
+.tooltip-card {
+  display: grid;
+  gap: 10px;
+}
+.tooltip-card p,
+.tooltip-facts {
+  margin: 0;
+}
+.tooltip-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+.tooltip-heading strong {
+  font-size: 15px;
+}
+.tooltip-shortcut,
+.tooltip-footer,
+.tooltip-facts dt {
+  color: var(--gray-11);
+}
+.tooltip-shortcut {
+  font-size: 11px;
+  text-align: right;
+}
+.tooltip-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  padding-block: 10px;
+  border-block: 1px solid var(--gray-6);
+}
+.tooltip-facts dd {
+  margin: 2px 0 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.tooltip-status {
+  font-weight: 500;
+}
+.tooltip-footer {
+  font-size: 11px;
+}

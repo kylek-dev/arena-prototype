@@ -5,7 +5,8 @@ import { useConfigSelector } from "../../state/config";
 import { engine, heldSlots, interaction, spellDragPreview } from "../../state/session";
 import { useStore } from "../../state/store";
 import { activateSlot } from "../../runtime/commands";
-import { Hint } from "../../ui/Tooltip";
+import { Hint, TooltipCard } from "../../ui/Tooltip";
+import { SpellDetails } from "../abilities/SpellDetails";
 import { beginSpellPress } from "../../runtime/spell-drag";
 import { useRef } from "react";
 import { Cooldown } from "./Cooldown";
@@ -32,22 +33,24 @@ export function ActionSlot({ slot, number }: { slot: Slot; number: number }) {
   return (
     <Hint
       text={
-        <>
-          <strong>{slot.ability ? "Pulse" : "Empty slot"}</strong>
-          <p>{pair?.map(label).join(" / ")}</p>
-          <p>{slot.ability ? status : "Place a spell from the spellbook."}</p>
-          {state && slot.ability && (
-            <p>
-              {state.pulse.damage} damage · {state.pulse.range} m · {state.pulse.cooldown} s
-              recharge. Requires target and clear line of sight.
-            </p>
-          )}
-          <p>
-            {locked
-              ? "Assignments locked"
-              : "Drag to move/swap; Shift-drag copies. Drop a slotted spell on the arena to remove it."}
-          </p>
-        </>
+        slot.ability ? (
+          <SpellDetails
+            state={state}
+            shortcut={pair?.filter(Boolean).map(label).join(" / ") || "Unbound"}
+            instruction={
+              locked
+                ? "Assignments locked. Unlock in Settings → Action bars."
+                : "Drag to move or swap · Shift-drag to copy. Drop on the arena to remove."
+            }
+          />
+        ) : (
+          <TooltipCard
+            title="Empty slot"
+            shortcut={pair?.filter(Boolean).map(label).join(" / ") || "Unbound"}
+            description="Place a spell from the spellbook."
+            footer={locked ? "Assignments locked. Unlock in Settings → Action bars." : undefined}
+          />
+        )
       }
     >
       <button
