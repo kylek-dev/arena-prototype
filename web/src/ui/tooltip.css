@@ -17,6 +17,15 @@
 .tooltip-arrow {
   fill: var(--gray-7);
 }
+.unit-tooltip {
+  width: 280px;
+}
+.placed:has(.unit-tooltip-live) {
+  pointer-events: none;
+}
+.unit-tooltip .tooltip-facts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
 .tooltip-card {
   display: grid;
   gap: 10px;

@@ -6,6 +6,7 @@ export type Snapshot = {
   target: Entity & { x: number; z: number };
   selected: boolean;
   selectedPlayer?: boolean;
+  hoveredUnit?: "Player" | "Opponent1" | null;
   distance: number;
   range: number;
   cooldown: number;
@@ -21,6 +22,7 @@ export function needsImmediateDelivery(previous: Snapshot | null, next: Snapshot
   return (
     !previous ||
     next.tick < previous.tick ||
+    next.hoveredUnit !== previous.hoveredUnit ||
     next.cooldown > previous.cooldown ||
     (next.cooldown === 0) !== (previous.cooldown === 0)
   );
@@ -59,6 +61,10 @@ export function adaptSnapshot(raw: unknown): Snapshot {
   if (
     typeof r.selected !== "boolean" ||
     (r.selectedPlayer !== undefined && typeof r.selectedPlayer !== "boolean") ||
+    (r.hoveredUnit !== undefined &&
+      r.hoveredUnit !== null &&
+      r.hoveredUnit !== "Player" &&
+      r.hoveredUnit !== "Opponent1") ||
     typeof r.won !== "boolean" ||
     typeof r.feedback !== "string" ||
     typeof r.attackStatus !== "string"
@@ -86,6 +92,8 @@ declare global {
     arenaShell: {
       hasCharacterModel?: boolean;
       readInput: () => number[];
+      readHover?: () => number[];
+      readGraphics?: () => number[];
       onState: (state: unknown) => void;
     };
     arenaDebug?: { readonly state: Snapshot | null; readonly metrics: unknown };

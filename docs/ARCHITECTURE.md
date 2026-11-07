@@ -22,7 +22,11 @@ The optional glTF character is a presentation child of the existing player entit
 
 Durable replay files, interrupts, teams, networking and server validation are not implemented. The public simulation API is provisional.
 
+[ADR 0011](decisions/0011-unit-tooltips.md) adds a shared anchored unit tooltip for frame and world hover. A separate optional `readHover` shell callback supplies canvas coordinates; Rust presentation picking publishes a read-only `hoveredUnit` tag without changing the command ABI or simulation. The tooltip reuses `TooltipCard` and `Placed`, with a persisted bottom-right default and editable layout preview.
+
 ## Intended boundaries
+
+[ADR 0012](decisions/0012-graphics-quality.md) adds device-local Off/4× MSAA and Low/High procedural detail through a separate optional graphics callback. Preferences apply only to presentation and persist independently of HUD profiles; simulation and combat input ordering are unchanged.
 
 ```mermaid
 flowchart LR

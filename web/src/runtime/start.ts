@@ -1,9 +1,11 @@
 import { adaptSnapshot, needsImmediateDelivery } from "../bridge/snapshot";
 import { loadEngine } from "../bridge/loader";
+import { readGraphics } from "../state/graphics";
 import { observeCastResult } from "./cast-feedback";
 import { engine, error, focus } from "../state/session";
 import { reconcileFocus } from "../domain/units/selection";
 import { installPointer } from "./pointer";
+import { installUnitHover } from "./unit-hover";
 import { installInput } from "./input-router";
 import { installSpellDragging } from "./spell-drag";
 import { debugEnabled, measureFrames, metrics, recordError, recordState } from "./diagnostics";
@@ -11,6 +13,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
   const pointer = installPointer(canvas, () => router.cancel());
   const router = installInput(canvas, pointer.end);
   const stopSpellDrop = installSpellDragging(canvas);
+  const unitHover = installUnitHover(canvas);
   const fail = (message: string) => {
     if (error.get()) return;
     recordError(message);
@@ -24,6 +27,8 @@ export function startRuntime(canvas: HTMLCanvasElement) {
   let lastDelivery = 0;
   window.arenaShell = {
     readInput: router.sample,
+    readHover: unitHover.read,
+    readGraphics,
     onState(raw) {
       try {
         const next = adaptSnapshot(raw),
@@ -67,5 +72,6 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     router.dispose();
     pointer.dispose();
     stopSpellDrop();
+    unitHover.dispose();
   };
 }

@@ -20,6 +20,7 @@ describe("engine snapshot boundary", () => {
     { ...snapshot(), maxHealth: 100, cooldown: NaN },
     { ...snapshot(), maxHealth: 100, character: undefined },
     { ...snapshot(), maxHealth: 100, camera: undefined },
+    { ...snapshot(), maxHealth: 100, hoveredUnit: "Team1" },
   ])("rejects incomplete engine data: %j", (raw) => {
     expect(() => adaptSnapshot(raw)).toThrow();
   });
