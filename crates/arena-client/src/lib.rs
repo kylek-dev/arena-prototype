@@ -3,7 +3,10 @@
 mod character;
 
 use arena_sim::TICKS_PER_SECOND;
-use arena_sim::arena::{ATTACK_RANGE, Arena, ArenaCommand, ArenaEvent, PILLARS, Position};
+use arena_sim::arena::{
+    ATTACK_COOLDOWN, ATTACK_DAMAGE, ATTACK_RANGE, Arena, ArenaCommand, ArenaEvent, PILLARS,
+    Position,
+};
 use bevy::{asset::AssetMetaCheck, core_pipeline::tonemapping::Tonemapping, prelude::*};
 
 #[derive(Resource)]
@@ -481,7 +484,7 @@ fn publish(
         })
         .unwrap_or(Vec2::splat(-1.0));
     platform::publish(&format!(
-        r#"{{"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":false}}}}"#,
+        r#"{{"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":false}},"maxHealth":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}}}}"#,
         practice.arena.tick(),
         practice.frames,
         player.position.x,
@@ -504,7 +507,11 @@ fn publish(
         orbit.pitch,
         orbit.distance,
         character.status(),
-        character.meshes
+        character.meshes,
+        Arena::default().fighters()[0].health,
+        ATTACK_DAMAGE,
+        ATTACK_RANGE / 1000,
+        ATTACK_COOLDOWN as f64 / TICKS_PER_SECOND as f64
     ));
 }
 
@@ -567,6 +574,15 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pulse_presentation_metadata_matches_the_practice_rules() {
+        let arena = Arena::default();
+        let health = arena.fighters()[1].health;
+        assert_eq!(health.div_ceil(ATTACK_DAMAGE), 4);
+        assert_eq!(ATTACK_RANGE / 1000, 6);
+        assert_eq!(ATTACK_COOLDOWN as f64 / TICKS_PER_SECOND as f64, 1.0);
+    }
 
     #[test]
     fn releasing_free_look_preserves_walking_heading_and_view() {

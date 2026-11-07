@@ -1,0 +1,245 @@
+import * as Tooltip from "@radix-ui/react-tooltip";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, expect, it } from "vitest";
+import { Modal } from "../../web/src/ui/Dialog";
+import { UnitFrame } from "../../web/src/features/unit-frames/UnitFrame";
+import { ActionSlot } from "../../web/src/features/action-bars/ActionSlot";
+import { Spellbook } from "../../web/src/features/spellbook/Spellbook";
+import { BindingsEditor, BindingConflict } from "../../web/src/features/keybindings/BindingsEditor";
+import { ProfileSettings } from "../../web/src/features/settings/ProfileSettings";
+import { BarSettings } from "../../web/src/features/settings/BarSettings";
+import { Loading } from "../../web/src/features/loading/Loading";
+import { Frames } from "../../web/src/features/unit-frames/Frames";
+import { LayoutSettings, LayoutToolbar } from "../../web/src/features/layout-editor/LayoutSettings";
+import { initial } from "../../web/src/domain/preferences/schema";
+import { engine, error, focus, interaction, selectedLayout } from "../../web/src/state/session";
+import { preferences, persistence, saveMessage } from "../../web/src/state/config";
+import { acceptBinding, pendingBinding } from "../../web/src/state/binding-capture";
+import { chord } from "../../web/src/domain/bindings/model";
+import { snapshot } from "./fixtures";
+import { moveSpell, dropSpell, hitTarget } from "./drag-fixture";
+import { endDrag, installSpellDragging } from "../../web/src/runtime/spell-drag";
+
+beforeEach(() => {
+  preferences.set(initial());
+  engine.set(snapshot());
+  focus.set(null);
+  error.set("");
+  saveMessage.set("");
+  interaction.set({ panel: null, quick: false, layout: false, hovered: null, capture: null });
+  pendingBinding.set(null);
+  selectedLayout.set(null);
+});
+
+afterEach(() => {
+  cleanup();
+  endDrag();
+  clearTimeout(persistence.timer);
+});
+
+it("uses one unit frame for empty, dead, selected and focused units", () => {
+  const { rerender } = render(<UnitFrame role="target" unit={null} />);
+  expect(screen.getByText("No target")).toBeTruthy();
+  const unit = { id: "e", name: "Sentinel", health: 0, maxHealth: 100 };
+  rerender(<UnitFrame role="focus" unit={unit} selected focused />);
+  expect(screen.getByText("Defeated")).toBeTruthy();
+  expect(screen.getByText("focus · selected · focus")).toBeTruthy();
+  expect(screen.getByRole("meter").getAttribute("aria-valuenow")).toBe("0");
+});
+
+it("traps modal focus and returns it to the opener", async () => {
+  const user = userEvent.setup();
+  const opener = document.createElement("button");
+  opener.textContent = "Opener";
+  document.body.append(opener);
+  opener.focus();
+  let closed = false;
+  const { unmount } = render(
+    <Modal
+      title="Example"
+      close={() => {
+        closed = true;
+      }}
+    >
+      <button>Inside</button>
+    </Modal>,
+  );
+  expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
+  await user.tab({ shift: true });
+  expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
+  await user.keyboard("{Escape}");
+  expect(closed).toBe(true);
+  unmount();
+  await waitFor(() => expect(document.activeElement).toBe(opener));
+  opener.remove();
+});
+
+it("has an icon-only draggable spellbook with no assignment forms", () => {
+  render(
+    <Tooltip.Provider>
+      <Spellbook />
+      <ActionSlot slot={{ id: "bar-1-s2", ability: null }} number={2} />
+    </Tooltip.Provider>,
+  );
+  const spell = screen.getByRole("button", { name: "Pulse spell" });
+  expect(spell.getAttribute("data-spell-draggable")).toBe("true");
+  expect(spell.classList.contains("action-slot")).toBe(true);
+  expect(screen.queryByRole("combobox")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Place Pulse" })).toBeNull();
+  const canvas = document.createElement("canvas");
+  const stop = installSpellDragging(canvas);
+  hitTarget(screen.getByRole("button", { name: "Slot 2 empty" }));
+  fireEvent.pointerDown(spell, { pointerId: 1, button: 0, clientX: 100, clientY: 100 });
+  moveSpell();
+  dropSpell();
+  stop();
+  expect(preferences.get().profiles[0].config.bars[0].slots[1].ability).toBe("pulse");
+  expect(preferences.get().profiles[0].config.bars[0].slots[0].ability).toBe("pulse");
+});
+
+it("shows shared cooldown and visible bindings, and selects quick-bind hover/focus", () => {
+  engine.set(snapshot({ cooldown: 0.6 }));
+  interaction.set({ ...interaction.get(), quick: true });
+  render(
+    <Tooltip.Provider>
+      <ActionSlot slot={{ id: "bar-1-s1", ability: "pulse" }} number={1} />
+    </Tooltip.Provider>,
+  );
+  const slot = screen.getByRole("button", { name: "Slot 1 Pulse" });
+  expect(screen.getByText("0.6")).toBeTruthy();
+  expect(screen.getByText("1", { selector: "kbd" })).toBeTruthy();
+  fireEvent.mouseEnter(slot);
+  expect(interaction.get().hovered).toBe("bar-1-s1");
+  fireEvent.mouseLeave(slot);
+  expect(interaction.get().hovered).toBeNull();
+  fireEvent.focus(slot);
+  expect(interaction.get().hovered).toBe("bar-1-s1");
+});
+
+it("searches bindings, opens capture, clears alternate entries and cancels conflicts", async () => {
+  const user = userEvent.setup();
+  render(
+    <>
+      <BindingsEditor />
+      <BindingConflict />
+    </>,
+  );
+  await user.type(screen.getByLabelText("Search actions"), "forward");
+  expect(screen.queryByRole("button", { name: "Bind back primary" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Bind forward secondary" }));
+  expect(interaction.get().capture).toEqual({ action: "forward", entry: 1 });
+  await user.click(screen.getByRole("button", { name: "Cancel capture" }));
+  act(() => acceptBinding("back", 1, chord({ code: "KeyW" })));
+  expect(screen.getByRole("dialog")).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(preferences.get().profiles[0].config.bindings.forward[0]?.code).toBe("KeyW");
+});
+
+it("creates and switches profiles and reports invalid imports", async () => {
+  const user = userEvent.setup();
+  render(<ProfileSettings />);
+  await user.type(screen.getByLabelText("Profile name"), "Other");
+  await user.click(screen.getByRole("button", { name: "Create" }));
+  expect(preferences.get().profiles).toHaveLength(2);
+  await user.selectOptions(screen.getByLabelText("Active profile"), "default");
+  expect(preferences.get().active).toBe("default");
+  await user.type(screen.getByLabelText("Profile JSON (import / export)"), "invalid");
+  await user.click(screen.getByRole("button", { name: "Import as new profiles" }));
+  expect(screen.getByRole("status").textContent).toContain("SyntaxError");
+});
+
+it("adds and removes bounded bars and cleans stale bindings", async () => {
+  const user = userEvent.setup();
+  render(<BarSettings />);
+  await user.click(screen.getByRole("button", { name: "Add action bar" }));
+  const bar = preferences.get().profiles[0].config.bars[1];
+  expect(preferences.get().profiles[0].config.bindings[`slot:${bar.slots[0].id}`]).toEqual([
+    null,
+    null,
+  ]);
+  await user.click(screen.getAllByRole("button", { name: "Remove bar" })[1]);
+  expect(preferences.get().profiles[0].config.bindings[`slot:${bar.slots[0].id}`]).toBeUndefined();
+});
+
+it("renders actionable startup errors and a failed-character fallback notice", () => {
+  error.set("Missing WASM");
+  const { rerender } = render(<Loading />);
+  expect(screen.getByRole("alert").textContent).toContain("Missing WASM");
+  expect(screen.getByRole("button", { name: "Reload arena" })).toBeTruthy();
+  act(() => {
+    error.set("");
+    engine.set(snapshot({ character: { status: "failed" } }));
+  });
+  rerender(<Loading />);
+  expect(screen.getByRole("status").textContent).toContain("procedural fallback");
+});
+
+it("focus frame follows live health independently of actual target selection", async () => {
+  const user = userEvent.setup();
+  render(<Frames />);
+  await user.click(screen.getByRole("button", { name: "Set focus" }));
+  expect(focus.get()).toBe("practice-opponent");
+  act(() =>
+    engine.set(snapshot({ selected: false, target: { ...snapshot().target, health: 50 } })),
+  );
+  expect(screen.queryByRole("region", { name: "target status" })).toBeNull();
+  expect(screen.getByText("50 / 100")).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Clear focus" }));
+  expect(screen.queryByRole("region", { name: "focus status" })).toBeNull();
+});
+
+it("edits visibility and scale, previews hidden frames and resets selected layout", async () => {
+  const user = userEvent.setup();
+  render(
+    <>
+      <LayoutSettings />
+      <Frames />
+    </>,
+  );
+  await user.click(screen.getByRole("button", { name: "Edit on canvas" }));
+  await user.click(screen.getByRole("button", { name: "Edit player" }));
+  expect(selectedLayout.get()).toBe("player");
+  expect(screen.queryByRole("combobox")).toBeNull();
+  expect(screen.queryByLabelText("X anchor offset")).toBeNull();
+  await user.click(screen.getByLabelText("Visible"));
+  expect(preferences.get().profiles[0].config.frames.player.visible).toBe(false);
+  fireEvent.change(screen.getByLabelText(/Scale/), { target: { value: "1.5" } });
+  expect(preferences.get().profiles[0].config.frames.player.scale).toBe(1.5);
+  await user.click(screen.getByRole("button", { name: "Reset selected" }));
+  expect(preferences.get().profiles[0].config.frames.player.scale).toBe(1);
+  expect(preferences.get().profiles[0].config.frames.player.visible).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Done" }));
+  expect(interaction.get().layout).toBe(false);
+});
+
+it("shows sample frames without selection/focus and drags the whole selected frame", () => {
+  engine.set(snapshot({ selected: false }));
+  interaction.set({ ...interaction.get(), layout: true });
+  render(<Frames />);
+  expect(screen.getAllByText("Layout sample")).toHaveLength(3);
+  const frame = screen.getByRole("button", { name: "Edit target" });
+  const before = preferences.get().profiles[0].config.frames.target;
+  fireEvent.pointerDown(frame, { button: 0, clientX: 600, clientY: 120, pointerId: 1 });
+  expect(selectedLayout.get()).toBe("target");
+  fireEvent.pointerMove(frame, { clientX: 400, clientY: 220, pointerId: 1 });
+  expect(preferences.get().profiles[0].config.frames.target).toBe(before);
+  fireEvent.pointerUp(frame, { pointerId: 1 });
+  expect(preferences.get().profiles[0].config.frames.target.x).toBeLessThan(before.x);
+  expect(preferences.get().profiles[0].config.frames.target.y).toBeGreaterThan(before.y);
+  expect(screen.queryByRole("button", { name: "Move target" })).toBeNull();
+});
+
+it("moves the layout editor window by its title without changing a frame layout", () => {
+  interaction.set({ ...interaction.get(), layout: true });
+  render(<LayoutToolbar />);
+  const window = screen.getByRole("complementary", { name: "Layout editor" });
+  const title = screen.getByRole("button", { name: "Move Layout editor" });
+  const before = window.style.left;
+  const frames = preferences.get().profiles[0].config.frames;
+  fireEvent.pointerDown(title, { button: 0, clientX: 400, clientY: 50, pointerId: 1 });
+  fireEvent.pointerMove(title, { clientX: 500, clientY: 80, pointerId: 1 });
+  fireEvent.pointerUp(title, { pointerId: 1 });
+  expect(window.style.left).not.toBe(before);
+  expect(preferences.get().profiles[0].config.frames).toBe(frames);
+});

@@ -13,6 +13,7 @@
 /playwright-report/
 
 /web/assets/
+/web/public/
 
 # Pixabay stock model: local use only; do not redistribute the raw download.
 /assets/characters/pixellabs-undead-3417.glb

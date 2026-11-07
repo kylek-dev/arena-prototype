@@ -7,11 +7,14 @@ This is a local solo practice scene. Start the original Rust headless example wi
 ```sh
 rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.122 --locked
+npm ci
 ./scripts/build-web.sh
-python3 -m http.server 8000 --directory web --bind 127.0.0.1
+npm run serve
 ```
 
-Open http://127.0.0.1:8000. Build output is generated under web/pkg and ignored by Git. The shell uses relative URLs, so it can also run under a static hosting subpath. Production static hosting should use HTTPS and Brotli/gzip compression for WASM, JavaScript and CSS, with `application/wasm` MIME type for the module. The simple Python server does not compress downloads.
+Open http://127.0.0.1:8000. Rust generates `web/public/pkg` and `web/public/assets`; Vite copies them with the React overlay to `dist/`. All output is ignored. Publish the entire `dist/` directory, not `web/`. URLs remain relative for subpath hosting. Use HTTPS, Brotli/gzip and `application/wasm`. A simple alternative is `python3 -m http.server 8000 --directory dist --bind 127.0.0.1` (no compression).
+
+After one complete build, `npm run dev` provides frontend hot reload using the existing engine. `npm run build` rebuilds only TypeScript/CSS and copies existing engine assets; it cannot make a fresh checkout playable without the complete build. [Frontend boundaries and behavior](FRONTEND.md) documents ownership, profiles and input modes.
 
 Controls:
 
@@ -19,12 +22,19 @@ Controls:
 - **Left-drag:** orbit the camera only. Character facing and movement direction remain independent of the camera, including after release or stopping and restarting movement.
 - **Right-drag:** orbit the camera and turn the character to face that direction.
 - **Left + right held:** walk forward while steering and turning with the camera.
-- **Wheel:** zoom. **Tab or ordinary left-click:** select. **Escape:** clear/cancel capture.
+- **Wheel:** zoom. **Tab or ordinary left-click:** select. **Escape:** game menu. **Shift+Escape:** clear target.
 - **1 / Pulse:** attack. **R / Reset:** restart.
+- **F:** set focus from selected target. **O:** settings. **P:** spellbook. Bind clear/target focus and other interface commands in Settings.
 
 Mouse gestures hide and lock the cursor. Releasing one button stops mouse-driven walking and keeps the remaining button’s look/turn mode; releasing both restores the cursor. Drags and button chords never count as targeting clicks. Lost pointer lock, focus loss, and tab hiding cancel held mouse movement. If a browser denies pointer lock, the cursor is hidden over the canvas and dragging works within the page.
 
-Click the canvas to return keyboard focus after using other controls. Shift+Tab leaves it for ordinary keyboard navigation; modified browser shortcuts remain available. Mobile controls and key remapping are not implemented yet.
+Canvas focus is reclaimed after ordinary HUD interaction; gameplay also routes while a non-keyboard-owning HUD control briefly has focus. Text fields, modal dialogs, binding capture, quick bind and layout editing own/suspend keyboard input and clear holds; plain HUD clicks and the nonmodal spellbook do not. Window focus loss, hiding and unexpected pointer-lock loss still cancel input. Shift+Tab explicitly opts into UI navigation without automatic focus reclamation; clicking in the page or explicitly refocusing the canvas resumes gameplay routing.
+
+Escape opens the game menu instead of a top-right toolbar. Its `menu` action is remappable in Settings alongside movement, targeting, reset, focus, slots and UI toggles. Physical unmodified and Shift chords are supported; Ctrl/Alt/Meta/function keys and Shift+Tab remain reserved. Escape cancels captures except when assigning the menu action; use Cancel to leave that capture. Old default Escape-clear bindings migrate to the menu and Shift+Escape-clear; custom Escape uses and saved locks are preserved. Printed labels may differ on non-US layouts. Mobile controls are not implemented.
+
+Spellbook contains only Pulse as an action-slot-sized draggable icon; tooltips show rule-owned metadata. New/default profiles start unlocked without a warning banner. Catalog drag copies; slot-to-slot drags move/swap; Shift-drag copies. Drop a slotted spell on the canvas to remove its assignment while retaining slot/bindings. Catalog-to-canvas and cancelled/invalid drops do nothing. Assignment is deliberately drag-only per user request: no dropdown or alternative placement/removal forms. Lock/unlock in Settings → Action bars; saved locks are preserved. Click/key activation shares assignments and authoritative cooldowns; dragging never casts. Unavailable actions explain why without submitting an attack; Rust validates submitted intents.
+
+Quick bind edits a hovered/focused slot's primary key, offers Unbind, and exits with Escape/Done. Settings edits both entries with explicit Replace/Cancel for conflicts. Target/focus hide when absent. Layout editing always shows labelled sample frames, including hidden/absent units. Click a frame/bar to select it and drag its whole body (or use arrows): no frame dropdown, X/Y sliders or frame drag bars. Move the editor window by its title; adjust selected visibility/scale/lock and reset selected/all; Done/Escape exits. Assignment/position locks are independent. Limits remain four bars, twelve slots each, eight local profiles. Import adds unique profiles without overwriting another; invalid/future storage is preserved until explicit recovery. Export when saving fails. Minimum desktop viewport: 800×600; oversized content fits the viewport. Styling uses Radix Themes ([ADR 0008](decisions/0008-gameplay-first-ui.md)).
 
 
 The opponent is stationary and does not attack. Its health reaching zero ends the round. Walls and the two square pillars block movement. Pillars also block Pulse's line of sight. The HUD shows attack rejection feedback, range, target health, and cooldown.
@@ -37,7 +47,7 @@ npm run test:watch
 cargo test -p arena-sim --locked
 ```
 
-`npm test` runs the production `web/input.js` state machine through Node's built-in test runner. It needs Node 24, with no npm install, browser, server, assets, renderer, or WASM build. Tests cover keyboard filtering, repeated actions, movement, click/drag thresholds, both button orders, partial release, held keyboard movement, cancellation, lock loss/late grants/denial, and the positional Rust input contract. Rust tests validate damage, cooldowns, range, collision, line of sight, command budgets, replay order, and terminal rounds.
+`npm test` runs the original Node input suite plus Vitest domain/DOM/runtime tests after `npm ci`, without a browser, server, assets, renderer or WASM build. `npm run test:input` remains Node-only with no npm install. Tests cover physical chords, alternate holds/modifier release, repeats, conflicts, capture/quick-bind isolation, typing, focus selection, atomic slots, bounds, profile operations/import, malformed/future storage, dialogs/focus, errors and settings. The original mouse/cursor and positional Rust input contract regressions remain intact. DOM tests do not implement browser layout. Rust tests validate combat and presentation contracts.
 
 For the complete code checks and a browser build:
 
@@ -45,9 +55,10 @@ For the complete code checks and a browser build:
 ./scripts/check.sh
 cargo clippy -p arena-client --target wasm32-unknown-unknown --locked -- -D warnings
 ./scripts/build-web.sh
+cargo run -p arena-headless
 ```
 
-CI runs Rust rules/headless linting and tests, workspace formatting, JavaScript syntax checks, and input unit tests on PRs and pushes to `main`; superseded runs for the same PR are cancelled. The required `browser` job keeps its existing name but now runs JavaScript checks only. Neither automatic job compiles Bevy or WASM.
+CI runs Rust rules/headless linting/tests and workspace formatting. Its required `browser` job installs pinned npm packages and checks frontend typechecking, lint, formatting, input/domain/DOM tests and a frontend production build. Neither automatic fast job compiles Bevy/WASM or installs a browser. See [ADR 0007](decisions/0007-react-combat-ui.md).
 
 The separate `Full client build` workflow checks changed files on every PR and main push. Changes to Rust crates, Cargo manifests/locks, the Rust toolchain, `.cargo` configuration, assets, scripts, or workflow files trigger full native workspace checks, WASM Clippy, and the web build, uploading `browser-build`. Docs-only and JavaScript-only changes skip those expensive jobs. The required `client-build` check passes only when both builds succeed or change detection confirms neither is needed; detection failures block it too. It does not install or launch a browser.
 
@@ -60,8 +71,16 @@ E2E testing is a human review step, not an automated development or CI gate. Bui
 1. **Startup and assets:** a clean clone loads the procedural player with no missing model requests. If the optional character is installed, verify its appearance and movement. An unavailable configured model should retain a playable fallback and show a notice.
 2. **Combat loop:** WASD approaches the target; Tab and an ordinary click select it; 1 reports no target/out of range/recharge correctly, deals four hits to finish, and R or Reset starts a fresh round.
 3. **Mouse modes:** left drag changes only the view; hold W, left-drag, and release left-click to verify that character heading, walking direction, and camera angle remain unchanged. Stop, orbit the camera, release, then press each WASD key: movement must remain character-relative, with A/D strafing and S backing up without turning. Right drag turns without walking; both buttons walk and steer in either press order. Releasing either button stops mouse walking and retains the remaining look/turn mode. Releasing both restores the cursor. Drags/chords must not select a target.
-4. **Cancellation and focus:** held keyboard movement survives ordinary mouse release; loss of capture, canvas/window focus, or tab visibility clears held input. Shift+Tab leaves the canvas and browser shortcuts work. Wheel zoom remains usable.
+4. **Cancellation and focus:** movement survives ordinary mouse release and HUD focus/clicks. Typing/modal/capture/editing owners, window blur, hiding and unexpected lock loss clear holds. Confirm canvas recovery never steals typing focus or Shift+Tab navigation and the spellbook stays open while moving. Verify Escape menu/rebinding and Shift+Escape clear. Independent focus follows current health and clears on reset; absent target/focus hide.
 5. **Presentation and errors:** inspect the HUD, arena, target indicator, model, and camera at desktop dimensions; check the console. `?debug=1` exposes read-only diagnostics, while `/` does not expose `arenaDebug`. Loading failures must remain visible.
+6. **Configuration:** remap movement and both binding entries, exercise Replace/Cancel, reserved shortcuts and capture cancellation. Quick-hover/focus binding must not cast, reset, select or move. Tab must navigate UI normally.
+7. **Spell placement:** default unlocked without warning, catalog-copy, slot move/swap/Shift-copy, cancelled/invalid drops and slot-to-canvas removal (binding retained). Confirm icon sizes and no assignment forms. Drags must never turn the camera or cast. Lock to protect assignments; verify shared click/key mapping and cooldown.
+   Icons and bar tracks now use a shared 64×64 px base size. Check the captured-pointer ghost/target outline, short click versus drag, release over icon text/cooldown layers, fast drags, Escape cancellation and outside release. If a saved profile is locked, explicitly use Unlock spell dragging in the spellbook. Native HTML drag events are no longer used.
+   Verify the cooldown reveals clockwise smoothly rather than stepping with snapshots; duplicated Pulse slots must stay in phase. Test tab hiding/resume and reduced-motion static shading. Animation must never enable casting before Rust reports ready.
+   Bound slots show a simple white highlight while their key is held, including empty slots and rejected casts (no target/recharging). Verify primary/alternate/Shift bindings, release and focus-loss cleanup, and no highlight while typing or binding. This feedback reflects input only, not spell activation. Human rendered review of this highlight is pending.
+8. **Layout and persistence:** always-sample frames, direct click selection, whole-frame dragging/arrows, movable editor title, visibility/scale/locks and resets; no frame dropdown/coordinate sliders/drag bars. Resize at 800×600 and larger. Verify menu reachability, profiles/import/export/reload and storage-failure feedback.
+
+**Revised UI review status (2026-11-07): pending human review.** The user reported focus, layout and presentation issues in the initial implementation. This revision addresses them with automated regressions; no browser/device, console inspection or rendered pass for the revision has been observed. See [implementation verification](../planning/REACT-UI-VERIFICATION.md).
 
 Record browser/device, scenarios, console errors, and actual review status in the PR. Unit tests and a successful build do not establish DOM wiring, pointer-lock permissions, GPU rendering, ray picking, or browser compatibility. Rendering/input integration review remains pending until a person performs it.
 
@@ -81,7 +100,7 @@ On Linux, Playwright may require system libraries and sudo for `--with-deps`. Br
 
 ## Inspect and measure
 
-Open `/?debug=1` to expose the diagnostics panel and read-only `window.arenaDebug.state` and `.metrics`. The HUD can be toggled with Diagnostics. The state includes rules tick, integer positions, target selection, cooldown, feedback, and camera state. `firstStateMs` measures module loading/initialization to the first simulation snapshot, **not** the first GPU frame or a network benchmark. Frame percentiles measure requestAnimationFrame intervals after engine warmup, including any stalls; they do not isolate GPU time. Tests save the browser version and transfer sizes alongside them.
+Open `/?debug=1` for the diagnostics panel and read-only `window.arenaDebug.state` and `.metrics`; toggle it through Menu → Toggle diagnostics. State includes rules tick, integer positions, selection, cooldown, feedback and camera. `firstStateMs` measures initialization to the first snapshot, **not** the first GPU frame or a network benchmark. Frame percentiles are requestAnimationFrame intervals after warmup, not isolated GPU time. Optional diagnostics save browser version and transfer sizes.
 
 The JavaScript shell-to-engine adapter exists to support this practice scene. No debug command injection or remote control endpoint is exposed. Remove or gate the bridge when designing public competitive sessions.
 
