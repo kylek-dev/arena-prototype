@@ -1,0 +1,32 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Browser: frontend hot reload",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://127.0.0.1:8000/?debug=1",
+      "webRoot": "${workspaceFolder}/web",
+      "preLaunchTask": "Dev: frontend hot reload"
+    },
+    {
+      "name": "Browser: production preview",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://127.0.0.1:8000/?debug=1",
+      "webRoot": "${workspaceFolder}/web",
+      "preLaunchTask": "Dev: serve production build"
+    },
+    {
+      "name": "Rust: headless scenario (CodeLLDB)",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["build", "-p", "arena-headless", "--bin", "arena-headless", "--locked"],
+        "filter": { "name": "arena-headless", "kind": "bin" }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}
