@@ -4,7 +4,7 @@
 
 `arena-headless` supplies a scripted list of commands to `arena-sim`. The simulation contains a deliberately tiny one-dimensional duel: bounded movement, range, damage, cooldown, and match completion. The script prints tick-tagged events. Rules run at a proposed 30 Hz and use integer state. Commands resolve in supplied order; ties are not simultaneous. The test replays the same input twice and compares events and state.
 
-The browser spike adds `arena_sim::arena`: planar movement with integer coordinates, normalized movement limits, wall/pillar collision, range and line-of-sight checks, cooldowns and round completion. `arena-client` presents these rules in a Bevy 3D scene with camera-relative movement and a plain HTML HUD. Browser input is sampled before fixed updates; positions interpolate for rendering. See [ADR 0002](decisions/0002-browser-spike.md).
+The browser spike adds `arena_sim::arena`: planar movement with integer coordinates, normalized movement limits, wall/pillar collision, range and line-of-sight checks, cooldowns and round completion. `arena-client` presents these rules in a Bevy 3D scene with character-relative movement and a plain HTML HUD. Browser input is sampled before fixed updates; positions interpolate for rendering. See [ADR 0002](decisions/0002-browser-spike.md).
 
 Browser input intent is held in `web/input.js`, a deterministic state machine with no DOM, clock, or renderer dependency. `web/shell.js` binds DOM events and cursor capture to that state and forwards the existing positional input array to Rust. Node unit tests exercise transitions directly; Rust tests exercise combat rules. Rendering and browser integration are reviewed manually. See [ADR 0004](decisions/0004-unit-first-validation.md).
 

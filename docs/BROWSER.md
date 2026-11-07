@@ -15,8 +15,8 @@ Open http://127.0.0.1:8000. Build output is generated under web/pkg and ignored 
 
 Controls:
 
-- **WASD:** move.
-- **Left-drag:** orbit the camera only, preserving character heading even while walking.
+- **WASD:** move relative to character facing. W/S move forward/backward; A/D strafe left/right. Movement never turns the character.
+- **Left-drag:** orbit the camera only. Character facing and movement direction remain independent of the camera, including after release or stopping and restarting movement.
 - **Right-drag:** orbit the camera and turn the character to face that direction.
 - **Left + right held:** walk forward while steering and turning with the camera.
 - **Wheel:** zoom. **Tab or ordinary left-click:** select. **Escape:** clear/cancel capture.
@@ -59,7 +59,7 @@ E2E testing is a human review step, not an automated development or CI gate. Bui
 
 1. **Startup and assets:** a clean clone loads the procedural player with no missing model requests. If the optional character is installed, verify its appearance and movement. An unavailable configured model should retain a playable fallback and show a notice.
 2. **Combat loop:** WASD approaches the target; Tab and an ordinary click select it; 1 reports no target/out of range/recharge correctly, deals four hits to finish, and R or Reset starts a fresh round.
-3. **Mouse modes:** left drag changes only the view; right drag turns without walking; both buttons walk and steer in either press order. Releasing either button stops mouse walking and retains the remaining look/turn mode. Releasing both restores the cursor. Drags/chords must not select a target.
+3. **Mouse modes:** left drag changes only the view; hold W, left-drag, and release left-click to verify that character heading, walking direction, and camera angle remain unchanged. Stop, orbit the camera, release, then press each WASD key: movement must remain character-relative, with A/D strafing and S backing up without turning. Right drag turns without walking; both buttons walk and steer in either press order. Releasing either button stops mouse walking and retains the remaining look/turn mode. Releasing both restores the cursor. Drags/chords must not select a target.
 4. **Cancellation and focus:** held keyboard movement survives ordinary mouse release; loss of capture, canvas/window focus, or tab visibility clears held input. Shift+Tab leaves the canvas and browser shortcuts work. Wheel zoom remains usable.
 5. **Presentation and errors:** inspect the HUD, arena, target indicator, model, and camera at desktop dimensions; check the console. `?debug=1` exposes read-only diagnostics, while `/` does not expose `arenaDebug`. Loading failures must remain visible.
 

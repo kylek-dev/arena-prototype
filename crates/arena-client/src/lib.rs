@@ -291,21 +291,7 @@ fn read_controls(
     orbit.yaw -= input.orbit_x * 0.005;
     orbit.pitch = (orbit.pitch + input.orbit_y * 0.004).clamp(0.25, 1.2);
     orbit.distance = (orbit.distance + input.zoom * 0.01).clamp(6.0, 22.0);
-    if input.steer {
-        practice.facing = orbit.yaw;
-    }
-    // Free-look changes the view without steering even a moving character.
-    let movement_yaw = if input.free_look && !input.steer {
-        practice.facing
-    } else {
-        orbit.yaw
-    };
-    let rotation = Quat::from_rotation_y(movement_yaw);
-    let movement = rotation * Vec3::new(input.x, 0.0, input.z).clamp_length_max(1.0);
-    practice.movement = Vec2::new(movement.x, movement.z);
-    if !input.steer && !input.free_look && practice.movement.length_squared() > 0.001 {
-        practice.facing = (-movement.x).atan2(-movement.z);
-    }
+    update_movement(&mut practice, &orbit, &input);
     if input.select {
         practice.selected = true;
         practice.feedback = "Opponent selected";
@@ -332,6 +318,17 @@ fn read_controls(
         practice.attack = true;
     }
 }
+fn update_movement(practice: &mut Practice, orbit: &Orbit, input: &Input) {
+    if input.steer {
+        practice.facing = orbit.yaw;
+    }
+    // WASD always uses character heading: A/D strafe and S backs up without
+    // turning. Camera-only orbit never changes movement, even after stopping.
+    let rotation = Quat::from_rotation_y(practice.facing);
+    let movement = rotation * Vec3::new(input.x, 0.0, input.z).clamp_length_max(1.0);
+    practice.movement = Vec2::new(movement.x, movement.z);
+}
+
 fn simulate(mut practice: ResMut<Practice>) {
     practice.previous = practice.arena.fighters().map(|f| world(f.position));
     let mut commands = vec![ArenaCommand::Move {
@@ -524,7 +521,6 @@ struct Input {
     zoom: f32,
     click: Option<Vec2>,
     steer: bool,
-    free_look: bool,
 }
 #[cfg(target_arch = "wasm32")]
 mod platform {
@@ -556,7 +552,6 @@ mod platform {
             orbit_y: number(7),
             zoom: number(8),
             steer: number(11) != 0.0,
-            free_look: number(12) != 0.0,
             click: if number(9) >= 0.0 {
                 Some(Vec2::new(number(9), number(10)))
             } else {
@@ -566,6 +561,110 @@ mod platform {
     }
     pub fn publish(json: &str) {
         arena_state(json);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn releasing_free_look_preserves_walking_heading_and_view() {
+        let mut practice = Practice {
+            facing: 0.7,
+            ..default()
+        };
+        let mut orbit = Orbit {
+            yaw: -1.2,
+            ..default()
+        };
+        let input = Input {
+            z: -1.0,
+            ..default()
+        };
+        update_movement(&mut practice, &orbit, &input);
+        let movement = practice.movement;
+        orbit.yaw = -2.0;
+        update_movement(&mut practice, &orbit, &input);
+        for _ in 0..3 {
+            update_movement(&mut practice, &orbit, &input);
+            assert_eq!(practice.facing, 0.7);
+            assert_eq!(practice.movement, movement);
+            assert_eq!(orbit.yaw, -2.0);
+        }
+    }
+
+    #[test]
+    fn movement_after_camera_orbit_and_stopping_uses_character_heading() {
+        let mut practice = Practice::default();
+        let orbit = Orbit {
+            yaw: 1.0,
+            ..default()
+        };
+        let mut input = Input {
+            z: -1.0,
+            ..default()
+        };
+        update_movement(&mut practice, &orbit, &input);
+        input.z = 0.0;
+        update_movement(&mut practice, &orbit, &input);
+        assert_eq!(practice.movement, Vec2::ZERO);
+        assert_eq!(practice.facing, 0.0);
+        input.z = -1.0;
+        update_movement(&mut practice, &orbit, &input);
+        assert_eq!(practice.facing, 0.0);
+        assert_eq!(practice.movement, Vec2::new(0.0, -1.0));
+    }
+
+    #[test]
+    fn steering_turns_character_and_subsequent_movement() {
+        let mut practice = Practice::default();
+        let orbit = Orbit {
+            yaw: 1.0,
+            ..default()
+        };
+        let mut input = Input {
+            z: -1.0,
+            ..default()
+        };
+        update_movement(&mut practice, &orbit, &input);
+        input.steer = true;
+        update_movement(&mut practice, &orbit, &input);
+        assert_eq!(practice.facing, orbit.yaw);
+        input.steer = false;
+        update_movement(&mut practice, &orbit, &input);
+        assert!((practice.facing - orbit.yaw).abs() < 0.0001);
+    }
+
+    #[test]
+    fn wasd_strafes_and_backs_up_without_turning_at_any_heading() {
+        for facing in [0.0, 0.7, -2.0] {
+            for (x, z) in [
+                (-1.0, 0.0),
+                (1.0, 0.0),
+                (0.0, -1.0),
+                (0.0, 1.0),
+                (1.0, -1.0),
+            ] {
+                let mut practice = Practice {
+                    facing,
+                    ..default()
+                };
+                let orbit = Orbit {
+                    yaw: 2.5,
+                    ..default()
+                };
+                let input = Input { x, z, ..default() };
+                let expected =
+                    Quat::from_rotation_y(facing) * Vec3::new(x, 0.0, z).clamp_length_max(1.0);
+                for _ in 0..3 {
+                    update_movement(&mut practice, &orbit, &input);
+                    assert_eq!(practice.facing, facing);
+                    assert_eq!(practice.movement, Vec2::new(expected.x, expected.z));
+                    assert!(practice.movement.length() <= 1.0001);
+                }
+            }
+        }
     }
 }
 #[cfg(not(target_arch = "wasm32"))]
