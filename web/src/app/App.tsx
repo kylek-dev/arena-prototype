@@ -1,4 +1,4 @@
-import * as Tooltip from "@radix-ui/react-tooltip";
+import { TooltipProvider } from "../ui/Tooltip";
 import { Theme } from "@radix-ui/themes";
 import { Frames } from "../features/unit-frames/Frames";
 import { ActionBars } from "../features/action-bars/ActionBars";
@@ -27,7 +27,7 @@ export function App() {
   const menuBindings = useConfigSelector((c) => c.bindings.menu);
   const menuKey = menuBindings?.find(Boolean);
   const title =
-    mode.panel === "menu" ? "Game menu" : mode.panel === "settings" ? "Settings" : "Spellbook";
+    mode.panel === "menu" ? "Game menu" : mode.panel === "settings" ? "Settings" : "Spells";
 
   return (
     <Theme
@@ -39,7 +39,7 @@ export function App() {
       radius="medium"
       panelBackground="solid"
     >
-      <Tooltip.Provider delayDuration={300}>
+      <TooltipProvider disabled={dragging || mode.quick || mode.layout || !!mode.capture}>
         <button id="menu-access" className="menu-access" onClick={() => setPanel("menu")}>
           Open game menu
         </button>
@@ -61,17 +61,13 @@ export function App() {
           <Modal
             key={mode.panel}
             title={title}
-            description={
-              mode.panel === "spellbook"
-                ? "Drag a spell onto a slot. Drag a slotted spell onto the arena to remove it."
-                : undefined
-            }
+            description={mode.panel === "spellbook" ? "Drag a spell onto a slot." : undefined}
             modal={mode.panel !== "spellbook"}
             className={
               mode.panel === "menu"
                 ? "menu-dialog"
                 : mode.panel === "spellbook"
-                  ? `spellbook-dialog ${dragging ? "drag-through" : ""}`
+                  ? `spellbook-dialog window-area-left ${dragging ? "drag-through" : ""}`
                   : ""
             }
             escapeBlocked={!!mode.capture || !!pending}
@@ -87,7 +83,7 @@ export function App() {
           </Modal>
         )}
         <BindingConflict />
-      </Tooltip.Provider>
+      </TooltipProvider>
     </Theme>
   );
 }

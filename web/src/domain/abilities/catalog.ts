@@ -19,10 +19,26 @@ export function availability(state: Snapshot | null): string {
       ? "Round complete"
       : !state.selected
         ? "Select a target"
-        : state.cooldown > 0
-          ? `Recharging · ${state.cooldown.toFixed(1)} s`
-          : state.attackStatus;
+        : state.selectedPlayer
+          ? "Invalid target"
+          : state.cooldown > 0
+            ? `Recharging · ${state.cooldown.toFixed(1)} s`
+            : state.attackStatus;
 }
 export function canActivate(state: Snapshot | null) {
   return availability(state) === "Ready";
+}
+
+export function actionTint(state: Snapshot | null): "target" | "unavailable" | undefined {
+  if (!isEngineReady(state)) return "unavailable";
+  if (!state.selected) return undefined;
+  if (state.selectedPlayer) return "target";
+  if (
+    state.won ||
+    state.target.health === 0 ||
+    state.distance > state.range ||
+    ["Out of range", "Line of sight blocked"].includes(state.attackStatus)
+  )
+    return "target";
+  return canActivate(state) ? undefined : "unavailable";
 }

@@ -26,6 +26,8 @@ Controls:
 - **1 / Pulse:** attack. **R / Reset:** restart.
 - **F:** set focus from selected target. **O:** settings. **P:** spellbook. Bind clear/target focus and other interface commands in Settings.
 
+All live unit frames (player, target, focus and opponents) support left-click to target their represented unit and right-click to focus it. Player self-targeting is supported, but Pulse cannot attack the player. Layout mode instead selects/drags sample frames. Unit tags reserve Opponent1–3 and Team1–3; only one opponent and no teammates exist today. Rebuild the complete client for the appended self-selection bridge field. Human browser review of these interactions is pending.
+
 Mouse gestures hide and lock the cursor. Releasing one button stops mouse-driven walking and keeps the remaining button’s look/turn mode; releasing both restores the cursor. Drags and button chords never count as targeting clicks. Lost pointer lock, focus loss, and tab hiding cancel held mouse movement. If a browser denies pointer lock, the cursor is hidden over the canvas and dragging works within the page.
 
 Canvas focus is reclaimed after ordinary HUD interaction; gameplay also routes while a non-keyboard-owning HUD control briefly has focus. Text fields, modal dialogs, binding capture, quick bind and layout editing own/suspend keyboard input and clear holds; plain HUD clicks and the nonmodal spellbook do not. Window focus loss, hiding and unexpected pointer-lock loss still cancel input. Shift+Tab explicitly opts into UI navigation without automatic focus reclamation; clicking in the page or explicitly refocusing the canvas resumes gameplay routing.
@@ -41,7 +43,11 @@ The opponent is stationary and does not attack. Its health reaching zero ends th
 
 The practice-round box is removed; reset remains available through R and the game menu. A dedicated top-center area shows bold red errors only when an attempted spell cast fails (including missing target, range, line of sight, recharge or an authoritative rejection). Passive availability changes do not show errors. Messages expire after 2.5 seconds; repeated failed attempts restart that interval, while a valid cast attempt or reset clears them immediately. Empty slots and suspended gameplay/editing do not count as cast attempts. Startup failures and recovery remain in the loading panel, not the combat-error area. Human rendered review of these HUD changes is pending; automated DOM tests, frontend lint/format checks, WASM Clippy and the complete web build passed locally on 2026-11-07. No rendered/browser pass is claimed.
 
+Action-bar slots show spell icons and keybinding labels, without printed spell names or separate slot-number labels. Tooltips retain spell details and bindings, accessible names retain slot identification, and cooldown/key-held feedback is unchanged. Human rendered review of this simplification is pending.
+
 ## Fast automated verification
+
+Assigned action buttons use a subtle red tint for defeated targets, round completion, out-of-range targets or blocked line of sight. With no target selected, buttons stay neutral. Other unavailable states tint grey, including recharge and any future resource rejection reported by the engine; resource costs are not implemented today. Empty slots stay neutral. Keybinding labels and cooldown overlays remain visible. Human rendered review of these tints is pending.
 
 ```sh
 npm test

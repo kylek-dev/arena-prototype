@@ -15,6 +15,20 @@
 - `state`: small external stores expose immutable snapshots; selector results must be stable references or primitives, not newly allocated objects. Ordinary HUD snapshots are throttled to 80 ms, but cooldown starts/ends/increases and session resets deliver immediately. Rust still runs every tick. Preferences never persist engine snapshots.
 - `ui`: reusable Radix dialog/tooltip wrappers and viewport placement, styled with Radix Themes 3.3.0. Modal dialogs trap/restore focus; the nonmodal spellbook retains gameplay focus and stays open during canvas interaction. Portals remain in the themed overlay. Feature editors are public composition entry points, not shared private subcomponents.
 
+## Default window area
+
+The spell catalog is labelled **Spells** in the menu, window and binding settings. Its internal `spellbook` action/profile key stays unchanged so saved P/custom bindings continue to work. Icons form a five-column grid, filling rows as real abilities are added; Pulse is still the only implemented spell, with no placeholder abilities.
+
+The reusable, opt-in `.window-area-left` class in `ui/panels.css` provides a 520×480 CSS px area on the left, roughly 3.5vw from the edge and 18dvh from the top, below the default unit frames. It shrinks to fit smaller viewports and reserves bottom action-bar space; dialog content scrolls when necessary. Only Spells currently uses it; future windows can opt in through `Modal`'s `className`. Other dialogs keep their existing centered placement and sizing, including compact menu/capture windows. Spells remains nonmodal and retains spell-drag pass-through. HUD frames and the movable layout inspector retain their independent placement. Human rendered review of this window area and grid is pending.
+
+## Shared tooltips
+
+`ui/Tooltip.tsx` owns the app-wide `TooltipProvider`, `Hint` trigger/portal behavior and optional `TooltipCard` layout. Use `Hint` with one native focusable element (or a component forwarding its ref and event props). Supply descriptive content, not interactive controls; use a dialog/popover for controls. Hover, keyboard focus, Escape dismissal and accessible descriptions use pinned Radix Tooltip 1.2.8. Provider defaults to a 300 ms hover delay and suppresses open/new tooltips during spell dragging, layout editing and binding capture/quick bind. Placement flips/shifts within a 12 px viewport margin; portals stay inside the themed overlay.
+
+`TooltipCard` supplies title, optional shortcut, description, labelled facts, status and footer without importing game state. `features/abilities/SpellDetails.tsx` composes that layout for both action slots and spellbook; only engine snapshots supply combat numbers. Empty slots use a generic card without spell stats. New HUD help should reuse these primitives rather than importing Radix directly or duplicating spell markup. `ui/tooltip.css` owns the shared visual treatment. Human rendered review of wrapping, viewport-edge placement and hover transitions remains pending.
+
+Tooltip regression tests cover focus/hover, Escape, accessible trigger descriptions, suppression, shared spellbook/slot details, live cooldown status and missing engine data. Local frontend checks, WASM Clippy and the complete web build passed on 2026-11-07; no rendered/browser pass is claimed. Before merge, manually review slots and spellbook near viewport edges, long/alternate bindings, loading/recharging states, locked assignments and tooltip dismissal during drag/editing.
+
 ## Stylesheet ownership
 
 `web/src/styles/global.css` is the single CSS entry point after Radix Themes. It imports page/theme defaults and shared controls from `styles/base.css`, reusable placement and panel styles from `ui/`, and HUD styles alongside their owning features (unit frames, action bars, combat errors, diagnostics and loading). Action-slot styles also serve the spellbook and drag preview. Shared panels include dialogs, forms, bindings, tooltips, editing windows and notices.

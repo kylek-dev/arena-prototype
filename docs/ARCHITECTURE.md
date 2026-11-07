@@ -16,6 +16,8 @@ The browser spike adds `arena_sim::arena`: planar movement with integer coordina
 
 Node tests exercise legacy input directly; Vitest exercises domain modules and production DOM/runtime adapters without a browser or WASM. Rust tests exercise rules and presentation contracts. See [ADR 0004](decisions/0004-unit-first-validation.md) and [frontend boundaries](FRONTEND.md). Rendered integration remains manual.
 
+[ADR 0010](decisions/0010-unit-tag-frame-interactions.md) unifies live frame clicks through unit tags: left-click targets, right-click focuses, including the player. The local bridge appends self-selection at input index 13 and publishes `selectedPlayer`; existing indices remain unchanged. Missing future opponent/team slots resolve to nothing. Self-targeted attacks remain invalid under simulation rules.
+
 The optional glTF character is a presentation child of the existing player entity, normalized to the arena scale. A generated asset manifest lets clean clones use the procedural fallback without fetching a missing/private download. Loading state is exposed through the existing debug snapshot; collision and game rules do not depend on model geometry. See [asset provenance](../assets/characters/README.md).
 
 Durable replay files, interrupts, teams, networking and server validation are not implemented. The public simulation API is provisional.

@@ -13,7 +13,7 @@ import { Loading } from "../../web/src/features/loading/Loading";
 import { Frames } from "../../web/src/features/unit-frames/Frames";
 import { LayoutSettings, LayoutToolbar } from "../../web/src/features/layout-editor/LayoutSettings";
 import { initial, defaultConfig, validateConfig } from "../../web/src/domain/preferences/schema";
-import { input, interactOpponent } from "../../web/src/runtime/commands";
+import { input, interactEntity } from "../../web/src/runtime/commands";
 import { engine, error, focus, interaction, selectedLayout } from "../../web/src/state/session";
 import { preferences, persistence, saveMessage } from "../../web/src/state/config";
 import { acceptBinding, pendingBinding } from "../../web/src/state/binding-capture";
@@ -103,7 +103,24 @@ it("has an icon-only draggable spellbook with no assignment forms", () => {
   expect(preferences.get().profiles[0].config.bars[0].slots[0].ability).toBe("pulse");
 });
 
-it("shows shared cooldown and visible bindings, and selects quick-bind hover/focus", () => {
+it("shows keybindings without spell names or slot-number labels", () => {
+  render(
+    <Tooltip.Provider>
+      <ActionSlot slot={{ id: "bar-1-s1", ability: "pulse" }} number={1} />
+      <ActionSlot slot={{ id: "bar-1-s2", ability: null }} number={2} />
+    </Tooltip.Provider>,
+  );
+  const assigned = screen.getByRole("button", { name: "Slot 1 Pulse" });
+  const empty = screen.getByRole("button", { name: "Slot 2 empty" });
+  expect(assigned.textContent).toBe("1ϟ");
+  expect(assigned.querySelector("kbd")?.textContent).toBe("1");
+  expect(assigned.querySelector("small")).toBeNull();
+  expect(empty.textContent).toBe("·");
+  expect(empty.querySelector("small")).toBeNull();
+  expect(preferences.get().profiles[0].config.bindings["slot:bar-1-s1"][0]?.code).toBe("Digit1");
+});
+
+it("shows shared cooldown and selects quick-bind hover/focus", () => {
   engine.set(snapshot({ cooldown: 0.6 }));
   interaction.set({ ...interaction.get(), quick: true });
   render(
@@ -113,13 +130,49 @@ it("shows shared cooldown and visible bindings, and selects quick-bind hover/foc
   );
   const slot = screen.getByRole("button", { name: "Slot 1 Pulse" });
   expect(screen.getByText("0.6")).toBeTruthy();
-  expect(screen.getByText("1", { selector: "kbd" })).toBeTruthy();
+  expect(slot.querySelector("kbd")?.textContent).toBe("1");
+  expect(slot.querySelector("small")).toBeNull();
   fireEvent.mouseEnter(slot);
   expect(interaction.get().hovered).toBe("bar-1-s1");
   fireEvent.mouseLeave(slot);
   expect(interaction.get().hovered).toBeNull();
   fireEvent.focus(slot);
   expect(interaction.get().hovered).toBe("bar-1-s1");
+});
+
+it("tints target failures red and other failures grey, leaving missing targets and empty slots neutral", () => {
+  render(
+    <Tooltip.Provider>
+      <ActionSlot slot={{ id: "bar-1-s1", ability: "pulse" }} number={1} />
+      <ActionSlot slot={{ id: "bar-1-s2", ability: null }} number={2} />
+    </Tooltip.Provider>,
+  );
+  const slot = screen.getByRole("button", { name: "Slot 1 Pulse" });
+  const empty = screen.getByRole("button", { name: "Slot 2 empty" });
+  expect(slot.hasAttribute("data-unusable")).toBe(false);
+  act(() => engine.set(snapshot({ selected: false, distance: 7 })));
+  expect(slot.hasAttribute("data-unusable")).toBe(false);
+  for (const overrides of [
+    { distance: 7, cooldown: 0.5, attackStatus: "Recharging" },
+    { attackStatus: "Out of range" },
+    { attackStatus: "Line of sight blocked" },
+    { won: true },
+  ]) {
+    act(() => engine.set(snapshot(overrides)));
+    expect(slot.getAttribute("data-unusable")).toBe("target");
+    expect(empty.hasAttribute("data-unusable")).toBe(false);
+  }
+  // Synthetic resource status exercises presentation only; resource rules do not exist yet.
+  for (const overrides of [
+    { cooldown: 0.5, attackStatus: "Recharging" },
+    { attackStatus: "Insufficient resource" },
+  ]) {
+    act(() => engine.set(snapshot(overrides)));
+    expect(slot.getAttribute("data-unusable")).toBe("unavailable");
+  }
+  act(() => engine.set(snapshot()));
+  expect(slot.hasAttribute("data-unusable")).toBe(false);
+  expect(slot.querySelector("kbd")?.textContent).toBe("1");
 });
 
 it("searches bindings, opens capture, clears alternate entries and cancels conflicts", async () => {
@@ -215,10 +268,10 @@ it("guards opponent interactions while editing, blocked, unavailable or stale", 
     expect(focus.get()).toBeNull();
     act(() => interaction.set({ ...interaction.get(), layout: false, quick: false, panel: null }));
   }
-  interactOpponent("missing", "focus");
+  interactEntity("missing", "focus");
   expect(focus.get()).toBeNull();
   act(() => engine.set(null));
-  interactOpponent("practice-opponent", "target");
+  interactEntity("practice-opponent", "target");
   expect(input.select).toBe(false);
 });
 
