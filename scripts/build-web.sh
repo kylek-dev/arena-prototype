@@ -9,20 +9,8 @@ profile="${ARENA_WEB_PROFILE:-web}"
 start_seconds=$SECONDS
 cargo build --locked -p arena-client --target wasm32-unknown-unknown --profile "$profile"
 mkdir -p web/public/pkg web/public/assets/characters
-# Third-party stock art stays local. Clean clones still build with a placeholder.
-python3 - <<'ASSETS'
-import json
-import shutil
-from pathlib import Path
-source = Path('assets/characters/pixellabs-undead-3417.glb')
-target = Path('web/public/assets/characters') / source.name
-if source.is_file():
-    shutil.copy2(source, target)
-else:
-    target.unlink(missing_ok=True)
-Path('web/public/assets/character.json').write_text(json.dumps({'available': source.is_file()}) + '\n')
-print('Character asset:', 'local model copied' if source.is_file() else 'placeholder (optional model not installed)')
-ASSETS
+python3 scripts/prepare_character.py
+python3 scripts/prepare_weapon.py
 bindgen_flags=(--remove-producers-section)
 if [[ "${ARENA_DEBUG_SYMBOLS:-0}" != 1 ]]; then
   bindgen_flags+=(--remove-name-section)

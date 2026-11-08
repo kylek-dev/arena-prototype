@@ -1,9 +1,14 @@
 //! Bevy presentation adapter for the shared arena rules. DOM integration is
 //! isolated in `platform`; rules remain usable in native headless tests.
+mod animation;
 mod camera;
 mod character;
+mod character_animation;
 mod graphics;
 mod hover;
+mod humanoid;
+mod lighting;
+mod weapons;
 
 use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::{
@@ -70,14 +75,15 @@ struct AttackBeam;
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen(start))]
 pub fn run() {
     App::new()
-        .insert_resource(ClearColor(Color::srgb(0.035, 0.055, 0.08)))
+        .insert_resource(ClearColor(Color::srgb(0.18, 0.21, 0.25)))
         .insert_resource(GlobalAmbientLight {
-            brightness: 260.0,
+            brightness: 500.0,
             ..default()
         })
         .insert_resource(Time::<Fixed>::from_hz(TICKS_PER_SECOND as f64))
         .init_resource::<Practice>()
         .init_resource::<Orbit>()
+        .init_resource::<animation::Settings>()
         .add_plugins(
             DefaultPlugins
                 .set(AssetPlugin {
@@ -97,9 +103,32 @@ pub fn run() {
                 }),
         )
         .add_systems(Startup, setup)
-        .add_systems(PreUpdate, (graphics::apply, read_controls))
+        .add_systems(
+            PreUpdate,
+            (
+                (
+                    graphics::apply,
+                    lighting::read_settings.pipe(lighting::apply),
+                )
+                    .chain(),
+                weapons::read_selection.pipe(weapons::apply),
+                read_controls,
+            ),
+        )
         .add_systems(FixedUpdate, simulate)
-        .add_systems(Update, (character::check_loading, present, publish).chain())
+        .add_systems(
+            Update,
+            (
+                character::check_loading,
+                present,
+                animation::animate,
+                character_animation::animate,
+                weapons::animate,
+                weapons::animate_staff,
+                publish,
+            )
+                .chain(),
+        )
         .run();
 }
 fn world(position: Position) -> Vec3 {
@@ -120,10 +149,15 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
 ) {
-    let player_scene = platform::has_character_model()
-        .then(|| asset_server.load(GltfAssetLabel::Scene(0).from_asset(character::MODEL_PATH)));
-    commands.insert_resource(character::CharacterModel::new(player_scene.clone()));
+    let character = character::CharacterModel::load(
+        platform::has_character_model(),
+        &asset_server,
+        &mut graphs,
+    );
+    let player_scene = character.scene.clone();
+    commands.insert_resource(character);
     let stone = material(&mut materials, Color::srgb(0.28, 0.34, 0.38));
     let edge = material(&mut materials, Color::srgb(0.13, 0.19, 0.23));
     let dark = material(&mut materials, Color::srgb(0.06, 0.10, 0.14));
@@ -234,9 +268,11 @@ fn setup(
     }
     let circle = meshes.add(Circle::new(0.65));
     let character_meshes = graphics::CharacterMeshes::new(&mut meshes);
-    let [body, head] = character_meshes.handles(true).clone();
-    commands.insert_resource(character_meshes);
     for (index, accent) in [(0, teal.clone()), (1, orange.clone())] {
+        let humanoid = humanoid::Humanoid::new(
+            humanoid::Appearance::practice(index, accent),
+            &mut materials,
+        );
         commands
             .spawn((
                 FighterVisual(index),
@@ -250,56 +286,35 @@ fn setup(
                     Transform::from_xyz(0.0, 0.015, 0.0)
                         .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
                 ));
-                // Keep the capsule as a loading/error fallback. The model is
-                // parented to FighterVisual so movement, facing and reset apply.
-                for (mesh, material, transform) in [
-                    (
-                        body.clone(),
-                        accent.clone(),
-                        Transform::from_xyz(0.0, 0.95, 0.0),
-                    ),
-                    (
-                        head.clone(),
-                        line.clone(),
-                        Transform::from_xyz(0.0, 1.7, 0.0),
-                    ),
-                    (
-                        cube.clone(),
-                        dark.clone(),
-                        Transform::from_xyz(0.0, 1.35, -0.32).with_scale(Vec3::new(0.5, 0.13, 0.2)),
-                    ),
-                    (
-                        cube.clone(),
-                        accent.clone(),
-                        Transform::from_xyz(0.0, 0.10, -0.55)
-                            .with_scale(Vec3::new(0.16, 0.04, 0.4)),
-                    ),
-                ] {
-                    let part = if mesh == body {
-                        Some(graphics::CharacterPart::Body)
-                    } else if mesh == head {
-                        Some(graphics::CharacterPart::Head)
-                    } else {
-                        None
-                    };
-                    let mut visual =
-                        parent.spawn((Mesh3d(mesh), MeshMaterial3d(material), transform));
-                    if let Some(part) = part {
-                        visual.insert(part);
-                    }
-                    if index == 0 {
-                        visual.insert(character::CharacterFallback);
-                    }
-                }
-                if let Some(scene) = &player_scene
-                    && index == 0
-                {
-                    parent
-                        .spawn((WorldAssetRoot(scene.clone()), character::model_transform()))
-                        .observe(character::on_ready);
-                }
+                parent
+                    .spawn((
+                        animation::Animator::new(index),
+                        Transform::default(),
+                        Visibility::default(),
+                    ))
+                    .with_children(|body| {
+                        if index == 0 {
+                            body.spawn((
+                                weapons::EquipmentCarrier,
+                                Transform::default(),
+                                Visibility::default(),
+                            ));
+                        }
+                        humanoid.spawn(body, &character_meshes, index);
+                        if let Some(scene) = &player_scene
+                            && index == 0
+                        {
+                            body.spawn((
+                                WorldAssetRoot(scene.clone()),
+                                character::model_transform(),
+                                Visibility::Hidden,
+                            ))
+                            .observe(character::on_ready);
+                        }
+                    });
             });
     }
+    commands.insert_resource(character_meshes);
     commands.spawn((
         TargetRing,
         Mesh3d(meshes.add(Annulus::new(0.72, 0.80))),
@@ -315,17 +330,33 @@ fn setup(
         Visibility::Hidden,
     ));
     commands.spawn((
+        lighting::ArenaLight::Key,
         DirectionalLight {
-            illuminance: 9000.0,
+            color: Color::srgb(1.0, 0.95, 0.88),
+            illuminance: 6500.0,
             shadow_maps_enabled: false,
             ..default()
         },
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.9, -0.55, 0.0)),
     ));
+    commands.spawn((
+        Name::new("Cool arena fill"),
+        lighting::ArenaLight::Fill,
+        DirectionalLight {
+            color: Color::srgb(0.88, 0.93, 1.0),
+            illuminance: 3200.0,
+            shadow_maps_enabled: false,
+            ..default()
+        },
+        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.45, 2.3, 0.0)),
+    ));
     let focus = world(Arena::default().fighters()[0].position) + Vec3::Y;
     commands.spawn((
         Camera3d::default(),
-        Tonemapping::None,
+        bevy::camera::Hdr,
+        Tonemapping::Reinhard,
+        bevy::render::view::ColorGrading::default(),
+        graphics::arena_exposure(),
         platform::read_graphics().msaa,
         Transform::from_translation(focus + Vec3::new(0.0, 7.8, 10.3)).looking_at(focus, Vec3::Y),
     ));
@@ -577,7 +608,7 @@ fn publish(
         _ => "null",
     };
     platform::publish(&format!(
-        r#"{{"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"selectedPlayer":{},"hoveredUnit":{},"distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":false}},"maxHealth":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}}}}"#,
+        r#"{{"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"selectedPlayer":{},"hoveredUnit":{},"distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":{}}},"maxHealth":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}}}}"#,
         practice.arena.tick(),
         practice.frames,
         player.position.x,
@@ -603,6 +634,7 @@ fn publish(
         orbit.distance,
         character.status(),
         character.meshes,
+        true,
         Arena::default().fighters()[0].health,
         ATTACK_DAMAGE,
         ATTACK_RANGE / 1000,
@@ -632,13 +664,15 @@ mod platform {
     use bevy::prelude::Vec2;
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen(
-        inline_js = "export function arena_has_character() { return globalThis.arenaShell.hasCharacterModel === true; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); }"
+        inline_js = "export function arena_has_character() { return globalThis.arenaShell.hasCharacterModel === true; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); }"
     )]
     extern "C" {
         fn arena_has_character() -> bool;
         fn arena_input() -> js_sys::Array;
         fn arena_hover() -> js_sys::Array;
         fn arena_graphics() -> js_sys::Array;
+        fn arena_weapons() -> js_sys::Array;
+        fn arena_lighting() -> js_sys::Array;
         fn arena_state(json: &str);
     }
     pub fn has_character_model() -> bool {
@@ -646,7 +680,21 @@ mod platform {
     }
     pub fn read_graphics() -> super::graphics::Settings {
         let values = arena_graphics();
-        super::graphics::Settings::from_values(values.get(0).as_f64(), values.get(1).as_f64())
+        super::graphics::Settings::from_values(
+            values.get(0).as_f64(),
+            values.get(1).as_f64(),
+            values.get(2).as_f64(),
+        )
+    }
+    pub fn read_weapons() -> super::weapons::Selection {
+        let values = arena_weapons();
+        super::weapons::Selection::from_values(values.get(0).as_f64(), values.get(1).as_f64())
+    }
+    pub fn read_lighting() -> super::lighting::Settings {
+        let values = arena_lighting();
+        super::lighting::Settings::from_values::<{ super::lighting::VALUE_COUNT }>(
+            std::array::from_fn(|i| values.get(i as u32).as_f64()),
+        )
     }
     pub fn read_hover() -> Option<Vec2> {
         let a = arena_hover();
@@ -923,9 +971,15 @@ mod tests {
 }
 #[cfg(not(target_arch = "wasm32"))]
 mod platform {
+    pub fn read_lighting() -> super::lighting::Settings {
+        super::lighting::Settings::from_values([None; super::lighting::VALUE_COUNT])
+    }
+    pub fn read_weapons() -> super::weapons::Selection {
+        super::weapons::Selection::from_values(None, None)
+    }
     pub fn read_graphics() -> super::graphics::Settings {
         // Exercise the same defaults as an older browser shell with no callback.
-        super::graphics::Settings::from_values(None, None)
+        super::graphics::Settings::from_values(None, None, None)
     }
     pub fn read_hover() -> Option<bevy::prelude::Vec2> {
         None

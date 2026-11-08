@@ -1,6 +1,8 @@
 import { adaptSnapshot, needsImmediateDelivery } from "../bridge/snapshot";
 import { loadEngine } from "../bridge/loader";
 import { readGraphics } from "../state/graphics";
+import { readWeapons } from "../state/weapons";
+import { readLighting } from "../state/lighting";
 import { observeCastResult } from "./cast-feedback";
 import { engine, error, focus } from "../state/session";
 import { reconcileFocus } from "../domain/units/selection";
@@ -29,6 +31,8 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     readInput: router.sample,
     readHover: unitHover.read,
     readGraphics,
+    readWeapons,
+    readLighting,
     onState(raw) {
       try {
         const next = adaptSnapshot(raw),

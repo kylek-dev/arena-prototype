@@ -13,6 +13,7 @@ import { LayoutToolbar } from "../features/layout-editor/LayoutSettings";
 import { CombatErrors } from "../features/combat-errors/CombatErrors";
 import { Loading } from "../features/loading/Loading";
 import { Diagnostics } from "../features/diagnostics/Diagnostics";
+import { LightingTweaks } from "../features/lighting-tweaks/LightingTweaks";
 import { Modal } from "../ui/Dialog";
 import { draggingSpell, interaction, setPanel } from "../state/session";
 import { saveMessage, useConfigSelector } from "../state/config";
@@ -58,6 +59,7 @@ export function App() {
         <QuickBinding />
         <LayoutToolbar />
         <Diagnostics />
+        <LightingTweaks />
         <Loading />
         {mode.panel && (
           <Modal

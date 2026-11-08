@@ -7,10 +7,12 @@ export function MovableWindow({
   title,
   children,
   close,
+  className = "",
 }: {
   title: string;
   children: ReactNode;
   close: () => void;
+  className?: string;
 }) {
   const [value, setValue] = useState(() => layout(0.5, 0.03));
   const placement = useMovable(value, setValue, true);
@@ -18,7 +20,7 @@ export function MovableWindow({
   return (
     <aside
       ref={placement.ref}
-      className="movable-window"
+      className={`movable-window ${className}`}
       style={placement.style}
       aria-label={title}
       data-keyboard-owner="true"

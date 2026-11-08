@@ -94,6 +94,8 @@ declare global {
       readInput: () => number[];
       readHover?: () => number[];
       readGraphics?: () => number[];
+      readWeapons?: () => number[];
+      readLighting?: () => number[];
       onState: (state: unknown) => void;
     };
     arenaDebug?: { readonly state: Snapshot | null; readonly metrics: unknown };
