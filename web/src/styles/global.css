@@ -2,6 +2,7 @@
 @import "./base.css";
 @import "../ui/placement.css";
 @import "../features/nameplates/nameplates.css";
+@import "../features/combat-text/combat-text.css";
 @import "../features/unit-frames/unit-frames.css";
 @import "../features/action-bars/action-bars.css";
 @import "../features/combat-errors/combat-errors.css";

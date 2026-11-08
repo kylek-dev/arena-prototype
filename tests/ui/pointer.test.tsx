@@ -6,7 +6,7 @@ import { snapshot } from "./fixtures";
 import { installInput } from "../../web/src/runtime/input-router";
 import { installPointer } from "../../web/src/runtime/pointer";
 import { endDrag, installSpellDragging } from "../../web/src/runtime/spell-drag";
-import { input } from "../../web/src/runtime/commands";
+import { dispatch, input } from "../../web/src/runtime/commands";
 import { armSpell, moveSpell, dropSpell, hitTarget } from "./drag-fixture";
 import { fireEvent } from "@testing-library/react";
 
@@ -132,6 +132,47 @@ it("unexpected lock loss cancels both keyboard and mouse input", () => {
   expect(input.dragging).toBe(false);
 });
 
+it.each(["keyboard reset", "command reset", "round end", "engine reset", "late lock"])(
+  "%s releases capture and clears steering without losing reset intent",
+  (transition) => {
+    canvas.requestPointerLock = vi.fn().mockResolvedValue(undefined);
+    walk();
+    canvas.dispatchEvent(new MouseEvent("mousedown", { button: 2, buttons: 2 }));
+    move(2, 10);
+    if (transition !== "late lock") lock();
+    expect(canvas.style.cursor).toBe("none");
+    expect(input.looking).toBe(true);
+    if (transition === "keyboard reset") {
+      window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyR", bubbles: true }));
+    } else if (transition === "round end") {
+      engine.set(snapshot({ won: true }));
+    } else if (transition === "engine reset") {
+      engine.set(snapshot({ tick: 0 }));
+    } else {
+      dispatch("reset");
+    }
+    if (transition === "late lock") lock();
+    expect(lockedElement).toBeNull();
+    expect(canvas.style.cursor).toBe("");
+    expect(input.dragging).toBe(false);
+    expect(input.looking).toBe(false);
+    const sample = router.sample();
+    expect(sample.slice(0, 5)).toEqual([0, 0, 0, 0, 0]);
+    expect(sample[5]).toBe(transition === "round end" || transition === "engine reset" ? 0 : 1);
+    expect(sample.slice(11, 13)).toEqual([0, 0]);
+    expect(router.sample()[5]).toBe(0);
+    // Trailing motion/release cannot resurrect the old gesture or select/focus.
+    move(2, 10);
+    document.dispatchEvent(new MouseEvent("mouseup", { button: 2, buttons: 0 }));
+    expect(router.sample().slice(15)).toEqual([-1, -1]);
+    expect(canvas.style.cursor).toBe("");
+    canvas.dispatchEvent(new MouseEvent("mousedown", { button: 2, buttons: 2 }));
+    move(2, 10);
+    expect(input.looking).toBe(true);
+    expect(canvas.style.cursor).toBe("none");
+  },
+);
+
 it("drag transactions clear held movement, suppress casts and cancel without placement", () => {
   walk();
   armSpell(document.getElementById("spell")!, { ability: "pulse", source: "bar-1-s1" });
@@ -141,6 +182,22 @@ it("drag transactions clear held movement, suppress casts and cancel without pla
   expect(router.sample().slice(0, 6)).toEqual([0, 0, 0, 0, 0, 0]);
   endDrag();
   expect(preferences.get().profiles[0].config.bars[0].slots[0].ability).toBe("pulse");
+});
+
+it("reset also clears two-button walking when pointer lock is unavailable", () => {
+  canvas.requestPointerLock = vi.fn(() => {
+    throw new Error("Pointer lock denied");
+  });
+  canvas.dispatchEvent(new MouseEvent("mousedown", { button: 0, buttons: 1 }));
+  canvas.dispatchEvent(new MouseEvent("mousedown", { button: 2, buttons: 3 }));
+  expect(router.sample()[1]).toBe(-1);
+  expect(canvas.style.cursor).toBe("none");
+  dispatch("reset");
+  expect(canvas.style.cursor).toBe("");
+  expect(input.mouseButtons).toBe(0);
+  const sample = router.sample();
+  expect(sample.slice(0, 6)).toEqual([0, 0, 0, 0, 0, 1]);
+  expect(sample.slice(11, 13)).toEqual([0, 0]);
 });
 
 it("exclusive UI modes prevent canvas gestures", () => {

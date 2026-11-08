@@ -1,10 +1,11 @@
 import { InputState } from "../../input.js";
 import { availability, canActivate, isEngineReady } from "../domain/abilities/catalog";
 import { beginCast, clearCastFeedback, rejectCast } from "./cast-feedback";
+import { nameplateNotice, setNameplates } from "./nameplate-feedback";
 import { nextTarget } from "../domain/units/selection";
 import { resolveUnit, type UnitTag, type UnitRoster } from "../domain/units/tags";
 import type { Snapshot } from "../bridge/snapshot";
-import { config, updateConfig } from "../state/config";
+import { config } from "../state/config";
 import {
   draggingSpell,
   blocksGameplay,
@@ -12,6 +13,7 @@ import {
   error,
   focus,
   interaction,
+  inputReset,
   setMode,
   setPanel,
 } from "../state/session";
@@ -69,7 +71,7 @@ export function dispatch(action: string) {
     case "toggleEnemyNameplates":
     case "toggleFriendlyNameplates": {
       const side = action === "toggleEnemyNameplates" ? "enemy" : "friendly";
-      updateConfig((c) => ({ ...c, nameplates: { ...c.nameplates, [side]: !c.nameplates[side] } }));
+      setNameplates(side, !config().nameplates[side]);
       break;
     }
     case "jump":
@@ -94,6 +96,8 @@ export function dispatch(action: string) {
       interactUnit("Focus", "target");
       break;
     case "reset":
+      inputReset.set(inputReset.get() + 1);
+      nameplateNotice.set(null);
       clearCastFeedback();
       focus.set(null);
       input.requestReset();

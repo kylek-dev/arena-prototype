@@ -4,6 +4,7 @@ mod animation;
 mod camera;
 mod character;
 mod character_animation;
+mod combat_text;
 mod graphics;
 mod hover;
 mod humanoid;
@@ -30,6 +31,7 @@ struct Practice {
     feedback: &'static str,
     flash: f32,
     frames: u32,
+    combat_text: combat_text::CombatText,
 }
 impl Default for Practice {
     fn default() -> Self {
@@ -46,6 +48,7 @@ impl Default for Practice {
             feedback: "Select the opponent to begin",
             flash: 0.0,
             frames: 0,
+            combat_text: default(),
         }
     }
 }
@@ -472,7 +475,14 @@ fn simulate(mut practice: ResMut<Practice>) {
     }
     for event in practice.arena.step(&commands) {
         match event {
-            ArenaEvent::Hit { .. } => {
+            ArenaEvent::Hit {
+                actor,
+                target,
+                damage,
+            } => {
+                practice
+                    .combat_text
+                    .record(actor, target, -i32::from(damage));
                 practice.feedback = "Pulse hit · 25 damage";
                 practice.flash = 0.18;
             }
@@ -539,6 +549,7 @@ fn present(
             fixed.overstep_fraction(),
         )
     });
+    practice.combat_text.advance(time.delta_secs());
     for (fighter, mut transform) in &mut fighters {
         transform.translation = positions[fighter.0];
         if fighter.0 == 0 {
@@ -651,8 +662,16 @@ fn publish(
         })
         .map(|point| format!(r#"{{"tag":"Opponent1","x":{},"y":{}}}"#, point.x, point.y))
         .unwrap_or_default();
+    let combat_text = cameras.single().ok().map(|(camera, view)| {
+        practice.combat_text.entries.iter().filter_map(|entry| {
+            let (_, transform) = visuals.iter().find(|(unit, _)| unit.0 == entry.target)?;
+            let point = nameplates::anchor(camera, view, transform.translation() + Vec3::Y * (0.25 + entry.age * 0.7))?;
+            Some(format!(r#"{{"id":{},"source":"Player","target":"Opponent1","delta":{},"x":{},"y":{},"progress":{}}}"#,
+                entry.id, entry.delta, point.x, point.y, entry.age / 1.2))
+        }).collect::<Vec<_>>().join(",")
+    }).unwrap_or_default();
     platform::publish(&format!(
-        r#"{{"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"selectedPlayer":{},"hoveredUnit":{},"distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":{}}},"maxHealth":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}},"nameplates":[{}]}}"#,
+        r#"{{"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"selectedPlayer":{},"hoveredUnit":{},"distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":{}}},"maxHealth":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}},"nameplates":[{}],"combatText":[{}]}}"#,
         practice.arena.tick(),
         practice.frames,
         player.position.x,
@@ -683,7 +702,8 @@ fn publish(
         ATTACK_DAMAGE,
         ATTACK_RANGE / 1000,
         ATTACK_COOLDOWN as f64 / TICKS_PER_SECOND as f64,
-        plates
+        plates,
+        combat_text
     ));
 }
 
@@ -795,6 +815,56 @@ fn focus_cursor(x: f32, y: f32) -> Option<Vec2> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn combat_numbers_come_from_successful_hits_not_attempts_and_reset_clears_them() {
+        let mut app = App::new();
+        app.init_resource::<Practice>()
+            .add_systems(FixedUpdate, simulate);
+        {
+            let mut practice = app.world_mut().resource_mut::<Practice>();
+            practice.selected = Some(1);
+            practice.attack = true;
+        }
+        app.world_mut().run_schedule(FixedUpdate);
+        assert!(
+            app.world()
+                .resource::<Practice>()
+                .combat_text
+                .entries
+                .is_empty()
+        );
+        {
+            let mut practice = app.world_mut().resource_mut::<Practice>();
+            for _ in 0..30 {
+                practice.arena.step(&[ArenaCommand::Move {
+                    actor: 0,
+                    x: 0,
+                    z: -1000,
+                }]);
+            }
+            practice.attack = true;
+        }
+        app.world_mut().run_schedule(FixedUpdate);
+        assert_eq!(
+            app.world().resource::<Practice>().combat_text.entries[0].delta,
+            -25
+        );
+        app.world_mut().resource_mut::<Practice>().attack = true;
+        app.world_mut().run_schedule(FixedUpdate);
+        assert_eq!(
+            app.world().resource::<Practice>().combat_text.entries.len(),
+            1
+        );
+        *app.world_mut().resource_mut::<Practice>() = Practice::default();
+        assert!(
+            app.world()
+                .resource::<Practice>()
+                .combat_text
+                .entries
+                .is_empty()
+        );
+    }
 
     #[test]
     fn right_model_click_focus_is_independent_of_target_and_misses_or_reset_do_nothing() {

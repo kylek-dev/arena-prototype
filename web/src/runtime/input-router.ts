@@ -9,6 +9,7 @@ import {
   error,
   interaction,
   heldSlots,
+  inputReset,
 } from "../state/session";
 import { isEngineReady } from "../domain/abilities/catalog";
 import { dispatch, input } from "./commands";
@@ -34,6 +35,16 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
     releaseMouse();
   };
   const focusPolicy = installFocusPolicy(canvas, events.signal, cancel);
+  const unReset = inputReset.subscribe(cancel);
+  let previousEngine = engine.get();
+  const unEngine = engine.subscribe(() => {
+    const next = engine.get();
+    const previous = previousEngine;
+    previousEngine = next;
+    if (previous && (!next || (!previous.won && next.won) || next.tick < previous.tick)) {
+      cancel();
+    }
+  });
   let previousConfig = config();
   let previousProfile = preferences.get().active;
   const unsubscribe = interaction.subscribe(() => {
@@ -130,10 +141,6 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
     e.preventDefault();
     syncHeldSlots();
     dispatch(action);
-    if (action === "reset") {
-      resolver.clear();
-      syncHeldSlots();
-    }
   }
   window.addEventListener("keydown", keydown, { ...options, capture: true });
   window.addEventListener(
@@ -168,6 +175,8 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
       unsubscribe();
       unconfig();
       unDrag();
+      unReset();
+      unEngine();
       cancel();
     },
   };

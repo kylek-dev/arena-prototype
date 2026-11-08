@@ -8,6 +8,9 @@ export const draggingSpell = createStore(false);
 export const pressingSpell = createStore(false);
 // Input feedback only; independent of spell assignments and combat availability.
 export const heldSlots = createStore<ReadonlySet<string>>(new Set());
+// Synchronous reset intent lets input adapters release browser capture before
+// the one-shot engine reset is queued, regardless of its UI/key entry point.
+export const inputReset = createStore(0);
 export const spellDragPreview = createStore<{ x: number; y: number; target: string | null } | null>(
   null,
 );
