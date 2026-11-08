@@ -138,12 +138,12 @@ test('a right click appends one-shot focus coordinates without targeting, turnin
   input.mouseUp({ button: 2, buttons: 0 });
   const focused = input.readInput();
   assert.deepEqual(focused.slice(0, 15), before.slice(0, 15));
-  assert.deepEqual(focused.slice(15), [25, 40]);
-  assert.deepEqual(input.readInput().slice(15), [-1, -1]);
+  assert.deepEqual(focused.slice(15, 17), [25, 40]);
+  assert.deepEqual(input.readInput().slice(15, 17), [-1, -1]);
   down(input, 2, 2);
   input.mouseUp({ button: 2, buttons: 0 });
   input.cancel();
-  assert.deepEqual(input.readInput().slice(15), [-1, -1]);
+  assert.deepEqual(input.readInput().slice(15, 17), [-1, -1]);
 });
 
 test('right drags, reversed motion, and either two-button chord never focus', () => {
@@ -153,7 +153,7 @@ test('right drags, reversed motion, and either two-button chord never focus', ()
     move(input, 2, distance, 0);
     move(input, 2, -distance, 0);
     input.mouseUp({ button: 2, buttons: 0 });
-    assert.deepEqual(input.readInput().slice(15), [-1, -1]);
+    assert.deepEqual(input.readInput().slice(15, 17), [-1, -1]);
   }
   for (const [first, second] of [[0, 2], [2, 0]]) {
     const input = new InputState();
@@ -161,7 +161,7 @@ test('right drags, reversed motion, and either two-button chord never focus', ()
     down(input, second, 3);
     input.mouseUp({ button: first, buttons: second === 0 ? 1 : 2 });
     input.mouseUp({ button: second, buttons: 0 });
-    assert.deepEqual(input.readInput().slice(15), [-1, -1]);
+    assert.deepEqual(input.readInput().slice(15, 17), [-1, -1]);
   }
 });
 
@@ -288,8 +288,8 @@ test('the Rust bridge input array keeps its positional contract and drains delta
   input.wheel(-30);
   down(input, 2, 2);
   move(input, 2, 10, 5);
-  assert.deepEqual(input.readInput(), [0, -1, 1, 1, 0, 0, 10, 5, 120, -1, -1, 1, 0, 0, 0, -1, -1]);
-  assert.deepEqual(input.readInput(), [0, -1, 0, 0, 0, 0, 0, 0, 0, -1, -1, 1, 0, 0, 0, -1, -1]);
+  assert.deepEqual(input.readInput(), [0, -1, 1, 1, 0, 0, 10, 5, 120, -1, -1, 1, 0, 0, 0, -1, -1, -1, 0]);
+  assert.deepEqual(input.readInput(), [0, -1, 0, 0, 0, 0, 0, 0, 0, -1, -1, 1, 0, 0, 0, -1, -1, -1, 0]);
 });
 
 test('self selection uses the appended bridge field and drains or cancels once', () => {

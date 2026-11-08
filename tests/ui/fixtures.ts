@@ -1,4 +1,26 @@
 import type { Snapshot } from "../../web/src/bridge/snapshot";
+import { adaptSnapshot } from "../../web/src/bridge/snapshot";
+
+export function teamSnapshot(size: 1 | 2 | 3, selectedActor: number | null = 1): Snapshot {
+  return adaptSnapshot({
+    ...snapshot(),
+    maxHealth: 100,
+    teamSize: size,
+    selectedActor,
+    selected: selectedActor !== null,
+    selectedPlayer: selectedActor === 0,
+    roster: Array.from({ length: size * 2 }, (_, actor) => ({
+      actor,
+      tag:
+        actor === 0
+          ? "Player"
+          : actor % 2 === 0
+            ? `Team${actor / 2}`
+            : `Opponent${Math.floor(actor / 2) + 1}`,
+      health: actor === 3 ? 50 : 100,
+    })),
+  });
+}
 
 export function snapshot(overrides: Partial<Snapshot> = {}): Snapshot {
   return {

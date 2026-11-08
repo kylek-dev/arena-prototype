@@ -35,9 +35,10 @@ export function actionTint(state: Snapshot | null): "target" | "unavailable" | u
   if (state.selectedPlayer) return "target";
   if (
     state.won ||
-    state.target.health === 0 ||
+    (state.roster?.find((unit) => unit.actor === state.selectedActor) ?? state.target).health ===
+      0 ||
     state.distance > state.range ||
-    ["Out of range", "Line of sight blocked"].includes(state.attackStatus)
+    ["Invalid target", "Out of range", "Line of sight blocked"].includes(state.attackStatus)
   )
     return "target";
   return canActivate(state) ? undefined : "unavailable";

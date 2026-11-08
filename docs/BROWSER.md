@@ -6,6 +6,12 @@ This is a local solo practice scene. Start the original Rust headless example wi
 
 ## Build and play
 
+The currently targeted unit has a subtle pale-gold border on its team/opponent frame and world nameplate. Focus alone does not highlight it; clearing/changing target removes/moves the border. Nameplates read selection from the render-rate scene snapshot. Human rendered review of this selection highlight is pending.
+
+Nameplates now include the unit's name in small, plain text just above the bar, aligned to its left edge. Long names truncate to the bar width; targeting/focus, health updates and visibility settings are unchanged. Human rendered review of the label placement is pending.
+
+**New practice modes (human rendered review pending):** Escape → **Practice mode** selects 1v1, 2v2 or 3v3 and starts a fresh round. R/menu reset keeps the selected mode; reload defaults to 1v1. Team frames appear on the left and exclude yourself (0/1/2 teammates); opponents appear on the right (1/2/3). All other units are stationary and do not attack. Left-click targets and right-click focuses every frame/model/nameplate; Tab cycles living enemies. Pulse rejects friendly targets, and the round ends only when every enemy is defeated. Layout editing includes a separately movable/saved team group. Existing positions are preserved. Rebuild WASM and frontend together. This supersedes historical single-opponent/no-teammate notes below; it does not implement multiplayer. See [ADR 0025](decisions/0025-team-practice-rosters.md) for the manual checklist.
+
 ```sh
 rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.122 --locked
@@ -153,6 +159,10 @@ This command builds on an existing web build and starts its own static server. T
 On Linux, Playwright may require system libraries and sudo for `--with-deps`. Browser installation is optional for the normal unit-test loop. To opt into Firefox diagnostics, install its browser/runtime dependencies, then use `ARENA_TEST_FIREFOX=1 npm run test:browser -- --project=firefox`.
 
 ## Inspect and measure
+
+**Frame-pacing correction (human review pending):** the overlay distinguishes **browser FPS** from **engine Hz**, with engine P99/Max and a cyan graph (browser intervals remain gold). The previous browser-only counter could show 240 FPS while the game actually updated around 60–100 Hz. The WASM client now keeps continuous Winit updates across ordinary canvas/HUD focus changes; native defaults, 30 Hz simulation, keyboard ownership and blur/hidden-tab input cancellation are unchanged. Engine Hz counts published engine frames, not GPU presentations. Reset samples clears both histories. Rebuild the complete client and compare movement/targeting in the production build. See [ADR 0027](decisions/0027-browser-focus-frame-pacing.md) for observed evidence and limits.
+
+With `?debug=1`, the default diagnostics panel is now a compact **FPS/frame-time overlay**, not the large JSON dump. It displays FPS averaged over the last second, P50/P95/**P99**, **Max**, and the number of intervals **over 33.3 ms** within the last 3600 samples. **Reset samples** starts a fresh measurement without resetting combat. The six-second graph preserves peaks in 50 ms buckets, with guides at 16.7/33.3 ms and a fixed 100 ms ceiling (larger spikes remain visible in Max). At very high FPS the sample capacity can retain less than six seconds. Overlay statistics refresh at most four times per second; hidden-tab gaps and startup frames are excluded. **Show engine snapshot** explicitly expands the old JSON view; leave it collapsed when investigating stutters. Escape → Toggle diagnostics hides/shows the panel on debug URLs. Browser intervals cannot identify CPU/GPU/simulation causes on their own; human rendered/performance review is pending. See [ADR 0026](decisions/0026-frame-timing-overlay.md).
 
 Open `/?debug=1` for the diagnostics panel and read-only `window.arenaDebug.state` and `.metrics`; toggle it through Menu → Toggle diagnostics. State includes rules tick, integer positions, selection, cooldown, feedback and camera. `firstStateMs` measures initialization to the first snapshot, **not** the first GPU frame or a network benchmark. Frame percentiles are requestAnimationFrame intervals after warmup, not isolated GPU time. Optional diagnostics save browser version and transfer sizes.
 

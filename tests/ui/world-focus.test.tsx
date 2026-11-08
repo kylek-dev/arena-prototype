@@ -11,7 +11,7 @@ vi.mock("../../web/src/bridge/loader", () => ({
 }));
 vi.mock("../../web/src/runtime/diagnostics", async (original) => ({
   ...(await original<typeof import("../../web/src/runtime/diagnostics")>()),
-  measureFrames: vi.fn(),
+  measureFrames: vi.fn(() => () => {}),
 }));
 
 let stop: () => void;

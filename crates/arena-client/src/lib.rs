@@ -22,7 +22,7 @@ use bevy::{asset::AssetMetaCheck, core_pipeline::tonemapping::Tonemapping, prelu
 #[derive(Resource)]
 struct Practice {
     arena: Arena,
-    previous: [Vec3; 2],
+    previous: Vec<Vec3>,
     movement: Vec2,
     facing: f32,
     selected: Option<usize>,
@@ -35,8 +35,18 @@ struct Practice {
 }
 impl Default for Practice {
     fn default() -> Self {
-        let arena = Arena::default();
-        let previous = arena.fighters().map(fighter_world);
+        Self::new(1)
+    }
+}
+impl Practice {
+    fn new(size: usize) -> Self {
+        let arena = Arena::practice(size).expect("validated practice size");
+        let previous = arena
+            .fighters()
+            .iter()
+            .copied()
+            .map(fighter_world)
+            .collect();
         Self {
             arena,
             previous,
@@ -79,6 +89,7 @@ struct AttackBeam;
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen(start))]
 pub fn run() {
     App::new()
+        .insert_resource(practice_window_settings(cfg!(target_arch = "wasm32")))
         .insert_resource(ClearColor(Color::srgb(0.18, 0.21, 0.25)))
         .insert_resource(GlobalAmbientLight {
             brightness: 500.0,
@@ -139,6 +150,17 @@ pub fn run() {
                 .after(bevy::camera::CameraUpdateSystems),
         )
         .run();
+}
+
+fn practice_window_settings(browser: bool) -> bevy::winit::WinitSettings {
+    // The browser HUD can own DOM focus while the arena remains visible.
+    // Canvas focus must not select Winit's event-driven 60 Hz low-power mode.
+    // Hidden tabs still follow browser rAF throttling; input cancellation is separate.
+    if browser {
+        bevy::winit::WinitSettings::continuous()
+    } else {
+        bevy::winit::WinitSettings::game()
+    }
 }
 fn world(position: Position) -> Vec3 {
     Vec3::new(position.x as f32 / 1000.0, 0.0, position.z as f32 / 1000.0)
@@ -277,7 +299,12 @@ fn setup(
     }
     let circle = meshes.add(Circle::new(0.65));
     let character_meshes = graphics::CharacterMeshes::new(&mut meshes);
-    for (index, accent) in [(0, teal.clone()), (1, orange.clone())] {
+    for index in 0..6 {
+        let accent = if index % 2 == 0 {
+            teal.clone()
+        } else {
+            orange.clone()
+        };
         let humanoid = humanoid::Humanoid::new(
             humanoid::Appearance::practice(index, accent),
             &mut materials,
@@ -377,8 +404,11 @@ fn read_controls(
     visuals: Query<(&FighterVisual, &GlobalTransform)>,
 ) {
     let input = platform::read_input();
-    if input.reset {
-        *practice = Practice::default();
+    if input.reset || input.team_size.is_some() {
+        let size = input
+            .team_size
+            .unwrap_or(practice.arena.fighters().len() / 2);
+        *practice = Practice::new(size);
         *orbit = Orbit::default();
     }
     orbit.yaw -= input.orbit_x * 0.005;
@@ -386,6 +416,7 @@ fn read_controls(
     orbit.distance = (orbit.distance + input.zoom * 0.01).clamp(6.0, 22.0);
     update_movement(&mut practice, &orbit, &input);
     update_selection(&mut practice, &input);
+    let actor_count = practice.arena.fighters().len();
     let pick = |cursor| {
         cameras.single().ok().and_then(|(camera, view)| {
             camera.viewport_to_world(view, cursor).ok().and_then(|ray| {
@@ -393,6 +424,7 @@ fn read_controls(
                     ray,
                     visuals
                         .iter()
+                        .filter(|(unit, _)| unit.0 < actor_count)
                         .map(|(unit, transform)| (unit.0, transform.translation())),
                 )
             })
@@ -438,6 +470,12 @@ fn update_selection(practice: &mut Practice, input: &Input) {
         practice.selected = Some(0);
         practice.feedback = "Player selected";
     }
+    if let Some(actor) = input
+        .select_actor
+        .filter(|actor| *actor < practice.arena.fighters().len())
+    {
+        practice.selected = Some(actor);
+    }
     if input.clear {
         practice.selected = None;
         practice.feedback = "Target cleared";
@@ -455,7 +493,13 @@ fn update_movement(practice: &mut Practice, orbit: &Orbit, input: &Input) {
 }
 
 fn simulate(mut practice: ResMut<Practice>) {
-    practice.previous = practice.arena.fighters().map(fighter_world);
+    practice.previous = practice
+        .arena
+        .fighters()
+        .iter()
+        .copied()
+        .map(fighter_world)
+        .collect();
     let mut commands = vec![ArenaCommand::Move {
         actor: 0,
         x: (practice.movement.x * 1000.0) as i16,
@@ -512,7 +556,7 @@ fn present(
     fixed: Res<Time<Fixed>>,
     time: Res<Time>,
     mut fighters: Query<
-        (&FighterVisual, &mut Transform),
+        (&FighterVisual, &mut Transform, &mut Visibility),
         (Without<Camera>, Without<TargetRing>, Without<AttackBeam>),
     >,
     mut cameras: Query<
@@ -543,14 +587,24 @@ fn present(
         ),
     >,
 ) {
-    let positions: [Vec3; 2] = std::array::from_fn(|i| {
-        practice.previous[i].lerp(
-            fighter_world(practice.arena.fighters()[i]),
-            fixed.overstep_fraction(),
-        )
-    });
+    let positions: Vec<Vec3> = (0..practice.arena.fighters().len())
+        .map(|i| {
+            practice.previous[i].lerp(
+                fighter_world(practice.arena.fighters()[i]),
+                fixed.overstep_fraction(),
+            )
+        })
+        .collect();
     practice.combat_text.advance(time.delta_secs());
-    for (fighter, mut transform) in &mut fighters {
+    for (fighter, mut transform, mut visibility) in &mut fighters {
+        *visibility = if fighter.0 < positions.len() {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if fighter.0 >= positions.len() {
+            continue;
+        }
         transform.translation = positions[fighter.0];
         if fighter.0 == 0 {
             transform.rotation = Quat::from_rotation_y(practice.facing);
@@ -585,7 +639,7 @@ fn present(
     practice.flash = (practice.flash - time.delta_secs()).max(0.0);
     if let Ok((mut transform, mut visibility)) = beam.single_mut() {
         let from = positions[0] + Vec3::Y;
-        let to = positions[1] + Vec3::Y;
+        let to = positions[practice.selected.unwrap_or(1)] + Vec3::Y;
         *transform = Transform::from_translation((from + to) * 0.5)
             .looking_at(to, Vec3::Y)
             .with_scale(Vec3::new(0.065, 0.065, from.distance(to)));
@@ -607,7 +661,9 @@ fn publish(
     let fighters = practice.arena.fighters();
     let player = fighters[0];
     let target = fighters[1];
-    let distance = (player.position.distance_squared(target.position) as f64).sqrt() / 1000.0;
+    let selected_target = fighters[practice.selected.unwrap_or(1)];
+    let distance =
+        (player.position.distance_squared(selected_target.position) as f64).sqrt() / 1000.0;
     let cooldown =
         player.ready_at.saturating_sub(practice.arena.tick()) as f64 / TICKS_PER_SECOND as f64;
     let attack_status = match practice.arena.can_attack(0, practice.selected.unwrap_or(1)) {
@@ -639,38 +695,66 @@ fn publish(
                 ray,
                 visuals
                     .iter()
+                    .filter(|(unit, _)| unit.0 < fighters.len())
                     .map(|(unit, transform)| (unit.0, transform.translation())),
             )
         });
-    let hovered = match hovered {
-        Some(0) => "\"Player\"",
-        Some(1) => "\"Opponent1\"",
-        _ => "null",
-    };
-    // The local player is deliberately excluded. Team anchors can be appended
-    // when real teammates exist; selection/focus do not control plate visibility.
+    let hovered = hovered
+        .map(|actor| format!("\"{}\"", unit_tag(actor)))
+        .unwrap_or_else(|| "null".into());
+    // The local player is deliberately excluded, independently of selection/focus.
     let plates = cameras
         .single()
         .ok()
-        .and_then(|(camera, view)| {
+        .map(|(camera, view)| {
             visuals
                 .iter()
-                .find(|(unit, _)| unit.0 == 1)
-                .and_then(|(_, transform)| {
-                    nameplates::anchor(camera, view, transform.translation())
+                .filter(|(unit, _)| unit.0 > 0 && unit.0 < fighters.len())
+                .filter_map(|(unit, transform)| {
+                    nameplates::anchor(camera, view, transform.translation()).map(|point| {
+                        format!(
+                            r#"{{"tag":"{}","x":{},"y":{}}}"#,
+                            unit_tag(unit.0),
+                            point.x,
+                            point.y
+                        )
+                    })
                 })
+                .collect::<Vec<_>>()
+                .join(",")
         })
-        .map(|point| format!(r#"{{"tag":"Opponent1","x":{},"y":{}}}"#, point.x, point.y))
         .unwrap_or_default();
     let combat_text = cameras.single().ok().map(|(camera, view)| {
         practice.combat_text.entries.iter().filter_map(|entry| {
             let (_, transform) = visuals.iter().find(|(unit, _)| unit.0 == entry.target)?;
             let point = nameplates::anchor(camera, view, transform.translation() + Vec3::Y * (0.25 + entry.age * 0.7))?;
-            Some(format!(r#"{{"id":{},"source":"Player","target":"Opponent1","delta":{},"x":{},"y":{},"progress":{}}}"#,
-                entry.id, entry.delta, point.x, point.y, entry.age / 1.2))
+            Some(format!(r#"{{"id":{},"source":"Player","target":"{}","delta":{},"x":{},"y":{},"progress":{}}}"#,
+                entry.id, unit_tag(entry.target), entry.delta, point.x, point.y, entry.age / 1.2))
         }).collect::<Vec<_>>().join(",")
     }).unwrap_or_default();
-    platform::publish(&format!(
+    let roster = fighters
+        .iter()
+        .enumerate()
+        .map(|(actor, fighter)| {
+            format!(
+                r#"{{"actor":{},"tag":"{}","health":{}}}"#,
+                actor,
+                unit_tag(actor),
+                fighter.health
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let extra = format!(
+        r#""teamSize":{},"selectedActor":{},"roster":[{}],"#,
+        fighters.len() / 2,
+        practice
+            .selected
+            .map(|actor| actor.to_string())
+            .unwrap_or_else(|| "null".into()),
+        roster
+    );
+    let json = format!(
         r#"{{"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"selectedPlayer":{},"hoveredUnit":{},"distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":{}}},"maxHealth":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}},"nameplates":[{}],"combatText":[{}]}}"#,
         practice.arena.tick(),
         practice.frames,
@@ -704,11 +788,24 @@ fn publish(
         ATTACK_COOLDOWN as f64 / TICKS_PER_SECOND as f64,
         plates,
         combat_text
-    ));
+    );
+    platform::publish(&format!("{{{}{}", extra, &json[1..]));
+}
+
+fn unit_tag(actor: usize) -> String {
+    if actor == 0 {
+        "Player".into()
+    } else if actor.is_multiple_of(2) {
+        format!("Team{}", actor / 2)
+    } else {
+        format!("Opponent{}", actor / 2 + 1)
+    }
 }
 
 #[derive(Default)]
 struct Input {
+    team_size: Option<usize>,
+    select_actor: Option<usize>,
     x: f32,
     z: f32,
     attack: bool,
@@ -730,7 +827,7 @@ mod platform {
     use bevy::prelude::Vec2;
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen(
-        inline_js = "export function arena_has_character() { return globalThis.arenaShell.hasCharacterModel === true; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(unit) { const tag = unit === 0 ? 'Player' : unit === 1 ? 'Opponent1' : null; if (tag) globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); }"
+        inline_js = "export function arena_has_character() { return globalThis.arenaShell.hasCharacterModel === true; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(tag) { globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); }"
     )]
     extern "C" {
         fn arena_has_character() -> bool;
@@ -740,7 +837,7 @@ mod platform {
         fn arena_weapons() -> js_sys::Array;
         fn arena_lighting() -> js_sys::Array;
         fn arena_state(json: &str);
-        fn arena_focus(unit: u32);
+        fn arena_focus(tag: &str);
     }
     pub fn has_character_model() -> bool {
         arena_has_character()
@@ -773,6 +870,16 @@ mod platform {
         let a = arena_input();
         let number = |i| a.get(i).as_f64().unwrap_or(0.0) as f32;
         Input {
+            team_size: a
+                .get(18)
+                .as_f64()
+                .filter(|n| [1.0, 2.0, 3.0].contains(n))
+                .map(|n| n as usize),
+            select_actor: a
+                .get(17)
+                .as_f64()
+                .filter(|n| n.is_finite() && *n >= 0.0 && *n < 6.0 && n.fract() == 0.0)
+                .map(|n| n as usize),
             x: number(0),
             z: number(1),
             attack: number(2) != 0.0,
@@ -800,7 +907,7 @@ mod platform {
         }
     }
     pub fn focus_unit(unit: usize) {
-        arena_focus(unit as u32);
+        arena_focus(&super::unit_tag(unit));
     }
     pub fn publish(json: &str) {
         arena_state(json);
@@ -815,6 +922,96 @@ fn focus_cursor(x: f32, y: f32) -> Option<Vec2> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_hud_focus_does_not_enable_event_driven_low_power_updates() {
+        use bevy::winit::UpdateMode;
+        let settings = practice_window_settings(true);
+        for focused in [true, false] {
+            assert!(matches!(
+                settings.update_mode(focused),
+                UpdateMode::Continuous
+            ));
+        }
+        assert!(matches!(
+            practice_window_settings(false).unfocused_mode,
+            UpdateMode::Reactive { .. }
+        ));
+    }
+
+    #[test]
+    fn practice_rosters_present_all_active_actors_and_hide_unused_models() {
+        let mut app = App::new();
+        app.init_resource::<Practice>()
+            .init_resource::<Orbit>()
+            .init_resource::<Time>()
+            .init_resource::<Time<Fixed>>()
+            .add_systems(Update, (present, animation::animate).chain())
+            .init_resource::<animation::Settings>();
+        let visuals: Vec<_> = (0..6)
+            .map(|actor| {
+                app.world_mut()
+                    .spawn((
+                        FighterVisual(actor),
+                        Transform::default(),
+                        Visibility::default(),
+                    ))
+                    .id()
+            })
+            .collect();
+        for size in [1, 2, 3, 1] {
+            *app.world_mut().resource_mut::<Practice>() = Practice::new(size);
+            for actor in 0..size * 2 {
+                update_selection(
+                    &mut app.world_mut().resource_mut::<Practice>(),
+                    &Input {
+                        select_actor: Some(actor),
+                        ..default()
+                    },
+                );
+                assert_eq!(app.world().resource::<Practice>().selected, Some(actor));
+            }
+            update_selection(
+                &mut app.world_mut().resource_mut::<Practice>(),
+                &Input {
+                    select_actor: Some(6),
+                    ..default()
+                },
+            );
+            assert_eq!(
+                app.world().resource::<Practice>().selected,
+                Some(size * 2 - 1)
+            );
+            app.world_mut().run_schedule(Update);
+            for (actor, entity) in visuals.iter().enumerate() {
+                assert_eq!(
+                    *app.world().get::<Visibility>(*entity).unwrap(),
+                    if actor < size * 2 {
+                        Visibility::Inherited
+                    } else {
+                        Visibility::Hidden
+                    }
+                );
+                if actor < size * 2 {
+                    assert_eq!(
+                        app.world().get::<Transform>(*entity).unwrap().translation,
+                        fighter_world(app.world().resource::<Practice>().arena.fighters()[actor])
+                    );
+                }
+            }
+            assert_eq!(unit_tag(0), "Player");
+            for actor in 1..size * 2 {
+                assert_eq!(
+                    unit_tag(actor),
+                    if actor.is_multiple_of(2) {
+                        format!("Team{}", actor / 2)
+                    } else {
+                        format!("Opponent{}", actor / 2 + 1)
+                    }
+                );
+            }
+        }
+    }
 
     #[test]
     fn combat_numbers_come_from_successful_hits_not_attempts_and_reset_clears_them() {
@@ -1013,7 +1210,7 @@ mod tests {
             practice.arena.can_attack(0, 0),
             Err(arena_sim::arena::Rejection::InvalidTarget)
         );
-        let before = *practice.arena.fighters();
+        let before = practice.arena.fighters().to_vec();
         assert!(matches!(
             practice.arena.step(&[ArenaCommand::Attack {
                 actor: 0,
@@ -1021,7 +1218,7 @@ mod tests {
             }])[0],
             ArenaEvent::Rejected(arena_sim::arena::Rejection::InvalidTarget)
         ));
-        assert_eq!(*practice.arena.fighters(), before);
+        assert_eq!(practice.arena.fighters(), before);
         update_selection(
             &mut practice,
             &Input {

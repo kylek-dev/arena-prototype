@@ -47,7 +47,7 @@ it("gives every live and sample frame separate health and resource bars", () => 
     engine.set(null);
     interaction.set({ ...interaction.get(), layout: true });
   });
-  expect(screen.getAllByRole("meter")).toHaveLength(8);
+  expect(screen.getAllByRole("meter")).toHaveLength(16);
 });
 
 it("shows errors only after an attempted cast, refreshes repeated errors and expires them", () => {

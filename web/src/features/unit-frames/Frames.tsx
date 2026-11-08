@@ -101,29 +101,44 @@ export function Frames() {
           </Placed>
         );
       })}
-      <Placed
-        id="opponents"
-        value={frames.opponents}
-        onChange={(l) => updateConfig((c) => ({ ...c, frames: { ...c.frames, opponents: l } }))}
-      >
-        <div className="opponent-list" role="group" aria-label="Opponents">
-          {(editing
-            ? [{ id: "sample-opponent", name: "Enemy Bot", health: 75, maxHealth: 100 }]
-            : state
-              ? [state.target]
-              : []
-          ).map((unit) => (
-            <TaggedFrame
-              key={unit.id}
-              tag="Opponent1"
-              role="opponent"
-              unit={unit}
-              editing={editing}
-              selected={unit.id === selectedId}
-            />
-          ))}
-        </div>
-      </Placed>
+      {(["team", "opponents"] as const).map((side) => {
+        const units = editing
+          ? Array.from({ length: side === "team" ? 2 : 3 }, (_, index) => ({
+              id: `sample-${side}-${index}`,
+              name: side === "team" ? `Teammate ${index + 1}` : `Enemy Bot ${index + 1}`,
+              health: 75,
+              maxHealth: 100,
+            }))
+          : state
+            ? unitRoster(state, focused)[side].filter((unit) => unit.id !== state.player.id)
+            : [];
+        if (!editing && !units.length) return null;
+        return (
+          <Placed
+            key={side}
+            id={side}
+            value={frames[side]}
+            onChange={(l) => updateConfig((c) => ({ ...c, frames: { ...c.frames, [side]: l } }))}
+          >
+            <div
+              className="opponent-list"
+              role="group"
+              aria-label={side === "team" ? "Team" : "Opponents"}
+            >
+              {units.map((unit, index) => (
+                <TaggedFrame
+                  key={unit.id}
+                  tag={`${side === "team" ? "Team" : "Opponent"}${index + 1}` as UnitTag}
+                  role={side === "team" ? "teammate" : "opponent"}
+                  unit={unit}
+                  editing={editing}
+                  selected={unit.id === selectedId}
+                />
+              ))}
+            </div>
+          </Placed>
+        );
+      })}
     </>
   );
 }

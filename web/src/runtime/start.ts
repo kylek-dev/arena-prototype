@@ -39,14 +39,14 @@ export function startRuntime(canvas: HTMLCanvasElement) {
       try {
         const next = adaptSnapshot(raw),
           previous = engine.get();
-        recordState();
+        recordState(next.frames);
         observeCastResult(next);
         nameplateScene.set(next);
         focus.set(
           reconcileFocus(
             focus.get(),
-            [next.player, next.target],
-            !!previous && next.tick < previous.tick,
+            next.roster ?? [next.player, next.target],
+            !!previous && (next.tick < previous.tick || next.teamSize !== previous.teamSize),
           ),
         );
         // Deliver cooldown edges immediately so starting/finishing never waits
@@ -70,12 +70,13 @@ export function startRuntime(canvas: HTMLCanvasElement) {
         return metrics();
       },
     };
-  measureFrames(() => (engine.get()?.frames ?? 0) > 30);
+  const stopFrameTiming = measureFrames(() => (engine.get()?.frames ?? 0) > 30);
   loadEngine().catch((e) => {
     console.error(e);
     fail(String(e.message ?? e));
   });
   return () => {
+    stopFrameTiming();
     router.dispose();
     pointer.dispose();
     stopSpellDrop();

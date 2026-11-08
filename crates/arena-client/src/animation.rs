@@ -141,12 +141,15 @@ pub(crate) fn animate(
     mut roots: Query<(&mut Animator, &mut Transform), Without<crate::FighterVisual>>,
     mut joints: Query<(&Joint, &mut Transform), (Without<Animator>, Without<crate::FighterVisual>)>,
 ) {
-    let mut poses = [Pose::default(); 2];
+    let mut poses = [Pose::default(); 6];
     for (mut animator, mut transform) in &mut roots {
         let Some((_, fighter)) = fighters.iter().find(|(f, _)| f.0 == animator.actor) else {
             continue;
         };
         let actor = animator.actor;
+        if actor >= practice.arena.fighters().len() {
+            continue;
+        }
         let pose = animator.step(
             fighter.translation,
             fighter.rotation,

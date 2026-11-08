@@ -23,9 +23,11 @@ export function Nameplates() {
     mode.panel === "settings"
   )
     return null;
+  const roster = unitRoster(scene, null);
+  const selectedId = roster.target?.id;
   return (
     <div className="nameplates" aria-label="World health bars">
-      {visibleNameplates(scene.nameplates ?? [], unitRoster(scene, null), preferences).map(
+      {visibleNameplates(scene.nameplates ?? [], roster, preferences).map(
         ({ tag, unit, x, y, friendly }) => (
           <button
             key={tag}
@@ -33,6 +35,7 @@ export function Nameplates() {
             className={`nameplate ${friendly ? "friendly" : "enemy"}`}
             style={{ left: `${x * 100}%`, top: `${y * 100}%` }}
             aria-label={`${unit.name} health ${unit.health}/${unit.maxHealth}. Target; right-click to focus`}
+            aria-pressed={unit.id === selectedId}
             onMouseDown={(e) => {
               press.current = { x: e.clientX, y: e.clientY };
             }}
@@ -53,6 +56,9 @@ export function Nameplates() {
               className="nameplate-fill"
               style={{ width: `${(unit.health / unit.maxHealth) * 100}%` }}
             />
+            <span className="nameplate-name" aria-hidden="true">
+              {unit.name}
+            </span>
           </button>
         ),
       )}

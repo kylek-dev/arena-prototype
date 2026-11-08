@@ -1,9 +1,32 @@
 import { describe, expect, it } from "vitest";
 import { adaptSnapshot } from "../../web/src/bridge/snapshot";
 import { availability, canActivate } from "../../web/src/domain/abilities/catalog";
-import { snapshot } from "../ui/fixtures";
+import { snapshot, teamSnapshot } from "../ui/fixtures";
+import { defaultConfig, validateConfig } from "../../web/src/domain/preferences/schema";
 
 describe("engine snapshot boundary", () => {
+  it("validates roster identity, counts, selection and health", () => {
+    const valid = { ...teamSnapshot(3), maxHealth: 100 };
+    expect(adaptSnapshot(valid).roster).toHaveLength(6);
+    for (const invalid of [
+      { ...valid, teamSize: 4 },
+      { ...valid, selectedActor: 6 },
+      { ...valid, selected: false },
+      { ...valid, roster: valid.roster?.slice(1) },
+      { ...valid, roster: valid.roster?.map((unit) => ({ ...unit, tag: "Player" })) },
+      { ...valid, roster: valid.roster?.map((unit) => ({ ...unit, health: 101 })) },
+    ])
+      expect(() => adaptSnapshot(invalid)).toThrow();
+  });
+
+  it("adds left team placement to old profiles without moving existing frames", () => {
+    const old = defaultConfig();
+    const { team: _team, ...frames } = old.frames;
+    const migrated = validateConfig({ ...old, frames });
+    expect(migrated.frames.team.x).toBe(0.03);
+    expect(migrated.frames.opponents).toEqual(old.frames.opponents);
+    expect(validateConfig(migrated)).toEqual(migrated);
+  });
   it("adapts the two-entity practice ABI without inventing combat data", () => {
     const raw = { ...snapshot(), maxHealth: 150 };
     const adapted = adaptSnapshot(raw);
@@ -20,7 +43,7 @@ describe("engine snapshot boundary", () => {
     { ...snapshot(), maxHealth: 100, cooldown: NaN },
     { ...snapshot(), maxHealth: 100, character: undefined },
     { ...snapshot(), maxHealth: 100, camera: undefined },
-    { ...snapshot(), maxHealth: 100, hoveredUnit: "Team1" },
+    { ...snapshot(), maxHealth: 100, hoveredUnit: "Team4" },
   ])("rejects incomplete engine data: %j", (raw) => {
     expect(() => adaptSnapshot(raw)).toThrow();
   });

@@ -4,7 +4,7 @@ export function UnitFrame({
   role,
   unit,
 }: {
-  role: Exclude<FrameRole, "opponents" | "unitTooltip"> | "opponent";
+  role: Exclude<FrameRole, "opponents" | "team" | "unitTooltip"> | "opponent" | "teammate";
   unit: Entity | null;
 }) {
   return (

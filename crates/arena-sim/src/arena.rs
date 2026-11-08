@@ -127,40 +127,49 @@ pub enum ArenaEvent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Arena {
     tick: u64,
-    fighters: [Combatant; 2],
+    fighters: Vec<Combatant>,
     winner: Option<usize>,
 }
 impl Default for Arena {
     fn default() -> Self {
-        Self {
-            tick: 0,
-            fighters: [
-                Combatant {
-                    position: Position { x: 0, z: 5_500 },
-                    health: 100,
-                    ready_at: 0,
-                    height: 0,
-                    vertical_velocity: 0,
-                    momentum: Position { x: 0, z: 0 },
-                },
-                Combatant {
-                    position: Position { x: 0, z: -3_500 },
-                    health: 100,
-                    ready_at: 0,
-                    height: 0,
-                    vertical_velocity: 0,
-                    momentum: Position { x: 0, z: 0 },
-                },
-            ],
-            winner: None,
+        Self::practice(1).expect("valid default team size")
+    }
+}
+impl Arena {
+    /// Local practice roster: even actors are friendly, odd actors are enemies.
+    /// Actor zero is the player; command ordering remains caller supplied.
+    pub fn practice(team_size: usize) -> Option<Self> {
+        if !(1..=3).contains(&team_size) {
+            return None;
         }
+        Some(Self {
+            tick: 0,
+            fighters: (0..team_size * 2)
+                .map(|index| Combatant {
+                    position: Position {
+                        x: match index / 2 {
+                            0 => 0,
+                            1 => -2_500,
+                            _ => 2_500,
+                        },
+                        z: if index % 2 == 0 { 5_500 } else { -3_500 },
+                    },
+                    health: 100,
+                    ready_at: 0,
+                    height: 0,
+                    vertical_velocity: 0,
+                    momentum: Position { x: 0, z: 0 },
+                })
+                .collect(),
+            winner: None,
+        })
     }
 }
 impl Arena {
     pub fn tick(&self) -> u64 {
         self.tick
     }
-    pub fn fighters(&self) -> &[Combatant; 2] {
+    pub fn fighters(&self) -> &[Combatant] {
         &self.fighters
     }
     pub fn winner(&self) -> Option<usize> {
@@ -176,7 +185,10 @@ impl Arena {
         let Some(defender) = self.fighters.get(target) else {
             return Err(Rejection::InvalidTarget);
         };
-        if actor == target {
+        if attacker.health == 0 {
+            return Err(Rejection::InvalidActor);
+        }
+        if actor % 2 == target % 2 || defender.health == 0 {
             return Err(Rejection::InvalidTarget);
         }
         if self.tick < attacker.ready_at {
@@ -192,7 +204,7 @@ impl Arena {
     }
     pub fn step(&mut self, commands: &[ArenaCommand]) -> Vec<ArenaEvent> {
         let mut events = Vec::new();
-        let mut moved = [false; 2];
+        let mut moved = vec![false; self.fighters.len()];
         // Existing airborne momentum resolves before this tick's ordered commands.
         // Ground momentum expires without a Move, preventing stale running jumps.
         if self.winner.is_none() {
@@ -211,7 +223,7 @@ impl Arena {
             }
             match command {
                 ArenaCommand::Move { actor, x, z } => {
-                    if actor >= self.fighters.len() {
+                    if actor >= self.fighters.len() || self.fighters[actor].health == 0 {
                         events.push(ArenaEvent::Rejected(Rejection::InvalidActor));
                         continue;
                     }
@@ -246,6 +258,10 @@ impl Arena {
                         events.push(ArenaEvent::Rejected(Rejection::InvalidActor));
                         continue;
                     };
+                    if fighter.health == 0 {
+                        events.push(ArenaEvent::Rejected(Rejection::InvalidActor));
+                        continue;
+                    }
                     if fighter.height > 0 || fighter.vertical_velocity > 0 {
                         events.push(ArenaEvent::Rejected(Rejection::Airborne));
                         continue;
@@ -266,7 +282,12 @@ impl Arena {
                         target,
                         damage,
                     });
-                    if self.fighters[target].health == 0 {
+                    if self
+                        .fighters
+                        .iter()
+                        .enumerate()
+                        .all(|(index, fighter)| index % 2 == actor % 2 || fighter.health == 0)
+                    {
                         self.winner = Some(actor);
                         events.push(ArenaEvent::Won { actor });
                     }
@@ -349,6 +370,71 @@ fn segments_intersect(a: Position, b: Position, c: Position, d: Position) -> boo
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn practice_sizes_reject_friendly_fire_and_finish_only_after_team_elimination() {
+        assert!(Arena::practice(0).is_none());
+        assert!(Arena::practice(4).is_none());
+        for size in 1..=3 {
+            let mut arena = Arena::practice(size).unwrap();
+            assert_eq!(arena.fighters().len(), size * 2);
+            for fighter in &mut arena.fighters {
+                fighter.position = Position { x: 0, z: 0 };
+            }
+            let mut replay = arena.clone();
+            let mut commands = Vec::new();
+            if size > 1 {
+                let before = arena.clone();
+                assert_eq!(arena.can_attack(0, 2), Err(Rejection::InvalidTarget));
+                assert_eq!(
+                    arena.step(&[ArenaCommand::Attack {
+                        actor: 0,
+                        target: 2
+                    }]),
+                    vec![ArenaEvent::Rejected(Rejection::InvalidTarget)]
+                );
+                assert_eq!(arena.fighters, before.fighters);
+                replay = arena.clone();
+            }
+            for target in (1..size * 2).step_by(2) {
+                for _ in 0..4 {
+                    while arena.tick() < arena.fighters[0].ready_at {
+                        commands.push(Vec::new());
+                        arena.step(&[]);
+                    }
+                    let command = vec![ArenaCommand::Attack { actor: 0, target }];
+                    arena.step(&command);
+                    commands.push(command);
+                }
+                assert_eq!(arena.winner(), (target == size * 2 - 1).then_some(0));
+                if arena.winner().is_none() {
+                    assert_eq!(arena.can_attack(0, target), Err(Rejection::InvalidTarget));
+                    assert_eq!(arena.can_attack(target, 0), Err(Rejection::InvalidActor));
+                    let frozen = arena.fighters[target];
+                    arena.step(&[
+                        ArenaCommand::Move {
+                            actor: target,
+                            x: 1000,
+                            z: 0,
+                        },
+                        ArenaCommand::Jump { actor: target },
+                    ]);
+                    commands.push(vec![
+                        ArenaCommand::Move {
+                            actor: target,
+                            x: 1000,
+                            z: 0,
+                        },
+                        ArenaCommand::Jump { actor: target },
+                    ]);
+                    assert_eq!(arena.fighters[target], frozen);
+                }
+            }
+            for command in commands {
+                replay.step(&command);
+            }
+            assert_eq!(arena, replay);
+        }
+    }
     use super::*;
     fn forward() -> ArenaCommand {
         ArenaCommand::Move {
@@ -453,7 +539,7 @@ mod tests {
         assert_eq!(arena.fighters[0].position.z, before.z - MOVE_PER_TICK);
         assert!(arena.fighters[0].height > 0);
         arena.winner = Some(1);
-        let frozen = arena.fighters;
+        let frozen = arena.fighters.clone();
         arena.step(&[forward(), JUMP]);
         assert_eq!(arena.fighters, frozen);
         arena = Arena::default();

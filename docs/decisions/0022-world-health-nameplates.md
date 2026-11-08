@@ -1,5 +1,7 @@
 # ADR 0022: World health nameplates
 
+**2026-11-08 label follow-up:** at the user's request, nameplates now show a small, plain unit-name label above the health bar, aligned to the top left. Labels use the resolved roster name for friends/enemies, truncate at bar width and do not intercept pointer input. This supersedes the original health-only/no-printed-names presentation below. DOM regressions cover names and unchanged target/focus behavior; rendered placement awaits human review.
+
 Date: 2026-11-08. **Status: accepted**, following the user's request for clickable floating health bars, separate friendly/enemy settings and keybinds, and no self nameplate.
 
 ## Decision

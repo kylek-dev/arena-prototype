@@ -319,7 +319,7 @@ it("shows sample frames without selection/focus and drags the whole selected fra
   engine.set(snapshot({ selected: false }));
   interaction.set({ ...interaction.get(), layout: true });
   render(<Frames />);
-  expect(screen.getAllByRole("meter")).toHaveLength(8);
+  expect(screen.getAllByRole("meter")).toHaveLength(16);
   expect(screen.getByRole("button", { name: "Edit opponents" })).toBeTruthy();
   const frame = screen.getByRole("button", { name: "Edit target" });
   const before = preferences.get().profiles[0].config.frames.target;
