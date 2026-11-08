@@ -2,12 +2,14 @@ export interface GraphicsPreferences {
   version: 1;
   antialiasing: "off" | "msaa4";
   modelDetail: "low" | "high";
+  bloom: boolean;
 }
 
 export const defaultGraphics: GraphicsPreferences = {
   version: 1,
   antialiasing: "msaa4",
   modelDetail: "high",
+  bloom: true,
 };
 
 export function parseGraphics(value: unknown): GraphicsPreferences | null {
@@ -16,13 +18,23 @@ export function parseGraphics(value: unknown): GraphicsPreferences | null {
   if (
     v.version !== 1 ||
     (v.antialiasing !== "off" && v.antialiasing !== "msaa4") ||
-    (v.modelDetail !== "low" && v.modelDetail !== "high")
+    (v.modelDetail !== "low" && v.modelDetail !== "high") ||
+    (v.bloom !== undefined && typeof v.bloom !== "boolean")
   )
     return null;
-  return { version: 1, antialiasing: v.antialiasing, modelDetail: v.modelDetail };
+  return {
+    version: 1,
+    antialiasing: v.antialiasing,
+    modelDetail: v.modelDetail,
+    bloom: v.bloom !== false,
+  };
 }
 
 // Separate presentation callback, never part of the combat command array.
 export function graphicsValues(value: GraphicsPreferences): number[] {
-  return [value.antialiasing === "msaa4" ? 4 : 1, value.modelDetail === "high" ? 1 : 0];
+  return [
+    value.antialiasing === "msaa4" ? 4 : 1,
+    value.modelDetail === "high" ? 1 : 0,
+    value.bloom ? 1 : 0,
+  ];
 }

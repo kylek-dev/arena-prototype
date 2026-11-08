@@ -24,14 +24,17 @@ afterEach(() => {
 it("opens Graphics from settings and applies, persists and resets quality", () => {
   render(<Settings />);
   fireEvent.click(screen.getByRole("button", { name: "Graphics" }));
-  expect(readGraphics()).toEqual([4, 1]);
+  expect(readGraphics()).toEqual([4, 1, 1]);
   fireEvent.change(screen.getByLabelText("Anti-aliasing"), { target: { value: "off" } });
   fireEvent.change(screen.getByLabelText("Model detail"), { target: { value: "low" } });
-  expect(readGraphics()).toEqual([1, 0]);
-  expect(graphicsValues(loadGraphics(localStorage))).toEqual([1, 0]);
+  expect(readGraphics()).toEqual([1, 0, 1]);
+  expect(graphicsValues(loadGraphics(localStorage))).toEqual([1, 0, 1]);
+  fireEvent.click(screen.getByRole("checkbox", { name: "Weapon glow (bloom)" }));
+  expect(readGraphics()).toEqual([1, 0, 0]);
+  expect(loadGraphics(localStorage).bloom).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "Reset graphics" }));
   expect(loadGraphics(localStorage)).toEqual(defaultGraphics);
-  expect(readGraphics()).toEqual([4, 1]);
+  expect(readGraphics()).toEqual([4, 1, 1]);
 });
 
 it("rejects malformed and future storage without overwriting it on load", () => {
@@ -58,14 +61,24 @@ it("still applies settings when storage fails and shows the failure", () => {
   render(<Settings />);
   fireEvent.click(screen.getByRole("button", { name: "Graphics" }));
   fireEvent.change(screen.getByLabelText("Anti-aliasing"), { target: { value: "off" } });
-  expect(readGraphics()).toEqual([1, 1]);
+  expect(readGraphics()).toEqual([1, 1, 1]);
   expect(screen.getByRole("status").textContent).toContain("could not be saved");
 });
 
 it("keeps the graphics callback separate from combat and rejects invalid updates", () => {
   updateGraphics({ modelDetail: "low" });
-  expect(readGraphics()).toEqual([4, 0]);
+  expect(readGraphics()).toEqual([4, 0, 1]);
   // Runtime boundary remains validated even if callers bypass TypeScript.
   updateGraphics({ antialiasing: "invalid" as "off" });
-  expect(readGraphics()).toEqual([4, 0]);
+  expect(readGraphics()).toEqual([4, 0, 1]);
+  updateGraphics({ bloom: "invalid" as unknown as boolean });
+  expect(readGraphics()).toEqual([4, 0, 1]);
+});
+
+it("upgrades existing v1 graphics preferences without overwriting storage on load", () => {
+  const old = JSON.stringify({ version: 1, antialiasing: "off", modelDetail: "low" });
+  localStorage.setItem(GRAPHICS_KEY, old);
+  expect(graphicsValues(loadGraphics(localStorage))).toEqual([1, 0, 1]);
+  expect(localStorage.getItem(GRAPHICS_KEY)).toBe(old);
+  expect(parseGraphics({ ...defaultGraphics, bloom: null })).toBeNull();
 });

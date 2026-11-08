@@ -2,6 +2,7 @@ import { Button, Separator, Text } from "@radix-ui/themes";
 import { setMode, setPanel, selectedLayout } from "../../state/session";
 import { dispatch } from "../../runtime/commands";
 import { debugEnabled, diagnosticsVisible } from "../../runtime/diagnostics";
+import { lightingVisible } from "../../state/lighting";
 
 export function GameMenu() {
   return (
@@ -16,6 +17,16 @@ export function GameMenu() {
       </Button>
       <Button variant="surface" color="gray" onClick={() => setPanel("spellbook")}>
         Spells
+      </Button>
+      <Button
+        variant="surface"
+        color="gray"
+        onClick={() => {
+          setPanel(null);
+          lightingVisible.set(true);
+        }}
+      >
+        Lighting tweaks (temporary)
       </Button>
       <Button
         variant="surface"

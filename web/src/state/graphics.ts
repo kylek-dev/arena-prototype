@@ -28,7 +28,7 @@ export const graphicsSaveError = createStore("");
 export const readGraphics = () => graphicsValues(graphics.get());
 
 export function updateGraphics(
-  patch: Partial<Pick<ReturnType<typeof graphics.get>, "antialiasing" | "modelDetail">>,
+  patch: Partial<Pick<ReturnType<typeof graphics.get>, "antialiasing" | "modelDetail" | "bloom">>,
 ) {
   const next = parseGraphics({ ...graphics.get(), ...patch });
   if (!next) return;
