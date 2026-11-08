@@ -1,4 +1,6 @@
 import type { Entity } from "../domain/units/selection";
+import type { UnitTag } from "../domain/units/tags";
+export type RosterEntry = Entity & { actor: number; tag: UnitTag };
 import type { NameplateProjection } from "../domain/units/nameplates";
 import { validCombatText, type CombatTextProjection } from "../domain/units/combat-text";
 export type Snapshot = {
@@ -8,7 +10,10 @@ export type Snapshot = {
   target: Entity & { x: number; z: number };
   selected: boolean;
   selectedPlayer?: boolean;
-  hoveredUnit?: "Player" | "Opponent1" | null;
+  hoveredUnit?: UnitTag | null;
+  teamSize?: 1 | 2 | 3;
+  selectedActor?: number | null;
+  roster?: RosterEntry[];
   nameplates?: NameplateProjection[];
   combatText?: CombatTextProjection[];
   distance: number;
@@ -26,13 +31,15 @@ export function needsImmediateDelivery(previous: Snapshot | null, next: Snapshot
   return (
     !previous ||
     next.tick < previous.tick ||
+    next.teamSize !== previous.teamSize ||
+    next.selectedActor !== previous.selectedActor ||
     next.won !== previous.won ||
     next.hoveredUnit !== previous.hoveredUnit ||
     next.cooldown > previous.cooldown ||
     (next.cooldown === 0) !== (previous.cooldown === 0)
   );
 }
-// ABI v1 is the local two-entity practice adapter, not a multi-ability protocol.
+// Local practice snapshots optionally append a team roster; not a network protocol.
 export function adaptSnapshot(raw: unknown): Snapshot {
   if (!raw || typeof raw !== "object") throw new Error("Invalid engine snapshot");
   const r = raw as Snapshot;
@@ -68,8 +75,7 @@ export function adaptSnapshot(raw: unknown): Snapshot {
     (r.selectedPlayer !== undefined && typeof r.selectedPlayer !== "boolean") ||
     (r.hoveredUnit !== undefined &&
       r.hoveredUnit !== null &&
-      r.hoveredUnit !== "Player" &&
-      r.hoveredUnit !== "Opponent1") ||
+      !/^(Player|Opponent[1-3]|Team[1-2])$/.test(r.hoveredUnit)) ||
     typeof r.won !== "boolean" ||
     typeof r.feedback !== "string" ||
     typeof r.attackStatus !== "string"
@@ -107,6 +113,56 @@ export function adaptSnapshot(raw: unknown): Snapshot {
   }
   if (!Number.isFinite(maxHealth) || !maxHealth || maxHealth < 1)
     throw new Error("Invalid maximum health");
+  let roster: RosterEntry[] | undefined;
+  if (r.roster !== undefined) {
+    if (
+      ![1, 2, 3].includes(r.teamSize ?? 0) ||
+      !Array.isArray(r.roster) ||
+      r.roster.length !== (r.teamSize ?? 0) * 2
+    )
+      throw new Error("Invalid practice roster");
+    roster = r.roster.map((unit, actor) => {
+      const tag =
+        actor === 0
+          ? "Player"
+          : actor % 2 === 0
+            ? `Team${actor / 2}`
+            : `Opponent${Math.floor(actor / 2) + 1}`;
+      if (
+        unit.actor !== actor ||
+        unit.tag !== tag ||
+        !Number.isFinite(unit.health) ||
+        unit.health < 0 ||
+        unit.health > maxHealth
+      )
+        throw new Error("Invalid practice unit");
+      return {
+        actor,
+        tag: tag as UnitTag,
+        health: unit.health,
+        maxHealth,
+        id:
+          actor === 0
+            ? "practice-player"
+            : actor === 1
+              ? "practice-opponent"
+              : `practice-actor-${actor}`,
+        name:
+          actor === 0
+            ? "Player"
+            : actor % 2 === 0
+              ? `Teammate ${actor / 2}`
+              : `Enemy Bot${actor === 1 ? "" : ` ${Math.floor(actor / 2) + 1}`}`,
+      };
+    });
+    if (
+      r.selectedActor !== null &&
+      (!Number.isInteger(r.selectedActor) || !roster.some((unit) => unit.actor === r.selectedActor))
+    )
+      throw new Error("Invalid selected actor");
+    if (r.selected !== (r.selectedActor !== null) || r.selectedPlayer !== (r.selectedActor === 0))
+      throw new Error("Inconsistent selection");
+  }
   if (
     r.player.health > maxHealth ||
     r.target.health > maxHealth ||
@@ -117,6 +173,7 @@ export function adaptSnapshot(raw: unknown): Snapshot {
   }
   return {
     ...r,
+    roster,
     player: { ...r.player, maxHealth, id: "practice-player", name: "Player" },
     target: { ...r.target, maxHealth, id: "practice-opponent", name: "Enemy Bot" },
   };
@@ -130,7 +187,7 @@ declare global {
       readGraphics?: () => number[];
       readWeapons?: () => number[];
       readLighting?: () => number[];
-      onFocusUnit?: (tag: "Player" | "Opponent1") => void;
+      onFocusUnit?: (tag: UnitTag) => void;
       onState: (state: unknown) => void;
     };
     arenaDebug?: { readonly state: Snapshot | null; readonly metrics: unknown };

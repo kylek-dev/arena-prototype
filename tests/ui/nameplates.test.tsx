@@ -13,7 +13,7 @@ import {
   nameplateScene,
 } from "../../web/src/state/session";
 import { input } from "../../web/src/runtime/commands";
-import { snapshot } from "./fixtures";
+import { snapshot, teamSnapshot } from "./fixtures";
 
 beforeEach(() => {
   preferences.set(initial());
@@ -30,10 +30,30 @@ afterEach(() => {
   clearTimeout(persistence.timer);
 });
 
-it("shows only a health bar and targets/focuses without attacking or mouse look", () => {
+it("marks the targeted plate at render rate, independently of focus and HUD delivery", () => {
+  const plates = [
+    { tag: "Team1" as const, x: 0.3, y: 0.4 },
+    { tag: "Opponent2" as const, x: 0.5, y: 0.4 },
+  ];
+  engine.set(teamSnapshot(3, 1));
+  focus.set("practice-actor-3");
+  nameplateScene.set({ ...teamSnapshot(3, 2), nameplates: plates });
+  render(<Nameplates />);
+  expect(screen.getByRole("button", { pressed: true }).textContent).toBe("Teammate 1");
+  act(() => nameplateScene.set({ ...teamSnapshot(3, 3), nameplates: plates }));
+  expect(screen.getByRole("button", { pressed: true }).textContent).toBe("Enemy Bot 2");
+  expect(engine.get()?.selectedActor).toBe(1);
+  act(() => nameplateScene.set({ ...teamSnapshot(3, null), nameplates: plates }));
+  expect(screen.queryByRole("button", { pressed: true })).toBeNull();
+  act(() => nameplateScene.set({ ...teamSnapshot(3, 0), nameplates: plates }));
+  expect(screen.queryByRole("button", { pressed: true })).toBeNull();
+});
+
+it("shows a small unit name with the health bar and targets/focuses without attacking or mouse look", () => {
   const { container } = render(<Nameplates />);
   const bar = screen.getByRole("button", { name: /Enemy Bot health 75\/100/ });
-  expect(bar.textContent).toBe("");
+  expect(bar.textContent).toBe("Enemy Bot");
+  expect(bar.querySelector(".nameplate-name")?.getAttribute("aria-hidden")).toBe("true");
   expect(screen.getAllByRole("button")).toHaveLength(1);
   expect(container.querySelector(".nameplate-fill")).toBeTruthy();
   fireEvent.click(bar);
@@ -43,6 +63,23 @@ it("shows only a health bar and targets/focuses without attacking or mouse look"
   expect(input.select).toBe(false);
   expect(input.looking).toBe(false);
   expect(input.readInput()[2]).toBe(0);
+});
+
+it("labels friendly and enemy plates with their roster names, never the player", () => {
+  const state = teamSnapshot(3);
+  nameplateScene.set({
+    ...state,
+    nameplates: [
+      { tag: "Team1", x: 0.3, y: 0.4 },
+      { tag: "Team2", x: 0.4, y: 0.4 },
+      { tag: "Opponent2", x: 0.5, y: 0.4 },
+    ],
+  });
+  render(<Nameplates />);
+  expect(screen.getByText("Teammate 1")).toBeTruthy();
+  expect(screen.getByText("Teammate 2")).toBeTruthy();
+  expect(screen.getByText("Enemy Bot 2")).toBeTruthy();
+  expect(screen.queryByText("Player")).toBeNull();
 });
 
 it("follows render-rate projections and health independently of ordinary HUD delivery", () => {

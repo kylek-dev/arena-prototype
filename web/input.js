@@ -83,6 +83,8 @@ export class InputState {
     this.steerPending = this.freeLookPending = false;
     this.click = null;
     this.focusClick = null;
+    this.selectActor = -1;
+    this.teamSize = 0;
   }
 
   readInput() {
@@ -92,6 +94,9 @@ export class InputState {
     input.push(Number(this.selectPlayer));
     input.push(Number(this.jump));
     input.push(this.focusClick?.[0] ?? -1, this.focusClick?.[1] ?? -1);
+    input.push(this.selectActor, this.teamSize);
+    this.selectActor = -1;
+    this.teamSize = 0;
     this.focusClick = null;
     this.jump = false;
     this.selectPlayer = false;

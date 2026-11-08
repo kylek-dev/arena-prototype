@@ -2,7 +2,7 @@
 
 Temporary project name. An original, browser-first competitive arena game, inspired by the tactical depth of team arena combat. All characters, worldbuilding, art, audio, and ability identities will be our own.
 
-**Status:** browser practice prototype plus a shared, tested Rust simulation. Solo play against a stationary opponent; multiplayer is not implemented.
+**Status:** browser practice prototype plus a shared, tested Rust simulation. Local 1v1, 2v2 and 3v3 rosters with stationary non-player units; multiplayer is not implemented.
 
 ## Start here
 
@@ -33,6 +33,8 @@ Run `npm ci`, then `npm test` or `npm run test:watch` with Node 24 for input, do
 
 ## Browser prototype
 
+**Latest UI review (2026-11-08):** the user approved the current team practice modes/frames, nameplate labels/target highlights, timing overlay and frame-pacing correction and requested publication. This supersedes pending review notes for these changes; see [human review record](docs/UI-REVIEW.md#subsequent-changes).
+
 **UI review:** the user verified and approved all implemented UI changes on 2026-11-08, including earlier pending revisions and world nameplates. This supersedes the earlier pending-review notes below. See the [human review record](docs/UI-REVIEW.md) for scope and evidence limits.
 
 See [browser development](docs/BROWSER.md) for setup. With the pinned Rust/WASM tools installed:
@@ -43,11 +45,11 @@ npm ci
 npm run serve
 ```
 
-Open http://127.0.0.1:8000. WASD moves; Space jumps with takeoff momentum; left-drag looks; right-drag turns; both mouse buttons walk and steer. Tab selects, 1 attacks, and R resets.
+Open http://127.0.0.1:8000. WASD moves; Space jumps with takeoff momentum; left-drag looks; right-drag turns; both mouse buttons walk and steer. Tab selects, 1 attacks, and R resets. Escape → Practice mode selects 1v1/2v2/3v3. Team frames exclude yourself and appear on the left; opponents appear on the right. Mode changes restart the round; reset preserves mode. Human review of these additions is pending.
 
 Escape → **Lighting tweaks (temporary)** opens movable live controls for light strength/color/direction, background, exposure, saturation/contrast, shadow/midtone/highlight grading, tone mapping and bloom. No reload is needed while tuning; values are session-only, with Reset and copyable JSON. See [browser controls](docs/BROWSER.md).
 
-The React overlay adds target/focus frames, action bars, an icon-only draggable Pulse spellbook, remappable bindings, quick binding, direct layout editing and local profiles. Settings → Weapons switches cosmetic Verdant Eclipse glaives/Aetherthorn staff and six energy colors, saved on this device. Escape opens the bindable game menu; Shift+Escape clears target. Ordinary HUD clicks retain gameplay focus; typing/dialogs/editing own their keyboard input. Shift+Tab enters normal UI navigation. Layout frames and the editor window are movable. The interface uses Radix Themes with a neutral dark palette. Only Pulse and one stationary opponent exist. Use `npm run dev` for fast UI iteration after the first complete build; `npm run build` rebuilds only the frontend. See [frontend boundaries](docs/FRONTEND.md). Human rendered review of the revised overlay is pending.
+The React overlay adds target/focus and team/opponent frames, action bars, an icon-only draggable Pulse spellbook, remappable bindings, quick binding, direct layout editing and local profiles. Settings → Weapons switches cosmetic Verdant Eclipse glaives/Aetherthorn staff and six energy colors, saved on this device. Escape opens the bindable game menu; Shift+Escape clears target. Ordinary HUD clicks retain gameplay focus; typing/dialogs/editing own their keyboard input. Shift+Tab enters normal UI navigation. Layout frames and the editor window are movable. The interface uses Radix Themes with a neutral dark palette. Pulse remains the only ability; non-player units are stationary. Use `npm run dev` for fast UI iteration after the first complete build; `npm run build` rebuilds only the frontend. See [frontend boundaries](docs/FRONTEND.md). Human rendered review of the new team frames and practice modes is pending.
 
 The local `assets/BaseMale.glb` supplies the player's skeletal model and movement/jump/cast presentation after a complete rebuild. Builds without it retain the procedural character. See [character setup and manual review](docs/BROWSER.md#basemale-player-and-animations); human rendered review remains pending.
 

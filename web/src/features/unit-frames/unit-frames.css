@@ -26,6 +26,9 @@
 .unit-entry:focus-visible .unit-frame {
   border-color: var(--accent-9);
 }
+.unit-entry[aria-pressed="true"] .unit-frame:is(.teammate, .opponent) {
+  border-color: #b6ad8b;
+}
 .unit-heading {
   display: flex;
   justify-content: space-between;

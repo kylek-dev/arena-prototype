@@ -1,16 +1,39 @@
 import { Button, Separator, Text } from "@radix-ui/themes";
 import { setMode, setPanel, selectedLayout } from "../../state/session";
-import { dispatch } from "../../runtime/commands";
+import { dispatch, input } from "../../runtime/commands";
+import { engine } from "../../state/session";
+import { useStore } from "../../state/store";
 import { debugEnabled, diagnosticsVisible } from "../../runtime/diagnostics";
 import { lightingVisible } from "../../state/lighting";
 
 export function GameMenu() {
+  const size = useStore(engine, (s) => s?.teamSize ?? 1);
   return (
     <div className="stack game-menu">
       <Text size="2" color="gray">
         Local solo practice
       </Text>
       <Button onClick={() => setPanel(null)}>Resume</Button>
+      <label className="stack">
+        Practice mode
+        <select
+          aria-label="Practice mode"
+          value={size}
+          onChange={(event) => {
+            const next = Number(event.target.value);
+            setPanel(null);
+            dispatch("reset");
+            input.teamSize = next;
+          }}
+        >
+          <option value="1">1v1</option>
+          <option value="2">2v2</option>
+          <option value="3">3v3</option>
+        </select>
+      </label>
+      <Text size="1" color="gray">
+        Changing mode starts a fresh round. Other units are stationary.
+      </Text>
       <Separator size="4" />
       <Button variant="surface" color="gray" onClick={() => setPanel("settings")}>
         Settings

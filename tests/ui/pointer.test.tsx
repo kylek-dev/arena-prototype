@@ -82,7 +82,7 @@ it.each([0, 2])("button %i clicks never capture the cursor or activate look mode
   expect(canvas.requestPointerLock).not.toHaveBeenCalled();
   const sample = router.sample();
   expect(sample.slice(9, 11)).toEqual(button === 0 ? [25, 40] : [-1, -1]);
-  expect(sample.slice(15)).toEqual(button === 2 ? [25, 40] : [-1, -1]);
+  expect(sample.slice(15, 17)).toEqual(button === 2 ? [25, 40] : [-1, -1]);
   expect(sample.slice(11, 13)).toEqual([0, 0]);
 });
 
@@ -101,7 +101,7 @@ it.each([0, 2])("button %i captures only once after crossing the drag threshold"
   expect(canvas.style.cursor).toBe("");
   const released = router.sample();
   expect(released.slice(9, 11)).toEqual([-1, -1]);
-  expect(released.slice(15)).toEqual([-1, -1]);
+  expect(released.slice(15, 17)).toEqual([-1, -1]);
   move(0, 10);
   expect(canvas.requestPointerLock).toHaveBeenCalledTimes(1);
 });
@@ -164,7 +164,7 @@ it.each(["keyboard reset", "command reset", "round end", "engine reset", "late l
     // Trailing motion/release cannot resurrect the old gesture or select/focus.
     move(2, 10);
     document.dispatchEvent(new MouseEvent("mouseup", { button: 2, buttons: 0 }));
-    expect(router.sample().slice(15)).toEqual([-1, -1]);
+    expect(router.sample().slice(15, 17)).toEqual([-1, -1]);
     expect(canvas.style.cursor).toBe("");
     canvas.dispatchEvent(new MouseEvent("mousedown", { button: 2, buttons: 2 }));
     move(2, 10);
@@ -206,7 +206,7 @@ it("exclusive UI modes prevent canvas gestures", () => {
   expect(input.dragging).toBe(false);
   canvas.dispatchEvent(new MouseEvent("mousedown", { button: 2, buttons: 2 }));
   document.dispatchEvent(new MouseEvent("mouseup", { button: 2, buttons: 0 }));
-  expect(router.sample().slice(15)).toEqual([-1, -1]);
+  expect(router.sample().slice(15, 17)).toEqual([-1, -1]);
 });
 
 it("dropping a slotted spell on canvas removes its assignment, not its binding", () => {

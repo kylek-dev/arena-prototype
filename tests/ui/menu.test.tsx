@@ -75,7 +75,7 @@ it("reaches the movable direct-selection layout editor from the menu", async () 
   await user.click(screen.getByRole("button", { name: "Edit focus" }));
   expect(screen.getByText("Editing focus")).toBeTruthy();
   expect(screen.queryByRole("combobox")).toBeNull();
-  expect(screen.getAllByRole("meter")).toHaveLength(8);
+  expect(screen.getAllByRole("meter")).toHaveLength(16);
   act(() => {
     interaction.set({ ...interaction.get(), layout: false });
   });

@@ -21,10 +21,16 @@ export const input = new InputState();
 export function unitRoster(s: Snapshot, focused: string | null): UnitRoster {
   return {
     player: s.player,
-    target: s.selected ? (s.selectedPlayer ? s.player : s.target) : null,
+    target: s.roster
+      ? (s.roster.find((unit) => unit.actor === s.selectedActor) ?? null)
+      : s.selected
+        ? s.selectedPlayer
+          ? s.player
+          : s.target
+        : null,
     focus: focused,
-    opponents: [s.target],
-    team: [],
+    opponents: s.roster?.filter((unit) => unit.tag.startsWith("Opponent")) ?? [s.target],
+    team: s.roster?.filter((unit) => unit.tag.startsWith("Team") && unit.id !== s.player.id) ?? [],
   };
 }
 export function interactUnit(tag: UnitTag, action: "target" | "focus") {
@@ -37,9 +43,15 @@ export function interactUnit(tag: UnitTag, action: "target" | "focus") {
 export function interactEntity(id: string, action: "target" | "focus") {
   const s = engine.get();
   if (draggingSpell.get() || error.get() || blocksGameplay() || !isEngineReady(s)) return;
-  if (!s || (s.target.id !== id && s.player.id !== id)) return;
+  if (!s) return;
+  const unit = s.roster?.find((unit) => unit.id === id);
+  if (s.roster ? !unit : s.target.id !== id && s.player.id !== id) return;
   if (action === "focus") focus.set(id);
   else {
+    if (unit) {
+      input.selectActor = unit.actor;
+      return;
+    }
     input.select = s.target.id === id;
     input.selectPlayer = s.player.id === id;
   }
@@ -81,13 +93,20 @@ export function dispatch(action: string) {
       setPanel(interaction.get().panel === "menu" ? null : "menu");
       break;
     case "nextTarget":
-      if (s && nextTarget([s.target.id], s.selected ? s.target.id : null)) input.select = true;
+      if (s) {
+        const roster = unitRoster(s, focus.get());
+        const id = nextTarget(
+          roster.opponents.filter((unit) => unit.health > 0).map((unit) => unit.id),
+          roster.target?.id ?? null,
+        );
+        if (id) interactEntity(id, "target");
+      }
       break;
     case "clearTarget":
       input.clear = true;
       break;
     case "setFocus":
-      if (s?.selected) focus.set(s.selectedPlayer ? s.player.id : s.target.id);
+      if (s) focus.set(unitRoster(s, focus.get()).target?.id ?? null);
       break;
     case "clearFocus":
       focus.set(null);
