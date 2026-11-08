@@ -1,5 +1,6 @@
 import type { Entity } from "../domain/units/selection";
 import type { NameplateProjection } from "../domain/units/nameplates";
+import { validCombatText, type CombatTextProjection } from "../domain/units/combat-text";
 export type Snapshot = {
   tick: number;
   frames: number;
@@ -9,6 +10,7 @@ export type Snapshot = {
   selectedPlayer?: boolean;
   hoveredUnit?: "Player" | "Opponent1" | null;
   nameplates?: NameplateProjection[];
+  combatText?: CombatTextProjection[];
   distance: number;
   range: number;
   cooldown: number;
@@ -24,6 +26,7 @@ export function needsImmediateDelivery(previous: Snapshot | null, next: Snapshot
   return (
     !previous ||
     next.tick < previous.tick ||
+    next.won !== previous.won ||
     next.hoveredUnit !== previous.hoveredUnit ||
     next.cooldown > previous.cooldown ||
     (next.cooldown === 0) !== (previous.cooldown === 0)
@@ -73,6 +76,15 @@ export function adaptSnapshot(raw: unknown): Snapshot {
   )
     throw new Error("Invalid engine snapshot flags");
   const maxHealth = (raw as { maxHealth?: number }).maxHealth;
+  if (r.combatText !== undefined) {
+    if (
+      !Array.isArray(r.combatText) ||
+      r.combatText.length > 32 ||
+      !r.combatText.every(validCombatText) ||
+      new Set(r.combatText.map((entry) => entry.id)).size !== r.combatText.length
+    )
+      throw new Error("Invalid combat text projections");
+  }
   if (r.nameplates !== undefined) {
     if (!Array.isArray(r.nameplates) || r.nameplates.length > 6)
       throw new Error("Invalid nameplate projections");

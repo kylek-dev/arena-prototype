@@ -11,3 +11,6 @@
   text-shadow: 0 1px 3px #000;
   pointer-events: none;
 }
+.combat-errors .nameplate-notice {
+  color: #ffdf55;
+}

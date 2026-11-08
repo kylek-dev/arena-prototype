@@ -73,6 +73,7 @@ it("bypasses HUD throttling for cooldown start/end/reset, not ordinary countdown
   expect(needsImmediateDelivery(cooling, snapshot({ cooldown: 0.9 }))).toBe(false);
   expect(needsImmediateDelivery(cooling, ready)).toBe(true);
   expect(needsImmediateDelivery(cooling, snapshot({ tick: 0, cooldown: 0.5 }))).toBe(true);
+  expect(needsImmediateDelivery(ready, snapshot({ won: true }))).toBe(true);
 });
 
 it("shares one animation loop across slots and never mutates combat readiness", () => {

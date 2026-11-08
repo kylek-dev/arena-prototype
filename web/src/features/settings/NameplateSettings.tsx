@@ -1,4 +1,5 @@
-import { useConfigSelector, updateConfig } from "../../state/config";
+import { useConfigSelector } from "../../state/config";
+import { setNameplates } from "../../runtime/nameplate-feedback";
 
 export function NameplateSettings() {
   const preferences = useConfigSelector((c) => c.nameplates);
@@ -15,7 +16,7 @@ export function NameplateSettings() {
             checked={preferences[side]}
             onChange={(e) => {
               const checked = e.target.checked;
-              updateConfig((c) => ({ ...c, nameplates: { ...c.nameplates, [side]: checked } }));
+              setNameplates(side, checked);
             }}
           />
           {side === "enemy" ? "Enemy nameplates" : "Friendly nameplates"}
