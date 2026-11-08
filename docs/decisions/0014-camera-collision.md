@@ -51,3 +51,7 @@ human rendered review of the revision remains pending.
 Contact-only revision verification (2026-11-07): `./scripts/check.sh`, WASM Clippy,
 `./scripts/build-web.sh` (procedural fallback; optional model not installed), and
 `cargo run -p arena-headless` passed. No browser/E2E pass is claimed for this revision.
+
+## Human review update — 2026-11-08
+
+The user verified and approved all implemented UI/rendered changes, including the current contact-only camera revision. Historical pending human-review statements above are superseded; earlier feedback is retained as history. See [review record](../UI-REVIEW.md).

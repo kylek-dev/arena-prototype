@@ -1,0 +1,31 @@
+.nameplates {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+button.nameplate {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  width: 92px;
+  height: 12px;
+  padding: 0;
+  border: 1px solid #17191d;
+  border-radius: 2px;
+  background: #25272bdd;
+  box-shadow: 0 1px 3px #0009;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.nameplate-fill {
+  display: block;
+  height: 100%;
+  background: #cb5057;
+  pointer-events: none;
+}
+
+.nameplate.friendly .nameplate-fill {
+  background: #41ac72;
+}

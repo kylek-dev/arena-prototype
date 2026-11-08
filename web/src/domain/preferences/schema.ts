@@ -14,6 +14,7 @@ export type Config = {
   bindings: Bindings;
   frames: Record<FrameRole, Layout>;
   assignmentsLocked: boolean;
+  nameplates: { friendly: boolean; enemy: boolean };
 };
 export type Profile = { id: string; name: string; config: Config };
 export type Preferences = { version: 1; active: string; profiles: Profile[] };
@@ -31,6 +32,7 @@ export function defaultConfig(): Config {
       unitTooltip: layout(1, 1),
     },
     assignmentsLocked: false,
+    nameplates: { friendly: true, enemy: true },
   };
 }
 export function initial(): Preferences {
@@ -94,6 +96,17 @@ export function validateConfig(value: unknown): Config {
   const safeBars = bars.length ? bars : d.bars;
   const bindings = defaults(safeBars);
   const rawBindings = { ...record(r.bindings) };
+  // Newly introduced defaults must not steal existing custom chords.
+  for (const action of ["toggleEnemyNameplates", "toggleFriendlyNameplates"]) {
+    if (
+      !(action in rawBindings) &&
+      Object.values(rawBindings).some(
+        (pair) =>
+          Array.isArray(pair) && pair.some((c) => same(record(c) as Chord, bindings[action][0])),
+      )
+    )
+      rawBindings[action] = [null, null];
+  }
   // Existing custom Space assignments take precedence over the new default.
   if (
     !("jump" in rawBindings) &&
@@ -158,6 +171,10 @@ export function validateConfig(value: unknown): Config {
       unitTooltip: cleanLayout(frames.unitTooltip, d.frames.unitTooltip),
     },
     assignmentsLocked: bool(r.assignmentsLocked, false),
+    nameplates: {
+      friendly: bool(record(r.nameplates).friendly, true),
+      enemy: bool(record(r.nameplates).enemy, true),
+    },
   };
 }
 export function parsePreferences(text: string): Preferences {

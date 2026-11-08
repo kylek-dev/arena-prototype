@@ -27,3 +27,7 @@ Manual browser review must check continuous slider response while viewing the sc
 Local verification on 2026-11-07: `./scripts/check.sh` passed (12 simulation tests, 48 client tests, four Python asset tests, 26 Node input tests and 131 Vitest tests). WASM Clippy with warnings denied, the complete `./scripts/build-web.sh` including eight static HTTP resources, and the headless scenario passed. The build used procedural characters (optional character model absent). No browser was launched; human rendered/interaction review remains pending.
 
 Extension verification on 2026-11-08: `./scripts/check.sh` passed (12 simulation tests, 57 client tests, nine Python asset tests, 26 Node input tests and 131 Vitest tests). WASM Clippy with warnings denied, the complete web build with eight static resource checks, and the headless scenario passed. The build used the procedural character fallback (BaseMale absent). No browser was launched; expanded-control appearance and interaction review remain pending.
+
+## Human review update — 2026-11-08
+
+The user verified and approved all implemented UI/rendered changes, including the expanded lighting/color-grading panel. Historical pending human-review statements above are superseded. See [review record](../UI-REVIEW.md).

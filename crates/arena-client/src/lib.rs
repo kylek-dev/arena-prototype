@@ -8,6 +8,7 @@ mod graphics;
 mod hover;
 mod humanoid;
 mod lighting;
+mod nameplates;
 mod weapons;
 
 use arena_sim::TICKS_PER_SECOND;
@@ -125,9 +126,14 @@ pub fn run() {
                 character_animation::animate,
                 weapons::animate,
                 weapons::animate_staff,
-                publish,
             )
                 .chain(),
+        )
+        .add_systems(
+            PostUpdate,
+            publish
+                .after(bevy::transform::TransformSystems::Propagate)
+                .after(bevy::camera::CameraUpdateSystems),
         )
         .run();
 }
@@ -365,6 +371,7 @@ fn read_controls(
     mut practice: ResMut<Practice>,
     mut orbit: ResMut<Orbit>,
     cameras: Query<(&Camera, &GlobalTransform)>,
+    visuals: Query<(&FighterVisual, &GlobalTransform)>,
 ) {
     let input = platform::read_input();
     if input.reset {
@@ -376,24 +383,46 @@ fn read_controls(
     orbit.distance = (orbit.distance + input.zoom * 0.01).clamp(6.0, 22.0);
     update_movement(&mut practice, &orbit, &input);
     update_selection(&mut practice, &input);
-    if let Some(cursor) = input.click
-        && let Ok((camera, transform)) = cameras.single()
-        && let Ok(ray) = camera.viewport_to_world(transform, cursor)
-    {
-        let to_target = world(practice.arena.fighters()[1].position) + Vec3::Y - ray.origin;
-        let along = to_target.dot(*ray.direction);
-        let hit = along > 0.0 && (to_target - *ray.direction * along).length_squared() < 0.9 * 0.9;
-        practice.selected = hit.then_some(1);
-        practice.feedback = if hit {
-            "Opponent selected"
-        } else {
-            "Target cleared"
-        };
+    let pick = |cursor| {
+        cameras.single().ok().and_then(|(camera, view)| {
+            camera.viewport_to_world(view, cursor).ok().and_then(|ray| {
+                hover::pick(
+                    ray,
+                    visuals
+                        .iter()
+                        .map(|(unit, transform)| (unit.0, transform.translation())),
+                )
+            })
+        })
+    };
+    if let Some(unit) = update_world_clicks(&mut practice, &input, pick) {
+        platform::focus_unit(unit);
     }
     if input.attack {
         practice.attack = true;
     }
     practice.jump |= input.jump;
+}
+// Both buttons use the same rendered-unit/pillar picker. Focus is browser-owned
+// identity state, independent of selection; a right-click miss leaves it alone.
+fn update_world_clicks(
+    practice: &mut Practice,
+    input: &Input,
+    pick: impl Fn(Vec2) -> Option<usize>,
+) -> Option<usize> {
+    if let Some(cursor) = input.click {
+        practice.selected = pick(cursor);
+        practice.feedback = match practice.selected {
+            Some(0) => "Player selected",
+            Some(1) => "Opponent selected",
+            _ => "Target cleared",
+        };
+    }
+    if input.reset {
+        None
+    } else {
+        input.focus_click.and_then(pick)
+    }
 }
 // Explicit frame intents resolve opponent, player, then clear; canvas picking
 // follows them. Selection is presentation intent, never permission to deal damage.
@@ -607,8 +636,23 @@ fn publish(
         Some(1) => "\"Opponent1\"",
         _ => "null",
     };
+    // The local player is deliberately excluded. Team anchors can be appended
+    // when real teammates exist; selection/focus do not control plate visibility.
+    let plates = cameras
+        .single()
+        .ok()
+        .and_then(|(camera, view)| {
+            visuals
+                .iter()
+                .find(|(unit, _)| unit.0 == 1)
+                .and_then(|(_, transform)| {
+                    nameplates::anchor(camera, view, transform.translation())
+                })
+        })
+        .map(|point| format!(r#"{{"tag":"Opponent1","x":{},"y":{}}}"#, point.x, point.y))
+        .unwrap_or_default();
     platform::publish(&format!(
-        r#"{{"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"selectedPlayer":{},"hoveredUnit":{},"distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":{}}},"maxHealth":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}}}}"#,
+        r#"{{"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"selectedPlayer":{},"hoveredUnit":{},"distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":{}}},"maxHealth":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}},"nameplates":[{}]}}"#,
         practice.arena.tick(),
         practice.frames,
         player.position.x,
@@ -638,7 +682,8 @@ fn publish(
         Arena::default().fighters()[0].health,
         ATTACK_DAMAGE,
         ATTACK_RANGE / 1000,
-        ATTACK_COOLDOWN as f64 / TICKS_PER_SECOND as f64
+        ATTACK_COOLDOWN as f64 / TICKS_PER_SECOND as f64,
+        plates
     ));
 }
 
@@ -656,6 +701,7 @@ struct Input {
     orbit_y: f32,
     zoom: f32,
     click: Option<Vec2>,
+    focus_click: Option<Vec2>,
     steer: bool,
 }
 #[cfg(target_arch = "wasm32")]
@@ -664,7 +710,7 @@ mod platform {
     use bevy::prelude::Vec2;
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen(
-        inline_js = "export function arena_has_character() { return globalThis.arenaShell.hasCharacterModel === true; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); }"
+        inline_js = "export function arena_has_character() { return globalThis.arenaShell.hasCharacterModel === true; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(unit) { const tag = unit === 0 ? 'Player' : unit === 1 ? 'Opponent1' : null; if (tag) globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); }"
     )]
     extern "C" {
         fn arena_has_character() -> bool;
@@ -674,6 +720,7 @@ mod platform {
         fn arena_weapons() -> js_sys::Array;
         fn arena_lighting() -> js_sys::Array;
         fn arena_state(json: &str);
+        fn arena_focus(unit: u32);
     }
     pub fn has_character_model() -> bool {
         arena_has_character()
@@ -723,16 +770,80 @@ mod platform {
             } else {
                 None
             },
+            // Older shells have no appended focus-click fields. Missing,
+            // negative or nonfinite coordinates mean no click, never (0, 0).
+            focus_click: a
+                .get(15)
+                .as_f64()
+                .zip(a.get(16).as_f64())
+                .and_then(|(x, y)| super::focus_cursor(x as f32, y as f32)),
         }
+    }
+    pub fn focus_unit(unit: usize) {
+        arena_focus(unit as u32);
     }
     pub fn publish(json: &str) {
         arena_state(json);
     }
 }
 
+#[cfg(any(target_arch = "wasm32", test))]
+fn focus_cursor(x: f32, y: f32) -> Option<Vec2> {
+    (x.is_finite() && y.is_finite() && x >= 0.0 && y >= 0.0).then_some(Vec2::new(x, y))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn right_model_click_focus_is_independent_of_target_and_misses_or_reset_do_nothing() {
+        let mut practice = Practice {
+            selected: Some(1),
+            ..default()
+        };
+        let mut input = Input {
+            focus_click: Some(Vec2::ZERO),
+            ..default()
+        };
+        for unit in [0, 1] {
+            assert_eq!(
+                update_world_clicks(&mut practice, &input, |_| Some(unit)),
+                Some(unit)
+            );
+            assert_eq!(practice.selected, Some(1));
+        }
+        assert_eq!(update_world_clicks(&mut practice, &input, |_| None), None);
+        assert_eq!(practice.selected, Some(1));
+        input.reset = true;
+        assert_eq!(
+            update_world_clicks(&mut practice, &input, |_| Some(0)),
+            None
+        );
+        input.reset = false;
+        input.focus_click = None;
+        input.click = Some(Vec2::ZERO);
+        assert_eq!(
+            update_world_clicks(&mut practice, &input, |_| Some(0)),
+            None
+        );
+        assert_eq!(practice.selected, Some(0));
+        update_world_clicks(&mut practice, &input, |_| None);
+        assert_eq!(practice.selected, None);
+    }
+
+    #[test]
+    fn focus_click_coordinates_must_be_finite_and_nonnegative() {
+        assert_eq!(focus_cursor(25.0, 40.0), Some(Vec2::new(25.0, 40.0)));
+        for (x, y) in [
+            (-1.0, 0.0),
+            (0.0, -1.0),
+            (f32::NAN, 1.0),
+            (1.0, f32::INFINITY),
+        ] {
+            assert_eq!(focus_cursor(x, y), None);
+        }
+    }
 
     #[test]
     fn presentation_retracts_and_recovers_without_changing_requested_zoom() {
@@ -991,4 +1102,5 @@ mod platform {
         super::Input::default()
     }
     pub fn publish(_: &str) {}
+    pub fn focus_unit(_: usize) {}
 }

@@ -1,5 +1,7 @@
 # Frontend boundaries and behavior
 
+**Human UI review update (2026-11-08):** the user verified and approved all implemented UI changes, including earlier pending revisions and world nameplates. The pending-review statements below are historical and superseded; future changes still need review. See [review scope and evidence](UI-REVIEW.md).
+
 ## Public modules
 
 - `bridge/snapshot.ts`: validated Rust-to-browser practice contract. Combat numbers come from Rust, never local preferences. `loader.ts` loads generated static assets relative to the document.
@@ -22,6 +24,10 @@ The spell catalog is labelled **Spells** in the menu, window and binding setting
 The reusable, opt-in `.window-area-left` class in `ui/panels.css` provides a 520×480 CSS px area on the left, roughly 3.5vw from the edge and 18dvh from the top, below the default unit frames. It shrinks to fit smaller viewports and reserves bottom action-bar space; dialog content scrolls when necessary. Only Spells currently uses it; future windows can opt in through `Modal`'s `className`. Other dialogs keep their existing centered placement and sizing, including compact menu/capture windows. Spells remains nonmodal and retains spell-drag pass-through. HUD frames and the movable layout inspector retain their independent placement. Human rendered review of this window area and grid is pending.
 
 ## Shared tooltips
+
+World health nameplates live in `features/nameplates`, separately from layout-editable frames. Rust supplies validated normalized overhead projections; `state/session.nameplateScene` updates every engine publication before ordinary HUD throttling. Only the plate feature subscribes, resolving live health and unit-tag interactions without introducing new combat commands. Profile `nameplates.friendly/enemy` preferences drive Settings → Nameplates and remappable V/Shift+V toggles; old custom chords are preserved. Older snapshots without projections display none. Self plates are excluded, missing teammate slots remain empty, and exclusive UI modes suppress the live layer. See [ADR 0022](decisions/0022-world-health-nameplates.md); human rendered review is pending.
+
+World model right-clicks append one-shot focus-pick coordinates separately from left-click targeting. Rust resolves the rendered character and invokes optional `onFocusUnit`; `runtime/start` routes the tag through the same guarded focus command used by frames/nameplates. A miss does nothing, right-drag/chords never focus, and selection is unchanged. Both model buttons respect pillar occlusion, unlike nameplate overlays. See [ADR 0023](decisions/0023-world-model-focus.md); human rendered review of this subsequent change is pending.
 
 Unit hover uses `features/unit-frames/UnitTooltip.tsx`: one fixed tooltip, bottom-right by default, for world units and player/target/focus/opponent frames. It resolves live health by unit tag without changing target/focus. `runtime/unit-hover.ts` supplies unpressed canvas coordinates through the optional `readHover` shell callback; Rust publishes `hoveredUnit` using presentation proxies with nearest-unit/pillar occlusion checks. Rebuild WASM to enable world hover; older builds retain frame hover. Layout editing shows a draggable `unitTooltip` sample with standard scale/visibility/lock/reset controls; preferences add its default without moving existing frames. Live content is pointer-transparent and hides during exclusive modes/camera gestures. Resource values remain explicitly labelled placeholders. See [ADR 0011](decisions/0011-unit-tooltips.md). Human rendered review is pending.
 
@@ -60,3 +66,5 @@ Extrapolation is capped at 150 ms when samples stall, and the visual retains a f
 After `npm ci` and one complete `./scripts/build-web.sh`, use `npm run dev` for frontend hot reload without rebuilding Rust. `npm run build` builds only the frontend and copies any existing `web/public` assets to `dist`; a fresh checkout needs the complete build to play. Never publish a frontend-only build without its generated engine assets. `npm run serve` previews `dist`; `python3 -m http.server 8000 --directory dist --bind 127.0.0.1` is an alternative. Relative paths permit hosting the entire output under a subdirectory with no rewrite/router requirement.
 
 `npm run format` writes normal multi-line formatting; `format:check`, `typecheck`, `lint`, `test` and `build` are frontend gates. `test:watch` watches both Node input and Vitest suites; `test:input` / `test:input:watch` require no npm dependencies. jsdom tests mock only browser APIs without layout implementations; they do not validate geometry, pointer-lock permissions, GPU rendering or browser compatibility. See the manual checklist in [BROWSER.md](BROWSER.md).
+
+Model-focus review update (2026-11-08): the user approved the completed ADR 0023 change. Its pending human-review statement above is superseded; see [review record](UI-REVIEW.md#subsequent-changes).

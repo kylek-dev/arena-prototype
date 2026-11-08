@@ -39,3 +39,7 @@ Correction verification on 2026-11-07: the same complete checks passed with 46 c
 Further human feedback: the user confirmed the glow is visible in their screenshot but found the scene too contrasty. The current lighting values above reduce the key/fill ratio from 5:1 to roughly 2:1, increase ambient illumination and lift the background without changing exposure, tone mapping, weapon materials, bloom, halos or sparks. This records positive feedback on glow visibility only, not a full browser acceptance pass. Human rendered review of the softer lighting remains pending.
 
 Softer-lighting verification: full repository checks (including 46 client tests and 126 Vitest tests), WASM Clippy, the complete browser build/static HTTP checks and the headless scenario passed locally. No browser was launched for this adjustment; rendered review remains pending.
+
+## Human review update — 2026-11-08
+
+The user verified and approved all implemented UI/rendered changes, including the current glow, visibility and softer-lighting corrections. Historical pending human-review statements above are superseded; earlier failed reviews remain historical facts. No measured performance or exhaustive GPU compatibility claim is added. See [review record](../UI-REVIEW.md).

@@ -37,3 +37,7 @@ Keep Node's independent input suite. Add Vitest 4.1.12, jsdom 27.2.0 and Testing
 React, Vite, Radix, Vitest, jsdom and Testing Library use MIT; TypeScript uses Apache-2.0; Biome uses MIT OR Apache-2.0. Transitive notices remain with installed packages. Optional stock asset terms are unchanged. New CSS/glyph composition and labels are original, AI-assisted project code. No proprietary game assets or UI were imported. Older Vite/Vitest patch selections were replaced after npm audit; the selected lockfile reported zero advisories during implementation, not a guarantee against future advisories.
 
 Human browser/device review and hosted CI execution remain pending. Builds do not establish pointer-lock permissions or rendered quality.
+
+## Human review update — 2026-11-08
+
+The user verified and approved all implemented UI changes, including this decision's current revisions. This supersedes historical pending human-review statements above, not hosted CI status or automated-check history. See [review record](../UI-REVIEW.md).

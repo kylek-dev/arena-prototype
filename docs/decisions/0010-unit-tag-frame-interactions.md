@@ -13,3 +13,7 @@ The local practice bridge appends a one-shot self-selection flag at input index 
 ## Verification
 
 Domain/DOM tests cover tag resolution, unpopulated and synthetic team slots, all live frame interactions, self-target/focus display and editing guards. Input tests cover the appended field's draining/cancellation; Rust tests cover selection precedence and simulation rejection of self-damage. Human browser review remains required and pending; no automated rendered E2E gate is added.
+
+## Human review update — 2026-11-08
+
+The user verified and approved all implemented UI changes, including unit-frame interactions. Historical pending human-review statements above are superseded. See [review record](../UI-REVIEW.md).

@@ -23,3 +23,7 @@ Human review must cover scale/facing/feet, all movement directions/diagonals, wa
 Local asset inspection on 2026-11-07 confirmed one generated scene, eight ordered clips, the 45-joint skin, unchanged binary payload, removed Jump root-translation channel and stripped authoring extras. Source SHA-256: `ca5af6352a9e1cb2b18bc02d9a67bb7953a7c68d152fa84b10973f60f448ca15`. WASM Clippy with warnings denied, the complete web build and its non-root static HTTP/MIME checks passed. The scripted headless scenario also passed. No browser was launched; human rendered review remains pending.
 
 `./scripts/check.sh` passed locally: 12 simulation tests, 56 client tests, nine synthetic Python asset tests, 26 Node input tests and 131 Vitest tests, plus workspace formatting/Clippy and frontend checks. The manually invoked character browser diagnostics were updated for the BaseMale URL and animated state (and no longer count weapon downloads as character downloads); only their JavaScript syntax was checked, not Playwright or rendered behavior.
+
+## Human review update — 2026-11-08
+
+The user verified and approved all implemented UI/rendered changes, including character and animation presentation. Historical pending human-review statements above are superseded. Binary redistribution is not authorized by this UI approval. See [review record](../UI-REVIEW.md).

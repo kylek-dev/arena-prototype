@@ -21,3 +21,7 @@ DOM tests exercise both weapons, all six colors, callback ordering, persistence,
 Human review must check every weapon/color, rapid switches during loading, reload persistence, back clearance from front/side/rear, hidden old weapons/lights, movement/jump/reset attachment, optional character/fallback, and console/load errors. Automated checks do not establish rendered appearance or performance.
 
 Local verification on 2026-11-07: `./scripts/check.sh` passed (12 simulation tests, 40 client tests, four Python asset tests, 26 Node input tests and 125 Vitest tests). WASM Clippy with warnings denied, the complete `./scripts/build-web.sh` including eight static HTTP resources, and `cargo run -p arena-headless` passed. The build used procedural characters (optional character asset absent). No browser was launched; human rendered review remains pending.
+
+## Human review update — 2026-11-08
+
+The user verified and approved all implemented UI/rendered changes, including weapon selection and current appearance revisions. Historical pending human-review statements above are superseded. Binary publication/license confirmation remains separate and unresolved by this UI approval. See [review record](../UI-REVIEW.md).

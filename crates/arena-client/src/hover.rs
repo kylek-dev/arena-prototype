@@ -21,8 +21,8 @@ fn box_hit(ray: Ray3d, min: Vec3, max: Vec3) -> Option<f32> {
     (far >= near).then_some(near)
 }
 
-pub(super) fn pick(ray: Ray3d, units: impl Iterator<Item = (usize, Vec3)>) -> Option<usize> {
-    let blocker = PILLARS
+fn blocker_distance(ray: Ray3d) -> f32 {
+    PILLARS
         .iter()
         .filter_map(|pillar| {
             let p = super::world(pillar.center);
@@ -34,7 +34,11 @@ pub(super) fn pick(ray: Ray3d, units: impl Iterator<Item = (usize, Vec3)>) -> Op
                 p + Vec3::new(half_size, 4.1, half_size),
             )
         })
-        .fold(f32::INFINITY, f32::min);
+        .fold(f32::INFINITY, f32::min)
+}
+
+pub(super) fn pick(ray: Ray3d, units: impl Iterator<Item = (usize, Vec3)>) -> Option<usize> {
+    let blocker = blocker_distance(ray);
     units
         .filter_map(|(id, p)| {
             box_hit(

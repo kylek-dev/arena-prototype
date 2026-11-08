@@ -42,3 +42,7 @@ manual browser review; automated tests cannot establish that pass.
 Local verification (2026-11-07): `./scripts/check.sh`, WASM Clippy,
 `./scripts/build-web.sh` (procedural fallback; optional model not installed), and
 `cargo run -p arena-headless` passed. No browser/E2E or rendered pass is claimed.
+
+## Human review update — 2026-11-08
+
+The user verified and approved all implemented UI/rendered changes, including jump presentation. Historical pending human-review statements above are superseded. See [review record](../UI-REVIEW.md).

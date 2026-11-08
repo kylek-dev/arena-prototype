@@ -57,6 +57,9 @@ export class InputState {
     if (button === 0 && this.gesture?.startedLeft && !this.gesture.usedChord && this.gesture.distance < 4) {
       this.click = [this.gesture.x, this.gesture.y];
     }
+    if (button === 2 && this.gesture && !this.gesture.startedLeft && !this.gesture.usedChord && this.gesture.distance < 4) {
+      this.focusClick = [this.gesture.x, this.gesture.y];
+    }
     this.gesture = null;
     return true;
   }
@@ -79,6 +82,7 @@ export class InputState {
     this.orbitX = this.orbitY = this.zoom = 0;
     this.steerPending = this.freeLookPending = false;
     this.click = null;
+    this.focusClick = null;
   }
 
   readInput() {
@@ -87,6 +91,8 @@ export class InputState {
     const input = [Number(this.held.has('KeyD')) - Number(this.held.has('KeyA')), this.mouseButtons === 3 ? -1 : Number(this.held.has('KeyS')) - Number(this.held.has('KeyW')), Number(this.attack), Number(this.select), Number(this.clear), Number(this.reset), this.orbitX, this.orbitY, this.zoom, this.click?.[0] ?? -1, this.click?.[1] ?? -1, Number((this.looking && Boolean(this.mouseButtons & 2)) || this.steerPending), Number((this.looking && this.mouseButtons === 1) || this.freeLookPending)];
     input.push(Number(this.selectPlayer));
     input.push(Number(this.jump));
+    input.push(this.focusClick?.[0] ?? -1, this.focusClick?.[1] ?? -1);
+    this.focusClick = null;
     this.jump = false;
     this.selectPlayer = false;
     this.attack = this.select = this.clear = this.reset = false;

@@ -1,6 +1,8 @@
 import type { Snapshot } from "../bridge/snapshot";
 import { createStore } from "./store";
 export const engine = createStore<Snapshot | null>(null);
+// Render-rate presentation, separate from the throttled ordinary HUD snapshot.
+export const nameplateScene = createStore<Snapshot | null>(null);
 export const focus = createStore<string | null>(null);
 export const draggingSpell = createStore(false);
 export const pressingSpell = createStore(false);

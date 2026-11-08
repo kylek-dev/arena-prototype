@@ -1,6 +1,7 @@
 import { TooltipProvider } from "../ui/Tooltip";
 import { Theme } from "@radix-ui/themes";
 import { Frames } from "../features/unit-frames/Frames";
+import { Nameplates } from "../features/nameplates/Nameplates";
 import { UnitTooltip } from "../features/unit-frames/UnitTooltip";
 import { ActionBars } from "../features/action-bars/ActionBars";
 import { Spellbook } from "../features/spellbook/Spellbook";
@@ -51,6 +52,7 @@ export function App() {
             {save} Open Menu → Settings → Profiles to export or recover.
           </p>
         )}
+        <Nameplates />
         <Frames />
         <UnitTooltip />
         <ActionBars />

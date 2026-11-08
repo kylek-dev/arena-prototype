@@ -27,3 +27,7 @@ Sources consulted: [Radix Themes setup](https://www.radix-ui.com/themes/docs/ove
 ## Validation
 
 Add DOM/runtime regressions for focus recovery versus typing/navigation, Escape menu and rebinding, direct frame selection/drag, movable editor, sample/hidden frames, icon-only placement and canvas discard boundaries. No browser E2E is run automatically. User-reported issues motivated this revision; human review of the revised implementation remains pending.
+
+## Human review update — 2026-11-08
+
+The user verified and approved all implemented UI changes, including this decision's current revisions. Historical pending human-review statements above are superseded. See [review record](../UI-REVIEW.md).
