@@ -21,3 +21,7 @@ Human browser review must verify both imported glaives, grip alignment, thin edg
 Local verification on 2026-11-07: `./scripts/check.sh` passed (12 simulation tests, 35 client tests, two Python asset tests, 26 Node input tests and 122 Vitest tests), as did WASM Clippy with warnings denied, the complete `./scripts/build-web.sh`, generated-GLB HTTP/static checks and the scripted headless scenario. The build used procedural characters (optional character model absent). No browser was launched; human rendered review remains pending.
 
 Palette follow-up verification on 2026-11-07: the same full checks passed with 38 client tests, including four-bucket selection, preserved energy strength/finishes, per-instance clone reuse and source-material isolation, matching pair variants and light color. WASM Clippy, the complete web build/static checks and the headless scenario passed. The source GLB was not edited. No browser was launched; all four palettes still require human rendered review.
+
+## Human review update — 2026-11-08
+
+The user verified and approved all implemented UI/rendered changes, including current weapon presentation. Historical pending human-review statements above are superseded. Binary publication/license confirmation remains separate and unresolved by this UI approval. See [review record](../UI-REVIEW.md).

@@ -16,6 +16,8 @@ export const actions = [
   "spellbook",
   "quickBind",
   "layout",
+  "toggleEnemyNameplates",
+  "toggleFriendlyNameplates",
 ];
 export function actionList(bars: Bar[]) {
   return [...actions, ...bars.flatMap((b) => b.slots.map((s) => `slot:${s.id}`))];
@@ -70,9 +72,11 @@ export function defaults(bars: Bar[]): Bindings {
     settings: "KeyO",
     spellbook: "KeyP",
     setFocus: "KeyF",
+    toggleEnemyNameplates: "KeyV",
   }))
     result[action] = [chord({ code }), null];
   result.clearTarget = [chord({ code: "Escape", shiftKey: true }), null];
+  result.toggleFriendlyNameplates = [chord({ code: "KeyV", shiftKey: true }), null];
   if (bars[0]?.slots[0]) result[`slot:${bars[0].slots[0].id}`] = [chord({ code: "Digit1" }), null];
   return result;
 }

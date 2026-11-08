@@ -19,3 +19,7 @@ Domain/DOM tests cover settings reachability, bridge values, save/reload/reset, 
 Local verification on 2026-11-07: `./scripts/check.sh` passed (including 25 Node tests, 120 Vitest tests and 10 client Rust tests); WASM Clippy with warnings denied and `./scripts/build-web.sh` passed. The build used the procedural fallback because the optional model was not installed. No browser was launched; rendered review remains pending.
 
 Version-specific implementation references: the pinned Bevy 0.20.1 sources for `bevy_render::view::Msaa` and `bevy_mesh::primitives::{Capsule3dMeshBuilder, SphereMeshBuilder}` in the Cargo registry.
+
+## Human review update — 2026-11-08
+
+The user verified and approved all implemented UI/rendered changes, including graphics settings. Historical pending human-review statements above are superseded. See [review record](../UI-REVIEW.md); no measured performance or exhaustive GPU compatibility claim is added.

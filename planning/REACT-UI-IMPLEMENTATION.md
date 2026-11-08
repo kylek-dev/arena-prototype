@@ -1,5 +1,7 @@
 # React combat UI implementation plan
 
+**Human review update (2026-11-08):** the user verified and approved all implemented UI changes, including prior pending revisions. This closes the human UI approval gate mentioned below; historical instructions and results are retained. See [review record](../docs/UI-REVIEW.md). Future changes still require review; hosted CI and publication are separate.
+
 ## Handoff and authorization
 
 The user approved React and requested implementation of the complete feature set below, with substantial organization, reusable abstractions, and professional architecture. Do not omit features to reduce file count or hide unfinished functionality behind decorative UI. Implement in focused, reviewable increments without repeated confirmations for ordinary reversible work.

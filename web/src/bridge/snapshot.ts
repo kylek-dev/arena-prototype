@@ -1,4 +1,5 @@
 import type { Entity } from "../domain/units/selection";
+import type { NameplateProjection } from "../domain/units/nameplates";
 export type Snapshot = {
   tick: number;
   frames: number;
@@ -7,6 +8,7 @@ export type Snapshot = {
   selected: boolean;
   selectedPlayer?: boolean;
   hoveredUnit?: "Player" | "Opponent1" | null;
+  nameplates?: NameplateProjection[];
   distance: number;
   range: number;
   cooldown: number;
@@ -71,6 +73,26 @@ export function adaptSnapshot(raw: unknown): Snapshot {
   )
     throw new Error("Invalid engine snapshot flags");
   const maxHealth = (raw as { maxHealth?: number }).maxHealth;
+  if (r.nameplates !== undefined) {
+    if (!Array.isArray(r.nameplates) || r.nameplates.length > 6)
+      throw new Error("Invalid nameplate projections");
+    const tags = new Set<string>();
+    for (const plate of r.nameplates) {
+      if (
+        !plate ||
+        !/^(Opponent|Team)[1-3]$/.test(plate.tag) ||
+        tags.has(plate.tag) ||
+        !Number.isFinite(plate.x) ||
+        !Number.isFinite(plate.y) ||
+        plate.x < 0 ||
+        plate.x > 1 ||
+        plate.y < 0 ||
+        plate.y > 1
+      )
+        throw new Error("Invalid nameplate projection");
+      tags.add(plate.tag);
+    }
+  }
   if (!Number.isFinite(maxHealth) || !maxHealth || maxHealth < 1)
     throw new Error("Invalid maximum health");
   if (
@@ -96,6 +118,7 @@ declare global {
       readGraphics?: () => number[];
       readWeapons?: () => number[];
       readLighting?: () => number[];
+      onFocusUnit?: (tag: "Player" | "Opponent1") => void;
       onState: (state: unknown) => void;
     };
     arenaDebug?: { readonly state: Snapshot | null; readonly metrics: unknown };

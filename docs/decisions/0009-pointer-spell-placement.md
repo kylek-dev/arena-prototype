@@ -11,3 +11,7 @@ Escape, pointer cancellation/lost capture, blur, hiding, outside releases, stale
 Keep existing saved lock choices; show an explicit **Unlock spell dragging** button in the spellbook only while locked. No placement dropdowns or alternative assignment forms return. All bar tracks, spellbook icons and drag previews use the shared `--action-slot-size: 64px` token, including borders. Existing layout scaling/viewport fitting still apply to the base size.
 
 No dependency was added. Tests use the production pointer handlers and assignment reducers, mocking only missing jsdom pointer capture/hit testing; human review of actual hit geometry, click-versus-drag behavior and browser compatibility remains required. Playwright is not run automatically.
+
+## Human review update — 2026-11-08
+
+The user verified and approved all implemented UI changes, including captured-pointer spell placement. The human UI approval gate above is complete. See [review record](../UI-REVIEW.md); no agent-run browser reproduction is claimed.

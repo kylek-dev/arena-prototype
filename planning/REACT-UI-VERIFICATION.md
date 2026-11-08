@@ -1,6 +1,8 @@
 # React combat UI verification and handoff
 
-Date: 2026-11-07. Implementation is wired, with no decorative placeholder feature panels. **Human rendered review and hosted CI execution remain pending.** No Playwright or browser E2E was invoked.
+Implementation/check history: 2026-11-07. **Human UI review: verified and approved by the user on 2026-11-08**, including all earlier pending revisions and subsequent UI changes through nameplates. See [review record](../docs/UI-REVIEW.md). Hosted CI execution is separate and remains unverified here. No agent-run Playwright or browser E2E was invoked.
+
+Earlier pending-review/no-rendered-pass statements in the implementation history below describe the status at that time and are superseded by this dated user confirmation, not by automated tests.
 
 The user reported focus, layout and presentation issues in the first implementation. The follow-up scope is implemented under [ADR 0008](../docs/decisions/0008-gameplay-first-ui.md); the results below cover its automated regressions, not a claim that revised rendering has been reviewed by a person.
 
@@ -44,9 +46,11 @@ Build warning policy: ignore only dependency `use client` module-directive warni
 
 Observed pointer-drag revision frontend output: approximately 703 KB CSS (84 KB gzip) and 337 KB JavaScript (108 KB gzip). These are build sizes, not measured browser startup/rendering performance. Full native checks, WASM Clippy, the complete build/static-resource check and npm audit passed again for this revision; no rendered/browser pass is claimed.
 
-## Required human gate — NOT performed
+## Human UI gate — verified and approved by the user (2026-11-08)
 
-Use `npm run serve` and review [docs/BROWSER.md](../docs/BROWSER.md#manual-e2e-acceptance). Record browser/version, OS/device/GPU, viewport, console errors and actual results before merge/release:
+- [x] User confirmed all pending implemented UI changes are verified, including earlier revisions.
+
+The checklist below is retained as a future regression template, not outstanding approval work or an individual scenario log. Browser/version, OS/device/GPU, viewport and console results were not supplied. Use `npm run serve` and [docs/BROWSER.md](../docs/BROWSER.md#manual-e2e-acceptance) for subsequent reviews:
 
 - [ ] Startup, procedural fallback, optional-model failure and actionable errors.
 - [ ] Four-hit practice loop; unchanged character-relative movement and camera gestures.
@@ -62,7 +66,7 @@ Use `npm run serve` and review [docs/BROWSER.md](../docs/BROWSER.md#manual-e2e-a
 - [ ] Dialog focus/navigation, readable contrast/scale and reduced motion.
 - [ ] Desktop viewports (800×600 and larger), diagnostics opt-in and console inspection.
 
-Human browser/device: **not recorded — revised review pending**. User feedback identifies earlier problems, not a recorded acceptance pass for this revision. jsdom and static HTTP checks do not establish GPU rendering, pointer-lock permission, drag geometry, ray picking, accessibility-tool compatibility or performance. Drag-only spell assignment is a requested keyboard-accessibility tradeoff, not equivalent keyboard support.
+Human browser/device: **not supplied**. Human UI approval is based on the user's explicit 2026-11-08 confirmation, not an agent browser run. No individual scenario logs or console findings were supplied. jsdom and static HTTP checks do not establish GPU rendering, pointer-lock permission, drag geometry, ray picking, accessibility-tool compatibility or performance. Drag-only spell assignment is a requested keyboard-accessibility tradeoff, not equivalent keyboard support.
 
 ## Run locally
 

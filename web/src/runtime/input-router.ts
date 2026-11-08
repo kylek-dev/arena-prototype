@@ -34,11 +34,27 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
     releaseMouse();
   };
   const focusPolicy = installFocusPolicy(canvas, events.signal, cancel);
+  let previousConfig = config();
+  let previousProfile = preferences.get().active;
   const unsubscribe = interaction.subscribe(() => {
       cancel();
       focusPolicy.restore();
     }),
-    unconfig = preferences.subscribe(cancel);
+    unconfig = preferences.subscribe(() => {
+      const next = config();
+      // Visibility hotkeys are presentation-only: keep walking/steering and
+      // held-key ownership intact. All other preference edits still cancel.
+      const onlyNameplates =
+        preferences.get().active === previousProfile &&
+        next.nameplates !== previousConfig.nameplates &&
+        next.bindings === previousConfig.bindings &&
+        next.bars === previousConfig.bars &&
+        next.frames === previousConfig.frames &&
+        next.assignmentsLocked === previousConfig.assignmentsLocked;
+      previousConfig = next;
+      previousProfile = preferences.get().active;
+      if (!onlyNameplates) cancel();
+    });
   const unDrag = draggingSpell.subscribe(() => {
     cancel();
     focusPolicy.restore();

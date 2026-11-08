@@ -15,3 +15,7 @@ Hide live tooltips during spell dragging, quick binding, capture, menus/settings
 ## Verification
 
 Rust picking tests cover nearest identity, misses, behind-camera units and pillar occlusion. DOM/domain/runtime tests cover shared frame/world details, live health, suppression, layout selection/visibility, profile migration and pointer cancellation. Local checks, WASM Clippy and the complete web build passed on 2026-11-07. Human browser review of world picking, static placement and layout dragging remains required and pending; no automatic rendered E2E gate is added.
+
+## Human review update — 2026-11-08
+
+The user verified and approved all implemented UI changes, including unit tooltips. Historical pending human-review statements above are superseded. See [review record](../UI-REVIEW.md).

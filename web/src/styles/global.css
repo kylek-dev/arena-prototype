@@ -1,6 +1,7 @@
 /* Single entry point: keep cascade order explicit, independent of React imports. */
 @import "./base.css";
 @import "../ui/placement.css";
+@import "../features/nameplates/nameplates.css";
 @import "../features/unit-frames/unit-frames.css";
 @import "../features/action-bars/action-bars.css";
 @import "../features/combat-errors/combat-errors.css";

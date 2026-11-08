@@ -17,3 +17,7 @@ Reuse the existing Low/High mesh cache and quality switching for rounded parts. 
 Unit tests check paired limbs/eyes, facial direction, positive part dimensions and grounded height bounds for both hairstyles. Existing graphics tests check Low/High geometry bounds. Run `./scripts/check.sh`, WASM Clippy and the complete web build. Manual acceptance must review front/side/back silhouettes, facial readability, hair, back-weapon fit, both quality settings, movement/jumping/reset, targeting/hover and optional-model success/fallback. No rendered or performance pass is inferred from automated checks.
 
 Local verification on 2026-11-07: `./scripts/check.sh` passed (12 simulation tests, 27 client tests, 26 Node input tests and 122 Vitest tests), WASM Clippy with warnings denied passed, and `./scripts/build-web.sh` passed using the procedural characters (optional model not installed). The scripted headless scenario completed successfully. A renderer-free hierarchy test also checks that the player's complete fallback has one visibility root and every humanoid part uses the shared quality cache. No browser was launched; human rendered review remains pending.
+
+## Human review update — 2026-11-08
+
+The user verified and approved all implemented UI/rendered changes, including character presentation. Historical pending human-review statements above are superseded. See [review record](../UI-REVIEW.md).

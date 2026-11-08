@@ -1,5 +1,7 @@
 # Architecture
 
+**Human UI review update (2026-11-08):** the user verified and approved all implemented UI/rendered changes, including earlier pending revisions through ADR 0022. This supersedes the historical pending-review statements below. See [review scope and evidence](UI-REVIEW.md); automated checks, hosted CI, performance and asset licensing remain separate.
+
 ## Implemented today
 
 `arena-headless` supplies a scripted list of commands to `arena-sim`. The simulation contains a deliberately tiny one-dimensional duel: bounded movement, range, damage, cooldown, and match completion. The script prints tick-tagged events. Rules run at a proposed 30 Hz and use integer state. Commands resolve in supplied order; ties are not simultaneous. The test replays the same input twice and compares events and state.
@@ -18,6 +20,8 @@ Node tests exercise legacy input directly; Vitest exercises domain modules and p
 
 [ADR 0010](decisions/0010-unit-tag-frame-interactions.md) unifies live frame clicks through unit tags: left-click targets, right-click focuses, including the player. The local bridge appends self-selection at input index 13 and publishes `selectedPlayer`; existing indices remain unchanged. Missing future opponent/team slots resolve to nothing. Self-targeted attacks remain invalid under simulation rules.
 
+[ADR 0023](decisions/0023-world-model-focus.md) extends right-click focus to world models. One-shot coordinates append at input indices 15–16; Rust uses rendered-unit/pillar picking shared with left-click targeting and returns a local tag through optional `onFocusUnit`. Browser focus remains independent of selection; misses preserve focus and drags/chords do not focus. Nameplates remain usable through pillars. Human rendered review of model focus is pending separately from earlier approvals.
+
 The optional BaseMale glTF character is a presentation child of the existing player entity, normalized to the arena scale. A generated asset manifest lets builds without the local source use the procedural fallback without fetching a missing model. Loading state is exposed through the existing debug snapshot; collision and game rules do not depend on model geometry. See [asset provenance](../assets/README.md).
 
 [ADR 0015](decisions/0015-procedural-humanoids.md) replaces capsule placeholders with procedural humanoids. Internal appearance data separates skin/hair/eye colors, clothing, proportions and hairstyle from simulation identity; customization UI/persistence and skeletal animation remain deferred. The player humanoid is also the optional model's loading/error fallback. Human rendered review is pending.
@@ -27,6 +31,8 @@ The optional BaseMale glTF character is a presentation child of the existing pla
 [ADR 0021](decisions/0021-base-male-skeletal-character.md) supersedes the unrigged optional player with the local Blender-authored BaseMale skeleton and eight clips. A build adapter isolates its scene, strips authoring metadata and removes authored Jump root translation. A Bevy 0.20.1 animation graph selects locomotion from actual local displacement, seeks jump limb poses against rule-owned flight and plays a cosmetic Cast release on successful Pulse cooldown edges. No cast-time/damage or movement rules change; Attack is retained but has no new ability/binding. Authored models do not receive duplicate procedural bob. The opponent and absent/loading/error fallback stay procedural. Human browser review is pending.
 
 Durable replay files, interrupts, teams, networking and server validation are not implemented. The public simulation API is provisional.
+
+[ADR 0022](decisions/0022-world-health-nameplates.md) adds health-only world nameplates for non-player units. Optional normalized projections publish after camera/transform updates and feed a separate render-rate frontend store, independent of ordinary HUD throttling. Bars reuse unit-tag target/focus commands; profile settings and remappable friendly/enemy toggles control visibility. Nameplates remain visible/clickable through pillars; world-hover occlusion and combat line of sight remain unchanged. The current scene has no teammates. The through-pillar correction follows the earlier UI approval and awaits human rendered review.
 
 The original Verdant Eclipse GLB now supplies the player's two crossed cosmetic back weapons. A build-time adapter extracts a weapon-only scene without modifying the user's Blender export; per-instance readiness hides only the corresponding procedural fallback. Shared motion carriers and mount transforms are preserved. No simulation rules or input ABI change. See [ADR 0017](decisions/0017-imported-glaives.md).
 
@@ -63,3 +69,5 @@ Headless and local browser adapters use the shared rules today; the server bound
 Keep simulation time separate from rendering and transport. Browser prediction may reuse rules but does not decide outcomes. Snapshot interpolation and future reconciliation must expose correction metrics. Version replay content, rules and protocol so results remain explainable after balance changes.
 
 A future development bridge should expose structured state and command injection for browser automation and screenshots. Keep debug capabilities out of public competitive sessions. Do not require editor interaction or an external AI service to run tests.
+
+Model-focus review update (2026-11-08): the user approved the completed ADR 0023 change. Its pending human-review statement above is superseded; see [review record](UI-REVIEW.md#subsequent-changes).

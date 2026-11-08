@@ -4,10 +4,11 @@ import { readGraphics } from "../state/graphics";
 import { readWeapons } from "../state/weapons";
 import { readLighting } from "../state/lighting";
 import { observeCastResult } from "./cast-feedback";
-import { engine, error, focus } from "../state/session";
+import { engine, error, focus, nameplateScene } from "../state/session";
 import { reconcileFocus } from "../domain/units/selection";
 import { installPointer } from "./pointer";
 import { installUnitHover } from "./unit-hover";
+import { interactUnit } from "./commands";
 import { installInput } from "./input-router";
 import { installSpellDragging } from "./spell-drag";
 import { debugEnabled, measureFrames, metrics, recordError, recordState } from "./diagnostics";
@@ -33,12 +34,14 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     readGraphics,
     readWeapons,
     readLighting,
+    onFocusUnit: (tag) => interactUnit(tag, "focus"),
     onState(raw) {
       try {
         const next = adaptSnapshot(raw),
           previous = engine.get();
         recordState();
         observeCastResult(next);
+        nameplateScene.set(next);
         focus.set(
           reconcileFocus(
             focus.get(),
@@ -77,5 +80,6 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     pointer.dispose();
     stopSpellDrop();
     unitHover.dispose();
+    nameplateScene.set(null);
   };
 }

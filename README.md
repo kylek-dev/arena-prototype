@@ -33,6 +33,8 @@ Run `npm ci`, then `npm test` or `npm run test:watch` with Node 24 for input, do
 
 ## Browser prototype
 
+**UI review:** the user verified and approved all implemented UI changes on 2026-11-08, including earlier pending revisions and world nameplates. This supersedes the earlier pending-review notes below. See the [human review record](docs/UI-REVIEW.md) for scope and evidence limits.
+
 See [browser development](docs/BROWSER.md) for setup. With the pinned Rust/WASM tools installed:
 
 ```sh

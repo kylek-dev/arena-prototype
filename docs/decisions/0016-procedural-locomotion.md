@@ -19,3 +19,7 @@ Renderer-free tests cover paired counter-swing, backward/strafe axes, movement-t
 Manual review must check idle, forward/backward/diagonal/strafe motion, direction changes, stopping at walls/pillars, free-look versus turning, standing/running jumps, landing, reset, tab resume, weapon fit, both actor presets/proportions and Low/High detail. Also verify targeting/hover and optional imported-model/fallback behavior. Human rendered/browser review remains pending; automated tests do not establish appearance or performance.
 
 Local verification on 2026-11-07: `./scripts/check.sh` passed (12 simulation tests, 30 client tests, 26 Node input tests and 122 Vitest tests); WASM Clippy with warnings denied, `./scripts/build-web.sh` and the scripted headless scenario passed. The build used procedural characters (optional model not installed). No browser was launched; human rendered review remains pending.
+
+## Human review update — 2026-11-08
+
+The user verified and approved all implemented UI/rendered changes, including locomotion presentation. Historical pending human-review statements above are superseded. See [review record](../UI-REVIEW.md).

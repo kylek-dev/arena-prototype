@@ -4,7 +4,7 @@ import { beginCast, clearCastFeedback, rejectCast } from "./cast-feedback";
 import { nextTarget } from "../domain/units/selection";
 import { resolveUnit, type UnitTag, type UnitRoster } from "../domain/units/tags";
 import type { Snapshot } from "../bridge/snapshot";
-import { config } from "../state/config";
+import { config, updateConfig } from "../state/config";
 import {
   draggingSpell,
   blocksGameplay,
@@ -66,6 +66,12 @@ export function dispatch(action: string) {
     return;
   }
   switch (action) {
+    case "toggleEnemyNameplates":
+    case "toggleFriendlyNameplates": {
+      const side = action === "toggleEnemyNameplates" ? "enemy" : "friendly";
+      updateConfig((c) => ({ ...c, nameplates: { ...c.nameplates, [side]: !c.nameplates[side] } }));
+      break;
+    }
     case "jump":
       input.jump = true;
       break;

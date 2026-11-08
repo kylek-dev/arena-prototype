@@ -4,7 +4,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { ActionSlot } from "../../web/src/features/action-bars/ActionSlot";
 import { bind, chord } from "../../web/src/domain/bindings/model";
 import { initial } from "../../web/src/domain/preferences/schema";
-import { preferences, updateConfig, persistence } from "../../web/src/state/config";
+import { preferences, updateConfig, persistence, config } from "../../web/src/state/config";
 import { engine, error, focus, heldSlots, interaction } from "../../web/src/state/session";
 import { pendingBinding } from "../../web/src/state/binding-capture";
 import { installInput } from "../../web/src/runtime/input-router";
@@ -46,6 +46,34 @@ afterEach(() => {
 });
 
 describe("production input routing", () => {
+  it("toggles nameplates once, supports remapping, and respects typing/menu ownership", () => {
+    key("KeyW");
+    key("KeyV");
+    expect(config().nameplates).toEqual({ enemy: false, friendly: true });
+    expect(router.sample()[1]).toBe(-1);
+    key("KeyV", { repeat: true });
+    expect(config().nameplates.enemy).toBe(false);
+    release("KeyV");
+    key("KeyV", { shiftKey: true });
+    expect(config().nameplates.friendly).toBe(false);
+    expect(router.sample()[1]).toBe(-1);
+    release("KeyW");
+    release("KeyV");
+    updateConfig((c) => ({
+      ...c,
+      bindings: bind(c.bindings, "toggleEnemyNameplates", 0, chord({ code: "KeyN" })),
+    }));
+    key("KeyN");
+    expect(config().nameplates.enemy).toBe(true);
+    release("KeyN");
+    document.querySelector("input")!.focus();
+    key("KeyN");
+    expect(config().nameplates.enemy).toBe(true);
+    canvas.focus();
+    interaction.set({ ...interaction.get(), panel: "menu" });
+    key("KeyN");
+    expect(config().nameplates.enemy).toBe(true);
+  });
   it("lets lighting sliders own input without blocking gameplay after canvas refocus", () => {
     lightingVisible.set(true);
     render(<LightingTweaks />);

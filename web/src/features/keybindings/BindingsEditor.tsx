@@ -5,7 +5,12 @@ import { captureMessage, acceptBinding, pendingBinding } from "../../state/bindi
 import { interaction } from "../../state/session";
 import { useStore } from "../../state/store";
 import { Modal } from "../../ui/Dialog";
-const actionName = (action: string) => (action === "spellbook" ? "Spells" : action);
+const actionName = (action: string) =>
+  ({
+    spellbook: "Spells",
+    toggleEnemyNameplates: "Toggle enemy nameplates",
+    toggleFriendlyNameplates: "Toggle friendly nameplates",
+  })[action] ?? action;
 export function BindingConflict() {
   const pending = useStore(pendingBinding, (s) => s);
   return (
@@ -40,7 +45,15 @@ export function BindingsEditor() {
       ? "slots"
       : ["forward", "back", "left", "right", "jump"].includes(a)
         ? "movement"
-        : ["menu", "settings", "spellbook", "quickBind", "layout"].includes(a)
+        : [
+              "menu",
+              "settings",
+              "spellbook",
+              "quickBind",
+              "layout",
+              "toggleEnemyNameplates",
+              "toggleFriendlyNameplates",
+            ].includes(a)
           ? "interface"
           : "selection";
   return (
