@@ -199,3 +199,8 @@ mod tests {
 
 pub mod arena;
 pub mod effects;  
+pub mod auto_attacks;
+pub mod classes;
+pub mod specs;
+pub mod stat_templates;
+pub mod formulas;
