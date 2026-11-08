@@ -2,6 +2,7 @@
 //! No wall clock, random numbers, graphics, or I/O.
 pub const TICKS_PER_SECOND: u64 = 30;
 pub const COOLDOWN: u64 = TICKS_PER_SECOND;
+  
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fighter {
@@ -192,4 +193,14 @@ mod tests {
     }
 }
 
+
+
+
+
 pub mod arena;
+pub mod effects;  
+pub mod auto_attacks;
+pub mod classes;
+pub mod specs;
+pub mod stat_templates;
+pub mod formulas;
