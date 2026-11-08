@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { defaultLighting, lightingControls, patchLighting } from "../../web/src/domain/lighting";
 import { LightingTweaks } from "../../web/src/features/lighting-tweaks/LightingTweaks";
@@ -40,7 +40,10 @@ it("opens the temporary nonmodal window from the menu and updates every slider c
   expect(panel.closest(".scrim")).toBeNull();
   expect(screen.getAllByRole("slider")).toHaveLength(28);
   for (const [index, control] of lightingControls.slice(0, -1).entries()) {
-    const slider = screen.getByRole("slider", { name: control.label });
+    // Scope the accessible lookup to this label instead of recalculating names
+    // and visibility for all 28 sliders on every iteration (slow on CI runners).
+    const label = within(panel).getByText(control.label, { selector: "span" }).closest("label")!;
+    const slider = within(label).getByRole("slider", { name: control.label });
     const value = control.min + (control.max - control.min) / 2;
     fireEvent.change(slider, { target: { value: String(value) } });
     expect(readLighting()[index]).toBe(value);
