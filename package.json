@@ -21,7 +21,7 @@
     "@playwright/test": "1.64.1",
     "@testing-library/react": "16.3.0",
     "@testing-library/user-event": "14.6.1",
-    "@types/react": "19.2.2",
+    "@types/react": "19.3.0",
     "@types/react-dom": "19.2.2",
     "jsdom": "27.2.0",
     "typescript": "5.9.3",
@@ -32,7 +32,7 @@
     "@radix-ui/react-dialog": "1.1.15",
     "@radix-ui/react-tooltip": "1.2.8",
     "@radix-ui/themes": "3.3.0",
-    "react": "19.2.0",
+    "react": "19.3.1",
     "react-dom": "19.2.0"
   }
 }
