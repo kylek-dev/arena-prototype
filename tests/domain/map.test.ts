@@ -80,9 +80,16 @@ describe("plan geometry", () => {
       const p = edgePoint(map, edge, 3, 2);
       expect(edgeFrame(map, edge, p)).toEqual({ along: 3, out: 2 });
     }
-    // North is −Z; a south room runs from the floor edge toward +Z.
+    // North is −Z; a south room runs from the floor edge toward +Z, as wide
+    // as its opening around its offset.
     const south = map.rooms[0];
-    expect(roomRect(map, south)).toEqual({ minX: -3, minZ: 42, maxX: 3, maxZ: 53 });
+    const half = south.width / 2;
+    expect(roomRect(map, south)).toEqual({
+      minX: south.offset - half,
+      minZ: 42,
+      maxX: south.offset + half,
+      maxZ: 42 + south.depth,
+    });
     expect(spawnPoint(map, south, south.spawns[1])).toEqual({ x: -2, z: 47 });
     const north = map.rooms[1];
     expect(spawnPoint(map, north, north.spawns[0])).toEqual({ x: 0, z: -47 });
@@ -96,27 +103,36 @@ describe("edits", () => {
       x: -10.5,
       z: 3.5,
     });
-    // Kept on the floor (108 × 84 m with a 9 m pillar).
-    expect(movePillar(map, 0, { x: -500, z: 500 }).pillars[0]).toMatchObject({ x: -49.5, z: 37.5 });
+    // Kept on the floor (108 × 84 m): the pillar's edge stops at the boundary.
+    const { width, depth } = map.pillars[0];
+    expect(movePillar(map, 0, { x: -500, z: 500 }).pillars[0]).toMatchObject({
+      x: -(54 - width / 2),
+      z: 42 - depth / 2,
+    });
     expect(resizePillar(map, 0, { x: -18, z: -15 }).pillars[0]).toMatchObject({
       width: 6,
       depth: 1,
     });
     // Rooms slide along their edge and keep 1 m from the corners.
     expect(moveRoom(map, 0, { x: 12.2, z: 60 }).rooms[0].offset).toBe(12);
-    expect(moveRoom(map, 0, { x: 999, z: 0 }).rooms[0].offset).toBe(50);
+    expect(moveRoom(map, 0, { x: 999, z: 0 }).rooms[0].offset).toBe(
+      54 - map.rooms[0].width / 2 - 1,
+    );
     // Depth never drops below the deepest spawn.
     expect(deepenRoom(map, 0, { x: 0, z: 43 }).rooms[0].depth).toBe(5.5);
     expect(deepenRoom(map, 1, { x: 0, z: -58 }).rooms[1].depth).toBe(16);
     const spawn = moveSpawn(map, 0, 0, { x: 10, z: 100 }).rooms[0].spawns[0];
-    expect(spawn).toEqual({ across: 2.5, back: 10.5 });
+    // Clamped half a metre inside the room's side and back walls.
+    expect(spawn).toEqual({ across: map.rooms[0].width / 2 - 0.5, back: map.rooms[0].depth - 0.5 });
   });
 
   it("adds rooms clear of existing openings and spawns inside them", () => {
+    const template = colosseum().rooms[0];
     let map = addRoom(colosseum(), "friendly");
     const added = map.rooms[2];
-    expect(added).toMatchObject({ team: "friendly", edge: "south", width: 6 });
-    expect(Math.abs(added.offset)).toBeGreaterThanOrEqual(7);
+    // A copy of the team's room, at least 1 m clear of the existing opening.
+    expect(added).toMatchObject({ team: "friendly", edge: "south", width: template.width });
+    expect(Math.abs(added.offset - template.offset)).toBeGreaterThanOrEqual(template.width + 1);
     expect(added.spawns).toHaveLength(3);
     map = addSpawn(map, 2);
     expect(map.rooms[2].spawns.at(-1)).toEqual({ across: 0, back: 3.5 });
