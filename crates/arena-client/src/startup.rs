@@ -5,7 +5,7 @@
 //! camera actually draws, and on the web each new shader variant can stall a
 //! frame. The loading overlay therefore stays up while the scene renders behind
 //! it. Once assets are loaded the camera sweeps four headings around the player
-//! (so scenery outside the first view is prepared too) and the Pulse beam is
+//! (so scenery outside the first view is prepared too) and the Pulse lightning is
 //! drawn. Readiness then needs a full sweep plus a settled home view in which no
 //! GPU upload is pending and no new pipeline appears; any new work restarts it.
 use std::{collections::HashSet, f32::consts::TAU};

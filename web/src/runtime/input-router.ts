@@ -183,7 +183,7 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
       result[1] =
         input.mouseButtons === 3
           ? -1
-          : Number(resolver.active("back")) - Number(resolver.active("forward"));
+          : Number(resolver.active("back")) - Number(resolver.active("forward") || input.autorun);
       return result;
     },
     dispose() {

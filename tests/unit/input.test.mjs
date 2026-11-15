@@ -29,6 +29,45 @@ test('Space appends a one-shot jump without changing existing ABI fields', () =>
   assert.equal(input.readInput()[14], 0);
 });
 
+test('NumLock toggles autorun forward; W/S, a second press, or cancel stop it', () => {
+  const input = new InputState();
+  input.keyDown({ code: 'NumLock' });
+  assert.equal(sample(input).z, -1);
+  assert.equal(sample(input).z, -1);
+  input.keyDown({ code: 'NumLock', repeat: true });
+  assert.equal(sample(input).z, -1);
+  input.keyDown({ code: 'NumLock' });
+  assert.equal(sample(input).z, 0);
+  input.keyDown({ code: 'NumLock' });
+  input.keyDown({ code: 'KeyS' });
+  input.keyUp('KeyS');
+  assert.equal(sample(input).z, 0);
+  input.keyDown({ code: 'NumLock' });
+  input.cancel();
+  assert.deepEqual(sample(input), idle);
+});
+
+test('both-button walking stops autorun; single-button clicks and drags keep it', () => {
+  const input = new InputState();
+  input.keyDown({ code: 'NumLock' });
+  for (const [button, buttons] of [[0, 1], [2, 2]]) {
+    down(input, button, buttons);
+    move(input, buttons);
+    assert.equal(sample(input).z, -1);
+    input.mouseUp({ button, buttons: 0 });
+    assert.equal(sample(input).z, -1);
+  }
+  down(input, 0, 1);
+  input.mouseUp({ button: 0, buttons: 0 });
+  assert.equal(sample(input).z, -1);
+  down(input, 2, 2);
+  down(input, 0, 3);
+  assert.equal(sample(input).z, -1);
+  input.mouseUp({ button: 0, buttons: 2 });
+  input.mouseUp({ button: 2, buttons: 0 });
+  assert.equal(sample(input).z, 0);
+});
+
 test('keyboard movement persists between samples and opposing keys cancel', () => {
   const input = new InputState();
   input.keyDown({ code: 'KeyW' });

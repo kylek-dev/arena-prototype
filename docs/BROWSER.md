@@ -27,12 +27,13 @@ After one complete build, `npm run dev` provides frontend hot reload using the e
 Controls:
 
 - **WASD:** move relative to character facing. W/S move forward/backward; A/D strafe left/right. Movement never turns the character.
+- **NumLock (or `):** toggle autorun forward (remappable in Settings → Bindings → movement). Strafing and jumping keep it running; pressing forward/back, walking with both mouse buttons, or the autorun key again stops it, as do menus, focus loss and reset. Single-button clicks and drags (look, turn, target, focus) keep it running. Existing custom NumLock/` bindings are preserved.
 - **Space:** jump, carrying takeoff momentum until landing (remappable in Settings → Bindings → movement). No air steering, double-jump, or automatic repeat while held. Walls/pillars still block movement; jumping does not avoid attacks or bypass cover. Existing custom Space bindings are preserved.
 - **Left-drag:** orbit the camera only. Character facing and movement direction remain independent of the camera, including after release or stopping and restarting movement.
 - **Right-drag:** orbit the camera and turn the character to face that direction.
 - **Ordinary right-click on a character model:** focus that character without changing target. Empty space leaves focus unchanged. Both model buttons use nearest rendered-character picking and respect pillars; nameplate buttons remain usable through pillars. Rebuild WASM and frontend together. Human rendered review of model right-click focus is pending.
 - **Left + right held:** walk forward while steering and turning with the camera.
-- **Wheel:** zoom. **Tab or ordinary left-click:** select. **Escape:** game menu. **Shift+Escape:** clear target.
+- **Wheel:** zoom from 22 m down to 1.5 m, then one more step snaps into first person at eye level (your character is hidden; zoom out to return). The orbit pivot rises from chest to eye height inside 6 m. Dragging can raise the camera to just short of directly overhead (and as far below), so it can pass up and over the character. Rebuild the complete client for these camera changes. **Tab or ordinary left-click:** select. **Escape:** game menu. **Shift+Escape:** clear target.
 - **1 / Pulse:** attack. **R / Reset:** restart.
 - **F:** set focus from selected target. **O:** settings. **P:** spellbook. Bind clear/target focus and other interface commands in Settings.
 - **V:** toggle enemy nameplates. **Shift+V:** toggle friendly nameplates. Both are remappable in Settings → Bindings. Existing custom uses of these keys are preserved.
@@ -217,6 +218,12 @@ The arena floor and stand tiers use hand-painted CC0 flagstones; the pillars, pi
 
 **Human rendered review is pending.** Check floor readability and distance shimmer, brick scale and seams, the load-time switch, character/nameplate/spell contrast against the ground, the painted character shading in motion, Low/High, MSAA on/off and console errors. To change or add textures, see [free texture sources](research/free-texture-sources.md) and [ADR 0030](decisions/0030-stylized-surface-textures.md).
 
+## Pulse lightning (2026-11-15)
+
+A successful Pulse now throws five thin, forking blue lightning strands from the caster's raised left hand (the `middle_01_l` knuckles of a Quaternius kit, or the procedural model's left hand) to the target's chest, replacing the single gold bar from the stomach. The strands bow apart so they read separately, sprout short branches, grow to the target over 0.05 s, re-fork 26 times a second and fade out over 0.42 s, with soft flares at the hand and the impact. It is one additive, unlit mesh rebuilt in world space each frame after transform propagation, so it tracks the animated hand. Its HDR colour feeds the existing bloom. Presentation only: the rules still resolve the hit instantly, and the client never reports anything back.
+
+**Human rendered review is pending.** Check that the strands leave the hand during the cast at every orbit angle and when running, that they hit the target and do not pass through it, how readable they are against the floor and sky, Bloom off/on, MSAA off/on, any first-cast hitch after loading, close/inside-player camera views, kit swaps and the procedural fallback, and console errors. Automated tests cover geometry, timing, hand selection and visibility, not appearance.
+
 ## Character asset
 
 ### Character customization (2026-11-14)
@@ -282,7 +289,7 @@ unused assets. The dressed GLB fell from 57.7 MB to 9.2 MB. This is measured
 payload reduction, not a verified browser frame-time improvement; review a
 fresh entry, texture quality and console errors on the intended device.
 The loading screen now stays up while the scene renders behind it. The camera
-sweeps around the player and the Pulse beam is drawn once, until GPU uploads
+sweeps around the player and the Pulse lightning is drawn once, until GPU uploads
 and shader compilation settle; warmup gives up after 15 s
 ([ADR 0039](decisions/0039-render-warmup-behind-loading-screen.md)).
 **The player is temporarily unequipped:** no weapon/effect models are requested
