@@ -18,12 +18,15 @@ export function GameMenu() {
   const customizable = useStore(characterKits, (k) => k.length > 0);
   const link = useStore(networkLink, (l) => l);
   const phase = useStore(link?.state ?? NO_LINK, (s) => s.phase);
+  const seat = useStore(link?.state ?? NO_LINK, (s) => s.status?.seat ?? null);
   const inMatch = phase !== "idle" && phase !== "ended";
   const remembered = !inMatch ? link?.remembered() : null;
   return (
     <div className="stack game-menu">
       <Text size="2" color="gray">
-        {inMatch ? "Network match" : "Local solo practice"}
+        {inMatch
+          ? `Network match${seat === null ? "" : ` · seat ${seat + 1}`}`
+          : "Local solo practice"}
       </Text>
       <Button onClick={() => setPanel(null)}>Resume</Button>
       {inMatch && link && (

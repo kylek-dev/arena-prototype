@@ -709,9 +709,9 @@ fn network_receive(
         ..
     } = &mut *net;
     let session = session.get_or_insert_default();
-    let (out, rejections) = session.receive(&feed, now, &map.0.layout);
-    for frame in out.iter().chain(session.ping(now).as_ref()) {
-        platform::send_network(frame);
+    let rejections = session.receive(&feed, now, &map.0.layout);
+    if let Some(frame) = session.ping(now) {
+        platform::send_network(&frame);
     }
     if session.map_differs() == Some(true) {
         practice.feedback = "This build's map differs from the server's";
@@ -1101,8 +1101,8 @@ mod platform {
         fn arena_network_send(frame: &[u8]);
         fn arena_network_status(json: &str);
     }
-    /// The runtime's match feed as `[generation, ticketHex, ...frames]`;
-    /// `None` when there is no match (older shells send nothing).
+    /// The runtime's match feed as `[generation, ...frames]`; `None` when
+    /// there is no match (older shells send nothing).
     pub fn read_network() -> Option<super::network::Feed> {
         let values = arena_network();
         let generation = values
@@ -1110,16 +1110,11 @@ mod platform {
             .as_f64()
             .filter(|g| g.is_finite() && *g >= 0.0 && *g <= f64::from(u32::MAX))?
             as u32;
-        let ticket = values.get(1).as_string()?;
-        let frames = (2..values.length())
+        let frames = (1..values.length())
             .filter_map(|i| values.get(i).dyn_into::<js_sys::Uint8Array>().ok())
             .map(|frame| frame.to_vec())
             .collect();
-        Some(super::network::Feed {
-            generation,
-            ticket,
-            frames,
-        })
+        Some(super::network::Feed { generation, frames })
     }
     pub fn send_network(frame: &[u8]) {
         arena_network_send(frame);
@@ -1344,16 +1339,14 @@ mod tests {
         let feed = |frames| {
             *platform::NETWORK.lock().unwrap() = Some(network::Feed {
                 generation: 1,
-                ticket: "abcd".into(),
                 frames,
             });
         };
+        // The runtime greets the server itself; the engine sends nothing
+        // until it is welcomed.
         feed(vec![]);
         app.world_mut().run_schedule(PreUpdate);
-        assert!(matches!(
-            ClientMessage::decode(&sent()[0]),
-            Ok(ClientMessage::Hello { .. })
-        ));
+        assert!(sent().is_empty());
         // The server's 1v1, seen from seat 1, while seat 0 walks.
         let mut server = Arena::practice(arena_map::colosseum().layout, 1).unwrap();
         let mut frames = vec![
@@ -2051,7 +2044,6 @@ mod platform {
             .as_mut()
             .map(|feed| super::network::Feed {
                 generation: feed.generation,
-                ticket: feed.ticket.clone(),
                 frames: std::mem::take(&mut feed.frames),
             })
     }

@@ -168,6 +168,7 @@ impl App {
             id
         };
         Metrics::add(&self.metrics.matches_created, 1);
+        eprintln!("match {match_id:016x}: created for {team_size}v{team_size}");
         Metrics::add(&self.metrics.matches_active, 1);
         let session = Session::new(arena, self.map, self.config.limits, self.metrics.clone());
         tokio::spawn(run_match(self.clone(), match_id, session, receiver));
@@ -224,7 +225,9 @@ async fn run_match(
             command = commands.recv() => match command {
                 Some(Command::Attach { seat, conn, out }) => {
                     conns.insert(conn, out);
-                    session.attach(seat, conn)
+                    let out = session.attach(seat, conn);
+                    log_attach(id, seat, conn, &out);
+                    out
                 }
                 Some(Command::Input { seat, conn, frame }) => {
                     session.receive(seat, conn, frame);
@@ -232,6 +235,9 @@ async fn run_match(
                 }
                 Some(Command::Detach { seat, conn }) => {
                     conns.remove(&conn);
+                    if session.holds(seat, conn) {
+                        eprintln!("match {id:016x}: seat {seat} disconnected (connection {conn})");
+                    }
                     session.detach(seat, conn);
                     Vec::new()
                 }
@@ -249,6 +255,42 @@ async fn run_match(
     }
     app.matches.lock().expect("match registry lock").remove(&id);
     Metrics::sub(&app.metrics.matches_active, 1);
+    match session.arena().result() {
+        Some(result) => eprintln!("match {id:016x}: ended ({result:?})"),
+        None => eprintln!(
+            "match {id:016x}: ended without a result (seats never all joined, everyone left, or the server stopped)"
+        ),
+    }
+}
+
+/// One line per seat change, so an operator (or a puzzled tester) can see
+/// who joined which seat of which match. Tickets are never logged.
+fn log_attach(id: u64, seat: usize, conn: ConnId, out: &[Out]) {
+    for out in out {
+        match out {
+            Out::Send {
+                conn: to,
+                message: ServerMessage::Welcome(_),
+            } if *to == conn => {
+                eprintln!("match {id:016x}: seat {seat} joined (connection {conn})");
+            }
+            Out::Close {
+                conn: refused,
+                error: Some(code),
+            } if *refused == conn => {
+                eprintln!("match {id:016x}: seat {seat} refused connection {conn}: {code:?}");
+            }
+            Out::Close {
+                conn: old,
+                error: Some(ErrorCode::Replaced),
+            } => {
+                eprintln!(
+                    "match {id:016x}: seat {seat} taken over by connection {conn} from connection {old}"
+                );
+            }
+            _ => {}
+        }
+    }
 }
 
 fn deliver(app: &App, id: u64, conns: &mut HashMap<ConnId, mpsc::Sender<Outbound>>, out: Vec<Out>) {

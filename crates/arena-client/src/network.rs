@@ -1,10 +1,12 @@
 //! Networked play against `arena-server` (ADR 0044, Phase 5).
 //!
-//! The browser's TypeScript runtime owns the WebSocket; this module owns
-//! the protocol. Each frame it receives the socket's generation (bumped
-//! whenever a new socket opens), the join ticket and any binary frames,
-//! and it returns frames to send. Time is passed in, so the session is
-//! testable without a browser.
+//! The browser's TypeScript runtime owns the WebSocket and greets the server
+//! itself on every new socket, so a background tab (whose engine is paused
+//! by the browser) keeps its seat. This module owns the rest of the
+//! protocol. Each frame it receives the socket's generation (bumped
+//! whenever a new socket opens) and any binary frames, and it returns
+//! inputs and pings to send. Time is passed in, so the session is testable
+//! without a browser.
 //!
 //! The rest of the client assumes the local player is actor 0, with
 //! friends on even and enemies on odd indices. A session therefore
@@ -21,7 +23,7 @@
 use std::collections::VecDeque;
 
 use arena_protocol::{
-    ClientMessage, ErrorCode, FighterState, InputFrame, PROTOCOL_VERSION, ServerMessage, WireEvent,
+    ClientMessage, ErrorCode, FighterState, InputFrame, ServerMessage, WireEvent,
 };
 use arena_sim::arena::{Arena, Combatant, Rejection, RoundResult};
 use arena_sim::map::Layout;
@@ -39,10 +41,10 @@ const SNAP: f64 = 15.0;
 /// What the browser runtime hands over each frame while a match is set up.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Feed {
-    /// Bumped by the runtime for every newly opened socket; 0 while none is.
+    /// Bumped by the runtime for every newly opened socket; 0 before the
+    /// first one opens. A closed socket keeps its generation until its last
+    /// frames (often the server's final `Error`) have been read.
     pub generation: u32,
-    /// Hex-encoded join ticket.
-    pub ticket: String,
     pub frames: Vec<Vec<u8>>,
 }
 
@@ -157,16 +159,6 @@ pub fn seat_order(seat: usize, count: usize) -> Vec<usize> {
         .collect()
 }
 
-pub fn decode_hex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) || !text.is_ascii() {
-        return None;
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(&text[at..at + 2], 16).ok())
-        .collect()
-}
-
 /// Presentation yaw (radians, 0 facing −Z) of a rules binary angle.
 pub fn yaw(facing: u16) -> f32 {
     f32::from(facing) / 65536.0 * std::f32::consts::TAU
@@ -184,43 +176,23 @@ impl Session {
         self.seat.is_some() && matches!(self.phase, Phase::Waiting | Phase::Playing)
     }
 
-    /// Takes the runtime's feed for this frame and returns frames to send:
-    /// a `Hello` whenever a new socket has opened. `now` is in seconds.
-    pub fn receive(
-        &mut self,
-        feed: &Feed,
-        now: f64,
-        layout: &Layout,
-    ) -> (Vec<Vec<u8>>, Vec<Rejection>) {
-        let mut out = Vec::new();
+    /// Takes the runtime's feed for this frame and returns this player's
+    /// rejected intents. `now` is in seconds.
+    pub fn receive(&mut self, feed: &Feed, now: f64, layout: &Layout) -> Vec<Rejection> {
         let mut rejections = Vec::new();
-        if feed.generation != 0 && self.greeted != Some(feed.generation) {
+        if feed.generation == 0 {
+            return rejections;
+        }
+        if self.greeted != Some(feed.generation) {
             self.greeted = Some(feed.generation);
-            // A new connection: its sequence numbers start again, and the
-            // match continues from whatever the server says next.
+            // A new connection (already greeted by the runtime): its
+            // sequence numbers start again, and the match continues from
+            // whatever the server says next.
             self.phase = Phase::Connecting;
             self.seq = 0;
             self.unacked.clear();
             self.pings.clear();
             self.last_ping = None;
-            if let Some(ticket) = decode_hex(&feed.ticket) {
-                out.push(
-                    ClientMessage::Hello {
-                        protocol: PROTOCOL_VERSION,
-                        ticket,
-                    }
-                    .encode(),
-                );
-            } else {
-                self.phase = Phase::Closed(ErrorCode::BadTicket);
-            }
-        }
-        // Nothing on a socket that was never greeted can be trusted.
-        if feed.generation == 0
-            || self.greeted != Some(feed.generation)
-            || self.phase == Phase::Closed(ErrorCode::BadTicket)
-        {
-            return (out, rejections);
         }
         for frame in &feed.frames {
             let Ok(message) = ServerMessage::decode(frame) else {
@@ -333,7 +305,7 @@ impl Session {
                 ServerMessage::Error(code) => self.phase = Phase::Closed(code),
             }
         }
-        (out, rejections)
+        rejections
     }
 
     fn local_event(&self, event: WireEvent, my_team: usize) -> Option<Shown> {

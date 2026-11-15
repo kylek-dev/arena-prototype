@@ -14,18 +14,8 @@ import { interactUnit } from "./commands";
 import { installInput } from "./input-router";
 import { installSpellDragging } from "./spell-drag";
 import { debugEnabled, measureFrames, metrics, recordError, recordState } from "./diagnostics";
-import { browserLink } from "./network";
-import { parseJoinFragment } from "../domain/network";
+import { browserLink, installJoinLinks, takeJoinFragment } from "./network";
 import { networkLink } from "../state/network";
-
-/** Reads a development join link from the address bar and removes it, so
- * the ticket does not linger in the visible URL or later shares. */
-function takeJoinFragment() {
-  const ticket = parseJoinFragment(window.location.hash);
-  if (window.location.hash.includes("ticket="))
-    window.history.replaceState(null, "", window.location.pathname + window.location.search);
-  return ticket;
-}
 export function startRuntime(canvas: HTMLCanvasElement) {
   const pointer = installPointer(canvas, () => router.cancel());
   const router = installInput(canvas, pointer.end);
@@ -46,6 +36,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
   // A join link wins; otherwise a reload rejoins this tab's match.
   const joining = takeJoinFragment() ?? link.resumable();
   if (joining) link.join(joining);
+  const stopJoinLinks = installJoinLinks(link);
   let lastDelivery = 0;
   window.arenaShell = {
     readNetwork: link.read,
@@ -106,6 +97,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     fail(String(e.message ?? e));
   });
   return () => {
+    stopJoinLinks();
     link.dispose();
     networkLink.set(null);
     stopFrameTiming();

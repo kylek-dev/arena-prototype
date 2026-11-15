@@ -1,15 +1,25 @@
 // The browser end of a network match (ADR 0044, Phase 5): owns the
-// WebSocket, reconnects with backoff and remembers the ticket so a dropped
-// connection, reload or closed tab can rejoin. Rust owns the protocol: it
-// reads `[generation, ticket, ...frames]` each frame, sends encoded frames
-// back, and reports the match status. Nothing here interprets game data.
+// WebSocket, greets the server, reconnects with backoff and remembers the
+// ticket so a dropped connection, reload or closed tab can rejoin.
+//
+// Browsers pause a background tab's animation frames, and with them the
+// whole engine. So this link does not depend on the engine: it sends the
+// `Hello` itself when a socket opens (keeping the seat while the tab is in
+// the background or still loading) and reads the server's two-byte `Error`
+// frames itself (stopping on a final error even while paused). Everything
+// else is the engine's: it reads `[generation, ...frames]` each frame, sends
+// inputs and pings back, and reports the match status.
 
 import {
   backoffMs,
+  encodeHello,
+  endsLink,
   isExpired,
-  isFinalError,
+  isWelcome,
+  parseJoinFragment,
   parseStatus,
   parseTicket,
+  serverError,
   type LinkState,
   type MatchTicket,
 } from "../domain/network";
@@ -39,7 +49,8 @@ export type LinkDeps = {
 
 const TAB_KEY = "arena.match";
 const DEVICE_KEY = "arena.lastMatch";
-/** Frames held while Rust is not reading (a hidden tab) before dropping old ones. */
+/** Frames held while the engine is not reading (a background tab) before
+ * dropping the oldest. The `Welcome` is always kept: it says which seat this is. */
 const MAX_QUEUED = 512;
 const OPEN = 1;
 
@@ -97,8 +108,9 @@ export function createLink(deps: LinkDeps) {
     dropSocket();
     ticket = null;
     store(deps.tab, TAB_KEY, null);
-    // The seat is gone for good: do not offer it again later.
-    if (reason !== null) store(deps.device, DEVICE_KEY, null);
+    // The seat is gone for good: do not offer it again later. A seat taken
+    // by another tab still exists, so it stays on offer ("Play here").
+    if (reason !== null && reason !== "Replaced") store(deps.device, DEVICE_KEY, null);
     update({ phase: reason === null ? "idle" : "ended", ended: reason, attempt: 0 });
   };
   const connect = () => {
@@ -113,24 +125,34 @@ export function createLink(deps: LinkDeps) {
       return retry();
     }
     socket = next;
+    let lastError: string | null = null;
     next.binaryType = "arraybuffer";
     next.onopen = () => {
       opened += 1;
       generation = opened;
+      // Frames from an older socket are stale once a new one is open.
       queue = [];
+      if (ticket) next.send(encodeHello(ticket.ticket));
       update({ phase: "open", attempt: 0 });
     };
     next.onmessage = (event) => {
       if (!(event.data instanceof ArrayBuffer)) return;
-      queue.push(new Uint8Array(event.data));
-      if (queue.length > MAX_QUEUED) queue.splice(0, queue.length - MAX_QUEUED);
+      const frame = new Uint8Array(event.data);
+      lastError = serverError(frame) ?? lastError;
+      queue.push(frame);
+      if (queue.length > MAX_QUEUED) {
+        const oldest = queue.findIndex((queued) => !isWelcome(queued));
+        queue.splice(Math.max(oldest, 0), 1);
+      }
     };
     next.onclose = next.onerror = () => {
       if (socket !== next) return;
       next.onopen = next.onclose = next.onerror = next.onmessage = null;
       socket = null;
-      generation = 0;
-      retry();
+      // The generation stays until the engine has read this socket's last
+      // frames; a new socket replaces it when it opens.
+      if (endsLink(lastError)) end(lastError);
+      else retry();
     };
     update({ phase: state.get().attempt ? "reconnecting" : "connecting" });
   };
@@ -170,26 +192,46 @@ export function createLink(deps: LinkDeps) {
     remembered(): MatchTicket | null {
       return load(deps.device, DEVICE_KEY, deps.now());
     },
-    /** Rust's per-frame read: empty without a match. */
+    /** The engine's per-frame read: empty without a match. */
     read(): unknown[] {
       if (!ticket) return [];
       const frames = queue;
       queue = [];
-      return [generation, ticket.ticket, ...frames];
+      return [generation, ...frames];
     },
     send(frame: Uint8Array) {
       if (socket?.readyState === OPEN) socket.send(frame);
     },
-    /** Rust's status report; a final error ends the link. */
+    /** The engine's status report; a final error ends the link. */
     onStatus(raw: unknown) {
       const status = parseStatus(raw);
       if (!status) return;
       update({ status });
-      if (status.phase === "closed" && isFinalError(status.error)) end(status.error);
+      if (status.phase === "closed" && endsLink(status.error)) end(status.error);
     },
   };
 }
 export type Link = ReturnType<typeof createLink>;
+
+/** Reads a development join link from the address bar and removes it, so
+ * the ticket does not linger in the visible URL, history or later shares. */
+export function takeJoinFragment(win: Window = window) {
+  const ticket = parseJoinFragment(win.location.hash);
+  if (win.location.hash.includes("ticket="))
+    win.history.replaceState(null, "", win.location.pathname + win.location.search);
+  return ticket;
+}
+
+/** A join link pasted into an already open tab changes only the fragment,
+ * which does not reload the page; join it anyway. */
+export function installJoinLinks(link: Link, win: Window = window) {
+  const onHash = () => {
+    const ticket = takeJoinFragment(win);
+    if (ticket) link.join(ticket);
+  };
+  win.addEventListener("hashchange", onHash);
+  return () => win.removeEventListener("hashchange", onHash);
+}
 
 export function browserLink() {
   const safe = (get: () => Storage) => {

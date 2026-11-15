@@ -23,8 +23,10 @@ yet.
   `/play`. One connection per player per match.
 - **Binary frames only**, each one message, encoded with `postcard`
   (`serde`). Text frames close the connection.
-- The browser's TypeScript runtime owns the socket and passes decoded
-  snapshots and raw frames into WASM through the bridge.
+- The browser's TypeScript runtime owns the socket. It sends the `Hello`
+  and recognizes `Error` frames itself, so a background tab whose engine
+  is paused keeps its seat. All other frames pass raw into WASM through
+  the bridge.
 - A JSON rendering of every message type exists for diagnostics (server logs
   with a debug flag, browser debug overlay). It is never accepted on the wire.
 
@@ -54,7 +56,7 @@ yet.
 | `Welcome` | `protocol`, `actor: u8`, `team_size: u8`, `tick: u64`, `tick_rate: u8`, `rules: u32`, `map: u64` | `rules` is the rules version and `map` a digest of the layout, so replays and mismatches are explainable. |
 | `Snapshot` | `tick: u64`, `ack: u32`, `hash: u64`, `result`, `fighters` (≤ 6), `events` (≤ 256) | `ack` is the last input `seq` applied. `hash` is `Arena::state_hash()`. `fighters` carries each fighter's full rule state in actor order (position, height, vertical velocity, momentum, health, `ready_at`, facing), so a client can rebuild the arena and check `hash`, plus `connected`: whether that fighter's player is attached (not part of the rules or `hash`). `events` are tick-tagged events since the previous snapshot: `Jumped`, `Hit`, `Finished`, and `Rejected` only for the actor it names. `Moved` is not sent because positions show it. |
 | `Pong` | `nonce: u32` | |
-| `Error` | `code` | Sent before the server closes: `VersionMismatch`, `BadTicket`, `MatchFull`, `MatchOver`, `RateLimited`, `Malformed`, `HelloTimeout`, `ServerShutdown`. |
+| `Error` | `code` | Sent before the server closes: `VersionMismatch`, `BadTicket`, `MatchFull`, `MatchOver`, `RateLimited`, `Malformed`, `HelloTimeout`, `ServerShutdown`, `Replaced` (a newer connection with the same ticket took the seat). |
 
 Snapshots go out every tick to start with. Bandwidth will be measured before
 switching to deltas or a lower rate.
@@ -108,8 +110,9 @@ only with `--dev`, which also refuses to listen beyond loopback.
   that has not filled within 60 s ends with `MatchOver`.
 - **Running:** each tick merges every seat's queued inputs, advances the
   rules once and sends each connected player a snapshot with only their own
-  rejections. A reconnect with the same ticket replaces the older connection
-  (closed without an error) and restarts its `seq`. A match that every
+  rejections. A reconnect with the same ticket replaces the older connection,
+  which receives `Replaced` (so it does not take the seat back), and
+  restarts its `seq`. A match that every
   player has left for 30 s ends.
 - **Disconnects:** a disconnected player's fighter stands idle where it
   was, and every snapshot marks it `connected: false`. A disconnect is

@@ -1,5 +1,5 @@
 use super::*;
-use arena_protocol::{Snapshot, TickEvent, Welcome, WireRejection, WireResult};
+use arena_protocol::{PROTOCOL_VERSION, Snapshot, TickEvent, Welcome, WireRejection, WireResult};
 use arena_sim::arena::ArenaCommand;
 
 fn layout() -> Layout {
@@ -24,11 +24,7 @@ fn snapshot(arena: &Arena, ack: u32, events: Vec<TickEvent>, connected: &[bool])
 }
 
 fn feed(generation: u32, frames: Vec<Vec<u8>>) -> Feed {
-    Feed {
-        generation,
-        ticket: "abcd".into(),
-        frames,
-    }
+    Feed { generation, frames }
 }
 
 /// A session welcomed as `seat` in a `team_size` match.
@@ -60,54 +56,33 @@ fn seats_are_renumbered_so_the_local_player_is_actor_zero() {
 }
 
 #[test]
-fn every_new_socket_says_hello_once_and_restarts_its_sequence() {
+fn every_new_socket_restarts_the_sequence_and_frames_wait_for_one() {
     let mut session = Session::default();
-    let (out, _) = session.receive(&feed(0, vec![]), 0.0, &layout());
-    assert!(out.is_empty(), "no socket yet");
-    let (out, _) = session.receive(&feed(1, vec![]), 0.0, &layout());
-    assert_eq!(
-        ClientMessage::decode(&out[0]),
-        Ok(ClientMessage::Hello {
-            protocol: PROTOCOL_VERSION,
-            ticket: vec![0xab, 0xcd]
-        })
-    );
-    assert!(
-        session
-            .receive(&feed(1, vec![]), 0.0, &layout())
-            .0
-            .is_empty()
-    );
+    // Generation 0: no socket has opened yet, so nothing is trusted.
+    session.receive(&feed(0, vec![welcome(0, 1)]), 0.0, &layout());
+    assert_eq!(session.phase, Phase::Connecting);
     // Not joined yet: no intent or pings are sent.
     assert_eq!(session.input([0, 0], 0, false, None, 0.0), None);
     assert_eq!(session.ping(0.0), None);
     session.receive(&feed(1, vec![welcome(0, 1)]), 0.0, &layout());
+    assert!(session.joined());
     session.input([0, 0], 0, false, None, 0.0).unwrap();
     session.input([0, 0], 0, false, None, 0.0).unwrap();
-    // A reconnect greets again and numbers inputs from 1.
-    assert_eq!(
-        session
-            .receive(&feed(2, vec![welcome(0, 1)]), 0.0, &layout())
-            .0
-            .len(),
-        1
-    );
+    // A new socket (the runtime has greeted it) numbers inputs from 1.
+    session.receive(&feed(2, vec![welcome(0, 1)]), 0.0, &layout());
     let frame = session.input([0, 0], 0, false, None, 0.0).unwrap();
     let Ok(ClientMessage::Input(input)) = ClientMessage::decode(&frame) else {
         panic!()
     };
     assert_eq!(input.seq, 1);
-    // Frames from a socket it has not greeted are ignored.
-    let mut fresh = Session::default();
-    fresh.receive(
-        &Feed {
-            ticket: "not hex".into(),
-            ..feed(1, vec![welcome(0, 1)])
-        },
+    // A closed socket's last frames still arrive under its generation, so
+    // the server's final word is not lost.
+    session.receive(
+        &feed(2, vec![ServerMessage::Error(ErrorCode::Replaced).encode()]),
         0.0,
         &layout(),
     );
-    assert_eq!(fresh.phase, Phase::Closed(ErrorCode::BadTicket));
+    assert_eq!(session.phase, Phase::Closed(ErrorCode::Replaced));
 }
 
 #[test]
@@ -243,7 +218,7 @@ fn events_show_when_the_view_reaches_them_and_rejections_at_once() {
         };
         frames.push(snapshot(&server, 0, events, &[true, true]));
     }
-    let (_, rejections) = session.receive(&feed(1, frames), 0.0, &layout());
+    let rejections = session.receive(&feed(1, frames), 0.0, &layout());
     assert_eq!(rejections, vec![Rejection::Cooldown]);
     // The view starts at tick 7: the hit (during tick 8) is not shown yet.
     assert!(session.view(0.0, 0.0).unwrap().shown.is_empty());

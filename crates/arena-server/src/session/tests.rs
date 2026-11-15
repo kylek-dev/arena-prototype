@@ -215,7 +215,7 @@ fn a_reconnect_replaces_the_old_connection_and_restarts_its_sequence() {
         out[0],
         Out::Close {
             conn: conn(0),
-            error: None
+            error: Some(ErrorCode::Replaced)
         }
     );
     assert!(matches!(

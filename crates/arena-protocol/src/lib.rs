@@ -314,6 +314,8 @@ pub enum ErrorCode {
     Malformed,
     HelloTimeout,
     ServerShutdown,
+    /// A newer connection with the same ticket took this seat.
+    Replaced,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -1,13 +1,23 @@
 import { describe, expect, it } from "vitest";
 import {
   backoffMs,
+  encodeHello,
+  ERROR_CODES,
   isFinalError,
+  isWelcome,
+  PROTOCOL_VERSION,
+  serverError,
   parseJoinFragment,
   parseStatus,
   parseTicket,
   type MatchTicket,
 } from "../../web/src/domain/network";
-import { createLink, type LinkDeps } from "../../web/src/runtime/network";
+import {
+  createLink,
+  installJoinLinks,
+  takeJoinFragment,
+  type LinkDeps,
+} from "../../web/src/runtime/network";
 
 const NOW = 1_800_000_000_000;
 const ticket: MatchTicket = {
@@ -164,31 +174,67 @@ describe("network match identity", () => {
   });
 });
 
+describe("protocol corners the runtime speaks itself", () => {
+  it("encodes Hello exactly as arena-protocol's golden frame", () => {
+    // arena-protocol: Hello { protocol: 1, ticket: [0xab, 0xcd] } == [0, 1, 2, 0xab, 0xcd]
+    expect([...encodeHello("abcd")]).toEqual([0, 1, 2, 0xab, 0xcd]);
+    expect(PROTOCOL_VERSION).toBe(1);
+    // Lengths and versions past 127 use more varint bytes.
+    const long = encodeHello("00".repeat(300), 300);
+    expect([...long.slice(0, 5)]).toEqual([0, 0xac, 0x02, 0xac, 0x02]);
+    expect(long.length).toBe(5 + 300);
+  });
+
+  it("reads Error frames with arena-protocol's code order and nothing else", () => {
+    expect(ERROR_CODES.map((_, index) => serverError(new Uint8Array([3, index])))).toEqual([
+      "VersionMismatch",
+      "BadTicket",
+      "MatchFull",
+      "MatchOver",
+      "RateLimited",
+      "Malformed",
+      "HelloTimeout",
+      "ServerShutdown",
+      "Replaced",
+    ]);
+    expect(serverError(new Uint8Array([3, 99]))).toBeNull();
+    expect(serverError(new Uint8Array([1, 3]))).toBeNull();
+    expect(serverError(new Uint8Array([3, 3, 0]))).toBeNull();
+    expect(isWelcome(new Uint8Array([0, 1]))).toBe(true);
+    expect(isWelcome(new Uint8Array([1, 0]))).toBe(false);
+  });
+});
+
 describe("network link", () => {
-  it("hands Rust each socket's frames under a new generation", () => {
+  it("greets each socket itself and hands the engine its frames by generation", () => {
     const { link, latest } = harness();
     expect(link.read()).toEqual([]);
     link.join(ticket);
     expect(latest().url).toBe(ticket.server);
     expect(latest().binaryType).toBe("arraybuffer");
-    // Connecting: generation 0 tells Rust there is no socket yet.
-    expect(link.read()).toEqual([0, "ab01"]);
+    // Connecting: generation 0 tells the engine there is no socket yet.
+    expect(link.read()).toEqual([0]);
     latest().open();
+    // The runtime sends Hello at once, even if the engine is paused.
+    expect(latest().sent).toEqual([encodeHello("ab01")]);
     latest().receive([1, 2]);
     latest().receive([3]);
-    expect(link.read()).toEqual([1, "ab01", new Uint8Array([1, 2]), new Uint8Array([3])]);
-    expect(link.read()).toEqual([1, "ab01"]);
+    expect(link.read()).toEqual([1, new Uint8Array([1, 2]), new Uint8Array([3])]);
+    expect(link.read()).toEqual([1]);
     link.send(new Uint8Array([9]));
-    expect(latest().sent).toEqual([new Uint8Array([9])]);
+    expect(latest().sent.at(-1)).toEqual(new Uint8Array([9]));
     expect(link.state.get().phase).toBe("open");
   });
 
-  it("reconnects with backoff until a socket opens, then rejoins as a new generation", () => {
+  it("reconnects with backoff until a socket opens, then joins as a new generation", () => {
     const { link, latest, fire, sockets } = harness();
     link.join(ticket);
     latest().open();
+    latest().receive([1, 7]);
     latest().drop();
     expect(link.state.get()).toMatchObject({ phase: "reconnecting", attempt: 1 });
+    // The closed socket's last frames are still delivered under its generation.
+    expect(link.read()).toEqual([1, new Uint8Array([1, 7])]);
     // Sends while disconnected are dropped, not queued.
     link.send(new Uint8Array([1]));
     expect(fire()).toBe(500);
@@ -198,22 +244,21 @@ describe("network link", () => {
     expect(fire()).toBe(2000);
     latest().open();
     expect(link.state.get()).toMatchObject({ phase: "open", attempt: 0 });
-    expect(link.read()[0]).toBe(2);
+    expect(link.read()).toEqual([2]);
     expect(sockets.length).toBe(4);
-    expect(sockets.slice(0, 3).every((socket) => socket.sent.length === 0)).toBe(true);
+    // Only the opened sockets were greeted; nothing else was sent.
+    expect(sockets.map((socket) => socket.sent.length)).toEqual([1, 0, 0, 1]);
   });
 
-  it("ends on a final server error and forgets the seat", () => {
+  it("stops on a final server error even while the engine is paused", () => {
     const { link, latest, timers, tab, device } = harness();
     link.join(ticket);
     expect(tab.values.size).toBe(1);
     expect(device.values.size).toBe(1);
     latest().open();
-    // The server closes right after its error; the retry is cancelled
-    // once Rust reports the error it decoded.
+    // The server says MatchOver and closes; no engine read happens.
+    latest().receive([3, 3]);
     latest().drop();
-    expect(timers.length).toBe(1);
-    link.onStatus(status({ phase: "closed", error: "MatchOver" }));
     expect(timers.length).toBe(0);
     expect(link.state.get()).toMatchObject({ phase: "ended", ended: "MatchOver" });
     expect(link.read()).toEqual([]);
@@ -222,12 +267,44 @@ describe("network link", () => {
     const other = harness();
     other.link.join(ticket);
     other.latest().open();
-    other.link.onStatus(status({ phase: "closed", error: "ServerShutdown" }));
+    other.latest().receive([3, 7]);
     other.latest().drop();
     expect(other.link.state.get().phase).toBe("reconnecting");
+    // The engine's report of a final error also ends the link.
+    other.link.onStatus(status({ phase: "closed", error: "BadTicket" }));
+    expect(other.link.state.get()).toMatchObject({ phase: "ended", ended: "BadTicket" });
     // Malformed reports are ignored.
-    other.link.onStatus({ phase: "closed", error: 5 });
-    expect(other.link.state.get().status?.error).toBe("ServerShutdown");
+    const third = harness();
+    third.link.join(ticket);
+    third.link.onStatus({ phase: "closed", error: 5 });
+    expect(third.link.state.get().phase).toBe("connecting");
+  });
+
+  it("gives a seat up to a newer tab without forgetting it, so it can be taken back", () => {
+    const { link, latest, timers, device } = harness();
+    link.join(ticket);
+    latest().open();
+    latest().receive([3, 8]);
+    latest().drop();
+    expect(timers.length).toBe(0);
+    expect(link.state.get()).toMatchObject({ phase: "ended", ended: "Replaced" });
+    expect(link.resumable()).toBeNull();
+    expect(device.values.size).toBe(1);
+    expect(link.remembered()).toEqual(ticket);
+  });
+
+  it("keeps the Welcome when a background tab's backlog overflows", () => {
+    const { link, latest } = harness();
+    link.join(ticket);
+    latest().open();
+    latest().receive([0, 1, 1]);
+    for (let index = 0; index < 600; index += 1) latest().receive([1, index & 0xff]);
+    const [generation, ...frames] = link.read() as [number, ...Uint8Array[]];
+    expect(generation).toBe(1);
+    expect(frames).toHaveLength(512);
+    expect([...frames[0]]).toEqual([0, 1, 1]);
+    expect([...frames[1]]).toEqual([1, 89]);
+    expect([...frames[511]]).toEqual([1, 599 & 0xff]);
   });
 
   it("stops retrying when the ticket expires", () => {
@@ -237,6 +314,22 @@ describe("network link", () => {
     advance(3600 * 1000);
     fire();
     expect(link.state.get()).toMatchObject({ phase: "ended", ended: "expired" });
+  });
+
+  it("joins a link pasted into an open tab and removes it from the address bar", () => {
+    const { link, latest } = harness();
+    const stop = installJoinLinks(link);
+    window.location.hash = `server=${encodeURIComponent(ticket.server)}&ticket=ab01&expires=${ticket.expires}`;
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    expect(link.state.get().phase).toBe("connecting");
+    expect(latest().url).toBe(ticket.server);
+    expect(window.location.hash).toBe("");
+    stop();
+    window.location.hash = `server=${encodeURIComponent(ticket.server)}&ticket=cd02&expires=${ticket.expires}`;
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    expect(link.resumable()?.ticket).toBe("ab01");
+    expect(takeJoinFragment()?.ticket).toBe("cd02");
+    expect(window.location.hash).toBe("");
   });
 
   it("remembers the match per tab for reloads and per device for an offered rejoin", () => {

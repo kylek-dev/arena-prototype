@@ -234,7 +234,7 @@ declare global {
       readPreview?: () => number[];
       onMapStatus?: (status: unknown) => void;
       onFocusUnit?: (tag: UnitTag) => void;
-      /** Network match feed: `[generation, ticketHex, ...frames]`, or empty. */
+      /** Network match feed: `[generation, ...frames]`, or empty without a match. */
       readNetwork?: () => unknown[];
       sendNetwork?: (frame: Uint8Array) => void;
       onNetwork?: (status: unknown) => void;

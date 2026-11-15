@@ -121,7 +121,8 @@ impl Session {
     }
 
     /// A ticket-verified connection takes `seat`. A newer connection for the
-    /// same seat (a reconnect) replaces the older one.
+    /// same seat (a reconnect) replaces the older one, which is told why so
+    /// it does not reconnect and take the seat back.
     pub fn attach(&mut self, seat: usize, conn: ConnId) -> Vec<Out> {
         if matches!(self.phase, Phase::Finished { .. } | Phase::Ended) {
             return vec![Out::Close {
@@ -142,7 +143,7 @@ impl Session {
         {
             out.push(Out::Close {
                 conn: old,
-                error: None,
+                error: Some(ErrorCode::Replaced),
             });
         }
         slot.joined = true;
@@ -178,6 +179,13 @@ impl Session {
     /// Which seats have a connection attached, in actor order.
     pub fn connected(&self) -> Vec<bool> {
         self.seats.iter().map(|seat| seat.conn.is_some()).collect()
+    }
+
+    /// Whether `conn` currently holds `seat`.
+    pub fn holds(&self, seat: usize, conn: ConnId) -> bool {
+        self.seats
+            .get(seat)
+            .is_some_and(|slot| slot.conn == Some(conn))
     }
 
     /// The connection went away. Ignored unless it still holds the seat.

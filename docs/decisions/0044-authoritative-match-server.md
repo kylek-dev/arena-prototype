@@ -142,14 +142,48 @@ Browser behavior (Phase 5a implemented unless marked 5b):
 
 ### Browser network mode (Phase 5a implemented)
 
-The TypeScript runtime (`web/src/runtime/network.ts`) owns the WebSocket
-and only moves bytes. Each frame, Rust reads `[generation, ticket,
-...frames]` through `arenaShell.readNetwork`, where `generation` increases
-with every newly opened socket. Rust then sends frames through
-`sendNetwork` and reports status through `onNetwork`. Rust
-(`arena-client/src/network.rs`) owns the protocol. It greets each new
-socket with `Hello`, sends inputs and pings, and decodes welcomes,
-snapshots and errors with `arena-protocol`.
+The TypeScript runtime (`web/src/runtime/network.ts`) owns the WebSocket.
+Browsers pause a background tab's animation frames, and the whole engine
+runs on them, so the runtime does not wait for the engine to join. When a
+socket opens it sends the `Hello` itself, and it reads the server's
+two-byte `Error` frames itself. A background or still-loading tab therefore
+keeps its seat, and stops on a final error even while paused. These are
+the only two protocol messages the runtime handles. Their bytes are pinned
+by golden tests on both sides (`arena-protocol` and
+`tests/domain/network.test.ts`).
+
+Each frame, Rust reads `[generation, ...frames]` through
+`arenaShell.readNetwork`. `generation` increases with every newly opened
+socket. A closed socket keeps its generation until its last frames have
+been read, so the server's final word is never discarded. Rust sends
+inputs and pings through `sendNetwork` and reports status through
+`onNetwork`. Rust (`arena-client/src/network.rs`) decodes welcomes,
+snapshots and errors with `arena-protocol`. When a background tab's
+backlog overflows (512 frames, about 17 s), the oldest frames are dropped,
+but never the `Welcome` that says which seat this is.
+
+**Correction after the first browser test (2026-11-15).** Originally Rust
+sent the `Hello`. Two join links opened as tabs in one browser window
+failed: the background tab could not greet the server within 5 s, the
+server dropped it, and the error that said so was discarded with the
+closed socket's generation. Each tab then saw the other seat disconnected
+until the match timed out. In a separate (incognito) window both pages
+stayed active and the match worked. Three changes fix it: the runtime
+greets, the runtime reads errors, and closed sockets keep their
+generation. They were verified by a temporary live test against the real
+server: two links joined, nothing read their frames for 7 s, and the match
+ran (tick over 100) with no `HelloTimeout`. Human browser retesting is
+pending.
+
+**Seat takeover.** A second connection with the same ticket (another tab or
+window) takes the seat, and the older connection now receives `Replaced`.
+It stops instead of reconnecting, which previously made two tabs flap
+between each other forever. The seat stays remembered in that tab, which
+offers "Play here" to take it back. The server logs one line per seat
+change: match created, seat joined, refused, taken over, disconnected, and
+match ended. Tickets are never logged. A join link pasted into an
+already-open tab (a fragment-only change, which does not reload the page)
+also joins.
 
 - **Local numbering.** The client assumes it is actor 0, with friends on
   even and enemies on odd indices. A session renumbers the server's actors

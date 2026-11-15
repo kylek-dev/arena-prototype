@@ -134,10 +134,26 @@ fn the_wire_layout_is_pinned() {
             1, 0xAC, 0x02, 0xCF, 0x0F, 0x86, 0x0B, 0x80, 0x80, 0x03, 1, 1, 3
         ]
     );
-    assert_eq!(
-        ServerMessage::Error(ErrorCode::RateLimited).encode(),
-        [3, 4]
-    );
+    // The browser runtime reads these two-byte error frames itself (so a
+    // tab whose engine is paused still stops on a final error); its tests
+    // pin the same table in web/src/domain/network.ts.
+    let codes = [
+        ErrorCode::VersionMismatch,
+        ErrorCode::BadTicket,
+        ErrorCode::MatchFull,
+        ErrorCode::MatchOver,
+        ErrorCode::RateLimited,
+        ErrorCode::Malformed,
+        ErrorCode::HelloTimeout,
+        ErrorCode::ServerShutdown,
+        ErrorCode::Replaced,
+    ];
+    for (index, code) in codes.into_iter().enumerate() {
+        assert_eq!(ServerMessage::Error(code).encode(), [3, index as u8]);
+    }
+    // Welcome is variant 0, which the runtime keeps when trimming a backlog.
+    assert_eq!(server_samples()[0].encode()[0], 0);
+    assert_eq!(server_samples()[1].encode()[0], 1);
 }
 
 #[test]

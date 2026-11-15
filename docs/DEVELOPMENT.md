@@ -130,7 +130,7 @@ npm run serve                              # terminal 2 (after ./scripts/build-w
 ./scripts/dev-match.sh 1                   # team size 1–3; prints one join link per seat
 ```
 
-The tab joins its seat, reconnects by itself after a dropped connection, and rejoins after a reload; a banner shows the connection state, and Menu → Leave match returns to practice (Rejoin last match goes back). Add `?debug=1` before the `#` for network statistics in the diagnostics overlay. Join links carry the ticket in the URL fragment; the page removes it from the address bar. The match starts when every seat has joined.
+The tab joins its seat, reconnects by itself after a dropped connection, and rejoins after a reload; a banner shows the connection state, and Menu → Leave match returns to practice (Rejoin last match goes back). Add `?debug=1` before the `#` for network statistics in the diagnostics overlay. Tabs in one window work: a background tab keeps its seat while its rendering is paused. The server prints one line per seat change (`match …: seat 1 joined`, `… taken over`, `… disconnected`), which shows which match and seat each tab holds. Join links carry the ticket in the URL fragment; the page removes it from the address bar. The match starts when every seat has joined.
 
 Bot players exercise a running `--dev` server with simulated latency and report latency, consistency and recovery:
 

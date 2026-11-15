@@ -385,7 +385,11 @@ async fn a_reconnect_takes_over_the_seat() {
     let (_other, _) = Client::join(addr, &created.tickets[1]).await;
     let (mut new, welcome) = Client::join(addr, &created.tickets[0]).await;
     assert_eq!(welcome.actor, 0);
-    assert!(old.closed().await, "the replaced socket is closed");
+    assert_eq!(
+        old.error().await,
+        ErrorCode::Replaced,
+        "the replaced socket is told why, so it does not take the seat back"
+    );
     let start = new.snapshot_until(|_| true).await.fighters[0];
     // The new connection's sequence starts again at 1.
     new.input(forward()).await;

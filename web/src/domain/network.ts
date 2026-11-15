@@ -40,20 +40,31 @@ export type LinkState = {
 export type MatchMessage = {
   text: string;
   tone: "info" | "warning";
-  action: "rejoin" | "dismiss" | null;
+  action: { kind: "rejoin" | "dismiss"; label: string } | null;
 };
+/** How many seats have a connected player, while waiting for the start. */
+export type Attendance = { joined: number; seats: number; seat: number | null };
 const ENDED: Record<string, string> = {
   MatchOver: "The match is over.",
   BadTicket: "This match link is not valid.",
   VersionMismatch: "This game version cannot join that server.",
   MatchFull: "That seat is taken.",
   expired: "The match link has expired.",
+  Replaced: "This seat is now playing in another tab or window.",
 };
-export function matchMessage(state: LinkState, rememberedMatch: boolean): MatchMessage | null {
+export function matchMessage(
+  state: LinkState,
+  rememberedMatch: boolean,
+  attendance: Attendance | null = null,
+): MatchMessage | null {
   switch (state.phase) {
     case "idle":
       return rememberedMatch
-        ? { text: "A match you joined is still open.", tone: "info", action: "rejoin" }
+        ? {
+            text: "A match you joined is still open.",
+            tone: "info",
+            action: { kind: "rejoin", label: "Rejoin match" },
+          }
         : null;
     case "connecting":
       return { text: "Connecting to the match…", tone: "info", action: null };
@@ -67,13 +78,23 @@ export function matchMessage(state: LinkState, rememberedMatch: boolean): MatchM
       return {
         text: ENDED[state.ended ?? ""] ?? "You left the match.",
         tone: "info",
-        action: "dismiss",
+        action:
+          state.ended === "Replaced" && rememberedMatch
+            ? { kind: "rejoin", label: "Play here" }
+            : { kind: "dismiss", label: "Dismiss" },
       };
     case "open":
       if (!state.status || state.status.phase === "connecting")
         return { text: "Joining the match…", tone: "info", action: null };
-      if (state.status.phase === "waiting")
-        return { text: "Waiting for every player to join…", tone: "info", action: null };
+      if (state.status.phase === "waiting") {
+        const seat = state.status.seat === null ? "" : ` · you are seat ${state.status.seat + 1}`;
+        const count = attendance ? ` (${attendance.joined} of ${attendance.seats} joined)` : "";
+        return {
+          text: `Waiting for every player to join${count}${seat}…`,
+          tone: "info",
+          action: null,
+        };
+      }
       if (state.status.mapDiffers)
         return {
           text: "This build's map differs from the server's.",
@@ -88,6 +109,58 @@ export function matchMessage(state: LinkState, rememberedMatch: boolean): MatchM
 const FINAL_ERRORS = new Set(["MatchOver", "BadTicket", "VersionMismatch", "MatchFull"]);
 export function isFinalError(error: string | null) {
   return !!error && FINAL_ERRORS.has(error);
+}
+/** Errors that end this tab's link: final ones, and losing the seat to a
+ * newer connection (another tab), which must not be taken back silently. */
+export function endsLink(error: string | null) {
+  return isFinalError(error) || error === "Replaced";
+}
+
+// The runtime speaks two tiny, version-stable corners of the protocol
+// itself, so a background tab (whose engine the browser pauses) still joins
+// and still notices a final error. arena-protocol's golden tests pin the
+// same bytes; everything else is decoded by the engine.
+
+/** Must match `arena_protocol::PROTOCOL_VERSION`. */
+export const PROTOCOL_VERSION = 1;
+/** `ServerMessage::Error` codes in declaration order (`[3, index]`). */
+export const ERROR_CODES = [
+  "VersionMismatch",
+  "BadTicket",
+  "MatchFull",
+  "MatchOver",
+  "RateLimited",
+  "Malformed",
+  "HelloTimeout",
+  "ServerShutdown",
+  "Replaced",
+] as const;
+
+function varint(value: number): number[] {
+  const bytes: number[] = [];
+  let rest = value;
+  while (rest >= 0x80) {
+    bytes.push((rest & 0x7f) | 0x80);
+    rest = Math.floor(rest / 0x80);
+  }
+  bytes.push(rest);
+  return bytes;
+}
+
+/** `ClientMessage::Hello { protocol, ticket }`: variant 0, then varints. */
+export function encodeHello(ticketHex: string, protocol = PROTOCOL_VERSION): Uint8Array {
+  const ticket = (ticketHex.match(/../g) ?? []).map((pair) => Number.parseInt(pair, 16));
+  return new Uint8Array([0, ...varint(protocol), ...varint(ticket.length), ...ticket]);
+}
+
+/** The code of a `ServerMessage::Error` frame, or null for any other frame. */
+export function serverError(frame: Uint8Array): string | null {
+  return frame.length === 2 && frame[0] === 3 ? (ERROR_CODES[frame[1]] ?? null) : null;
+}
+
+/** Whether a frame is the server's `Welcome` (variant 0). */
+export function isWelcome(frame: Uint8Array) {
+  return frame[0] === 0;
 }
 
 /** Delay before reconnect attempt `attempt` (0-based): 0.5 s doubling to 8 s. */

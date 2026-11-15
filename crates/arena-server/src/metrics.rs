@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use arena_protocol::ErrorCode;
 
-const CODES: [ErrorCode; 8] = [
+const CODES: [ErrorCode; 9] = [
     ErrorCode::VersionMismatch,
     ErrorCode::BadTicket,
     ErrorCode::MatchFull,
@@ -14,6 +14,7 @@ const CODES: [ErrorCode; 8] = [
     ErrorCode::Malformed,
     ErrorCode::HelloTimeout,
     ErrorCode::ServerShutdown,
+    ErrorCode::Replaced,
 ];
 
 #[derive(Debug, Default)]

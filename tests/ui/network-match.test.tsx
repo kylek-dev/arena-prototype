@@ -39,6 +39,7 @@ type Fake = {
 function fakeLink() {
   const sockets: Fake[] = [];
   const values = new Map<string, string>();
+  let pending: (() => void) | null = null;
   const storage = {
     getItem: (key: string) => values.get(key) ?? null,
     setItem: (key: string, value: string) => void values.set(key, value),
@@ -60,7 +61,10 @@ function fakeLink() {
       return socket;
     },
     now: () => Date.now(),
-    setTimer: () => 1,
+    setTimer: (run) => {
+      pending = run;
+      return 1;
+    },
     clearTimer: () => {},
     tab: storage,
     device: storage,
@@ -74,6 +78,19 @@ function fakeLink() {
         latest().onopen?.();
       }),
     drop: () => act(() => latest().onclose?.()),
+    /** The reconnect timer fires. */
+    retry: () =>
+      act(() => {
+        const run = pending;
+        pending = null;
+        run?.();
+      }),
+    /** The server sends `Error(code)` and closes the socket. */
+    closeWith: (code: number) =>
+      act(() => {
+        latest().onmessage?.({ data: new Uint8Array([3, code]).buffer });
+        latest().onclose?.();
+      }),
     report: (phase: string, error: string | null = null) =>
       act(() =>
         link.onStatus({
@@ -115,6 +132,8 @@ function networkSnapshot() {
 let link: Link;
 let fake: ReturnType<typeof fakeLink>;
 beforeEach(() => {
+  engine.set(null);
+  nameplateScene.set(null);
   error.set("");
   focus.set(null);
   interaction.set({ panel: null, quick: false, layout: false, hovered: null, capture: null });
@@ -182,13 +201,22 @@ it("tells the player about connecting, waiting, reconnecting, the end and a rejo
   fake.open();
   expect(screen.getByRole("status").textContent).toContain("Joining the match…");
   fake.report("waiting");
-  expect(screen.getByRole("status").textContent).toContain("Waiting for every player to join…");
+  expect(screen.getByRole("status").textContent).toContain(
+    "Waiting for every player to join · you are seat 2…",
+  );
+  // With a roster, the banner counts who has joined.
+  act(() => engine.set(networkSnapshot()));
+  expect(screen.getByRole("status").textContent).toContain(
+    "Waiting for every player to join (2 of 4 joined) · you are seat 2…",
+  );
   fake.report("playing");
   expect(screen.queryByRole("status")).toBeNull();
   fake.drop();
   expect(screen.getByRole("status").textContent).toContain("Connection lost · reconnecting…");
   expect(screen.getByRole("status").className).toContain("warning");
-  fake.report("closed", "MatchOver");
+  fake.retry();
+  fake.open();
+  fake.closeWith(3);
   expect(screen.getByRole("status").textContent).toContain("The match is over.");
   fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
   // The finished match is forgotten, so nothing is offered.
@@ -198,6 +226,14 @@ it("tells the player about connecting, waiting, reconnecting, the end and a rejo
   act(() => link.leave());
   expect(screen.getByRole("status").textContent).toContain("A match you joined is still open.");
   fireEvent.click(screen.getByRole("button", { name: "Rejoin match" }));
+  expect(link.state.get().phase).toBe("connecting");
+  // Losing the seat to another tab offers to take it back here.
+  fake.open();
+  fake.closeWith(8);
+  expect(screen.getByRole("status").textContent).toContain(
+    "This seat is now playing in another tab or window.",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Play here" }));
   expect(link.state.get().phase).toBe("connecting");
 });
 
