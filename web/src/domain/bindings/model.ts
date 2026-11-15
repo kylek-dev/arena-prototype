@@ -4,6 +4,7 @@ export type Bindings = Record<string, [Chord | null, Chord | null]>;
 export const movement = ["forward", "back", "left", "right"] as const;
 export const actions = [
   ...movement,
+  "autorun",
   "jump",
   "nextTarget",
   "menu",
@@ -23,7 +24,7 @@ export function actionList(bars: Bar[]) {
   return [...actions, ...bars.flatMap((b) => b.slots.map((s) => `slot:${s.id}`))];
 }
 const codes =
-  /^(Key[A-Z]|Digit[0-9]|Numpad[0-9]|F([1-9]|1[0-2])|Arrow(Up|Down|Left|Right)|Space|Tab|Escape|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash|Home|End|PageUp|PageDown|Insert|Delete)$/;
+  /^(Key[A-Z]|Digit[0-9]|Numpad[0-9]|F([1-9]|1[0-2])|Arrow(Up|Down|Left|Right)|Space|Tab|Escape|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash|Home|End|PageUp|PageDown|Insert|Delete|NumLock)$/;
 export function chord(e: {
   code: string;
   ctrlKey?: boolean;
@@ -75,6 +76,7 @@ export function defaults(bars: Bar[]): Bindings {
     toggleEnemyNameplates: "KeyV",
   }))
     result[action] = [chord({ code }), null];
+  result.autorun = [chord({ code: "NumLock" }), chord({ code: "Backquote" })];
   result.clearTarget = [chord({ code: "Escape", shiftKey: true }), null];
   result.toggleFriendlyNameplates = [chord({ code: "KeyV", shiftKey: true }), null];
   if (bars[0]?.slots[0]) result[`slot:${bars[0].slots[0].id}`] = [chord({ code: "Digit1" }), null];

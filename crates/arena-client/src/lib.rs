@@ -11,6 +11,7 @@ mod heraldry;
 mod hover;
 mod humanoid;
 mod lighting;
+mod lightning;
 mod nameplates;
 mod props;
 mod sky;
@@ -39,7 +40,8 @@ struct Practice {
     attack: bool,
     jump: bool,
     feedback: &'static str,
-    flash: f32,
+    /// The Pulse lightning currently on screen, if any.
+    zap: Option<lightning::Zap>,
     frames: u32,
     combat_text: combat_text::CombatText,
 }
@@ -70,7 +72,7 @@ impl Practice {
             attack: false,
             jump: false,
             feedback: "Select the opponent to begin",
-            flash: 0.0,
+            zap: None,
             frames: 0,
             combat_text: default(),
         }
@@ -108,8 +110,6 @@ struct MapEdits {
 }
 #[derive(Component)]
 struct FighterVisual(usize);
-#[derive(Component)]
-struct AttackBeam;
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen(start))]
 pub fn run() {
@@ -178,14 +178,21 @@ pub fn run() {
                 weapons::fit_to_body,
                 weapons::animate,
                 weapons::animate_staff,
+                lightning::tag_hands,
             )
                 .chain(),
         )
         .add_systems(
             PostUpdate,
-            publish
-                .after(bevy::transform::TransformSystems::Propagate)
-                .after(bevy::camera::CameraUpdateSystems),
+            (
+                publish
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .after(bevy::camera::CameraUpdateSystems),
+                // This frame's animated hand, before visibility is resolved.
+                lightning::draw
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
+            ),
         )
         .run();
 }
@@ -274,12 +281,6 @@ fn setup(
     commands.insert_resource(sky::Sky::load(&asset_server));
     let teal = material(&mut materials, Color::srgb(0.15, 0.84, 0.75));
     let orange = material(&mut materials, Color::srgb(1.0, 0.39, 0.19));
-    let gold = materials.add(StandardMaterial {
-        base_color: Color::srgb(1.0, 0.72, 0.32),
-        unlit: true,
-        ..default()
-    });
-    let cube = meshes.add(Cuboid::from_size(Vec3::ONE));
     let character_meshes = graphics::CharacterMeshes::new(&mut meshes);
     let painted = textures::PaintedTextures::new(&mut images);
     for index in 0..6 {
@@ -335,13 +336,7 @@ fn setup(
     }
     commands.insert_resource(character_meshes);
     commands.insert_resource(painted);
-    commands.spawn((
-        AttackBeam,
-        Mesh3d(cube),
-        MeshMaterial3d(gold),
-        Transform::default(),
-        Visibility::Hidden,
-    ));
+    lightning::spawn(&mut commands, &mut meshes, &mut materials);
     commands.spawn((
         lighting::ArenaLight::Key,
         DirectionalLight {
@@ -469,8 +464,8 @@ fn read_controls(
     }
     let blockers = hover::pillar_blockers(&map.0);
     orbit.yaw -= input.orbit_x * 0.005;
-    orbit.pitch = (orbit.pitch + input.orbit_y * 0.004).clamp(-1.2, 1.2);
-    orbit.distance = (orbit.distance + input.zoom * 0.01).clamp(6.0, 22.0);
+    orbit.pitch = camera::pitch(orbit.pitch, input.orbit_y * 0.004);
+    orbit.distance = camera::zoom(orbit.distance, input.zoom * 0.01);
     update_movement(&mut practice, &orbit, &input);
     update_selection(&mut practice, &input);
     let actor_count = practice.arena.fighters().len();
@@ -586,7 +581,7 @@ fn simulate(mut practice: ResMut<Practice>) {
                     .combat_text
                     .record(actor, target, -i32::from(damage));
                 practice.feedback = "Pulse hit · 25 damage";
-                practice.flash = 0.18;
+                practice.zap = Some(lightning::Zap::new(actor, target, practice.arena.tick()));
             }
             ArenaEvent::Won { .. } => practice.feedback = "Round complete · reset to play again",
             // A second press in flight is harmless, not a spell-cast error.
@@ -615,15 +610,8 @@ fn present(
     obstacles: Query<&camera::Obstacle>,
     fixed: Res<Time<Fixed>>,
     time: Res<Time>,
-    mut fighters: Query<
-        (&FighterVisual, &mut Transform, &mut Visibility),
-        (Without<Camera>, Without<AttackBeam>),
-    >,
-    mut cameras: Query<&mut Transform, (With<Camera>, Without<FighterVisual>, Without<AttackBeam>)>,
-    mut beam: Query<
-        (&mut Transform, &mut Visibility),
-        (With<AttackBeam>, Without<FighterVisual>, Without<Camera>),
-    >,
+    mut fighters: Query<(&FighterVisual, &mut Transform, &mut Visibility), Without<Camera>>,
+    mut cameras: Query<&mut Transform, (With<Camera>, Without<FighterVisual>)>,
 ) {
     let positions: Vec<Vec3> = (0..practice.arena.fighters().len())
         .map(|i| {
@@ -648,7 +636,7 @@ fn present(
         // The ordinary boom snaps back from where it was when closed.
         orbit.eye = None;
     } else if let Ok(mut camera) = cameras.single_mut() {
-        let focus = positions[0] + Vec3::Y;
+        let focus = positions[0] + Vec3::Y * camera::focus_height(orbit.distance);
         // Behind the loading overlay the camera sweeps around the player so
         // every direction is drawn (and its GPU work done) before play. The
         // eye snaps there and back rather than easing into the first view.
@@ -656,19 +644,29 @@ fn present(
         let direction = Quat::from_rotation_y(orbit.yaw + sweep.unwrap_or(0.0))
             * Vec3::new(0.0, orbit.pitch.sin(), orbit.pitch.cos());
         let obstacles: Vec<_> = obstacles.iter().copied().collect();
-        let eye = camera::resolve_eye(
-            focus,
-            direction,
-            orbit.distance,
-            orbit.eye.filter(|_| sweep.is_none()),
-            time.delta_secs(),
-            &obstacles,
-        );
+        // First person sits at the eyes and looks along the boom; there is no
+        // boom to collide, and a near-zero offset would give a noisy view.
+        let first_person = sweep.is_none() && camera::first_person(orbit.distance);
+        let eye = if first_person {
+            focus
+        } else {
+            camera::resolve_eye(
+                focus,
+                direction,
+                orbit.distance,
+                orbit.eye.filter(|_| sweep.is_none()),
+                time.delta_secs(),
+                &obstacles,
+            )
+        };
         orbit.eye = sweep.is_none().then_some(eye);
         // Never render the player's own model from inside it.
         hide_player = camera::hides_player(focus, eye);
         // Keep a valid view direction even if the focus is inside an obstacle.
-        let view = (focus - eye).try_normalize().unwrap_or(-direction);
+        let view = (focus - eye)
+            .try_normalize()
+            .filter(|_| !first_person)
+            .unwrap_or(-direction);
         *camera = Transform::from_translation(eye).looking_to(view, Vec3::Y);
     }
     for (fighter, mut transform, mut visibility) in &mut fighters {
@@ -686,20 +684,6 @@ fn present(
         } else {
             practice.facings[fighter.0]
         });
-    }
-    practice.flash = (practice.flash - time.delta_secs()).max(0.0);
-    if let Ok((mut transform, mut visibility)) = beam.single_mut() {
-        let from = positions[0] + Vec3::Y;
-        let to = positions[practice.selected.unwrap_or(1)] + Vec3::Y;
-        *transform = Transform::from_translation((from + to) * 0.5)
-            .looking_at(to, Vec3::Y)
-            .with_scale(Vec3::new(0.065, 0.065, from.distance(to)));
-        // Drawn once during warmup so the first Pulse does not compile it.
-        *visibility = if practice.flash > 0.0 || startup.sweep().is_some() {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
     }
     practice.frames = practice.frames.saturating_add(1);
 }
@@ -1315,6 +1299,44 @@ mod tests {
                 < 0.001
         );
         assert_eq!(app.world().resource::<Orbit>().distance, 13.0);
+    }
+
+    #[test]
+    fn first_person_sits_at_eye_level_hides_the_player_and_looks_along_the_boom() {
+        let mut app = App::new();
+        app.init_resource::<Practice>()
+            .insert_resource(Orbit {
+                pitch: -0.4,
+                distance: camera::zoom(6.0, -10.0),
+                ..default()
+            })
+            .init_resource::<Time>()
+            .init_resource::<Time<Fixed>>()
+            .init_resource::<startup::State>()
+            .init_resource::<appearance::Preview>()
+            .add_systems(Update, present);
+        let feet = app.world().resource::<Practice>().previous[0];
+        let camera = app
+            .world_mut()
+            .spawn((Camera::default(), Transform::default()))
+            .id();
+        let player = app
+            .world_mut()
+            .spawn((
+                FighterVisual(0),
+                Transform::default(),
+                Visibility::Inherited,
+            ))
+            .id();
+        app.world_mut().run_schedule(Update);
+        let eye = *app.world().get::<Transform>(camera).unwrap();
+        assert!((eye.translation - (feet + Vec3::Y * camera::focus_height(0.0))).length() < 1e-5);
+        let direction = Vec3::new(0.0, (-0.4f32).sin(), (-0.4f32).cos());
+        assert!(eye.forward().dot(-direction) > 0.9999);
+        assert_eq!(
+            app.world().get::<Visibility>(player),
+            Some(&Visibility::Hidden)
+        );
     }
 
     #[test]

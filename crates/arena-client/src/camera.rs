@@ -198,6 +198,43 @@ pub(super) fn resolve_eye(
     })
 }
 
+/// Pitch stops just short of straight up/down so the view never degenerates
+/// against the world up axis; this allows looking down from directly overhead.
+pub(super) const PITCH_LIMIT: f32 = 1.55;
+/// Shortest third-person boom. Zooming in past it snaps to first person
+/// (distance 0); zooming out of first person starts here.
+pub(super) const NEAREST_BOOM: f32 = 1.5;
+pub(super) const FARTHEST_BOOM: f32 = 22.0;
+/// Pivot height above the feet: chest height for ordinary views, rising to
+/// eye level as the boom shortens below `PIVOT_RISE_WITHIN`.
+const CHEST: f32 = 1.0;
+const EYES: f32 = crate::character::HEIGHT * 0.92;
+const PIVOT_RISE_WITHIN: f32 = 6.0;
+
+pub(super) fn pitch(current: f32, delta: f32) -> f32 {
+    (current + delta).clamp(-PITCH_LIMIT, PITCH_LIMIT)
+}
+
+pub(super) fn zoom(distance: f32, delta: f32) -> f32 {
+    let next = (distance + delta).clamp(0.0, FARTHEST_BOOM);
+    if next >= NEAREST_BOOM || delta == 0.0 {
+        next
+    } else if delta < 0.0 {
+        0.0
+    } else {
+        NEAREST_BOOM
+    }
+}
+
+pub(super) fn first_person(distance: f32) -> bool {
+    distance < NEAREST_BOOM
+}
+
+pub(super) fn focus_height(distance: f32) -> f32 {
+    let t = (distance / PIVOT_RISE_WITHIN).clamp(0.0, 1.0);
+    EYES + (CHEST - EYES) * t
+}
+
 /// Below this distance from the focus the eye is inside the player's own
 /// body, so the player model is hidden rather than rendered from within.
 pub(super) const HIDE_PLAYER_WITHIN: f32 = 1.1;
@@ -466,5 +503,42 @@ mod tests {
         }
         assert!(hides_player(Vec3::Y, Vec3::Y + Vec3::Z * 0.4));
         assert!(!hides_player(Vec3::Y, Vec3::Y + Vec3::Z * 3.0));
+    }
+
+    #[test]
+    fn zoom_snaps_between_first_person_and_the_nearest_boom() {
+        assert_eq!(zoom(13.0, 1.0), 14.0);
+        assert_eq!(zoom(21.5, 3.0), FARTHEST_BOOM);
+        assert_eq!(zoom(2.0, -0.4), 1.6);
+        assert_eq!(zoom(2.0, -1.0), 0.0);
+        assert_eq!(zoom(6.0, -100.0), 0.0);
+        assert_eq!(zoom(0.0, -1.0), 0.0);
+        assert_eq!(zoom(0.0, 0.2), NEAREST_BOOM);
+        assert_eq!(zoom(0.0, 4.0), 4.0);
+        assert_eq!(zoom(0.0, 0.0), 0.0);
+        assert!(first_person(zoom(3.0, -2.0)));
+        assert!(!first_person(NEAREST_BOOM));
+    }
+
+    #[test]
+    fn pitch_reaches_overhead_without_flipping() {
+        assert_eq!(pitch(1.2, 1.0), PITCH_LIMIT);
+        assert_eq!(pitch(-1.2, -1.0), -PITCH_LIMIT);
+        let direction = Vec3::new(0.0, PITCH_LIMIT.sin(), PITCH_LIMIT.cos());
+        assert!(direction.y > 0.999 && direction.z > 0.0);
+        assert!(
+            Transform::default()
+                .looking_to(-direction, Vec3::Y)
+                .is_finite()
+        );
+    }
+
+    #[test]
+    fn pivot_rises_to_eye_level_only_for_close_booms() {
+        assert_eq!(focus_height(13.0), CHEST);
+        assert_eq!(focus_height(6.0), CHEST);
+        assert_eq!(focus_height(0.0), EYES);
+        assert!(focus_height(3.0) > CHEST && focus_height(3.0) < EYES);
+        const { assert!(EYES < crate::character::HEIGHT) };
     }
 }
