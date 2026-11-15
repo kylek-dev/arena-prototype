@@ -226,19 +226,23 @@ Idle, forward jogging, airborne posing and successful Pulse spell presentation
 use the source library. The actual included **`Jump_Start` → `Jump_Loop` →
 `Jump_Land`** clips provide takeoff, flight and recovery, without delaying the
 rule-owned jump or locking movement/casting during landing.
-Takeoff is now **0.30 seconds** and landing/recovery **0.80 seconds**, lengthened
-after the user found the original phases too brief.
-**Left/right now use the separate Blender-authored universal strafe clips**,
-replacing the forward-jog substitutes. **Backward still reverses the jog cycle**;
+The complete takeoff now plays over the first 70% of flight and hands over on
+the airborne loop's first pose. A standing landing plays the 0.80 second
+recovery. Landing while moving, or starting to move during recovery, goes
+straight into the gait ([ADR 0038](decisions/0038-matched-locomotion-and-jump-transitions.md)).
+**Left/right use the shared universal lateral run clips**, re-authored
+2026-11-14 to the jog's cadence and footfall frames so planted feet keep up
+with 7.2 m/s. Diagonals (W/S with A/D) always play the strafe, and
+switching keeps the step phase. **Backward still reverses the jog cycle**;
 the downloaded free Standard libraries lack a dedicated backward jog. Jump height and all
 movement/combat rules remain simulation-owned.
 
-The [119 KB shared strafe library](../assets/animations/README.md) contains no
+The [110 KB shared strafe library](../assets/animations/README.md) contains no
 character, outfit or race meshes/textures. Both directions passed numerical
-retargeting checks on all ten supplied humanoid base/race/outfit rigs. Blender
-pose inspection is not a browser pass; review A/D, diagonals, rapid reversals,
-stopping, steering and jump/landing transitions in the actual game. Foot sliding
-at game speed and model-specific contact adjustments may still need tuning.
+retargeting checks on all ten supplied humanoid base/race/outfit rigs. Numeric
+and stick-figure checks are not a browser pass. Review A/D at full speed,
+diagonals, rapid forward↔strafe switching, stopping, steering, standing/running
+jumps and landing into a run in the actual game.
 
 Dark foot discs and the gold world target ring are removed. Selection feedback
 remains in HUD frames/nameplates.
@@ -248,6 +252,10 @@ remains in HUD frames/nameplates.
 unused assets. The dressed GLB fell from 57.7 MB to 9.2 MB. This is measured
 payload reduction, not a verified browser frame-time improvement; review a
 fresh entry, texture quality and console errors on the intended device.
+The loading screen now stays up while the scene renders behind it. The camera
+sweeps around the player and the Pulse beam is drawn once, until GPU uploads
+and shader compilation settle; warmup gives up after 15 s
+([ADR 0039](decisions/0039-render-warmup-behind-loading-screen.md)).
 **The player is temporarily unequipped:** no weapon/effect models are requested
 or spawned. Existing weapon settings are retained but cannot equip anything
 until the engine-side flag is re-enabled. See [ADR 0035](decisions/0035-character-startup-budget.md).

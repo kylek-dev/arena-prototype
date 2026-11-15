@@ -8,6 +8,8 @@ Follow-up: [ADR 0035](0035-character-startup-budget.md) bounds textures and
 compacts the model after the user's entry-hitch report, lengthens takeoff/
 landing to 0.30/0.80 s and temporarily removes equipped weapons. The shorter
 timings and source-resolution payload measurements below describe history.
+[ADR 0038](0038-matched-locomotion-and-jump-transitions.md) plays the complete
+`Jump_Start` over 70% of flight and skips the landing recovery when moving.
 
 ## Decision
 

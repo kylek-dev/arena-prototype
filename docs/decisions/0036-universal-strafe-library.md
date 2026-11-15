@@ -5,6 +5,11 @@ request to create missing left/right strafes through Blender MCP, make them
 universal/shareable across bases, races and outfits, and use neutral names.
 Human browser review is pending.
 
+Follow-up: [ADR 0038](0038-matched-locomotion-and-jump-transitions.md) replaces
+these slow walking side-steps with jog-cadence lateral run loops authored by
+`scripts/author_universal_strafes.py`. The 0.8 s timing, file size and Blender
+script described below are history.
+
 ## Decision
 
 Author on the **CC0 UAL1 universal mannequin**, not the current female mesh.

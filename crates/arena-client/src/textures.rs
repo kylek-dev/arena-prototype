@@ -164,10 +164,6 @@ pub struct ArenaTextures {
 }
 
 impl ArenaTextures {
-    #[expect(
-        dead_code,
-        reason = "read by the startup gate, which is not wired in yet"
-    )]
     pub(crate) fn ready(&self) -> bool {
         self.pending.iter().all(|p| p.done)
     }

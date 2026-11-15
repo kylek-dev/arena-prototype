@@ -45,7 +45,8 @@ impl Clip {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct JumpEdges {
-    /// Authored segments of the included Jump_Start / Jump_Land clips.
+    /// Authored segments of the included Jump_Start / Jump_Land clips. The
+    /// start segment ends on the airborne loop's first pose.
     pub start: (f32, f32),
     pub land: (f32, f32),
 }
@@ -59,6 +60,10 @@ pub struct Timing {
     pub cast: (f32, f32),
     /// Older local characters have one combined jump clip, not separate edges.
     pub jump_edges: Option<JumpEdges>,
+    /// Shared length of locomotion loops whose footfalls are frame-aligned
+    /// (Backward is the reversed Forward). Switching between them keeps the
+    /// step phase instead of restarting the new loop from its first frame.
+    pub locomotion_cycle: Option<f32>,
 }
 
 impl Timing {
@@ -67,12 +72,21 @@ impl Timing {
         jump: (1.0 / 30.0 + 1.6 * 0.19, 1.0 / 30.0 + 1.6 * 0.79),
         cast: (1.0 / 30.0 + 2.0 * 0.60, 1.0 / 30.0 + 2.0 * 0.60 + 0.8),
         jump_edges: None,
+        locomotion_cycle: None,
     };
 }
 
 const CAST_SPEED: f32 = 1.5;
-const TAKEOFF_SECONDS: f32 = 0.30;
+/// Share of rule flight that plays the complete authored takeoff, so it hands
+/// over to the airborne loop exactly on that loop's first pose.
+const TAKEOFF_SHARE: f32 = 0.70;
 const LANDING_SECONDS: f32 = 0.80;
+/// Any clear sideways component plays the strafe: forward/back + strafe keys
+/// (45 degrees) always strafe, with the feet stepping across. The two bounds
+/// (about 24 and 19 degrees off straight) leave a band where the current clip
+/// is kept, so jitter near the boundary cannot alternate clips every frame.
+const STRAFE_ENTER: f32 = 0.45;
+const STRAFE_EXIT: f32 = 0.35;
 
 #[derive(Component)]
 pub(crate) struct Controller {
@@ -82,6 +96,7 @@ pub(crate) struct Controller {
     ready_at: u64,
     cast_remaining: f32,
     current: Option<Clip>,
+    locomotion: Option<Clip>,
     was_airborne: bool,
     takeoff: bool,
     land_remaining: f32,
@@ -105,10 +120,15 @@ struct Playback {
     cast_started: bool,
 }
 
-fn locomotion(velocity: Vec2) -> Clip {
+fn locomotion(velocity: Vec2, previous: Option<Clip>) -> Clip {
+    let (along, across) = (velocity.y.abs(), velocity.x.abs());
+    let longitudinal = match previous {
+        Some(Clip::Left | Clip::Right) => across < along * STRAFE_EXIT,
+        _ => across <= along * STRAFE_ENTER,
+    };
     if velocity.length() < 0.08 {
         Clip::Idle
-    } else if velocity.y.abs() >= velocity.x.abs() {
+    } else if longitudinal {
         if velocity.y < 0.0 {
             Clip::Forward
         } else {
@@ -127,6 +147,20 @@ fn jump_seek(timing: Timing, fighter: Combatant, overstep: f32) -> f32 {
     let phase = flight_phase(fighter, overstep);
     let (takeoff, landing) = timing.jump;
     takeoff + (landing - takeoff) * phase
+}
+
+/// Pose phase of an aligned locomotion loop; Backward is Forward reversed.
+fn pose_phase(clip: Clip, time: f32, cycle: f32) -> Option<f32> {
+    match clip {
+        Clip::Forward | Clip::Left | Clip::Right => Some(time.rem_euclid(cycle)),
+        Clip::Backward => Some((cycle - time).rem_euclid(cycle)),
+        _ => None,
+    }
+}
+
+/// Where `to` should start so its feet continue `from`'s step.
+fn carried_seek(from: Clip, time: f32, to: Clip, cycle: f32) -> Option<f32> {
+    pose_phase(to, pose_phase(from, time, cycle)?, cycle)
 }
 
 fn flight_phase(fighter: Combatant, overstep: f32) -> f32 {
@@ -149,6 +183,7 @@ impl Controller {
             ready_at: 0,
             cast_remaining: 0.0,
             current: None,
+            locomotion: None,
             was_airborne: false,
             takeoff: false,
             land_remaining: 0.0,
@@ -191,13 +226,20 @@ impl Controller {
             (self.land_remaining - sample.dt).max(0.0)
         };
         self.was_airborne = airborne;
+        let moving = locomotion(velocity, self.locomotion);
+        if moving != Clip::Idle {
+            // The planted landing recovery cannot carry a moving body: running
+            // out of a landing (or starting to move during recovery) goes
+            // straight to the gait instead of sliding the crouched pose.
+            self.land_remaining = 0.0;
+        }
         // Start follows the first part of actual rule flight: never delay takeoff
         // or play anticipation while the rules say the player is still grounded.
+        let phase = flight_phase(sample.fighter, sample.overstep);
         let flight_seconds =
             (2.0 * JUMP_SPEED as f32 / GRAVITY as f32 + 1.0) / arena_sim::TICKS_PER_SECOND as f32;
-        let elapsed = flight_phase(sample.fighter, sample.overstep) * flight_seconds;
         let clip = if airborne {
-            if self.timing.jump_edges.is_some() && self.takeoff && elapsed < TAKEOFF_SECONDS {
+            if self.timing.jump_edges.is_some() && self.takeoff && phase < TAKEOFF_SHARE {
                 Clip::JumpStart
             } else {
                 Clip::Jump
@@ -209,7 +251,8 @@ impl Controller {
         } else if self.timing.jump_edges.is_some() && self.land_remaining > 0.0 {
             Clip::JumpLand
         } else {
-            locomotion(velocity)
+            self.locomotion = Some(moving);
+            moving
         };
         Playback {
             clip,
@@ -220,11 +263,16 @@ impl Controller {
                 _ => (velocity.length() / 2.4).clamp(0.65, 2.0),
             },
             seek: match clip {
+                // After a complete takeoff the loop continues from its first
+                // pose in real flight time; without edges it spans the flight.
+                Clip::Jump if self.takeoff && self.timing.jump_edges.is_some() => Some(
+                    (self.timing.jump.0 + (phase - TAKEOFF_SHARE).max(0.0) * flight_seconds)
+                        .min(self.timing.jump.1),
+                ),
                 Clip::Jump => Some(jump_seek(self.timing, sample.fighter, sample.overstep)),
                 Clip::JumpStart => self.timing.jump_edges.map(|edges| {
                     edges.start.0
-                        + (edges.start.1 - edges.start.0)
-                            * (elapsed / TAKEOFF_SECONDS).clamp(0.0, 1.0)
+                        + (edges.start.1 - edges.start.0) * (phase / TAKEOFF_SHARE).clamp(0.0, 1.0)
                 }),
                 Clip::JumpLand => self.timing.jump_edges.map(|edges| {
                     edges.land.0
@@ -273,6 +321,16 @@ pub(crate) fn animate(
             || controller.current != Some(playback.clip)
             || (playback.clip == Clip::Cast && playback.cast_started);
         if change {
+            // Aligned loops continue the current step rather than restarting.
+            let carried = controller
+                .timing
+                .locomotion_cycle
+                .filter(|_| !playback.reset)
+                .zip(controller.current)
+                .and_then(|(cycle, from)| {
+                    let time = player.animation(model.nodes[from as usize])?.seek_time();
+                    carried_seek(from, time, playback.clip, cycle)
+                });
             let active = transitions.play(
                 &mut player,
                 index,
@@ -287,7 +345,7 @@ pub(crate) fn animate(
             if playback.clip.loops() {
                 active.repeat();
             }
-            if let Some(seek) = playback.seek {
+            if let Some(seek) = playback.seek.or(carried) {
                 active.seek_to(seek);
             }
             controller.current = Some(playback.clip);
@@ -331,7 +389,8 @@ mod tests {
             (Vec3::Z, Clip::Backward),
             (Vec3::NEG_X, Clip::Left),
             (Vec3::X, Clip::Right),
-            (Vec3::new(-1.0, 0.0, -1.0), Clip::Forward),
+            (Vec3::new(-1.0, 0.0, -1.0), Clip::Left),
+            (Vec3::new(1.0, 0.0, 1.0), Clip::Right),
         ] {
             let mut controller = controller();
             controller.step(sample(Vec3::ZERO, 0));
@@ -460,11 +519,20 @@ mod tests {
         let mut last = None;
         let mut start_frames = 0;
         let mut land_frames = 0;
+        let mut last_start_seek = 0.0;
+        let mut first_loop_seek = None;
         for _ in 0..80 {
             let playback = controller.step(rule_sample(&arena));
             if last != Some(playback.clip) {
                 changes.push(playback.clip);
                 last = Some(playback.clip);
+            }
+            match playback.clip {
+                Clip::JumpStart => last_start_seek = playback.seek.unwrap(),
+                Clip::Jump => {
+                    first_loop_seek.get_or_insert(playback.seek.unwrap());
+                }
+                _ => {}
             }
             match playback.clip {
                 Clip::JumpStart | Clip::Jump => {
@@ -493,8 +561,128 @@ mod tests {
             vec![Clip::JumpStart, Clip::Jump, Clip::JumpLand, Clip::Idle]
         );
         // Visible at the 30 Hz rule-sample cadence, not the former 0.12/0.28 s.
-        assert!(start_frames >= 8);
+        assert!(start_frames >= 14);
         assert!(land_frames >= 23);
+        // The takeoff finishes on the loop's first pose before handing over.
+        let span = edges.start.1 - edges.start.0;
+        assert!(last_start_seek > edges.start.1 - 0.1 * span);
+        let first_loop_seek = first_loop_seek.unwrap();
+        assert!(first_loop_seek - timing.jump.0 < 0.1);
+    }
+
+    #[test]
+    fn landing_while_moving_runs_on_instead_of_sliding_the_recovery_pose() {
+        use crate::character::QUATERNIUS_FEMALE;
+        let timing = QUATERNIUS_FEMALE.timing;
+        let run = |arena: &mut Arena, controller: &mut Controller, x: &mut f32, steps, moving| {
+            let mut clips = Vec::new();
+            for _ in 0..steps {
+                let fighter = arena.fighters()[0];
+                let mut value = sample(
+                    Vec3::new(*x, fighter.height as f32 / 1000.0, 0.0),
+                    arena.tick(),
+                );
+                value.fighter = fighter;
+                value.dt = 1.0 / arena_sim::TICKS_PER_SECOND as f32;
+                clips.push(controller.step(value).clip);
+                if moving {
+                    *x -= 0.24;
+                }
+                arena.step(&[]);
+            }
+            clips
+        };
+        // Moving through touchdown never enters the planted landing pose.
+        let mut arena = Arena::practice(arena_map::colosseum().layout, 1).unwrap();
+        let mut controller = Controller::new(timing);
+        let mut x = 0.0;
+        run(&mut arena, &mut controller, &mut x, 1, true);
+        arena.step(&[ArenaCommand::Jump { actor: 0 }]);
+        let clips = run(&mut arena, &mut controller, &mut x, 40, true);
+        assert!(clips.contains(&Clip::Jump));
+        assert!(!clips.contains(&Clip::JumpLand));
+        assert_eq!(*clips.last().unwrap(), Clip::Left);
+        // A standing landing recovers until movement starts, then never resumes.
+        let mut arena = Arena::practice(arena_map::colosseum().layout, 1).unwrap();
+        let mut controller = Controller::new(timing);
+        let mut x = 0.0;
+        run(&mut arena, &mut controller, &mut x, 1, false);
+        arena.step(&[ArenaCommand::Jump { actor: 0 }]);
+        let clips = run(&mut arena, &mut controller, &mut x, 26, false);
+        assert_eq!(*clips.last().unwrap(), Clip::JumpLand);
+        let clips = run(&mut arena, &mut controller, &mut x, 3, true);
+        assert!(clips[1..].iter().all(|clip| *clip == Clip::Left));
+        let clips = run(&mut arena, &mut controller, &mut x, 3, false);
+        assert!(clips[1..].iter().all(|clip| *clip == Clip::Idle));
+    }
+
+    #[test]
+    fn diagonals_always_strafe_whichever_key_was_pressed_first() {
+        // W then A, A then W, S then D, D then S: every diagonal is a strafe.
+        for (first, diagonal, clip) in [
+            (Vec3::NEG_Z, Vec3::new(-1.0, 0.0, -1.0), Clip::Left),
+            (Vec3::NEG_X, Vec3::new(-1.0, 0.0, -1.0), Clip::Left),
+            (Vec3::Z, Vec3::new(1.0, 0.0, 1.0), Clip::Right),
+            (Vec3::X, Vec3::new(1.0, 0.0, 1.0), Clip::Right),
+        ] {
+            let mut controller = controller();
+            controller.step(sample(Vec3::ZERO, 0));
+            let mut position = first * 0.24;
+            controller.step(sample(position, 1));
+            let diagonal = diagonal.normalize() * 0.24;
+            for tick in 2..40 {
+                // Alternating jitter of a few degrees never flips the clip.
+                let wobble = if tick % 2 == 0 { 1.05 } else { 0.95 };
+                position += Vec3::new(diagonal.x * wobble, 0.0, diagonal.z);
+                assert_eq!(controller.step(sample(position, tick)).clip, clip);
+            }
+        }
+        // Near-straight drift (e.g. sliding along a wall) stays forward, and
+        // jitter around the strafe boundary keeps the current clip.
+        let mut controller = controller();
+        controller.step(sample(Vec3::ZERO, 0));
+        let mut position = Vec3::ZERO;
+        for (tick, across) in [0.02, 0.0, 0.02, 0.10, 0.096, 0.10].into_iter().enumerate() {
+            position += Vec3::new(-across, 0.0, -0.24);
+            let clip = controller.step(sample(position, tick as u64 + 1)).clip;
+            assert_eq!(clip, Clip::Forward, "{tick}");
+        }
+        position += Vec3::new(-0.12, 0.0, -0.24);
+        assert_eq!(controller.step(sample(position, 10)).clip, Clip::Left);
+        for (tick, across) in [0.10, 0.096, 0.10].into_iter().enumerate() {
+            position += Vec3::new(-across, 0.0, -0.24);
+            assert_eq!(
+                controller.step(sample(position, tick as u64 + 11)).clip,
+                Clip::Left
+            );
+        }
+        position += Vec3::new(-0.03, 0.0, -0.24);
+        assert_eq!(controller.step(sample(position, 20)).clip, Clip::Forward);
+    }
+
+    #[test]
+    fn aligned_loops_carry_the_step_phase_across_switches() {
+        let cycle = 28.0 / 30.0;
+        for (from, time, to, expected) in [
+            (Clip::Forward, 0.2, Clip::Left, 0.2),
+            (Clip::Left, 0.5, Clip::Right, 0.5),
+            (Clip::Right, cycle + 0.1, Clip::Forward, 0.1),
+            (Clip::Forward, 0.2, Clip::Backward, cycle - 0.2),
+            (Clip::Backward, cycle - 0.2, Clip::Left, 0.2),
+        ] {
+            let seek = carried_seek(from, time, to, cycle).unwrap();
+            assert!((seek - expected).abs() < 1e-5, "{from:?}->{to:?}: {seek}");
+        }
+        assert_eq!(carried_seek(Clip::Idle, 0.2, Clip::Left, cycle), None);
+        assert_eq!(
+            carried_seek(Clip::Forward, 0.2, Clip::JumpLand, cycle),
+            None
+        );
+        use crate::character::{BASE_FEMALE, BASE_MALE, QUATERNIUS_FEMALE};
+        // Only the profile whose loops are authored frame-aligned carries phase.
+        assert_eq!(QUATERNIUS_FEMALE.timing.locomotion_cycle, Some(cycle));
+        assert_eq!(BASE_FEMALE.timing.locomotion_cycle, None);
+        assert_eq!(BASE_MALE.timing.locomotion_cycle, None);
     }
 
     #[test]
