@@ -3,18 +3,18 @@
 //! competitive scheduler. No rendering, networking, floating point, or OS time.
 
 use crate::TICKS_PER_SECOND;
+use crate::map::{Layout, MAX_TEAM};
 
-pub const MOVE_PER_TICK: i32 = 160;
+/// 7.2 m/s at 30 Hz.
+pub const MOVE_PER_TICK: i32 = 240;
 /// Millimetres/tick and millimetres/tick² (30 Hz): ~0.77 s airtime, 1.32 m apex.
 pub const JUMP_SPEED: i32 = 220;
 pub const GRAVITY: i32 = 20;
 pub const BODY_RADIUS: i32 = 450;
-// Half-extents of the playable floor, in millimetres.
-pub const ARENA_X: i32 = 18_000;
-pub const ARENA_Z: i32 = 14_000;
 pub const ATTACK_RANGE: i32 = 6_000;
 pub const ATTACK_COOLDOWN: u64 = TICKS_PER_SECOND;
 pub const ATTACK_DAMAGE: u16 = 25;
+pub const MAX_HEALTH: u16 = 100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Position {
@@ -28,45 +28,6 @@ impl Position {
         x * x + z * z
     }
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Pillar {
-    pub center: Position,
-    pub half_size: i32,
-}
-impl Pillar {
-    fn contains(self, point: Position, padding: i32) -> bool {
-        (point.x - self.center.x).abs() <= self.half_size + padding
-            && (point.z - self.center.z).abs() <= self.half_size + padding
-    }
-}
-pub const PILLARS: [Pillar; 4] = [
-    Pillar {
-        center: Position {
-            x: -7_000,
-            z: -5_000,
-        },
-        half_size: 1_500,
-    },
-    Pillar {
-        center: Position {
-            x: 7_000,
-            z: -5_000,
-        },
-        half_size: 1_500,
-    },
-    Pillar {
-        center: Position {
-            x: -7_000,
-            z: 5_000,
-        },
-        half_size: 1_500,
-    },
-    Pillar {
-        center: Position { x: 7_000, z: 5_000 },
-        half_size: 1_500,
-    },
-];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Combatant {
@@ -127,40 +88,37 @@ pub enum ArenaEvent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Arena {
     tick: u64,
+    layout: Layout,
     fighters: Vec<Combatant>,
     winner: Option<usize>,
-}
-impl Default for Arena {
-    fn default() -> Self {
-        Self::practice(1).expect("valid default team size")
-    }
 }
 impl Arena {
     /// Local practice roster: even actors are friendly, odd actors are enemies.
     /// Actor zero is the player; command ordering remains caller supplied.
-    pub fn practice(team_size: usize) -> Option<Self> {
-        if !(1..=3).contains(&team_size) {
+    /// Team `t`'s `k`th member starts at that team's `k`th room spawn. The
+    /// layout must already be valid (see `Layout::validate`).
+    pub fn practice(layout: Layout, team_size: usize) -> Option<Self> {
+        if !(1..=MAX_TEAM).contains(&team_size) {
             return None;
         }
+        let spawns = [layout.spawns(0), layout.spawns(1)];
+        if spawns.iter().any(|team| team.len() < team_size) {
+            return None;
+        }
+        let fighters = (0..team_size * 2)
+            .map(|index| Combatant {
+                position: spawns[index % 2][index / 2],
+                health: MAX_HEALTH,
+                ready_at: 0,
+                height: 0,
+                vertical_velocity: 0,
+                momentum: Position { x: 0, z: 0 },
+            })
+            .collect();
         Some(Self {
             tick: 0,
-            fighters: (0..team_size * 2)
-                .map(|index| Combatant {
-                    position: Position {
-                        x: match index / 2 {
-                            0 => 0,
-                            1 => -2_500,
-                            _ => 2_500,
-                        },
-                        z: if index % 2 == 0 { 5_500 } else { -3_500 },
-                    },
-                    health: 100,
-                    ready_at: 0,
-                    height: 0,
-                    vertical_velocity: 0,
-                    momentum: Position { x: 0, z: 0 },
-                })
-                .collect(),
+            layout,
+            fighters,
             winner: None,
         })
     }
@@ -171,6 +129,24 @@ impl Arena {
     }
     pub fn fighters(&self) -> &[Combatant] {
         &self.fighters
+    }
+    pub fn layout(&self) -> &Layout {
+        &self.layout
+    }
+    /// Swaps in an edited, already validated layout mid-round, as the map
+    /// editor's live preview does. Succeeds only when every fighter still
+    /// stands in walkable space; otherwise nothing changes and the caller
+    /// should start a fresh round. Health, cooldowns and the tick carry over.
+    pub fn relayout(&mut self, layout: Layout) -> bool {
+        if !self
+            .fighters
+            .iter()
+            .all(|fighter| layout.walkable(fighter.position))
+        {
+            return false;
+        }
+        self.layout = layout;
+        true
     }
     pub fn winner(&self) -> Option<usize> {
         self.winner
@@ -197,7 +173,10 @@ impl Arena {
         if attacker.position.distance_squared(defender.position) > i64::from(ATTACK_RANGE).pow(2) {
             return Err(Rejection::OutOfRange);
         }
-        if !line_of_sight(attacker.position, defender.position) {
+        if !self
+            .layout
+            .line_of_sight(attacker.position, defender.position)
+        {
             return Err(Rejection::LineOfSight);
         }
         Ok(())
@@ -210,7 +189,7 @@ impl Arena {
         if self.winner.is_none() {
             for fighter in &mut self.fighters {
                 if fighter.height > 0 {
-                    fighter.position = slide(fighter.position, fighter.momentum);
+                    fighter.position = self.layout.slide(fighter.position, fighter.momentum);
                 } else {
                     fighter.momentum = Position { x: 0, z: 0 };
                 }
@@ -246,7 +225,7 @@ impl Arena {
                     let dz = i32::from(z) * MOVE_PER_TICK / length;
                     let fighter = &mut self.fighters[actor];
                     let before = fighter.position;
-                    fighter.position = slide(before, Position { x: dx, z: dz });
+                    fighter.position = self.layout.slide(before, Position { x: dx, z: dz });
                     fighter.momentum = Position {
                         x: fighter.position.x - before.x,
                         z: fighter.position.z - before.z,
@@ -311,71 +290,42 @@ impl Arena {
     }
 }
 
-// The same bounded footprint applies in the air: jumping cannot bypass cover.
-fn slide(mut p: Position, delta: Position) -> Position {
-    let next = Position {
-        x: (p.x + delta.x).clamp(-ARENA_X + BODY_RADIUS, ARENA_X - BODY_RADIUS),
-        z: p.z,
-    };
-    if !PILLARS
-        .iter()
-        .any(|pillar| pillar.contains(next, BODY_RADIUS))
-    {
-        p = next;
-    }
-    let next = Position {
-        x: p.x,
-        z: (p.z + delta.z).clamp(-ARENA_Z + BODY_RADIUS, ARENA_Z - BODY_RADIUS),
-    };
-    if !PILLARS
-        .iter()
-        .any(|pillar| pillar.contains(next, BODY_RADIUS))
-    {
-        p = next;
-    }
-    p
-}
-
-/// Segment-versus-rectangle tests use the same pillar footprints as collision.
-pub fn line_of_sight(start: Position, end: Position) -> bool {
-    !PILLARS.iter().any(|pillar| {
-        if pillar.contains(start, 0) || pillar.contains(end, 0) {
-            return true;
-        }
-        let x = pillar.center.x;
-        let z = pillar.center.z;
-        let r = pillar.half_size;
-        let corners = [
-            Position { x: x - r, z: z - r },
-            Position { x: x + r, z: z - r },
-            Position { x: x + r, z: z + r },
-            Position { x: x - r, z: z + r },
-        ];
-        (0..4).any(|i| segments_intersect(start, end, corners[i], corners[(i + 1) % 4]))
-    })
-}
-fn segments_intersect(a: Position, b: Position, c: Position, d: Position) -> bool {
-    fn cross(a: Position, b: Position, c: Position) -> i64 {
-        (i64::from(b.x) - i64::from(a.x)) * (i64::from(c.z) - i64::from(a.z))
-            - (i64::from(b.z) - i64::from(a.z)) * (i64::from(c.x) - i64::from(a.x))
-    }
-    let overlaps = a.x.min(b.x) <= c.x.max(d.x)
-        && c.x.min(d.x) <= a.x.max(b.x)
-        && a.z.min(b.z) <= c.z.max(d.z)
-        && c.z.min(d.z) <= a.z.max(b.z);
-    overlaps
-        && cross(a, b, c).signum() * cross(a, b, d).signum() <= 0
-        && cross(c, d, a).signum() * cross(c, d, b).signum() <= 0
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::map::{Pillar, fixture};
+    /// Floor half-extents of the synthetic fixture layout.
+    const ARENA_X: i32 = 54_000;
+    const ARENA_Z: i32 = 42_000;
+    fn default_arena() -> Arena {
+        Arena::practice(fixture(), 1).unwrap()
+    }
+    fn pillars() -> Vec<Pillar> {
+        fixture().pillars
+    }
+    fn line_of_sight(a: Position, b: Position) -> bool {
+        fixture().line_of_sight(a, b)
+    }
+    #[test]
+    fn relayout_keeps_the_round_only_while_every_fighter_stays_walkable() {
+        let mut arena = default_arena();
+        arena.fighters[0].position = Position { x: 0, z: 0 };
+        arena.fighters[0].health = 40;
+        let mut moved = fixture();
+        moved.pillars[0].center.x += 2_000;
+        assert!(arena.relayout(moved.clone()));
+        assert_eq!(arena.layout(), &moved);
+        assert_eq!(arena.fighters()[0].health, 40);
+        let mut covering = moved.clone();
+        covering.pillars[0].center = Position { x: 0, z: 0 };
+        assert!(!arena.relayout(covering));
+        assert_eq!(arena.layout(), &moved, "a rejected layout changes nothing");
+    }
     #[test]
     fn practice_sizes_reject_friendly_fire_and_finish_only_after_team_elimination() {
-        assert!(Arena::practice(0).is_none());
-        assert!(Arena::practice(4).is_none());
+        assert!(Arena::practice(fixture(), 0).is_none());
+        assert!(Arena::practice(fixture(), 4).is_none());
         for size in 1..=3 {
-            let mut arena = Arena::practice(size).unwrap();
+            let mut arena = Arena::practice(fixture(), size).unwrap();
             assert_eq!(arena.fighters().len(), size * 2);
             for fighter in &mut arena.fighters {
                 fighter.position = Position { x: 0, z: 0 };
@@ -451,7 +401,7 @@ mod tests {
 
     #[test]
     fn jump_preserves_takeoff_momentum_until_exact_landing() {
-        let mut arena = Arena::default();
+        let mut arena = default_arena();
         arena.step(&[forward(), JUMP]);
         let takeoff = arena.fighters[0].position;
         assert_eq!(arena.fighters[0].height, JUMP_SPEED);
@@ -487,7 +437,7 @@ mod tests {
 
     #[test]
     fn stationary_jump_has_no_stale_momentum_and_cannot_double_jump() {
-        let mut arena = Arena::default();
+        let mut arena = default_arena();
         arena.step(&[forward()]);
         let before = arena.fighters[0].position;
         assert_eq!(
@@ -515,8 +465,9 @@ mod tests {
 
     #[test]
     fn jumping_keeps_planar_combat_and_airborne_command_budgets() {
-        let mut arena = Arena::default();
+        let mut arena = default_arena();
         arena.fighters[0].position = Position { x: 0, z: 0 };
+        arena.fighters[1].position = Position { x: 0, z: -3_000 };
         arena.step(&[forward(), JUMP]);
         assert_eq!(arena.can_attack(0, 1), Ok(()));
         let before = arena.fighters[0].position;
@@ -542,7 +493,7 @@ mod tests {
         let frozen = arena.fighters.clone();
         arena.step(&[forward(), JUMP]);
         assert_eq!(arena.fighters, frozen);
-        arena = Arena::default();
+        arena = default_arena();
         assert!(arena.fighters.iter().all(|f| f.height == 0
             && f.vertical_velocity == 0
             && f.momentum == Position { x: 0, z: 0 }));
@@ -555,9 +506,13 @@ mod tests {
                 x: ARENA_X - BODY_RADIUS - 200,
                 z: 0,
             },
-            Position { x: 4500, z: 5000 },
+            // Running diagonally into the far corner pillar.
+            Position {
+                x: pillars()[3].center.x - pillars()[3].half_x - BODY_RADIUS - 500,
+                z: pillars()[3].center.z,
+            },
         ] {
-            let mut a = Arena::default();
+            let mut a = default_arena();
             a.fighters[0].position = start;
             let mut b = a.clone();
             let mut previous = start;
@@ -579,7 +534,7 @@ mod tests {
                 assert!(fighter.position.x <= ARENA_X - BODY_RADIUS);
                 assert!(fighter.position.z <= ARENA_Z - BODY_RADIUS);
                 assert!(
-                    !PILLARS
+                    !pillars()
                         .iter()
                         .any(|p| p.contains(fighter.position, BODY_RADIUS))
                 );
@@ -589,12 +544,13 @@ mod tests {
     }
     #[test]
     fn attack_checks_range_cooldown_and_match_end() {
-        let mut arena = Arena::default();
+        let mut arena = default_arena();
         assert_eq!(
             arena.step(&[ATTACK]),
             vec![ArenaEvent::Rejected(Rejection::OutOfRange)]
         );
-        for _ in 0..20 {
+        let gap = arena.fighters()[0].position.z - arena.fighters()[1].position.z;
+        for _ in 0..(gap - ATTACK_RANGE) / MOVE_PER_TICK + 1 {
             arena.step(&[forward()]);
         }
         arena.step(&[ATTACK]);
@@ -621,7 +577,7 @@ mod tests {
     }
     #[test]
     fn invalid_inputs_and_diagonal_speed_are_bounded() {
-        let mut arena = Arena::default();
+        let mut arena = default_arena();
         assert_eq!(
             arena.step(&[
                 ArenaCommand::Move {
@@ -660,18 +616,22 @@ mod tests {
     }
     #[test]
     fn pillars_block_movement_and_attacks() {
-        for pillar in PILLARS {
+        for pillar in pillars() {
             for (x, z) in [(0, 1), (0, -1), (1, 0), (-1, 0)] {
-                let mut arena = Arena::default();
+                let mut arena = default_arena();
+                let offset = pillar.half_x + 1_000;
                 arena.fighters[0].position = Position {
-                    x: pillar.center.x + x * 2_500,
-                    z: pillar.center.z + z * 2_500,
+                    x: pillar.center.x + x * offset,
+                    z: pillar.center.z + z * offset,
                 };
                 arena.fighters[1].position = Position {
-                    x: pillar.center.x - x * 2_500,
-                    z: pillar.center.z - z * 2_500,
+                    x: pillar.center.x - x * offset,
+                    z: pillar.center.z - z * offset,
                 };
-                assert_eq!(arena.can_attack(0, 1), Err(Rejection::LineOfSight));
+                assert!(!line_of_sight(
+                    arena.fighters()[0].position,
+                    arena.fighters()[1].position
+                ));
                 for _ in 0..100 {
                     arena.step(&[ArenaCommand::Move {
                         actor: 0,
@@ -683,18 +643,41 @@ mod tests {
                 let stopped = arena.fighters()[0].position;
                 let clearance =
                     (stopped.x - pillar.center.x).abs() + (stopped.z - pillar.center.z).abs();
-                assert!(clearance > pillar.half_size + BODY_RADIUS);
-                assert!(clearance <= pillar.half_size + BODY_RADIUS + MOVE_PER_TICK);
+                assert!(clearance > pillar.half_x + BODY_RADIUS);
+                assert!(clearance <= pillar.half_x + BODY_RADIUS + MOVE_PER_TICK);
             }
+            // Within range, a sight line clipping a hexagon corner is still
+            // rejected, while one passing beside it, where a square pillar's
+            // corner used to be, is clear.
+            let mut arena = default_arena();
+            let (cx, cz, h) = (pillar.center.x, pillar.center.z, pillar.half_x);
+            arena.fighters[0].position = Position {
+                x: cx + h - 300,
+                z: cz - 2_000,
+            };
+            arena.fighters[1].position = Position {
+                x: cx + h - 300,
+                z: cz + 2_000,
+            };
+            assert_eq!(arena.can_attack(0, 1), Err(Rejection::LineOfSight));
+            arena.fighters[0].position = Position {
+                x: cx + h - 300,
+                z: cz + pillar.half_z - 500,
+            };
+            arena.fighters[1].position = Position {
+                x: cx + h - 2_300,
+                z: cz + pillar.half_z + 1_500,
+            };
+            assert_eq!(arena.can_attack(0, 1), Ok(()));
             // A segment touching the edge is blocked too.
             assert!(!line_of_sight(
                 Position {
-                    x: pillar.center.x + pillar.half_size,
-                    z: pillar.center.z + 2500
+                    x: pillar.center.x + pillar.half_x,
+                    z: pillar.center.z + pillar.half_x + 1_000
                 },
                 Position {
-                    x: pillar.center.x + pillar.half_size,
-                    z: pillar.center.z - 2500
+                    x: pillar.center.x + pillar.half_x,
+                    z: pillar.center.z - pillar.half_x - 1_000
                 }
             ));
         }
@@ -702,19 +685,69 @@ mod tests {
             Position { x: 0, z: ARENA_Z },
             Position { x: 0, z: -ARENA_Z }
         ));
+        // Sight lines that touch the pit wall are blocked, like pillar edges.
         assert!(line_of_sight(
+            Position {
+                x: -ARENA_X + 1,
+                z: 0
+            },
+            Position {
+                x: ARENA_X - 1,
+                z: 0
+            }
+        ));
+        assert!(!line_of_sight(
             Position { x: -ARENA_X, z: 0 },
             Position { x: ARENA_X, z: 0 }
         ));
     }
     #[test]
+    fn hexagonal_pillars_let_bodies_slide_along_faces_and_round_corners() {
+        let pillar = pillars()[0];
+        let Position { x: cx, z: cz } = pillar.center;
+        let run = |start: Position, x: i16, z: i16, ticks: usize| {
+            let mut arena = default_arena();
+            arena.fighters[0].position = start;
+            let mut previous = start;
+            for _ in 0..ticks {
+                arena.step(&[ArenaCommand::Move { actor: 0, x, z }]);
+                let now = arena.fighters()[0].position;
+                assert!(!pillar.contains(now, BODY_RADIUS), "{now:?}");
+                assert!(now.distance_squared(previous) <= i64::from(MOVE_PER_TICK).pow(2));
+                previous = now;
+            }
+            previous
+        };
+        // Clipping the corner on the pillar's +X side while running north
+        // to south: the body rounds it and carries on past the pillar.
+        let past = run(
+            Position {
+                x: cx + pillar.half_x + BODY_RADIUS - 300,
+                z: cz - 4_000,
+            },
+            0,
+            1000,
+            40,
+        );
+        assert!(past.z > cz + 4_000, "{past:?}");
+        // Pressing diagonally into a slanted face keeps most of the speed
+        // along the face instead of stopping dead.
+        let start = Position {
+            x: cx + 3_400 + BODY_RADIUS + 400,
+            z: cz + 2_200 + BODY_RADIUS + 400,
+        };
+        let end = run(start, -1000, 300, 20);
+        let travelled = end.distance_squared(start).isqrt();
+        assert!(travelled > 20 * i64::from(MOVE_PER_TICK) / 3, "{travelled}");
+    }
+    #[test]
     fn replay_and_world_bounds_are_repeatable() {
         // Use the open middle lane so this tests the wall, not a pillar.
-        let mut a = Arena::default();
+        let mut a = default_arena();
         a.fighters[0].position = Position { x: 0, z: 0 };
-        let mut b = Arena::default();
+        let mut b = default_arena();
         b.fighters[0].position = Position { x: 0, z: 0 };
-        for _ in 0..200 {
+        for _ in 0..ARENA_X / MOVE_PER_TICK + 10 {
             let commands = [
                 ArenaCommand::Move {
                     actor: 0,
@@ -731,20 +764,28 @@ mod tests {
 
     #[test]
     fn all_walls_bound_movement_and_spawns_are_clear() {
-        let initial = Arena::default();
-        for fighter in initial.fighters() {
-            assert!(fighter.position.x.abs() < ARENA_X - BODY_RADIUS);
-            assert!(fighter.position.z.abs() < ARENA_Z - BODY_RADIUS);
-            assert!(
-                !PILLARS
-                    .iter()
-                    .any(|p| p.contains(fighter.position, BODY_RADIUS))
-            );
+        for size in 1..=3 {
+            for (index, fighter) in Arena::practice(fixture(), size)
+                .unwrap()
+                .fighters()
+                .iter()
+                .enumerate()
+            {
+                assert!(fixture().walkable(fighter.position));
+                // Every team starts in its own room, behind the pit wall.
+                let sign = if index % 2 == 0 { 1 } else { -1 };
+                assert!(fighter.position.z * sign > ARENA_Z);
+            }
         }
+        // Beside the gateways the pit wall is solid.
+        let beside_gate = 10_000;
         for (x, z) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-            let mut arena = Arena::default();
-            arena.fighters[0].position = Position { x: 0, z: 0 };
-            for _ in 0..200 {
+            let mut arena = default_arena();
+            arena.fighters[0].position = Position {
+                x: if x == 0 { beside_gate } else { 0 },
+                z: 0,
+            };
+            for _ in 0..ARENA_X / MOVE_PER_TICK + 10 {
                 arena.step(&[ArenaCommand::Move {
                     actor: 0,
                     x: x * 1000,
@@ -754,10 +795,79 @@ mod tests {
             assert_eq!(
                 arena.fighters()[0].position,
                 Position {
-                    x: i32::from(x) * (ARENA_X - BODY_RADIUS),
+                    x: if x == 0 {
+                        beside_gate
+                    } else {
+                        i32::from(x) * (ARENA_X - BODY_RADIUS)
+                    },
                     z: i32::from(z) * (ARENA_Z - BODY_RADIUS),
                 }
             );
         }
+    }
+
+    #[test]
+    fn starting_rooms_open_onto_the_floor_only_through_their_width() {
+        let run = |start: Position, x: i16, z: i16, ticks: i32| {
+            let mut arena = default_arena();
+            arena.fighters[0].position = start;
+            for _ in 0..ticks {
+                arena.step(&[ArenaCommand::Move { actor: 0, x, z }]);
+            }
+            arena.fighters()[0].position
+        };
+        let room = &fixture().rooms[0];
+        let (half, depth) = (room.width / 2, room.depth);
+        let room_back = ARENA_Z + depth - BODY_RADIUS;
+        // Out of the friendly room and across the floor into the other room.
+        let spawn = default_arena().fighters()[0].position;
+        let crossed = run(spawn, 0, -1000, 2 * (ARENA_Z + depth) / MOVE_PER_TICK);
+        assert_eq!(
+            crossed,
+            Position {
+                x: 0,
+                z: -room_back
+            }
+        );
+        // From the floor straight into the friendly room's back wall.
+        assert_eq!(
+            run(Position { x: 0, z: 0 }, 0, 1000, 400),
+            Position { x: 0, z: room_back }
+        );
+        // The room is a straight corridor: its sides continue the opening's
+        // edges all the way back, with no wider pockets.
+        for z in [ARENA_Z + 700, room_back] {
+            assert_eq!(
+                run(Position { x: 0, z }, 1000, 0, 100),
+                Position {
+                    x: half - BODY_RADIUS,
+                    z
+                }
+            );
+        }
+        // Sight passes straight through the opening but not the pit wall.
+        let inside = Position {
+            x: 0,
+            z: ARENA_Z + 5_000,
+        };
+        assert!(line_of_sight(
+            inside,
+            Position {
+                x: 0,
+                z: ARENA_Z - 3_000
+            }
+        ));
+        assert!(!line_of_sight(
+            Position {
+                x: 2_000,
+                z: ARENA_Z + 5_000
+            },
+            Position {
+                x: 8_000,
+                z: ARENA_Z - 3_000
+            }
+        ));
+        // Both rooms see each other straight down their openings.
+        assert!(line_of_sight(inside, Position { x: 0, z: -inside.z }));
     }
 }

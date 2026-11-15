@@ -31,33 +31,53 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self {
-            background: [0.18, 0.21, 0.25],
-            ambient: 500.0,
-            key: 6500.0,
-            fill: 3200.0,
-            exposure: super::graphics::arena_exposure().ev100,
-            bloom_intensity: 0.22,
-            bloom_threshold: 0.8,
-            bloom_spread: 0.4,
-            saturation: 1.0,
-            contrast: 1.0,
-            gamma: 1.0,
-            shadows: 0.0,
-            midtones: 1.0,
-            highlights: 1.0,
-            temperature: 0.0,
-            tint: 0.0,
-            key_color: [1.0, 0.95, 0.88],
-            fill_color: [0.88, 0.93, 1.0],
-            key_angles: [0.9_f32.to_degrees(), -0.55_f32.to_degrees()],
-            fill_angles: [0.45_f32.to_degrees(), 2.3_f32.to_degrees()],
-            tonemapping: 0,
-        }
+        static PRESET: std::sync::OnceLock<Settings> = std::sync::OnceLock::new();
+        *PRESET.get_or_init(|| {
+            let preset: serde_json::Value =
+                serde_json::from_str(include_str!("../../../assets/lighting.json"))
+                    .expect("assets/lighting.json must be valid JSON");
+            let read = |key: &str| {
+                preset[key]
+                    .as_f64()
+                    .filter(|v| v.is_finite())
+                    .expect("lighting preset must contain every numeric control")
+                    as f32
+            };
+            Self {
+                background: [
+                    read("backgroundR"),
+                    read("backgroundG"),
+                    read("backgroundB"),
+                ],
+                ambient: read("ambient"),
+                key: read("keyLight"),
+                fill: read("fillLight"),
+                exposure: read("exposure"),
+                bloom_intensity: read("bloomIntensity"),
+                bloom_threshold: read("bloomThreshold"),
+                bloom_spread: read("bloomSpread"),
+                saturation: read("saturation"),
+                contrast: read("contrast"),
+                gamma: read("gamma"),
+                shadows: read("shadows"),
+                midtones: read("midtones"),
+                highlights: read("highlights"),
+                temperature: read("temperature"),
+                tint: read("tint"),
+                key_color: [read("keyR"), read("keyG"), read("keyB")],
+                fill_color: [read("fillR"), read("fillG"), read("fillB")],
+                key_angles: [read("keyPitch"), read("keyYaw")],
+                fill_angles: [read("fillPitch"), read("fillYaw")],
+                tonemapping: read("tonemapping") as u8,
+            }
+        })
     }
 }
 
 impl Settings {
+    pub(crate) fn exposure(self) -> f32 {
+        self.exposure
+    }
     pub fn from_values<const N: usize>(values: [Option<f64>; N]) -> Self {
         let defaults = Self::default();
         let read = |index: usize, default: f32, min: f64, max: f64| {
@@ -95,7 +115,7 @@ impl Settings {
                 read(26, defaults.fill_angles[0], 5.0, 90.0),
                 read(27, defaults.fill_angles[1], -180.0, 180.0),
             ],
-            tonemapping: read(28, 0.0, 0.0, 2.0).round() as u8,
+            tonemapping: read(28, defaults.tonemapping as f32, 0.0, 2.0).round() as u8,
         }
     }
 }
@@ -387,11 +407,19 @@ mod tests {
         world
             .run_system_once_with(apply, Settings::default())
             .unwrap();
-        assert_eq!(world.get::<Exposure>(camera).unwrap().ev100, 10.0);
         assert_eq!(
-            *world.get::<ColorGrading>(camera).unwrap(),
-            ColorGrading::default()
+            world.get::<Exposure>(camera).unwrap().ev100,
+            Settings::default().exposure
         );
+        // The shipped preset applies its own grade, so defaults are not identity.
+        let defaults = Settings::default();
+        let grading = world.get::<ColorGrading>(camera).unwrap();
+        assert_eq!(grading.global.post_saturation, defaults.saturation);
+        assert_eq!(grading.midtones.contrast, defaults.contrast);
+        assert_eq!(grading.midtones.gamma, defaults.gamma);
+        assert_eq!(grading.midtones.gain, defaults.midtones);
+        assert_eq!(grading.shadows.lift, defaults.shadows);
+        assert_eq!(grading.highlights.gain, defaults.highlights);
         assert_eq!(
             *world.get::<Tonemapping>(camera).unwrap(),
             Tonemapping::Reinhard

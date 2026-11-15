@@ -1,0 +1,243 @@
+.movable-window.map-editor-window {
+  width: min(880px, calc(100vw - 56px));
+}
+.map-editor {
+  max-height: calc(100vh - 120px);
+  overflow-y: auto;
+  padding-right: 6px;
+  font-size: 13px;
+}
+.map-editor p {
+  margin: 0;
+}
+.map-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.map-toolbar-gap {
+  flex: 1;
+}
+.map-status .map-dirty {
+  color: var(--amber-11);
+}
+.map-errors {
+  margin: 0;
+  padding: 6px 8px 6px 24px;
+  border: 1px solid var(--red-7);
+  border-radius: 6px;
+  background: var(--red-3);
+  color: var(--red-11);
+}
+.map-notice.ok {
+  color: var(--green-11);
+}
+.map-notice.error {
+  color: var(--red-11);
+}
+.map-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 250px;
+  gap: 12px;
+  align-items: start;
+}
+@media (max-width: 720px) {
+  .map-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.map-plan {
+  display: block;
+  width: 100%;
+  max-height: 62vh;
+  aspect-ratio: 1;
+  border-radius: 6px;
+  touch-action: none;
+  user-select: none;
+  outline-offset: 2px;
+}
+.map-plan rect,
+.map-plan circle,
+.map-plan line {
+  vector-effect: non-scaling-stroke;
+}
+.plan-building {
+  fill: var(--pal-sand-1);
+}
+.plan-stands {
+  fill: var(--pal-sand-2);
+}
+.plan-pit-wall {
+  fill: var(--pal-sand-3);
+}
+.plan-floor {
+  fill: var(--pal-sand-4);
+}
+.plan-floor.ground-sand {
+  fill: var(--pal-sand-5);
+}
+.plan-floor.ground-snow {
+  fill: var(--pal-stone-6);
+}
+.plan-floor.ground-grass {
+  fill: var(--pal-leaf-3);
+}
+.plan-prop rect:first-child {
+  fill: color-mix(in srgb, var(--pal-wood-5) 55%, transparent);
+  stroke: var(--pal-wood-1);
+  stroke-width: 1;
+  cursor: grab;
+}
+.plan-prop {
+  cursor: grab;
+}
+.plan-prop-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+.plan-prop-dot {
+  fill: var(--pal-wood-5);
+  stroke: var(--pal-wood-1);
+  stroke-width: 1;
+  pointer-events: none;
+}
+.map-plan .plan-prop.selected .plan-prop-dot {
+  fill: var(--pal-gold-5);
+}
+.map-plan .plan-prop.selected .plan-prop-hit {
+  fill: color-mix(in srgb, var(--pal-gold-5) 18%, transparent);
+  stroke: var(--pal-gold-5);
+  stroke-width: 1.5;
+}
+.plan-prop-front {
+  stroke: var(--pal-wood-1);
+  stroke-width: 2;
+  pointer-events: none;
+}
+.plan-grid {
+  stroke: color-mix(in srgb, var(--pal-night-12) 12%, transparent);
+  stroke-width: 1;
+}
+.plan-axis {
+  stroke: color-mix(in srgb, var(--pal-night-12) 28%, transparent);
+  stroke-width: 1;
+}
+.plan-room rect:first-child {
+  stroke-width: 1.5;
+  cursor: grab;
+}
+.plan-room.team-friendly rect:first-child {
+  fill: color-mix(in srgb, var(--pal-sky-4) 45%, transparent);
+  stroke: var(--pal-sky-5);
+}
+.plan-room.team-opposing rect:first-child {
+  fill: color-mix(in srgb, var(--pal-ember-4) 45%, transparent);
+  stroke: var(--pal-ember-5);
+}
+.plan-pillar polygon {
+  fill: var(--pal-stone-6);
+  stroke: var(--pal-sand-1);
+  stroke-width: 1.5;
+  cursor: grab;
+}
+.plan-spawn {
+  stroke: var(--pal-night-1);
+  stroke-width: 1;
+  cursor: grab;
+}
+.plan-spawn.team-friendly {
+  fill: var(--pal-sky-6);
+}
+.plan-spawn.team-opposing {
+  fill: var(--pal-ember-6);
+}
+.map-plan .selected rect:first-child,
+.map-plan .selected polygon,
+.map-plan circle.selected {
+  stroke: var(--pal-gold-5);
+  stroke-width: 3;
+}
+.plan-handle {
+  fill: var(--pal-gold-5);
+  stroke: var(--pal-night-1);
+  stroke-width: 1;
+  cursor: nwse-resize;
+}
+.plan-compass text {
+  fill: color-mix(in srgb, var(--pal-night-12) 70%, transparent);
+  font-weight: 700;
+}
+.map-hint {
+  font-size: 12px;
+  color: var(--gray-11);
+}
+.map-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.map-items button {
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--gray-6);
+  background: var(--gray-3);
+  color: var(--gray-12);
+  cursor: pointer;
+}
+.map-items button[aria-pressed="true"] {
+  border-color: var(--accent-8);
+  background: var(--accent-4);
+}
+.map-inspector h3 {
+  margin: 0;
+  font-size: 13px;
+}
+.map-field {
+  display: grid;
+  grid-template-columns: 1fr 76px 16px;
+  gap: 6px;
+  align-items: center;
+}
+.map-field input,
+.map-field select {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+.map-field-wide {
+  grid-template-columns: 1fr 1.4fr;
+}
+.map-unit {
+  color: var(--gray-11);
+  font-size: 11px;
+}
+.map-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.map-new {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--gray-6);
+  border-radius: 6px;
+}
+.map-new .map-actions {
+  justify-content: flex-start;
+}
+.map-props-add {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.map-props-add select {
+  flex: 1;
+  min-width: 0;
+}
