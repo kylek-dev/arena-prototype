@@ -2,9 +2,11 @@
 
 Date: 2026-11-15. **Status: mixed.** The fair tick resolution and authoritative
 facing in `arena-sim`, the `arena-protocol` message layer and the
-`arena-server` match server, and the `arena-bot` load tester are **accepted
-and implemented**. The browser network mode is **accepted as the plan** and
-not yet implemented. The scaling topology is **proposed**: it stays open
+`arena-server` match server, the `arena-bot` load tester and the browser's
+network transport and authoritative view (Phase 5a) are **accepted and
+implemented**. The Phase 5b match UI (disconnected/reconnecting display,
+join and rejoin controls, network diagnostics) is **accepted as the plan**
+and not yet implemented. No browser has run a network match yet. The scaling topology is **proposed**: it stays open
 until load measurements from the bot exist.
 
 Builds on [ADR 0001](0001-stack.md) (Axum/Tokio, WebSockets, one regional
@@ -112,21 +114,61 @@ fighter `connected` in every snapshot (implemented), so other players can
 see who is gone. The player can rejoin at any time while the match runs,
 using the same join ticket. The seat, state and identity are kept.
 
-Browser requirements for the network mode (Phase 5, not implemented):
+Browser behavior (Phase 5a implemented unless marked 5b):
 
-- Show a disconnected fighter greyed out, with "Disconnected" on its unit
-  frame and nameplate, and clear it when `connected` returns.
-- Store the active match's ticket, server address and expiry in
-  `localStorage` when joining, so the player can rejoin after a dropped
-  connection, a reload or a closed tab. On start, rejoin automatically if a
-  stored ticket has not expired.
-- After an unexpected close, reconnect automatically with capped
-  exponential backoff (for example 0.5 s doubling to 8 s) for as long as the
-  ticket is valid, showing "Reconnecting…" meanwhile.
-- Delete the stored ticket and stop retrying on `MatchOver`, `BadTicket` or
-  `VersionMismatch`, and when the ticket expires.
-- The ticket is a bearer credential for one seat in one match only. It
-  expires (two hours by default) and is never put in a URL or a log.
+- After an unexpected close, the runtime reconnects automatically with
+  capped exponential backoff (0.5 s doubling to 8 s) while the ticket is
+  valid. The same ticket retakes the seat.
+- The ticket, server address and expiry are stored when joining, in two
+  places. Per tab (`sessionStorage`): a reload or a restored tab rejoins
+  automatically. Per browser (`localStorage`): the last match is
+  remembered and offered as a "Rejoin match" control (5b). This refines the
+  original requirement of rejoining automatically from `localStorage`: two
+  tabs would otherwise both claim one seat and keep replacing each other.
+- `MatchOver`, `BadTicket`, `VersionMismatch` and `MatchFull`, or an expired
+  ticket, end the link and delete both stored copies. Other errors (such as
+  `ServerShutdown`) keep retrying.
+- (5b) A disconnected fighter is shown greyed out, with "Disconnected" on its
+  unit frame and nameplate, until `connected` returns; the local player sees
+  "Reconnecting…" while the link retries.
+- The ticket is a bearer credential for one seat in one match only and
+  expires (two hours by default). It is never logged or sent in a query
+  string. Development join links (`scripts/dev-match.sh`) carry it in the
+  URL fragment, which browsers do not send to servers, and the page removes
+  it from the address bar on load.
+
+### Browser network mode (Phase 5a implemented)
+
+The TypeScript runtime (`web/src/runtime/network.ts`) owns the WebSocket
+and only moves bytes. Each frame, Rust reads `[generation, ticket,
+...frames]` through `arenaShell.readNetwork`, where `generation` increases
+with every newly opened socket. Rust then sends frames through
+`sendNetwork` and reports status through `onNetwork`. Rust
+(`arena-client/src/network.rs`) owns the protocol. It greets each new
+socket with `Hello`, sends inputs and pings, and decodes welcomes,
+snapshots and errors with `arena-protocol`.
+
+- **Local numbering.** The client assumes it is actor 0, with friends on
+  even and enemies on odd indices. A session renumbers the server's actors
+  so this seat is local 0, friendly seats `2k` and enemy seats `2k + 1`.
+  The rules, HUD, picking and nameplates work unchanged; attack targets and
+  events are translated at the boundary.
+- **Authoritative view.** `Arena::restore` rebuilds the rules state from
+  each snapshot. The view trails the newest snapshot by 3 ticks (100 ms) on
+  a clock that runs at real time and eases toward its target, snapping only
+  after large gaps. Positions and facings are interpolated between
+  snapshots; when snapshots stop, the view holds the newest state rather
+  than extrapolating (an "underrun"). Hits, jumps and the result show when
+  the view reaches their tick. The player's own rejections show at once.
+  Every snapshot is checked against its state hash.
+- **No prediction yet.** The player's own movement appears after a round
+  trip plus the view delay, as the roadmap asks (measure first). The
+  session reports smoothed ping, input-to-acknowledgement time, view delay,
+  underruns and hash mismatches.
+- During a match the client plays on the server's map (the colosseum),
+  ignores local reset and practice-size changes and defers map-editor
+  edits. A different map digest is reported. When the runtime ends the
+  match, a fresh local practice round starts.
 
 ### Bots and load testing (implemented)
 

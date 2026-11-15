@@ -122,6 +122,16 @@ curl http://127.0.0.1:8080/metrics            # Prometheus text counters
 
 `--dev` generates a random ticket key and enables `POST /dev/match`; it refuses non-loopback `--bind` addresses. Without `--dev`, set `ARENA_TICKET_KEY` to at least 32 bytes of hex shared with whatever issues tickets. `--debug-json` logs every message as JSON on stderr. Ctrl+C or SIGTERM drains: readiness (`/readyz`) fails, new matches are refused, running matches get up to `--drain-seconds` (default 60) before players receive `ServerShutdown`. The browser cannot connect yet. Server tests: `cargo test -p arena-server`.
 
+To play a network match in the browser (Phase 5a: no match UI yet), start the server and the client, then create a match and open one printed link per seat, each in its own tab or browser:
+
+```sh
+cargo run -p arena-server -- --dev        # terminal 1
+npm run serve                              # terminal 2 (after ./scripts/build-web.sh)
+./scripts/dev-match.sh 1                   # team size 1–3; prints one join link per seat
+```
+
+The tab joins its seat, reconnects by itself after a dropped connection, and rejoins after a reload. Join links carry the ticket in the URL fragment; the page removes it from the address bar. The match starts when every seat has joined.
+
 Bot players exercise a running `--dev` server with simulated latency and report latency, consistency and recovery:
 
 ```sh

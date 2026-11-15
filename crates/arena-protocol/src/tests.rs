@@ -391,6 +391,23 @@ fn snapshots_carry_the_authoritative_state_and_its_hash() {
         assert_eq!((wire.x, wire.z), (fighter.position.x, fighter.position.z));
     }
     assert_eq!(snapshot.fighters[2].facing, 77);
+    // Wire state converts back to the exact rule state.
+    let fighters: Vec<_> = snapshot
+        .fighters
+        .iter()
+        .map(FighterState::combatant)
+        .collect();
+    assert_eq!(fighters, arena.fighters());
+    for result in [RoundResult::Draw, RoundResult::Won { team: 1 }] {
+        assert_eq!(RoundResult::from(WireResult::from(result)), result);
+    }
+    for reason in [
+        Rejection::Cooldown,
+        Rejection::LineOfSight,
+        Rejection::Duplicate,
+    ] {
+        assert_eq!(Rejection::from(WireRejection::from(reason)), reason);
+    }
     assert!(snapshot.fighters[3].height > 0);
 }
 

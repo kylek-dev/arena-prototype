@@ -114,6 +114,8 @@ pub struct NewMatch {
     pub team_size: usize,
     /// Hex-encoded join tickets, one per seat in actor order.
     pub tickets: Vec<String>,
+    /// Unix seconds after which the tickets are refused.
+    pub expires: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,6 +186,7 @@ impl App {
             match_id,
             team_size,
             tickets,
+            expires,
         })
     }
 

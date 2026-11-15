@@ -205,6 +205,25 @@ impl Arena {
     }
 }
 impl Arena {
+    /// Rebuilds an arena from authoritative state, as a client presenting a
+    /// server's snapshot does. `None` unless there are 2–6 fighters in
+    /// teams of equal size.
+    pub fn restore(
+        layout: Layout,
+        tick: u64,
+        fighters: Vec<Combatant>,
+        result: Option<RoundResult>,
+    ) -> Option<Self> {
+        if !(2..=MAX_TEAM * 2).contains(&fighters.len()) || !fighters.len().is_multiple_of(2) {
+            return None;
+        }
+        Some(Self {
+            tick,
+            layout,
+            fighters,
+            result,
+        })
+    }
     pub fn tick(&self) -> u64 {
         self.tick
     }
@@ -1435,6 +1454,27 @@ mod tests {
             let hash = arena.state_hash();
             assert!(!seen.contains(&hash));
             seen.push(hash);
+        }
+    }
+    #[test]
+    fn restored_arenas_continue_exactly_like_the_original() {
+        let mut original = close_quarters(2, 1_000);
+        original.step(&[forward(), JUMP, ATTACK]);
+        let mut restored = Arena::restore(
+            original.layout().clone(),
+            original.tick(),
+            original.fighters().to_vec(),
+            original.result(),
+        )
+        .unwrap();
+        assert_eq!(restored, original);
+        assert_eq!(restored.state_hash(), original.state_hash());
+        let commands = [forward(), ArenaCommand::Jump { actor: 3 }];
+        assert_eq!(restored.step(&commands), original.step(&commands));
+        assert_eq!(restored, original);
+        let one = original.fighters()[0];
+        for count in [0, 1, 3, 8] {
+            assert!(Arena::restore(fixture(), 0, vec![one; count], None).is_none());
         }
     }
     const GOLDEN_STATE_HASH: u64 = 395_746_746_345_043_275;

@@ -171,6 +171,11 @@ async fn two_players_play_a_match_the_server_decides() {
     let addr = running.addr;
     let created = new_match(addr, 1).await;
     assert_eq!(created.tickets.len(), 2);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(created.expires > now + 3_600, "tickets outlive a match");
     let (mut first, welcome) = Client::join(addr, &created.tickets[0]).await;
     assert_eq!(
         (welcome.actor, welcome.team_size, welcome.protocol),

@@ -216,6 +216,10 @@ declare global {
       readPreview?: () => number[];
       onMapStatus?: (status: unknown) => void;
       onFocusUnit?: (tag: UnitTag) => void;
+      /** Network match feed: `[generation, ticketHex, ...frames]`, or empty. */
+      readNetwork?: () => unknown[];
+      sendNetwork?: (frame: Uint8Array) => void;
+      onNetwork?: (status: unknown) => void;
       onState: (state: unknown) => void;
     };
     arenaDebug?: { readonly state: Snapshot | null; readonly metrics: unknown };

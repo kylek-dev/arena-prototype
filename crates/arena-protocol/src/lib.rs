@@ -7,7 +7,9 @@
 //! claim a position, health or cooldown. The JSON rendering is for
 //! diagnostics and is never accepted on the wire.
 
-use arena_sim::arena::{ActorInput, Arena, ArenaEvent, Axes, Combatant, Rejection, RoundResult};
+use arena_sim::arena::{
+    ActorInput, Arena, ArenaEvent, Axes, Combatant, Position, Rejection, RoundResult,
+};
 use serde::{Deserialize, Serialize};
 
 /// Bumped on any incompatible change to a message layout. `Hello` stays
@@ -153,6 +155,24 @@ pub struct FighterState {
     pub connected: bool,
 }
 impl FighterState {
+    /// The rule state this describes (without `connected`).
+    pub fn combatant(&self) -> Combatant {
+        Combatant {
+            position: Position {
+                x: self.x,
+                z: self.z,
+            },
+            height: self.height,
+            vertical_velocity: self.vertical_velocity,
+            momentum: Position {
+                x: self.momentum[0],
+                z: self.momentum[1],
+            },
+            health: self.health,
+            ready_at: self.ready_at,
+            facing: self.facing,
+        }
+    }
     pub fn new(fighter: &Combatant, connected: bool) -> Self {
         Self {
             x: fighter.position.x,
@@ -172,6 +192,16 @@ impl FighterState {
 pub enum WireResult {
     Won { team: u8 },
     Draw,
+}
+impl From<WireResult> for RoundResult {
+    fn from(result: WireResult) -> Self {
+        match result {
+            WireResult::Won { team } => Self::Won {
+                team: usize::from(team),
+            },
+            WireResult::Draw => Self::Draw,
+        }
+    }
 }
 impl From<RoundResult> for WireResult {
     fn from(result: RoundResult) -> Self {
@@ -242,6 +272,21 @@ pub enum WireRejection {
     Cooldown,
     OutOfRange,
     LineOfSight,
+}
+impl From<WireRejection> for Rejection {
+    fn from(reason: WireRejection) -> Self {
+        match reason {
+            WireRejection::InvalidActor => Self::InvalidActor,
+            WireRejection::InvalidTarget => Self::InvalidTarget,
+            WireRejection::InvalidMovement => Self::InvalidMovement,
+            WireRejection::Duplicate => Self::Duplicate,
+            WireRejection::Airborne => Self::Airborne,
+            WireRejection::MatchOver => Self::MatchOver,
+            WireRejection::Cooldown => Self::Cooldown,
+            WireRejection::OutOfRange => Self::OutOfRange,
+            WireRejection::LineOfSight => Self::LineOfSight,
+        }
+    }
 }
 impl From<Rejection> for WireRejection {
     fn from(reason: Rejection) -> Self {
