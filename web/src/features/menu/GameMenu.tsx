@@ -5,6 +5,7 @@ import { engine } from "../../state/session";
 import { useStore } from "../../state/store";
 import { debugEnabled, diagnosticsVisible } from "../../runtime/diagnostics";
 import { lightingVisible } from "../../state/lighting";
+import { mapEditorVisible } from "../../state/map-editor";
 
 export function GameMenu() {
   const size = useStore(engine, (s) => s?.teamSize ?? 1);
@@ -50,6 +51,16 @@ export function GameMenu() {
         }}
       >
         Lighting tweaks (temporary)
+      </Button>
+      <Button
+        variant="surface"
+        color="gray"
+        onClick={() => {
+          setPanel(null);
+          mapEditorVisible.set(true);
+        }}
+      >
+        Map editor
       </Button>
       <Button
         variant="surface"

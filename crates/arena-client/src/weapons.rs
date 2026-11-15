@@ -7,6 +7,8 @@ use bevy::{
 use std::collections::HashMap;
 
 pub const MODEL_PATH: &str = "weapons/verdant-eclipse.glb";
+/// Temporarily unequipped at the user's request. Preserve source assets/settings.
+pub const EQUIPPED: bool = false;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variant {
@@ -618,6 +620,59 @@ impl BackBlades {
     }
 }
 
+/// Lean (degrees about +X, top away from the body) and inward shift that seat
+/// each weapon flush on the current body: 1.5 cm from its nearest surface.
+/// Fitted against the procedural fallback's parts and BaseFemale's rest mesh
+/// for the imported glaives and staff (their procedural fallbacks clear too).
+/// BaseFemale's braid hangs down the upper back, so her weapons lean outward
+/// over it while resting on the torso. BaseMale keeps its reviewed placement.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BackFit {
+    lean_degrees: f32,
+    inward: f32,
+}
+
+pub(crate) fn back_fit(body: Option<&str>, staff: bool) -> BackFit {
+    let (lean_degrees, inward) = match (body, staff) {
+        (None, false) => (0.0, 0.116),
+        (None, true) => (2.5, 0.153),
+        (Some("base-female"), false) => (11.0, 0.085),
+        (Some("base-female"), true) => (8.5, 0.127),
+        _ => (0.0, 0.0),
+    };
+    BackFit {
+        lean_degrees,
+        inward,
+    }
+}
+
+/// Mounts were authored around the X crossing at (0, 1.25, 0.36). The fit
+/// leans about that point and then moves toward the body (−Z is forward).
+const FIT_PIVOT: Vec3 = Vec3::new(0.0, 1.25, 0.36);
+
+fn fit_transform(fit: BackFit) -> Transform {
+    let rotation = Quat::from_rotation_x(fit.lean_degrees.to_radians());
+    Transform::from_translation(FIT_PIVOT - rotation * FIT_PIVOT - Vec3::Z * fit.inward)
+        .with_rotation(rotation)
+}
+
+/// Seats the selected weapon group on whichever body is visible: the loaded
+/// character model once ready, otherwise the procedural fallback.
+pub fn fit_to_body(
+    character: Res<crate::character::CharacterModel>,
+    mut groups: Query<(&Selection, &mut Transform)>,
+) {
+    let body = (character.status() == "ready")
+        .then(|| character.profile.map(|profile| profile.id))
+        .flatten();
+    for (selection, mut transform) in &mut groups {
+        let next = fit_transform(back_fit(body, selection.staff));
+        if *transform != next {
+            *transform = next;
+        }
+    }
+}
+
 fn mounts() -> [Transform; 2] {
     // Fighters face -Z; +Z is their back. Both center grips share one close-fitting
     // plane and intentionally intersect at the X instead of stacking in depth.
@@ -861,6 +916,29 @@ mod tests {
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
     use bevy::mesh::VertexAttributeValues;
+
+    #[test]
+    fn no_equipment_carrier_means_no_weapon_geometry_or_cached_groups() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_resource::<Assets<StandardMaterial>>();
+        for kind in [0.0, 1.0] {
+            for color in 0..6 {
+                app.world_mut()
+                    .run_system_once_with(
+                        apply,
+                        Selection::from_values(Some(kind), Some(f64::from(color))),
+                    )
+                    .unwrap();
+            }
+        }
+        let world = app.world_mut();
+        assert_eq!(world.query::<&Selection>().iter(world).count(), 0);
+        assert_eq!(world.query::<&Mesh3d>().iter(world).count(), 0);
+        assert!(world.resource::<Assets<Mesh>>().is_empty());
+        assert!(world.resource::<Assets<StandardMaterial>>().is_empty());
+    }
 
     #[test]
     fn switches_all_combinations_with_one_visible_group_and_bounded_cached_assets() {
@@ -1442,6 +1520,37 @@ mod tests {
         }
         let mut lights = world.query::<&PointLight>();
         assert_eq!(lights.single(world).unwrap().color, Variant::Purple.color());
+    }
+
+    #[test]
+    fn back_fit_moves_weapons_onto_each_body_and_leans_over_the_braid() {
+        // The crossing point moves toward the body by exactly the inward fit.
+        for body in [None, Some("base-female")] {
+            for staff in [false, true] {
+                let fit = back_fit(body, staff);
+                let pivot = fit_transform(fit).transform_point(FIT_PIVOT);
+                assert!((pivot.z - (FIT_PIVOT.z - fit.inward)).abs() < 1e-6);
+                assert!(fit.inward > 0.08, "{body:?} {staff}");
+                // A leaned top sits farther back than the bottom.
+                let transform = fit_transform(fit);
+                let top = transform.transform_point(FIT_PIVOT + Vec3::Y);
+                let bottom = transform.transform_point(FIT_PIVOT - Vec3::Y);
+                assert!(top.z >= bottom.z - 1e-6);
+            }
+        }
+        // BaseFemale's weapons tilt outward over her braid.
+        assert!(back_fit(Some("base-female"), false).lean_degrees > 5.0);
+        // Unfitted models keep the reviewed placement.
+        assert_eq!(
+            fit_transform(back_fit(Some("base-male"), false)),
+            Transform::IDENTITY
+        );
+        // On the procedural fallback the crossing moves from 0.36 m to just
+        // behind the tunic's back (0.18 m).
+        let seated = fit_transform(back_fit(None, false))
+            .transform_point(mounts()[0].translation)
+            .z;
+        assert!((0.23..0.26).contains(&seated), "{seated}");
     }
 
     #[test]

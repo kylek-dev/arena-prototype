@@ -1,5 +1,6 @@
+import lightingPreset from "../../../assets/lighting.json";
 // Temporary session-only art controls. Order is the presentation callback ABI.
-export const lightingControls = [
+const controls = [
   { key: "backgroundR", label: "Background red", min: 0, max: 1, step: 0.01, initial: 0.18 },
   { key: "backgroundG", label: "Background green", min: 0, max: 1, step: 0.01, initial: 0.21 },
   { key: "backgroundB", label: "Background blue", min: 0, max: 1, step: 0.01, initial: 0.25 },
@@ -65,6 +66,11 @@ export const lightingControls = [
   },
   { key: "tonemapping", label: "Tone mapping", min: 0, max: 2, step: 1, initial: 0 },
 ] as const;
+// One editable preset drives Rust startup, the web controls and Reset.
+export const lightingControls = controls.map((control) => ({
+  ...control,
+  initial: lightingPreset[control.key],
+}));
 export const toneMappingOptions = ["Reinhard (current)", "Reinhard luminance", "ACES filmic"];
 // Group independently of callback order: existing positions must never move.
 export const lightingGroups = [

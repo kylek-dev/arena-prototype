@@ -13,6 +13,7 @@ import {
 import { defaultGraphics } from "../../web/src/domain/graphics";
 import { graphics } from "../../web/src/state/graphics";
 import { interaction, setPanel } from "../../web/src/state/session";
+import lightingPreset from "../../assets/lighting.json";
 
 beforeEach(() => {
   resetLighting();
@@ -62,8 +63,9 @@ it("opens the temporary nonmodal window from the menu and updates every slider c
   expect(lighting.get()).toEqual(defaultLighting);
   expect(readLighting()).toEqual(lightingControls.map((control) => control.initial));
   expect(readLighting().slice(0, 10)).toEqual([
-    0.18, 0.21, 0.25, 500, 6500, 3200, 10, 0.22, 0.8, 0.4,
+    0.18, 0.21, 0.25, 500, 6500, 200, 8.5, 0.22, 0.8, 0.4,
   ]);
+  expect(defaultLighting).toEqual(lightingPreset);
 });
 
 it("retains session tweaks on close, reopens through Graphics and closes with Escape from a slider", () => {

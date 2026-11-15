@@ -8,13 +8,16 @@ export function MovableWindow({
   children,
   close,
   className = "",
+  anchor = { x: 0.5, y: 0.03 },
 }: {
   title: string;
   children: ReactNode;
   close: () => void;
   className?: string;
+  /** Initial placement as fractions of the free space (see `layout`). */
+  anchor?: { x: number; y: number };
 }) {
-  const [value, setValue] = useState(() => layout(0.5, 0.03));
+  const [value, setValue] = useState(() => layout(anchor.x, anchor.y));
   const placement = useMovable(value, setValue, true);
 
   return (

@@ -181,12 +181,14 @@ export function adaptSnapshot(raw: unknown): Snapshot {
 declare global {
   interface Window {
     arenaShell: {
-      hasCharacterModel?: boolean;
+      characterModel?: string;
       readInput: () => number[];
       readHover?: () => number[];
       readGraphics?: () => number[];
       readWeapons?: () => number[];
       readLighting?: () => number[];
+      readMap?: () => unknown[];
+      onMapStatus?: (status: unknown) => void;
       onFocusUnit?: (tag: UnitTag) => void;
       onState: (state: unknown) => void;
     };

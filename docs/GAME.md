@@ -32,4 +32,4 @@ Open world, MMO progression, loot economy, matchmaking ratings, monetization, gu
 
 ## Art and AI
 
-Use procedural primitives initially. AI can help code, tests, documentation, offline concept exploration and placeholder assets with recorded provenance. Production identity requires deliberate human art direction. Bots should consume ordinary game commands so AI-assisted testing remains independent of rendering or cloud model availability.
+Use procedural primitives initially. AI can help code, tests, documentation, offline concept exploration and placeholder assets with recorded provenance. Production identity requires deliberate human art direction; see [art direction](ART-DIRECTION.md). Bots should consume ordinary game commands so AI-assisted testing remains independent of rendering or cloud model availability.

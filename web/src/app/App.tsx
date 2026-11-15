@@ -16,6 +16,7 @@ import { CombatErrors } from "../features/combat-errors/CombatErrors";
 import { Loading } from "../features/loading/Loading";
 import { Diagnostics } from "../features/diagnostics/Diagnostics";
 import { LightingTweaks } from "../features/lighting-tweaks/LightingTweaks";
+import { MapEditor } from "../features/map-editor/MapEditor";
 import { Modal } from "../ui/Dialog";
 import { draggingSpell, interaction, setPanel } from "../state/session";
 import { saveMessage, useConfigSelector } from "../state/config";
@@ -64,6 +65,7 @@ export function App() {
         <LayoutToolbar />
         <Diagnostics />
         <LightingTweaks />
+        <MapEditor />
         <Loading />
         {mode.panel && (
           <Modal

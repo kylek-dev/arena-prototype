@@ -3,6 +3,8 @@ use bevy::prelude::*;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum JointKind {
+    Chest,
+    Head,
     Shoulder,
     Elbow,
     Hip,
@@ -54,6 +56,7 @@ pub(crate) struct Animator {
 
 #[derive(Clone, Copy, Default)]
 struct Pose {
+    seconds: f32,
     phase: f32,
     direction: Vec2,
     amount: f32,
@@ -104,6 +107,7 @@ impl Animator {
             .rem_euclid(std::f32::consts::TAU);
         }
         Pose {
+            seconds: 0.0,
             phase: self.phase,
             direction: self.velocity.normalize_or_zero(),
             amount: (speed / 3.0).min(1.0) * (1.0 - self.airborne),
@@ -114,22 +118,47 @@ impl Animator {
 
 fn joint_rotation(joint: &Joint, pose: Pose, settings: &Settings) -> Quat {
     let swing = pose.phase.sin() * joint.side * pose.amount;
-    // -Z is forward. Reverse swing for backing up; lateral steps swing about Z.
+    // -Z is forward. Lateral hips only abduct (open), never adduct across
+    // the stance centerline. Alternating open/close steps replace scissoring.
     let forward = -pose.direction.y;
     let strafe = pose.direction.x;
-    let (pitch, roll) = match joint.kind {
+    let breath = (pose.seconds * 1.8).sin() * (1.0 - pose.amount);
+    let (pitch, yaw, roll) = match joint.kind {
+        JointKind::Chest => (
+            -0.08 * forward * pose.amount - 0.10 * pose.airborne + 0.012 * breath,
+            pose.phase.sin() * 0.055 * forward * pose.amount,
+            -0.06 * strafe * pose.amount,
+        ),
+        JointKind::Head => (
+            0.035 * forward * pose.amount - 0.012 * breath,
+            -pose.phase.sin() * 0.035 * forward * pose.amount,
+            0.025 * strafe * pose.amount,
+        ),
         JointKind::Hip => (
             swing * forward * settings.leg_swing + pose.airborne * 0.50,
-            swing * strafe * settings.leg_swing,
+            0.0,
+            joint.side * (swing * strafe).max(0.0) * settings.leg_swing * 0.5,
         ),
-        JointKind::Knee => (-swing.max(0.0) * 0.60 - pose.airborne * 0.95, 0.0),
+        JointKind::Knee => (
+            -swing.max(0.0) * (0.65 * forward.abs() + 0.35 * strafe.abs()) - pose.airborne * 0.95,
+            0.0,
+            0.0,
+        ),
         JointKind::Shoulder => (
             -swing * forward * settings.arm_swing - pose.airborne * 0.22,
-            -swing * strafe * settings.arm_swing,
+            0.0,
+            joint.side * (0.06 + 0.08 * pose.airborne) - swing * strafe * settings.arm_swing * 0.25,
         ),
-        JointKind::Elbow => (0.10 * pose.amount + pose.airborne * 0.35, 0.0),
+        JointKind::Elbow => (
+            0.12 + 0.24 * pose.amount
+                + (-swing * forward).max(0.0) * 0.30
+                + pose.airborne * 0.35
+                + 0.015 * breath,
+            0.0,
+            0.0,
+        ),
     };
-    Quat::from_euler(EulerRot::XYZ, pitch, 0.0, roll)
+    Quat::from_euler(EulerRot::XYZ, pitch, yaw, roll)
 }
 
 #[allow(clippy::type_complexity)]
@@ -150,7 +179,7 @@ pub(crate) fn animate(
         if actor >= practice.arena.fighters().len() {
             continue;
         }
-        let pose = animator.step(
+        let mut pose = animator.step(
             fighter.translation,
             fighter.rotation,
             practice.arena.tick(),
@@ -158,6 +187,7 @@ pub(crate) fn animate(
             time.delta_secs(),
             &settings,
         );
+        pose.seconds = time.elapsed_secs() + actor as f32 * 0.73;
         let breath = (time.elapsed_secs() * 1.8).sin() * 0.5 + 0.5;
         transform.translation.y = if animator.authored {
             0.0
@@ -180,6 +210,7 @@ mod tests {
     fn paired_limbs_counter_swing_and_backward_and_strafe_change_axes() {
         let settings = Settings::default();
         let pose = Pose {
+            seconds: 0.0,
             phase: std::f32::consts::FRAC_PI_2,
             direction: Vec2::NEG_Y,
             amount: 1.0,
@@ -209,7 +240,7 @@ mod tests {
         assert!(left.abs_diff_eq(rotation(JointKind::Hip, -1.0, backwards).inverse(), 0.0001));
         let lateral = rotation(
             JointKind::Hip,
-            -1.0,
+            1.0,
             Pose {
                 direction: Vec2::X,
                 ..pose
@@ -217,6 +248,100 @@ mod tests {
         ) * Vec3::NEG_Y;
         assert!(lateral.x.abs() > 0.1);
         assert!(lateral.z.abs() < 0.0001);
+    }
+
+    #[test]
+    fn full_strafe_and_diagonal_cycles_keep_lower_legs_and_boots_in_their_own_lane() {
+        let settings = Settings::default();
+        for direction in [
+            Vec2::X,
+            Vec2::NEG_X,
+            Vec2::new(1.0, 1.0),
+            Vec2::new(-1.0, 1.0),
+            Vec2::new(1.0, -1.0),
+            Vec2::new(-1.0, -1.0),
+        ] {
+            for step in 0..=360 {
+                for side in [-1.0, 1.0] {
+                    let pose = Pose {
+                        phase: step as f32 * std::f32::consts::TAU / 360.0,
+                        direction: direction.normalize(),
+                        amount: 1.0,
+                        ..default()
+                    };
+                    let hip = joint_rotation(
+                        &Joint {
+                            actor: 0,
+                            kind: JointKind::Hip,
+                            side,
+                        },
+                        pose,
+                        &settings,
+                    );
+                    let knee = joint_rotation(
+                        &Joint {
+                            actor: 0,
+                            kind: JointKind::Knee,
+                            side,
+                        },
+                        pose,
+                        &settings,
+                    );
+                    // Conservative boxes around the ellipsoids in the real bind pose:
+                    // hip y=.85, knee y=.47; both x=side*.155.
+                    for (center, half) in [
+                        (Vec3::new(0.0, -0.15, 0.0), Vec3::new(0.075, 0.195, 0.09)),
+                        (Vec3::new(0.0, -0.36, -0.075), Vec3::new(0.10, 0.105, 0.18)),
+                    ] {
+                        for x in [-1.0, 1.0] {
+                            for y in [-1.0, 1.0] {
+                                for z in [-1.0, 1.0] {
+                                    let point = Vec3::new(side * 0.155, 0.85, 0.0)
+                                        + hip
+                                            * (Vec3::new(0.0, -0.38, 0.0)
+                                                + knee * (center + half * Vec3::new(x, y, z)));
+                                    assert!(point.x * side >= 0.035, "crossed lane: {point:?}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn upper_body_breathes_and_counter_rotates_and_elbows_flex_during_a_stride() {
+        let settings = Settings::default();
+        let rotation = |kind, pose| {
+            joint_rotation(
+                &Joint {
+                    actor: 0,
+                    kind,
+                    side: 1.0,
+                },
+                pose,
+                &settings,
+            )
+        };
+        let idle = Pose {
+            seconds: 0.8,
+            ..default()
+        };
+        assert!(!rotation(JointKind::Chest, idle).abs_diff_eq(Quat::IDENTITY, 0.001));
+        let walk = Pose {
+            phase: std::f32::consts::FRAC_PI_2,
+            direction: Vec2::NEG_Y,
+            amount: 1.0,
+            ..default()
+        };
+        let chest = rotation(JointKind::Chest, walk).to_euler(EulerRot::XYZ);
+        let head = rotation(JointKind::Head, walk).to_euler(EulerRot::XYZ);
+        assert!((rotation(JointKind::Chest, walk) * Vec3::Y).z < 0.0);
+        assert!(chest.1 * head.1 < 0.0);
+        assert!(
+            !rotation(JointKind::Elbow, walk).abs_diff_eq(rotation(JointKind::Elbow, idle), 0.1)
+        );
     }
 
     #[test]
