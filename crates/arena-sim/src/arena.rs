@@ -292,14 +292,14 @@ impl Arena {
 
 #[cfg(test)]
 mod tests {
-    use crate::map::{Block, fixture};
+    use crate::map::{Pillar, fixture};
     /// Floor half-extents of the synthetic fixture layout.
     const ARENA_X: i32 = 54_000;
     const ARENA_Z: i32 = 42_000;
     fn default_arena() -> Arena {
         Arena::practice(fixture(), 1).unwrap()
     }
-    fn pillars() -> Vec<Block> {
+    fn pillars() -> Vec<Pillar> {
         fixture().pillars
     }
     fn line_of_sight(a: Position, b: Position) -> bool {
@@ -646,18 +646,29 @@ mod tests {
                 assert!(clearance > pillar.half_x + BODY_RADIUS);
                 assert!(clearance <= pillar.half_x + BODY_RADIUS + MOVE_PER_TICK);
             }
-            // Within range, a sight line clipping a corner is still rejected.
+            // Within range, a sight line clipping a hexagon corner is still
+            // rejected, while one passing beside it, where a square pillar's
+            // corner used to be, is clear.
             let mut arena = default_arena();
             let (cx, cz, h) = (pillar.center.x, pillar.center.z, pillar.half_x);
             arena.fighters[0].position = Position {
-                x: cx + h + 500,
-                z: cz + h - 2_000,
+                x: cx + h - 300,
+                z: cz - 2_000,
             };
             arena.fighters[1].position = Position {
-                x: cx + h - 2_000,
-                z: cz + h + 500,
+                x: cx + h - 300,
+                z: cz + 2_000,
             };
             assert_eq!(arena.can_attack(0, 1), Err(Rejection::LineOfSight));
+            arena.fighters[0].position = Position {
+                x: cx + h - 300,
+                z: cz + pillar.half_z - 500,
+            };
+            arena.fighters[1].position = Position {
+                x: cx + h - 2_300,
+                z: cz + pillar.half_z + 1_500,
+            };
+            assert_eq!(arena.can_attack(0, 1), Ok(()));
             // A segment touching the edge is blocked too.
             assert!(!line_of_sight(
                 Position {
@@ -689,6 +700,45 @@ mod tests {
             Position { x: -ARENA_X, z: 0 },
             Position { x: ARENA_X, z: 0 }
         ));
+    }
+    #[test]
+    fn hexagonal_pillars_let_bodies_slide_along_faces_and_round_corners() {
+        let pillar = pillars()[0];
+        let Position { x: cx, z: cz } = pillar.center;
+        let run = |start: Position, x: i16, z: i16, ticks: usize| {
+            let mut arena = default_arena();
+            arena.fighters[0].position = start;
+            let mut previous = start;
+            for _ in 0..ticks {
+                arena.step(&[ArenaCommand::Move { actor: 0, x, z }]);
+                let now = arena.fighters()[0].position;
+                assert!(!pillar.contains(now, BODY_RADIUS), "{now:?}");
+                assert!(now.distance_squared(previous) <= i64::from(MOVE_PER_TICK).pow(2));
+                previous = now;
+            }
+            previous
+        };
+        // Clipping the corner on the pillar's +X side while running north
+        // to south: the body rounds it and carries on past the pillar.
+        let past = run(
+            Position {
+                x: cx + pillar.half_x + BODY_RADIUS - 300,
+                z: cz - 4_000,
+            },
+            0,
+            1000,
+            40,
+        );
+        assert!(past.z > cz + 4_000, "{past:?}");
+        // Pressing diagonally into a slanted face keeps most of the speed
+        // along the face instead of stopping dead.
+        let start = Position {
+            x: cx + 3_400 + BODY_RADIUS + 400,
+            z: cz + 2_200 + BODY_RADIUS + 400,
+        };
+        let end = run(start, -1000, 300, 20);
+        let travelled = end.distance_squared(start).isqrt();
+        assert!(travelled > 20 * i64::from(MOVE_PER_TICK) / 3, "{travelled}");
     }
     #[test]
     fn replay_and_world_bounds_are_repeatable() {

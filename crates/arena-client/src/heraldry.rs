@@ -3,6 +3,7 @@
 //! a lit cloth field, a gold-embroidered border with stitching, a medallion
 //! bearing one of three original sigils, and a chevron hem. Meshes carry real
 //! folds and swallowtail/pennant outlines instead of flat boxes.
+use crate::palette;
 use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::mesh::{Indices, PrimitiveTopology};
@@ -36,26 +37,26 @@ pub(crate) struct Livery {
 /// colours reserved for gameplay.
 pub(crate) const LIVERIES: [Livery; 3] = [
     Livery {
-        field: Vec3::new(0.40, 0.17, 0.62),
-        accent: Vec3::new(0.97, 0.88, 0.62),
+        field: palette::vec3(palette::ARCANE_3),
+        accent: palette::vec3(palette::GOLD_6),
         sigil: Sigil::Sun,
     },
     Livery {
-        field: Vec3::new(0.13, 0.27, 0.70),
-        accent: Vec3::new(0.86, 0.92, 1.0),
+        field: palette::vec3(palette::SKY_3),
+        accent: palette::vec3(palette::SKY_7),
         sigil: Sigil::Moon,
     },
     Livery {
-        field: Vec3::new(0.10, 0.46, 0.30),
-        accent: Vec3::new(0.98, 0.86, 0.52),
+        field: palette::vec3(palette::LEAF_3),
+        accent: palette::vec3(palette::GOLD_5),
         sigil: Sigil::Crown,
     },
 ];
 
-const GOLD_LIGHT: Vec3 = Vec3::new(1.0, 0.86, 0.46);
-const GOLD: Vec3 = Vec3::new(0.90, 0.64, 0.24);
-const GOLD_DARK: Vec3 = Vec3::new(0.52, 0.30, 0.12);
-const INK: Vec3 = Vec3::new(0.16, 0.09, 0.14);
+const GOLD_LIGHT: Vec3 = palette::vec3(palette::GOLD_5);
+const GOLD: Vec3 = palette::vec3(palette::GOLD_3);
+const GOLD_DARK: Vec3 = palette::vec3(palette::GOLD_2);
+const INK: Vec3 = palette::vec3(palette::ARCANE_1);
 
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);

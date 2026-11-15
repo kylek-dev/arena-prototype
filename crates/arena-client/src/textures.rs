@@ -15,13 +15,20 @@ use std::f32::consts::TAU;
 
 pub const FLOOR_PATH: &str = "textures/stone-floor.png";
 pub const BRICKS_PATH: &str = "textures/stone-bricks.png";
+/// Original painted pillar granite (`arena-textures` granite painter).
+pub const GRANITE_PATH: &str = "textures/stone-granite.png";
 pub const STONE_WALL_PATH: &str = "textures/stone-wall.png";
 pub const WOOD_PATH: &str = "textures/wood-planks.png";
 pub const GRATE_PATH: &str = "textures/metal-grate.png";
 pub const PANELS_PATH: &str = "textures/metal-panels.png";
+pub const SAND_PATH: &str = "textures/ground-sand.png";
+pub const SNOW_PATH: &str = "textures/ground-snow.png";
+pub const GRASS_PATH: &str = "textures/ground-grass.png";
 /// Metres covered by one repeat of each tiling texture.
 pub const FLOOR_TILE: f32 = 4.0;
 pub const BRICKS_TILE: f32 = 2.0;
+/// Granite has no direction, so it tiles in world space like the rest.
+pub const GRANITE_TILE: f32 = 2.0;
 
 fn sampler(address_v: ImageAddressMode) -> ImageSampler {
     ImageSampler::Descriptor(ImageSamplerDescriptor {
@@ -68,6 +75,62 @@ pub fn tiled_cube(transform: &Transform, tile: f32) -> Mesh {
         .collect();
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh
+}
+
+/// A unit hexagonal prism (corners on ±X, flat faces on ±Z, matching the
+/// rules' pillar) inscribed in the unit cube that `transform` scales, with
+/// world-aligned UVs like `tiled_cube`: each side runs along its own face,
+/// rows follow world height, and the caps follow world position.
+pub fn tiled_hexagon(transform: &Transform, tile: f32) -> Mesh {
+    let world = |p: Vec3| transform.translation + p * transform.scale;
+    let corners = crate::prism::hexagon_corners(Vec3::ZERO, 0.5, 0.5);
+    let (mut positions, mut normals, mut uvs, mut indices) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut face = |points: &[Vec3], normal: Vec3, uv: &dyn Fn(Vec3) -> Vec2| {
+        let first = positions.len() as u32;
+        for &p in points {
+            positions.push(p.to_array());
+            normals.push(normal.to_array());
+            uvs.push((uv(world(p)) / tile).to_array());
+        }
+        // A fan, wound so its front faces outward.
+        let winding = (points[1] - points[0])
+            .cross(points[2] - points[0])
+            .dot(normal);
+        for i in 1..points.len() as u32 - 1 {
+            if winding > 0.0 {
+                indices.extend([first, first + i, first + i + 1]);
+            } else {
+                indices.extend([first, first + i + 1, first + i]);
+            }
+        }
+    };
+    for i in 0..6 {
+        let (a, b) = (corners[i], corners[(i + 1) % 6]);
+        // Local normal (Bevy applies the inverse-transpose for scale); the UV
+        // runs along the face as it stands in the world.
+        let edge = b - a;
+        let normal = Vec3::new(edge.z, 0.0, -edge.x).normalize();
+        let along = (world(b) - world(a)).normalize();
+        let quad = [
+            a - Vec3::Y * 0.5,
+            b - Vec3::Y * 0.5,
+            b + Vec3::Y * 0.5,
+            a + Vec3::Y * 0.5,
+        ];
+        face(&quad, normal, &|w| Vec2::new(w.dot(along), -w.y));
+    }
+    let cap = |y: f32| corners.map(|c| c + Vec3::Y * y);
+    face(&cap(0.5), Vec3::Y, &|w| Vec2::new(w.x, w.z));
+    face(&cap(-0.5), Vec3::NEG_Y, &|w| Vec2::new(w.x, w.z));
+    Mesh::new(
+        bevy::mesh::PrimitiveTopology::TriangleList,
+        bevy::asset::RenderAssetUsages::default(),
+    )
+    .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+    .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
+    .with_inserted_indices(bevy::mesh::Indices::U32(indices))
 }
 
 fn to_linear(value: u8) -> f32 {
@@ -164,10 +227,6 @@ pub struct ArenaTextures {
 }
 
 impl ArenaTextures {
-    #[expect(
-        dead_code,
-        reason = "read by the startup gate, which is not wired in yet"
-    )]
     pub(crate) fn ready(&self) -> bool {
         self.pending.iter().all(|p| p.done)
     }
@@ -347,6 +406,49 @@ impl PaintedTextures {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hexagon_prism_faces_outward_and_fits_its_box() {
+        let transform = Transform::from_xyz(2.0, 5.0, -3.0).with_scale(Vec3::new(9.0, 10.0, 9.0));
+        let mesh = tiled_hexagon(&transform, 2.0);
+        let Some(VertexAttributeValues::Float32x3(positions)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            unreachable!()
+        };
+        let Some(VertexAttributeValues::Float32x3(normals)) =
+            mesh.attribute(Mesh::ATTRIBUTE_NORMAL)
+        else {
+            unreachable!()
+        };
+        let Some(bevy::mesh::Indices::U32(indices)) = mesh.indices() else {
+            unreachable!()
+        };
+        // Six quads and two six-corner caps, in the unit cube the transform
+        // scales (the venue keeps the scaled transform on the entity).
+        assert_eq!(positions.len(), 6 * 4 + 2 * 6);
+        assert_eq!(indices.len(), (6 * 2 + 2 * 4) * 3);
+        for p in positions {
+            assert!(Vec3::from(*p).abs().max_element() <= 0.5 + 1e-6);
+        }
+        let Some(VertexAttributeValues::Float32x2(uvs)) = mesh.attribute(Mesh::ATTRIBUTE_UV_0)
+        else {
+            unreachable!()
+        };
+        // Side UVs span the real 10 m height at the 2 m tile.
+        let v: Vec<f32> = uvs.iter().take(24).map(|uv| uv[1]).collect();
+        let span =
+            v.iter().copied().fold(f32::MIN, f32::max) - v.iter().copied().fold(f32::MAX, f32::min);
+        assert!((span - 5.0).abs() < 1e-4);
+        for triangle in indices.chunks(3) {
+            let [a, b, c] = [0, 1, 2].map(|k| Vec3::from(positions[triangle[k] as usize]));
+            let facing = (b - a).cross(c - a);
+            let normal = Vec3::from(normals[triangle[0] as usize]);
+            assert!(facing.dot(normal) > 0.0, "inward triangle {triangle:?}");
+            // Every face points away from the prism's axis.
+            assert!(((a + b + c) / 3.0).dot(normal) > 0.0);
+        }
+    }
 
     #[test]
     fn tiled_cube_uvs_follow_world_scale_and_continue_across_neighbours() {

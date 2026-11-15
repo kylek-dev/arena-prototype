@@ -4,21 +4,125 @@ import {
   addSpawn,
   duplicate,
   EDGES,
+  GROUNDS,
   removeSelected,
+  rotateProp,
   setFloor,
+  setGround,
   setName,
   setVenue,
   TEAMS,
   updatePillar,
+  updateProp,
   updateRoom,
   updateSpawn,
   venueFields,
   type ArenaMap,
   type Edge,
+  type Ground,
+  type MapProp,
+  type PropInfo,
   type Selection,
   type Team,
 } from "../../domain/map";
-import { commitMap, mapSelection } from "../../state/map-editor";
+import { commitMap, mapSelection, propCatalog } from "../../state/map-editor";
+import { useStore } from "../../state/store";
+
+/** Catalog entries grouped by category, in catalog order. */
+export function groupedProps(catalog: readonly PropInfo[]) {
+  const groups = new Map<string, PropInfo[]>();
+  for (const info of catalog) {
+    const list = groups.get(info.category) ?? [];
+    list.push(info);
+    groups.set(info.category, list);
+  }
+  return [...groups.entries()];
+}
+
+/** `<option>`s for every prop, grouped by category. */
+export function PropOptions({ catalog }: { catalog: readonly PropInfo[] }) {
+  return (
+    <>
+      {groupedProps(catalog).map(([category, list]) => (
+        <optgroup key={category} label={category}>
+          {list.map((info) => (
+            <option key={info.id} value={info.id}>
+              {info.label}
+            </option>
+          ))}
+        </optgroup>
+      ))}
+    </>
+  );
+}
+
+function PropInspector({ map, index }: { map: ArenaMap; index: number }) {
+  const catalog = useStore(propCatalog, (c) => c);
+  const prop = map.props[index];
+  const set = (patch: Partial<MapProp>) => commitMap(updateProp(map, index, patch));
+  const known = catalog.some((c) => c.id === prop.model);
+  return (
+    <section className="map-inspector stack" aria-label="Selected prop">
+      <h3>
+        Prop {index + 1} · {catalog.find((c) => c.id === prop.model)?.label ?? prop.model}
+      </h3>
+      <label className="map-field map-field-wide">
+        <span>Model</span>
+        <select value={prop.model} onChange={(e) => set({ model: e.target.value })}>
+          {!known && <option value={prop.model}>{prop.model}</option>}
+          <PropOptions catalog={catalog} />
+        </select>
+      </label>
+      <NumberField label="X" value={prop.x} step={0.5} onCommit={(x) => set({ x })} />
+      <NumberField label="Z" value={prop.z} step={0.5} onCommit={(z) => set({ z })} />
+      <NumberField label="Height" value={prop.y} step={0.1} onCommit={(y) => set({ y })} />
+      <NumberField
+        label="Turn"
+        value={prop.rotation}
+        step={15}
+        unit="°"
+        onCommit={(rotation) => set({ rotation })}
+      />
+      <NumberField
+        label="Scale"
+        value={prop.scale}
+        step={0.1}
+        unit="×"
+        onCommit={(scale) => set({ scale })}
+      />
+      <p className="map-hint">
+        Decoration only: fighters and spells pass through props. R turns 15° (Shift+R back).
+      </p>
+      <div className="map-actions">
+        <Button
+          variant="surface"
+          color="gray"
+          onClick={() => commitMap(rotateProp(map, index, 90))}
+        >
+          Turn 90°
+        </Button>
+        <Button
+          variant="surface"
+          color="gray"
+          onClick={() => {
+            const next = duplicate(map, { kind: "prop", index });
+            commitMap(next.map);
+            mapSelection.set(next.selection);
+          }}
+        >
+          Duplicate
+        </Button>
+        <Button
+          color="red"
+          variant="soft"
+          onClick={() => commitMap(removeSelected(map, { kind: "prop", index }))}
+        >
+          Delete prop
+        </Button>
+      </div>
+    </section>
+  );
+}
 
 /** Number input that commits on Enter or blur (one rebuild per edit), and reverts on Escape. */
 export function NumberField({
@@ -51,6 +155,12 @@ export function NumberField({
         value={text}
         onChange={(e) => setText(e.target.value)}
         onBlur={apply}
+        // Spinner clicks and arrow-key steps apply at once; typed text
+        // applies on Enter or blur.
+        onPointerUp={apply}
+        onKeyUp={(e) => {
+          if (e.key === "ArrowUp" || e.key === "ArrowDown") apply();
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter") apply();
           if (e.key === "Escape" && text !== String(value)) {
@@ -132,6 +242,7 @@ export function MapInspector({ map, selection }: { map: ArenaMap; selection: Sel
       </section>
     );
   }
+  if (selection?.kind === "prop") return <PropInspector map={map} index={selection.index} />;
   if (selection?.kind === "room") {
     const i = selection.index;
     const room = map.rooms[i];
@@ -237,6 +348,19 @@ export function MapInspector({ map, selection }: { map: ArenaMap; selection: Sel
     <section className="map-inspector stack" aria-label="Map settings">
       <h3>Map</h3>
       <TextField label="Name" value={map.name} onCommit={(name) => commitMap(setName(map, name))} />
+      <label className="map-field map-field-wide">
+        <span>Ground</span>
+        <select
+          value={map.ground}
+          onChange={(e) => commitMap(setGround(map, e.target.value as Ground))}
+        >
+          {GROUNDS.map((g) => (
+            <option key={g.id} value={g.id}>
+              {g.label}
+            </option>
+          ))}
+        </select>
+      </label>
       <NumberField
         label="Floor width (X)"
         value={map.floor.width}

@@ -27,6 +27,12 @@ now occupy 0.30/0.80 s. Equipped weapons are temporarily disabled by omitting
 their carrier, preserving source files and preferences. Browser hitch
 resolution remains unverified; no customization UI is added.
 
+[ADR 0043](decisions/0043-hexagonal-pillars.md) makes pillars hexagons inscribed in their map box. The rules test exact integer hexagon contact and sight lines, and movement pushes a body out to the pillar's surface so it slides along faces and rounds corners; the camera, picking, meshes and map editor share the same hexagon. The map format is unchanged.
+
+[ADR 0042](decisions/0042-closed-color-palette.md) makes [`docs/palette.json`](palette.json) the closed color palette. `scripts/palette.mjs` generates CSS variables (and Radix scale overrides), a TypeScript map and the engine-free `arena-palette` crate; the client, the sky painter and the HUD take every color from it, with spell effects as the only exemption. Tests reject other color literals.
+
+[ADR 0040](decisions/0040-character-customization-kits.md) replaces the single dressed female with per-body customization kits: one GLB per body holding every hairstyle/outfit piece as a named node and body regions that outfit pieces hide. The browser resolves the saved look into a render spec (visible nodes, material tints/texture variants, morph) that `arena-client/src/appearance.rs` applies; a close-up preview camera serves the Character screen. Presentation only.
+
 [ADR 0036](decisions/0036-universal-strafe-library.md) replaces the forward-jog
 left/right substitutes with a standalone Blender-authored universal strafe
 library. It targets the common 65-joint skeleton, not the current body/outfit,
@@ -34,6 +40,18 @@ and retargets offline into the unchanged graph indices. No QAL race data ships
 in that library. New curves carry an MIT notice; Quaternius reference data
 retains CC0 provenance. Compatibility checks cover all ten supplied humanoid
 targets; browser animation review remains pending.
+
+[ADR 0038](decisions/0038-matched-locomotion-and-jump-transitions.md) re-authors
+those strafes as jog-cadence lateral runs (frame-aligned footfalls, speed-matched
+planted feet) with a standard-library Python script. The client strafes on
+diagonals (with boundary hysteresis), carries step phase across aligned loops, plays the complete
+takeoff and skips the planted landing recovery while moving. All of this stays
+presentation-only; browser review is pending.
+
+[ADR 0039](decisions/0039-render-warmup-behind-loading-screen.md) holds the
+loading screen until the render world settles: a camera sweep and beam draw
+behind the overlay, with readiness read from pipeline/GPU-asset state during
+extraction and a 15 s cap. The bridge snapshot gains an optional `startup` field.
 
 `arena-headless` supplies a scripted list of commands to `arena-sim`. The simulation contains a deliberately tiny one-dimensional duel: bounded movement, range, damage, cooldown, and match completion. The script prints tick-tagged events. Rules run at a proposed 30 Hz and use integer state. Commands resolve in supplied order; ties are not simultaneous. The test replays the same input twice and compares events and state.
 

@@ -22,10 +22,6 @@ pub(crate) struct Sky {
 }
 
 impl Sky {
-    #[expect(
-        dead_code,
-        reason = "read by the startup gate, which is not wired in yet"
-    )]
     pub(crate) fn ready(&self) -> bool {
         self.done
     }

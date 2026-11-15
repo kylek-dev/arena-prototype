@@ -1,15 +1,18 @@
 //! `cargo run -p arena-textures --release -- <source-dir> <output-dir>`
-//! `cargo run -p arena-textures --release -- --sky <output-dir>`
+//! `cargo run -p arena-textures --release -- --painted <output-dir>`
 //!
 //! Reads the downloaded CC0 maps named in `TEXTURES` and writes small tiling
-//! PNGs for the game, then paints the original sky cubemap. The `--sky` form
-//! needs no downloads. scripts/fetch_textures.py downloads and verifies sources.
+//! PNGs for the game, then paints the original sky cubemap and pillar granite.
+//! The `--painted` form (alias `--sky`) writes only those and needs no
+//! downloads. scripts/fetch_textures.py downloads and verifies sources.
 use std::path::{Path, PathBuf};
 
-use arena_textures::{Recipe, Rgb, prepare, sky};
+use arena_textures::{Recipe, Rgb, granite, prepare, sky};
 
 /// Texels per sky cube face edge.
 const SKY_FACE: u32 = 1024;
+/// Texels per edge of the 2 m pillar granite tile (384 per metre).
+const GRANITE_SIZE: u32 = 768;
 
 struct Texture {
     output: &'static str,
@@ -18,18 +21,27 @@ struct Texture {
     recipe: Recipe,
 }
 
-const TEXTURES: [Texture; 6] = [
+/// Mean sRGB luma of the arena floor stone.
+const STONE_MEAN: f32 = 0.72;
+/// The bricks' higher contrast raises their linear average at the same luma;
+/// this mean matches the floor's linear average, which is what tints multiply.
+const BRICKS_MEAN: f32 = 0.708;
+
+const TEXTURES: [Texture; 9] = [
     Texture {
         output: "stone-floor.png",
         color: "Stylized_Stone_Floor_010_basecolor.png",
         occlusion: Some("Stylized_Stone_Floor_010_ambientOcclusion.png"),
+        // Arena stone (floor, bricks) is pure value with one shared average,
+        // so the same palette tint looks the same on every stone surface and
+        // floors, walls and pillars meet without a colour seam.
         recipe: Recipe {
-            chroma: 0.2,
+            chroma: 0.0,
             occlusion: 0.4,
             saturated_lift: 0.0,
             // Clean, readable ground: keep the stones, soften the grout lines.
             contrast: 0.7,
-            mean: 0.72,
+            mean: STONE_MEAN,
         },
     },
     Texture {
@@ -38,11 +50,11 @@ const TEXTURES: [Texture; 6] = [
         // Its occlusion map is nearly flat; the painted colour carries the depth.
         occlusion: None,
         recipe: Recipe {
-            chroma: 0.12,
+            chroma: 0.0,
             occlusion: 0.0,
             saturated_lift: 0.5,
             contrast: 0.85,
-            mean: 0.62,
+            mean: BRICKS_MEAN,
         },
     },
     Texture {
@@ -95,16 +107,81 @@ const TEXTURES: [Texture; 6] = [
             mean: 0.7,
         },
     },
+    // Ground options for map floors keep most of their painted colour; the
+    // game shows them untinted.
+    Texture {
+        output: "ground-sand.png",
+        color: "Stylized_Sand_002_basecolor.png",
+        occlusion: Some("Stylized_Sand_002_ambientOcclusion.png"),
+        recipe: Recipe {
+            chroma: 0.75,
+            occlusion: 0.3,
+            saturated_lift: 0.0,
+            contrast: 0.75,
+            mean: 0.62,
+        },
+    },
+    Texture {
+        output: "ground-snow.png",
+        color: "Snow_005_basecolor.png",
+        occlusion: Some("Snow_005_ambientOcclusion.png"),
+        recipe: Recipe {
+            chroma: 0.8,
+            occlusion: 0.3,
+            saturated_lift: 0.0,
+            // The source is very flat; stretch it so drifts read from above.
+            contrast: 1.35,
+            mean: 0.86,
+        },
+    },
+    Texture {
+        output: "ground-grass.png",
+        color: "Stylized_Grass_003_basecolor.jpg",
+        occlusion: Some("Stylized_Grass_003_ambientOcclusion.jpg"),
+        recipe: Recipe {
+            chroma: 0.85,
+            occlusion: 0.3,
+            saturated_lift: 0.0,
+            // Calm the blade pattern so it does not shimmer at distance.
+            contrast: 0.65,
+            mean: 0.42,
+        },
+    },
 ];
 
-fn write_sky(output: &Path) -> Result<(), String> {
-    let path = output.join("sky.png");
-    image::RgbImage::from_raw(SKY_FACE, SKY_FACE * 6, sky::render(SKY_FACE))
-        .ok_or("sky buffer size mismatch")?
+fn write_rgb(
+    output: &Path,
+    name: &str,
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    let path = output.join(name);
+    image::RgbImage::from_raw(width, height, data)
+        .ok_or(format!("{name}: buffer size mismatch"))?
         .save(&path)
         .map_err(|error| format!("{}: {error}", path.display()))?;
-    println!("{} ({SKY_FACE}×{})", path.display(), SKY_FACE * 6);
+    println!("{} ({width}×{height})", path.display());
     Ok(())
+}
+
+/// The original paintings: no downloads needed.
+fn write_painted(output: &Path) -> Result<(), String> {
+    write_rgb(
+        output,
+        "sky.png",
+        SKY_FACE,
+        SKY_FACE * 6,
+        sky::render(SKY_FACE),
+    )?;
+    let size = GRANITE_SIZE;
+    write_rgb(
+        output,
+        "stone-granite.png",
+        size,
+        size,
+        granite::render(size),
+    )
 }
 
 fn read(path: &Path) -> Result<image::DynamicImage, String> {
@@ -114,13 +191,15 @@ fn read(path: &Path) -> Result<image::DynamicImage, String> {
 fn main() -> Result<(), String> {
     let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     if let [flag, output] = args.as_slice()
-        && flag.as_os_str() == "--sky"
+        && (flag.as_os_str() == "--painted" || flag.as_os_str() == "--sky")
     {
         std::fs::create_dir_all(output).map_err(|error| error.to_string())?;
-        return write_sky(output);
+        return write_painted(output);
     }
     let [source, output] = args.as_slice() else {
-        return Err("usage: arena-textures <source-dir> <output-dir> | --sky <output-dir>".into());
+        return Err(
+            "usage: arena-textures <source-dir> <output-dir> | --painted <output-dir>".into(),
+        );
     };
     std::fs::create_dir_all(output).map_err(|error| error.to_string())?;
     for texture in &TEXTURES {
@@ -154,5 +233,5 @@ fn main() -> Result<(), String> {
             prepared.height
         );
     }
-    write_sky(output)
+    write_painted(output)
 }

@@ -36,7 +36,7 @@
   font-variant-numeric: tabular-nums;
 }
 .engine-frame-rate strong {
-  color: #79cbd2;
+  color: var(--pal-teal-5);
 }
 .diagnostics button {
   font: inherit;
@@ -73,9 +73,9 @@
 }
 .frame-graph polyline {
   fill: none;
-  stroke: #b6ad8b;
+  stroke: var(--pal-sand-5);
   stroke-width: 1;
 }
 .frame-graph .engine-frame-line {
-  stroke: #79cbd2;
+  stroke: var(--pal-teal-5);
 }

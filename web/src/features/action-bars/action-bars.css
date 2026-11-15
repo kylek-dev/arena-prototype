@@ -29,7 +29,7 @@
   border-color: color-mix(in srgb, var(--red-9) 35%, var(--gray-7));
 }
 .action-slot[data-unusable="target"] .spell-symbol {
-  color: color-mix(in srgb, var(--red-11) 35%, var(--indigo-11, #a4b3ff));
+  color: color-mix(in srgb, var(--red-11) 35%, var(--indigo-11));
 }
 .action-slot[data-unusable="unavailable"] {
   background: var(--gray-5);
@@ -44,8 +44,8 @@
   inset: 0;
   z-index: 3;
   border-radius: inherit;
-  box-shadow: inset 0 0 0 2px #fff;
-  background: #fff2;
+  box-shadow: inset 0 0 0 2px var(--pal-night-12);
+  background: color-mix(in srgb, var(--pal-night-12) 13%, transparent);
   pointer-events: none;
 }
 .action-slot.binding-hover {
@@ -63,17 +63,21 @@
 }
 .spell-symbol {
   font-size: 33px;
-  color: var(--indigo-11, #a4b3ff);
+  color: var(--indigo-11);
 }
 .cooldown {
   position: absolute;
   inset: 0;
   display: grid;
   place-items: center;
-  color: white;
+  color: var(--pal-night-12);
   font-size: 16px;
   font-variant-numeric: tabular-nums;
-  background: conic-gradient(from 0deg, transparent var(--cooldown-sweep, 0deg), #000b 0deg);
+  background: conic-gradient(
+    from 0deg,
+    transparent var(--cooldown-sweep, 0deg),
+    color-mix(in srgb, var(--pal-night-1) 73%, transparent) 0deg
+  );
   pointer-events: none;
 }
 .cooldown[hidden] {

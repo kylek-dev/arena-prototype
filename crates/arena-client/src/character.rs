@@ -3,7 +3,7 @@ use bevy::{prelude::*, world_serialization::WorldInstanceReady};
 
 use crate::character_animation::{Clip, Controller, JumpEdges, Timing};
 
-const HEIGHT: f32 = 1.9;
+pub(crate) const HEIGHT: f32 = 1.9;
 
 /// Per-model build output, measured rest bounds and authored clip timing.
 /// IDs match the manifest written by scripts/prepare_character.py.
@@ -12,8 +12,8 @@ pub struct Profile {
     pub id: &'static str,
     pub path: &'static str,
     /// Measured lowest sole and highest point of the glTF rest meshes.
-    sole: f32,
-    top: f32,
+    pub(crate) sole: f32,
+    pub(crate) top: f32,
     pub timing: Timing,
 }
 
@@ -28,6 +28,7 @@ pub const BASE_FEMALE: Profile = Profile {
         jump: (8.0 / 30.0, 25.0 / 30.0),
         cast: (14.0 / 30.0, 36.0 / 30.0),
         jump_edges: None,
+        locomotion_cycle: None,
     },
 };
 
@@ -49,11 +50,15 @@ pub const QUATERNIUS_FEMALE: Profile = Profile {
         jump: (0.0, 2.5),
         cast: (0.0, 0.5),
         jump_edges: Some(JumpEdges {
-            // Included UAL1 takeoff segment and full landing/recovery.
-            // No gameplay windup; world takeoff still happens immediately.
-            start: (0.0, 0.35),
+            // The complete UAL1 takeoff (it ends on Jump_Loop's first pose) and
+            // full landing/recovery. No gameplay windup; world takeoff still
+            // happens immediately.
+            start: (0.0, 40.0 / 30.0),
             land: (0.0, 38.0 / 30.0),
         }),
+        // Jog_Fwd_Loop and the universal lateral run: 28 frames, left foot
+        // planted from frame 1 and right from frame 15.
+        locomotion_cycle: Some(28.0 / 30.0),
     },
 };
 
@@ -89,6 +94,8 @@ pub struct CharacterModel {
     pub profile: Option<&'static Profile>,
     status: &'static str,
     pub meshes: usize,
+    /// Assembled from a customizable kit, so appearance changes may swap it.
+    pub kit: bool,
 }
 impl CharacterModel {
     pub fn load(
@@ -125,10 +132,24 @@ impl CharacterModel {
             profile,
             status,
             meshes: 0,
+            kit: false,
         }
     }
     pub fn status(&self) -> &'static str {
         self.status
+    }
+    #[cfg(test)]
+    pub(crate) fn ready(profile: &'static Profile) -> Self {
+        Self {
+            scene: None,
+            asset: None,
+            graph: Handle::default(),
+            nodes: Vec::new(),
+            profile: Some(profile),
+            status: "ready",
+            meshes: 1,
+            kit: true,
+        }
     }
 }
 
@@ -143,7 +164,16 @@ pub fn on_ready(
     mut fallback: Query<&mut Visibility, With<CharacterFallback>>,
     mut carriers: Query<&mut crate::animation::Animator>,
     mut model: ResMut<CharacterModel>,
+    scenes: Query<&WorldAssetRoot>,
+    instances: Query<Entity, With<crate::appearance::KitInstance>>,
 ) {
+    // A kit replaced before it finished loading is discarded, not shown.
+    if let Ok(root) = scenes.get(ready.entity)
+        && model.scene.as_ref() != Some(&root.0)
+    {
+        commands.entity(ready.entity).despawn();
+        return;
+    }
     model.meshes = children
         .iter_descendants(ready.entity)
         .filter(|entity| meshes.contains(*entity))
@@ -177,17 +207,23 @@ pub fn on_ready(
         transitions,
         Controller::new(profile.timing),
     ));
-    if let Ok(mut visibility) = roots.get_mut(ready.entity) {
-        *visibility = Visibility::Inherited;
-    }
     model.status = "ready";
-    for mut visibility in &mut fallback {
-        *visibility = Visibility::Hidden;
-    }
     for mut carrier in &mut carriers {
         if carrier.actor == 0 {
             carrier.authored = true;
         }
+    }
+    // A kit is revealed by `appearance::apply` once its look is applied, so
+    // no frame shows every hairstyle and outfit at once; until then the
+    // previous kit (or the fallback at startup) stays.
+    if instances.contains(ready.entity) {
+        return;
+    }
+    if let Ok(mut visibility) = roots.get_mut(ready.entity) {
+        *visibility = Visibility::Inherited;
+    }
+    for mut visibility in &mut fallback {
+        *visibility = Visibility::Hidden;
     }
 }
 
@@ -217,7 +253,8 @@ mod tests {
 
     #[test]
     #[ignore = "requires python3 scripts/prepare_character.py and local CC0 sources"]
-    fn prepared_quaternius_loads_in_bevy_without_a_renderer() {
+    fn prepared_quaternius_kit_loads_in_bevy_without_a_renderer() {
+        const KIT: &str = "characters/kits/human-female.glb";
         use bevy::{asset::AssetPlugin, mesh::MeshPlugin};
         let mut app = App::new();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -225,7 +262,7 @@ mod tests {
             .canonicalize()
             .expect("prepare local character first");
         assert!(
-            path.join(QUATERNIUS_FEMALE.path).metadata().unwrap().len() < 12_000_000,
+            path.join(KIT).metadata().unwrap().len() < 14_000_000,
             "prepared character exceeded the local payload budget"
         );
         app.add_plugins((
@@ -243,7 +280,7 @@ mod tests {
         app.finish();
         app.cleanup();
         let server = app.world().resource::<AssetServer>().clone();
-        let handle: Handle<Gltf> = server.load(QUATERNIUS_FEMALE.path);
+        let handle: Handle<Gltf> = server.load(KIT);
         // Drain real asset tasks; no sleeps, browser, window, renderer or GPU.
         let mut loaded = false;
         for _ in 0..100_000 {
@@ -263,23 +300,41 @@ mod tests {
         );
         let gltf = app.world().resource::<Assets<Gltf>>().get(&handle).unwrap();
         assert_eq!(gltf.scenes.len(), 1);
-        assert_eq!(gltf.skins.len(), 1);
+        // The body's skin plus parts whose bind pose differs slightly.
+        assert!(!gltf.skins.is_empty());
         assert_eq!(gltf.animations.len(), Clip::ALL.len());
         assert!(!gltf.meshes.is_empty());
         for name in [
-            "Human_Head_Neck",
+            "Body_Head",
+            "Body_Torso",
+            "Body_Feet",
             "Eyes",
-            "Eyebrows",
+            "Eyebrows_Female",
             "Hair_Buns",
-            "Female_Ranger_Body",
-            "Female_Ranger_Arms_Bracer",
-            "Female_Ranger_Acc_Pauldrons",
-            "Female_Ranger_Legs",
-            "Female_Ranger_Feet",
+            "Hair_Long",
+            "Hair_Beard",
+            "Ranger_Body",
+            "Ranger_Bracers",
+            "Ranger_Pauldrons",
+            "Ranger_Hood",
+            "Peasant_Legs",
         ] {
             assert!(gltf.named_nodes.contains_key(name), "missing {name}");
         }
-        assert!(!gltf.named_nodes.contains_key("Female_Ranger_Head_Hood"));
+        for name in [
+            "Skin",
+            "Skin_Hands",
+            "Hair_1",
+            "Hair_2",
+            "Eyes",
+            "Ranger",
+            "Peasant",
+        ] {
+            assert!(
+                gltf.named_materials.contains_key(name),
+                "missing material {name}"
+            );
+        }
         assert!(!gltf.named_nodes.contains_key("Superhero_Female"));
         for name in ["Jump", "Jump_Start", "Jump_Land"] {
             assert!(gltf.named_animations.contains_key(name));
@@ -292,10 +347,40 @@ mod tests {
         }
         for name in ["Strafe_Left", "Strafe_Right"] {
             let clip = clips.get(gltf.named_animations.get(name).unwrap()).unwrap();
-            assert!((clip.duration() - 0.8).abs() < 1e-5);
+            // Frame-aligned with Jog_Fwd_Loop (28 frames at 30 samples/s).
+            assert!((clip.duration() - 28.0 / 30.0).abs() < 1e-5);
         }
         for (_, image) in app.world().resource::<Assets<Image>>().iter() {
             assert!(image.width() <= 1024 && image.height() <= 1024);
+        }
+        // Every other built kit (races carry sparse morph targets) loads too.
+        let mut others = Vec::new();
+        for entry in std::fs::read_dir(path.join("characters/kits")).unwrap() {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            if name.ends_with(".glb") && format!("characters/kits/{name}") != KIT {
+                others.push(server.load::<Gltf>(format!("characters/kits/{name}")));
+            }
+        }
+        for _ in 0..100_000 {
+            app.update();
+            if others.iter().all(|h| {
+                matches!(
+                    server.get_load_state(h.id()),
+                    Some(bevy::asset::LoadState::Loaded | bevy::asset::LoadState::Failed(_))
+                )
+            }) {
+                break;
+            }
+        }
+        for handle in &others {
+            if let Some(bevy::asset::LoadState::Failed(error)) = server.get_load_state(handle.id())
+            {
+                panic!("{error}");
+            }
+            let gltf = app.world().resource::<Assets<Gltf>>().get(handle).unwrap();
+            assert_eq!(gltf.animations.len(), Clip::ALL.len());
+            assert!(gltf.named_nodes.contains_key("Eyes"));
+            assert!(gltf.named_materials.contains_key("Skin"));
         }
     }
 
@@ -310,6 +395,7 @@ mod tests {
             profile: Some(&BASE_FEMALE),
             status: "loading",
             meshes: 0,
+            kit: false,
         }
     }
 
