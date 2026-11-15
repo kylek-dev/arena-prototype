@@ -7,6 +7,8 @@
 //! claim a position, health or cooldown. The JSON rendering is for
 //! diagnostics and is never accepted on the wire.
 
+pub mod prediction;
+
 use arena_sim::arena::{
     ActorInput, Arena, ArenaEvent, Axes, Combatant, Position, Rejection, RoundResult,
 };

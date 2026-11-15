@@ -1,6 +1,6 @@
 use super::*;
 use arena_protocol::{FighterState, WireRejection};
-use arena_sim::arena::{ATTACK_COOLDOWN, ArenaCommand, Axes};
+use arena_sim::arena::{ATTACK_COOLDOWN, ArenaCommand};
 
 const LIMITS: Limits = Limits {
     queue: 3,
@@ -424,4 +424,64 @@ fn disconnected_seats_are_reported_idle_and_never_forfeit() {
     assert!(snapshot(&out, 500).unwrap().fighters[0].connected);
     let out = session.tick();
     assert!(snapshot(&out, conn(1)).unwrap().fighters[0].connected);
+}
+
+/// A client that predicts its own movement, with its inputs reaching the
+/// server two ticks late, against the real session.
+fn predicting(late: impl Fn(u32) -> bool, jump_at: Option<u32>) -> (u64, u64) {
+    use arena_protocol::prediction::Predictor;
+    let layout = arena_map::colosseum().layout;
+    let mut session = running(arena(1));
+    let mut predictor = Predictor::default();
+    // (arrival tick, frame), in sending order; TCP keeps them ordered.
+    let mut in_flight: std::collections::VecDeque<(u32, InputFrame)> = Default::default();
+    let mut worst = 0;
+    for seq in 1..=60u32 {
+        let input = InputFrame {
+            jump: jump_at == Some(seq),
+            ..frame(seq)
+        };
+        let mut slot = ActorInput::default();
+        input.merge_into(&mut slot);
+        let out = session.tick();
+        if let Some(snapshot) = snapshot(&out, conn(0)) {
+            let fighters = snapshot
+                .fighters
+                .iter()
+                .map(FighterState::combatant)
+                .collect();
+            if let Some(moved) =
+                predictor.reconcile(&layout, snapshot.tick, fighters, None, 0, snapshot.ack)
+            {
+                worst = worst.max(moved);
+            }
+        }
+        predictor.apply(seq, slot);
+        // Inputs land two ticks after sending; a late one lands a tick
+        // later, holding up the ones behind it.
+        let arrives =
+            (seq + 2 + u32::from(late(seq))).max(in_flight.back().map_or(0, |(at, _)| *at));
+        in_flight.push_back((arrives, input));
+        while in_flight.front().is_some_and(|(at, _)| *at <= seq) {
+            let (_, frame) = in_flight.pop_front().unwrap();
+            session.receive(0, conn(0), frame);
+        }
+    }
+    (predictor.corrections(), worst)
+}
+
+#[test]
+fn a_predicting_client_agrees_with_the_server_while_running_on_the_ground() {
+    // Steady delivery: never corrected.
+    assert_eq!(predicting(|_| false, None), (0, 0));
+    // A late input leaves an idle tick, but on the ground that only delays
+    // the same steps: still never corrected.
+    assert_eq!(predicting(|seq| seq % 10 == 0, None), (0, 0));
+    // In the air, an idle tick still advances the arc, so a late input
+    // mid-jump is corrected, by at most one tick of motion (a step across
+    // plus a tick of rise or fall).
+    let (corrections, worst) = predicting(|seq| seq == 30, Some(20));
+    assert!(corrections > 0);
+    let tick_of_motion = (arena_sim::arena::MOVE_PER_TICK + arena_sim::arena::JUMP_SPEED) as u64;
+    assert!(worst > 0 && worst <= tick_of_motion, "{worst}");
 }
