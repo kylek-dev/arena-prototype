@@ -971,7 +971,10 @@ mod tests {
         let blocked = blocked_by(&map);
         let spawn = map.layout.spawns(0)[0];
         assert!(!blocked(Vec3::new(mm(spawn.x), 1.0, mm(spawn.z))));
-        assert!(blocked(Vec3::new(mm(spawn.x), 1.0, mm(spawn.z) + 4.0)));
+        // An east room runs along Z; 1 m past its side wall is solid.
+        let room = &map.layout.rooms[0];
+        let beyond = mm(room.offset) + mm(room.width) * 0.5 + 1.0;
+        assert!(blocked(Vec3::new(mm(spawn.x), 1.0, beyond)));
     }
 
     #[test]
