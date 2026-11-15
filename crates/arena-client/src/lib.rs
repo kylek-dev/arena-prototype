@@ -1,6 +1,7 @@
 //! Bevy presentation adapter for the shared arena rules. DOM integration is
 //! isolated in `platform`; rules remain usable in native headless tests.
 mod animation;
+mod appearance;
 mod camera;
 mod character;
 mod character_animation;
@@ -10,7 +11,11 @@ mod heraldry;
 mod hover;
 mod humanoid;
 mod lighting;
+mod lightning;
 mod nameplates;
+mod palette;
+mod prism;
+mod props;
 mod sky;
 mod startup;
 mod textures;
@@ -37,7 +42,8 @@ struct Practice {
     attack: bool,
     jump: bool,
     feedback: &'static str,
-    flash: f32,
+    /// The Pulse lightning currently on screen, if any.
+    zap: Option<lightning::Zap>,
     frames: u32,
     combat_text: combat_text::CombatText,
 }
@@ -68,7 +74,7 @@ impl Practice {
             attack: false,
             jump: false,
             feedback: "Select the opponent to begin",
-            flash: 0.0,
+            zap: None,
             frames: 0,
             combat_text: default(),
         }
@@ -106,14 +112,12 @@ struct MapEdits {
 }
 #[derive(Component)]
 struct FighterVisual(usize);
-#[derive(Component)]
-struct AttackBeam;
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen(start))]
 pub fn run() {
     App::new()
         .insert_resource(practice_window_settings(cfg!(target_arch = "wasm32")))
-        .insert_resource(ClearColor(Color::srgb(0.18, 0.21, 0.25)))
+        .insert_resource(ClearColor(palette::color(palette::NIGHT_6)))
         .insert_resource(GlobalAmbientLight {
             brightness: 500.0,
             ..default()
@@ -121,9 +125,12 @@ pub fn run() {
         .insert_resource(Time::<Fixed>::from_hz(TICKS_PER_SECOND as f64))
         .init_resource::<ActiveMap>()
         .init_resource::<MapEdits>()
+        .init_resource::<props::PropModels>()
         .init_resource::<Practice>()
         .init_resource::<Orbit>()
         .init_resource::<animation::Settings>()
+        .init_resource::<appearance::Desired>()
+        .init_resource::<appearance::Preview>()
         .add_plugins(
             DefaultPlugins
                 .set(AssetPlugin {
@@ -153,7 +160,7 @@ pub fn run() {
                 )
                     .chain(),
                 weapons::read_selection.pipe(weapons::apply),
-                (apply_map_edits, read_controls).chain(),
+                (appearance::read, apply_map_edits, read_controls).chain(),
             ),
         )
         .add_systems(FixedUpdate, simulate)
@@ -162,6 +169,8 @@ pub fn run() {
             (
                 rebuild_venue.run_if(resource_changed::<ActiveMap>),
                 character::check_loading,
+                appearance::switch_kit,
+                appearance::apply,
                 textures::attach_arena_textures,
                 sky::attach,
                 startup::update,
@@ -171,14 +180,21 @@ pub fn run() {
                 weapons::fit_to_body,
                 weapons::animate,
                 weapons::animate_staff,
+                lightning::tag_hands,
             )
                 .chain(),
         )
         .add_systems(
             PostUpdate,
-            publish
-                .after(bevy::transform::TransformSystems::Propagate)
-                .after(bevy::camera::CameraUpdateSystems),
+            (
+                publish
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .after(bevy::camera::CameraUpdateSystems),
+                // This frame's animated hand, before visibility is resolved.
+                lightning::draw
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
+            ),
         )
         .run();
 }
@@ -233,11 +249,23 @@ fn setup(
     mut images: ResMut<Assets<Image>>,
     practice: Res<Practice>,
 ) {
-    let character = character::CharacterModel::load(
-        platform::character_model().and_then(|id| character::Profile::from_id(&id)),
+    let model_id = platform::character_model();
+    // A kit-built player starts from the browser's saved appearance, so the
+    // first model loaded is already the right one.
+    let kit = (model_id.as_deref() == Some(appearance::KITS_MODEL))
+        .then(platform::read_appearance)
+        .flatten()
+        .and_then(|(_, json)| appearance::Spec::parse(&json));
+    let mut character = character::CharacterModel::load(
+        match &kit {
+            Some(spec) => Some(appearance::kit_profile(&spec.kit)),
+            None => model_id.and_then(|id| character::Profile::from_id(&id)),
+        },
         &asset_server,
         &mut graphs,
     );
+    character.kit = kit.is_some();
+    let kit_instance = kit.as_ref().map(|spec| spec.kit.path.clone());
     let player_scene = character.scene.clone();
     let player_transform = character
         .profile
@@ -253,14 +281,8 @@ fn setup(
     ));
     commands.insert_resource(venue_assets);
     commands.insert_resource(sky::Sky::load(&asset_server));
-    let teal = material(&mut materials, Color::srgb(0.15, 0.84, 0.75));
-    let orange = material(&mut materials, Color::srgb(1.0, 0.39, 0.19));
-    let gold = materials.add(StandardMaterial {
-        base_color: Color::srgb(1.0, 0.72, 0.32),
-        unlit: true,
-        ..default()
-    });
-    let cube = meshes.add(Cuboid::from_size(Vec3::ONE));
+    let teal = material(&mut materials, palette::color(palette::TEAL_4));
+    let orange = material(&mut materials, palette::color(palette::EMBER_4));
     let character_meshes = graphics::CharacterMeshes::new(&mut meshes);
     let painted = textures::PaintedTextures::new(&mut images);
     for index in 0..6 {
@@ -281,47 +303,46 @@ fn setup(
                 Visibility::default(),
             ))
             .with_children(|parent| {
-                parent
-                    .spawn((
-                        animation::Animator::new(index),
-                        Transform::default(),
-                        Visibility::default(),
-                    ))
-                    .with_children(|body| {
-                        if index == 0 && weapons::EQUIPPED {
-                            body.spawn((
-                                weapons::EquipmentCarrier,
-                                Transform::default(),
-                                Visibility::default(),
-                            ));
+                let mut body = parent.spawn((
+                    animation::Animator::new(index),
+                    Transform::default(),
+                    Visibility::default(),
+                ));
+                if index == 0 {
+                    body.insert(appearance::PlayerBody);
+                }
+                body.with_children(|body| {
+                    if index == 0 && weapons::EQUIPPED {
+                        body.spawn((
+                            weapons::EquipmentCarrier,
+                            Transform::default(),
+                            Visibility::default(),
+                        ));
+                    }
+                    humanoid.spawn(body, &character_meshes, index);
+                    if let Some(scene) = &player_scene
+                        && index == 0
+                    {
+                        let mut root = body.spawn((
+                            WorldAssetRoot(scene.clone()),
+                            player_transform,
+                            Visibility::Hidden,
+                        ));
+                        if let Some(path) = &kit_instance {
+                            root.insert(appearance::KitInstance::new(path));
                         }
-                        humanoid.spawn(body, &character_meshes, index);
-                        if let Some(scene) = &player_scene
-                            && index == 0
-                        {
-                            body.spawn((
-                                WorldAssetRoot(scene.clone()),
-                                player_transform,
-                                Visibility::Hidden,
-                            ))
-                            .observe(character::on_ready);
-                        }
-                    });
+                        root.observe(character::on_ready);
+                    }
+                });
             });
     }
     commands.insert_resource(character_meshes);
     commands.insert_resource(painted);
-    commands.spawn((
-        AttackBeam,
-        Mesh3d(cube),
-        MeshMaterial3d(gold),
-        Transform::default(),
-        Visibility::Hidden,
-    ));
+    lightning::spawn(&mut commands, &mut meshes, &mut materials);
     commands.spawn((
         lighting::ArenaLight::Key,
         DirectionalLight {
-            color: Color::srgb(1.0, 0.95, 0.88),
+            color: palette::color(palette::SAND_8),
             illuminance: 6500.0,
             shadow_maps_enabled: false,
             ..default()
@@ -332,7 +353,7 @@ fn setup(
         Name::new("Cool arena fill"),
         lighting::ArenaLight::Fill,
         DirectionalLight {
-            color: Color::srgb(0.88, 0.93, 1.0),
+            color: palette::color(palette::SKY_7),
             illuminance: 3200.0,
             shadow_maps_enabled: false,
             ..default()
@@ -391,10 +412,13 @@ fn map_status_json(revision: f64, errors: &[String]) -> String {
     )
 }
 /// Replaces the venue with one built from the active map.
+#[allow(clippy::too_many_arguments)]
 fn rebuild_venue(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     assets: Res<venue::VenueAssets>,
+    server: Res<AssetServer>,
+    mut prop_models: ResMut<props::PropModels>,
     map: Res<ActiveMap>,
     old: Query<Entity, With<venue::VenueEntity>>,
     mut orbit: ResMut<Orbit>,
@@ -403,6 +427,7 @@ fn rebuild_venue(
         commands.entity(entity).despawn();
     }
     venue::spawn(&mut commands, &mut meshes, &assets, &map.0);
+    props::spawn(&mut commands, &server, &mut prop_models, &map.0);
     // The previous eye may now be inside new geometry.
     orbit.eye = None;
 }
@@ -421,8 +446,18 @@ fn read_controls(
     map: Res<ActiveMap>,
     cameras: Query<(&Camera, &GlobalTransform)>,
     visuals: Query<(&FighterVisual, &GlobalTransform)>,
+    preview: Res<appearance::Preview>,
 ) {
-    let input = platform::read_input();
+    let mut input = platform::read_input();
+    if preview.open {
+        // The character stands still for the close-up; only a reset or mode
+        // change from the menu still applies.
+        input = Input {
+            team_size: input.team_size,
+            reset: input.reset,
+            ..default()
+        };
+    }
     if input.reset || input.team_size.is_some() {
         let size = input
             .team_size
@@ -431,8 +466,8 @@ fn read_controls(
     }
     let blockers = hover::pillar_blockers(&map.0);
     orbit.yaw -= input.orbit_x * 0.005;
-    orbit.pitch = (orbit.pitch + input.orbit_y * 0.004).clamp(-1.2, 1.2);
-    orbit.distance = (orbit.distance + input.zoom * 0.01).clamp(6.0, 22.0);
+    orbit.pitch = camera::pitch(orbit.pitch, input.orbit_y * 0.004);
+    orbit.distance = camera::zoom(orbit.distance, input.zoom * 0.01);
     update_movement(&mut practice, &orbit, &input);
     update_selection(&mut practice, &input);
     let actor_count = practice.arena.fighters().len();
@@ -548,7 +583,7 @@ fn simulate(mut practice: ResMut<Practice>) {
                     .combat_text
                     .record(actor, target, -i32::from(damage));
                 practice.feedback = "Pulse hit · 25 damage";
-                practice.flash = 0.18;
+                practice.zap = Some(lightning::Zap::new(actor, target, practice.arena.tick()));
             }
             ArenaEvent::Won { .. } => practice.feedback = "Round complete · reset to play again",
             // A second press in flight is harmless, not a spell-cast error.
@@ -573,18 +608,12 @@ fn present(
     mut practice: ResMut<Practice>,
     mut orbit: ResMut<Orbit>,
     startup: Res<startup::State>,
+    preview: Res<appearance::Preview>,
     obstacles: Query<&camera::Obstacle>,
     fixed: Res<Time<Fixed>>,
     time: Res<Time>,
-    mut fighters: Query<
-        (&FighterVisual, &mut Transform, &mut Visibility),
-        (Without<Camera>, Without<AttackBeam>),
-    >,
-    mut cameras: Query<&mut Transform, (With<Camera>, Without<FighterVisual>, Without<AttackBeam>)>,
-    mut beam: Query<
-        (&mut Transform, &mut Visibility),
-        (With<AttackBeam>, Without<FighterVisual>, Without<Camera>),
-    >,
+    mut fighters: Query<(&FighterVisual, &mut Transform, &mut Visibility), Without<Camera>>,
+    mut cameras: Query<&mut Transform, (With<Camera>, Without<FighterVisual>)>,
 ) {
     let positions: Vec<Vec3> = (0..practice.arena.fighters().len())
         .map(|i| {
@@ -596,8 +625,20 @@ fn present(
         .collect();
     practice.combat_text.advance(time.delta_secs());
     let mut hide_player = false;
-    if let Ok(mut camera) = cameras.single_mut() {
-        let focus = positions[0] + Vec3::Y;
+    if let Ok(mut camera) = cameras.single_mut()
+        && preview.open
+        && startup.sweep().is_none()
+    {
+        *camera = preview_camera(
+            positions[0],
+            practice.facing,
+            &preview,
+            &obstacles.iter().copied().collect::<Vec<_>>(),
+        );
+        // The ordinary boom snaps back from where it was when closed.
+        orbit.eye = None;
+    } else if let Ok(mut camera) = cameras.single_mut() {
+        let focus = positions[0] + Vec3::Y * camera::focus_height(orbit.distance);
         // Behind the loading overlay the camera sweeps around the player so
         // every direction is drawn (and its GPU work done) before play. The
         // eye snaps there and back rather than easing into the first view.
@@ -605,19 +646,29 @@ fn present(
         let direction = Quat::from_rotation_y(orbit.yaw + sweep.unwrap_or(0.0))
             * Vec3::new(0.0, orbit.pitch.sin(), orbit.pitch.cos());
         let obstacles: Vec<_> = obstacles.iter().copied().collect();
-        let eye = camera::resolve_eye(
-            focus,
-            direction,
-            orbit.distance,
-            orbit.eye.filter(|_| sweep.is_none()),
-            time.delta_secs(),
-            &obstacles,
-        );
+        // First person sits at the eyes and looks along the boom; there is no
+        // boom to collide, and a near-zero offset would give a noisy view.
+        let first_person = sweep.is_none() && camera::first_person(orbit.distance);
+        let eye = if first_person {
+            focus
+        } else {
+            camera::resolve_eye(
+                focus,
+                direction,
+                orbit.distance,
+                orbit.eye.filter(|_| sweep.is_none()),
+                time.delta_secs(),
+                &obstacles,
+            )
+        };
         orbit.eye = sweep.is_none().then_some(eye);
         // Never render the player's own model from inside it.
         hide_player = camera::hides_player(focus, eye);
         // Keep a valid view direction even if the focus is inside an obstacle.
-        let view = (focus - eye).try_normalize().unwrap_or(-direction);
+        let view = (focus - eye)
+            .try_normalize()
+            .filter(|_| !first_person)
+            .unwrap_or(-direction);
         *camera = Transform::from_translation(eye).looking_to(view, Vec3::Y);
     }
     for (fighter, mut transform, mut visibility) in &mut fighters {
@@ -636,21 +687,33 @@ fn present(
             practice.facings[fighter.0]
         });
     }
-    practice.flash = (practice.flash - time.delta_secs()).max(0.0);
-    if let Ok((mut transform, mut visibility)) = beam.single_mut() {
-        let from = positions[0] + Vec3::Y;
-        let to = positions[practice.selected.unwrap_or(1)] + Vec3::Y;
-        *transform = Transform::from_translation((from + to) * 0.5)
-            .looking_at(to, Vec3::Y)
-            .with_scale(Vec3::new(0.065, 0.065, from.distance(to)));
-        // Drawn once during warmup so the first Pulse does not compile it.
-        *visibility = if practice.flash > 0.0 || startup.sweep().is_some() {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
-    }
     practice.frames = practice.frames.saturating_add(1);
+}
+/// Close-up framing for the customization screen: in front of the player,
+/// turned by the preview yaw, with the character left of centre so the
+/// options panel on the right does not cover it.
+fn preview_camera(
+    feet: Vec3,
+    facing: f32,
+    preview: &appearance::Preview,
+    obstacles: &[camera::Obstacle],
+) -> Transform {
+    let (height, distance) = preview.framing();
+    let focus = feet + Vec3::Y * height;
+    let forward = Quat::from_rotation_y(facing) * Vec3::NEG_Z;
+    let direction = (Quat::from_rotation_y(preview.yaw) * forward + Vec3::Y * 0.08).normalize();
+    // Walls still shorten the boom (a starting room is small), but never
+    // below arm's length of the face.
+    let eye = camera::resolve_eye(focus, direction, distance, None, 0.0, obstacles);
+    let eye = if eye.distance(focus) < 0.6 {
+        focus + direction * 0.6
+    } else {
+        eye
+    };
+    let view = (focus - eye).normalize();
+    let right = view.cross(Vec3::Y).normalize_or_zero();
+    let aim = focus + right * eye.distance(focus) * 0.22;
+    Transform::from_translation(eye).looking_at(aim, Vec3::Y)
 }
 fn publish(
     practice: Res<Practice>,
@@ -832,7 +895,7 @@ mod platform {
     use bevy::prelude::Vec2;
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen(
-        inline_js = "export function arena_character() { const id = globalThis.arenaShell.characterModel; return typeof id === 'string' ? id : undefined; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(tag) { globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); } export function arena_map() { return globalThis.arenaShell.readMap?.() ?? []; } export function arena_map_status(json) { globalThis.arenaShell.onMapStatus?.(JSON.parse(json)); }"
+        inline_js = "export function arena_character() { const id = globalThis.arenaShell.characterModel; return typeof id === 'string' ? id : undefined; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(tag) { globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); } export function arena_map() { return globalThis.arenaShell.readMap?.() ?? []; } export function arena_map_status(json) { globalThis.arenaShell.onMapStatus?.(JSON.parse(json)); } export function arena_appearance() { return globalThis.arenaShell.readAppearance?.() ?? []; } export function arena_preview() { return globalThis.arenaShell.readPreview?.() ?? []; }"
     )]
     extern "C" {
         fn arena_character() -> Option<String>;
@@ -845,6 +908,22 @@ mod platform {
         fn arena_focus(tag: &str);
         fn arena_map() -> js_sys::Array;
         fn arena_map_status(json: &str);
+        fn arena_appearance() -> js_sys::Array;
+        fn arena_preview() -> js_sys::Array;
+    }
+    /// The player's appearance spec as `[revision, json]`; older shells send none.
+    pub fn read_appearance() -> Option<(f64, String)> {
+        let values = arena_appearance();
+        let revision = values.get(0).as_f64().filter(|r| r.is_finite())?;
+        Some((revision, values.get(1).as_string()?))
+    }
+    pub fn read_preview() -> super::appearance::Preview {
+        let values = arena_preview();
+        super::appearance::Preview::from_values(
+            values.get(0).as_f64(),
+            values.get(1).as_f64(),
+            values.get(2).as_f64(),
+        )
     }
     /// The editor's current map as `[revision, json]`; older shells send none.
     pub fn read_map() -> Option<(f64, String)> {
@@ -960,6 +1039,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<Practice>()
             .init_resource::<Orbit>()
+            .init_resource::<appearance::Preview>()
             .init_resource::<Time>()
             .init_resource::<Time<Fixed>>()
             .init_resource::<startup::State>()
@@ -1133,6 +1213,39 @@ mod tests {
     }
 
     #[test]
+    fn preview_camera_faces_the_character_and_zooms_to_the_face() {
+        let feet = Vec3::new(2.0, 0.0, -3.0);
+        let mut preview = appearance::Preview::from_values(Some(1.0), Some(0.0), Some(0.0));
+        let body = preview_camera(feet, 0.0, &preview, &[]);
+        // Facing 0 looks down -Z, so the front view sits on -Z of the player.
+        assert!(body.translation.z < feet.z - 3.0);
+        assert!(body.forward().z > 0.9);
+        preview.shown_zoom = 1.0;
+        let face = preview_camera(feet, 0.0, &preview, &[]);
+        assert!(face.translation.distance(feet) < body.translation.distance(feet));
+        assert!(face.translation.y > body.translation.y);
+        // Turning the preview walks the eye around the player.
+        preview.yaw = std::f32::consts::PI;
+        let back = preview_camera(feet, 0.0, &preview, &[]);
+        assert!(back.translation.z > feet.z);
+        // A wall right in front still leaves an arm's length to the face.
+        let (_, wall) = camera::solid_wall(
+            Transform::from_translation(feet + Vec3::new(0.0, 1.0, -0.8))
+                .with_scale(Vec3::new(4.0, 4.0, 0.2)),
+        );
+        preview.yaw = 0.0;
+        let close = preview_camera(feet, 0.0, &preview, &[wall]);
+        assert!(
+            (close
+                .translation
+                .distance(feet + Vec3::Y * preview.framing().0)
+                - 0.6)
+                .abs()
+                < 1e-3
+        );
+    }
+
+    #[test]
     fn presentation_retracts_and_recovers_without_changing_requested_zoom() {
         let mut app = App::new();
         app.init_resource::<Practice>()
@@ -1143,6 +1256,7 @@ mod tests {
             .init_resource::<Time>()
             .init_resource::<Time<Fixed>>()
             .init_resource::<startup::State>()
+            .init_resource::<appearance::Preview>()
             .add_systems(Update, present);
         let focus = app.world().resource::<Practice>().previous[0] + Vec3::Y;
         let camera = app
@@ -1190,6 +1304,44 @@ mod tests {
     }
 
     #[test]
+    fn first_person_sits_at_eye_level_hides_the_player_and_looks_along_the_boom() {
+        let mut app = App::new();
+        app.init_resource::<Practice>()
+            .insert_resource(Orbit {
+                pitch: -0.4,
+                distance: camera::zoom(6.0, -10.0),
+                ..default()
+            })
+            .init_resource::<Time>()
+            .init_resource::<Time<Fixed>>()
+            .init_resource::<startup::State>()
+            .init_resource::<appearance::Preview>()
+            .add_systems(Update, present);
+        let feet = app.world().resource::<Practice>().previous[0];
+        let camera = app
+            .world_mut()
+            .spawn((Camera::default(), Transform::default()))
+            .id();
+        let player = app
+            .world_mut()
+            .spawn((
+                FighterVisual(0),
+                Transform::default(),
+                Visibility::Inherited,
+            ))
+            .id();
+        app.world_mut().run_schedule(Update);
+        let eye = *app.world().get::<Transform>(camera).unwrap();
+        assert!((eye.translation - (feet + Vec3::Y * camera::focus_height(0.0))).length() < 1e-5);
+        let direction = Vec3::new(0.0, (-0.4f32).sin(), (-0.4f32).cos());
+        assert!(eye.forward().dot(-direction) > 0.9999);
+        assert_eq!(
+            app.world().get::<Visibility>(player),
+            Some(&Visibility::Hidden)
+        );
+    }
+
+    #[test]
     fn editor_maps_rebuild_the_venue_keep_or_restart_rounds_and_report_problems() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
@@ -1198,8 +1350,11 @@ mod tests {
             .init_asset::<Image>()
             .init_resource::<ActiveMap>()
             .init_resource::<MapEdits>()
+            .init_resource::<props::PropModels>()
+            .init_asset::<WorldAsset>()
             .init_resource::<Practice>()
             .init_resource::<Orbit>()
+            .init_resource::<appearance::Preview>()
             .add_systems(
                 Update,
                 (
@@ -1235,6 +1390,12 @@ mod tests {
         let mut value: serde_json::Value = serde_json::from_str(arena_map::COLOSSEUM_JSON).unwrap();
         value["pillars"].as_array_mut().unwrap().pop();
         value["floor"]["width"] = 120.into();
+        value["ground"] = "sand".into();
+        value["props"] = serde_json::json!([
+            { "model": "Barrel", "x": 3, "z": 4 },
+            { "model": "Barrel", "x": -3, "z": 4, "rotation": 45 },
+            { "model": "Bench", "x": 0, "z": -6 }
+        ]);
         app.world_mut()
             .resource_mut::<Practice>()
             .arena
@@ -1259,6 +1420,12 @@ mod tests {
         let player = practice.arena.fighters()[0].position;
         assert_ne!(player, practice.arena.layout().spawns(0)[0]);
         assert_ne!(count(&mut app), initial);
+        let mut props = app
+            .world_mut()
+            .query_filtered::<&Name, (With<venue::VenueEntity>, With<WorldAssetRoot>)>();
+        assert_eq!(props.iter(app.world()).count(), 3);
+        // Two barrels share one loaded model.
+        assert_eq!(app.world().resource::<props::PropModels>().len(), 2);
         // Sliding the player's starting room away leaves them inside the
         // stands, so the round restarts at the map's spawns.
         assert!(
@@ -1506,6 +1673,14 @@ mod platform {
     pub fn character_model() -> Option<String> {
         None
     }
+    pub fn read_appearance() -> Option<(f64, String)> {
+        None
+    }
+    pub fn read_preview() -> super::appearance::Preview {
+        PREVIEW.lock().unwrap().unwrap_or_default()
+    }
+    pub static PREVIEW: std::sync::Mutex<Option<super::appearance::Preview>> =
+        std::sync::Mutex::new(None);
     pub fn read_input() -> super::Input {
         super::Input::default()
     }

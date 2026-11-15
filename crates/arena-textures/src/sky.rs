@@ -7,10 +7,17 @@
 //! lit bodies, cool undersides and bright sun-side crowns — rather than
 //! photographic detail.
 
+use arena_palette::{self as palette, Swatch};
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct V3(pub f32, pub f32, pub f32);
 
 impl V3 {
+    /// A palette swatch in sRGB; every painted anchor below is one.
+    const fn of(swatch: Swatch) -> Self {
+        let [r, g, b] = swatch.srgb();
+        V3(r, g, b)
+    }
     fn dot(self, o: Self) -> f32 {
         self.0 * o.0 + self.1 * o.1 + self.2 * o.2
     }
@@ -97,10 +104,10 @@ pub fn sun() -> V3 {
 
 /// Cloudless sky: gradient, brushed wash and sun glow.
 fn clear(dir: V3, sun: V3) -> V3 {
-    let zenith = V3(0.17, 0.36, 0.78);
-    let upper = V3(0.36, 0.62, 0.94);
-    let horizon = V3(0.98, 0.86, 0.70);
-    let below = V3(0.56, 0.54, 0.62);
+    let zenith = V3::of(palette::SKY_3);
+    let upper = V3::of(palette::SKY_5);
+    let horizon = V3::of(palette::SAND_7);
+    let below = V3::of(palette::STONE_5);
     let up = dir.1;
     let mut color = if up >= 0.0 {
         horizon
@@ -112,11 +119,11 @@ fn clear(dir: V3, sun: V3) -> V3 {
     // Broad, brushy variation in the clear sky so it never reads as a flat
     // digital gradient.
     let wash = fbm(dir.0 * 2.0 + 3.0, dir.2 * 2.0 + dir.1, 3, 91) - 0.5;
-    color = color.lerp(V3(0.55, 0.45, 0.85), (wash * 0.18).max(0.0));
-    color = color.lerp(V3(0.30, 0.70, 0.95), (-wash * 0.15).max(0.0));
+    color = color.lerp(V3::of(palette::ARCANE_4), (wash * 0.18).max(0.0));
+    color = color.lerp(V3::of(palette::SKY_5), (-wash * 0.15).max(0.0));
     let facing = dir.dot(sun).max(0.0);
     color = color.lerp(
-        V3(1.0, 0.94, 0.80),
+        V3::of(palette::SAND_8),
         facing.powf(48.0) * 0.75 + facing.powf(6.0) * 0.16,
     );
     color
@@ -144,22 +151,22 @@ pub fn paint(dir: V3, sun: V3) -> V3 {
         let lit = shape - fbm(x - sx, y - sy, 6, 1);
         let shadow_band = smoothstep(-0.005, -0.03, lit);
         let rim_band = smoothstep(0.012, 0.035, lit);
-        let body = V3(0.93, 0.92, 0.96);
-        let shadow = V3(0.70, 0.72, 0.88);
-        let rim = V3(1.0, 0.98, 0.92);
+        let body = V3::of(palette::NIGHT_12);
+        let shadow = V3::of(palette::ARCANE_6);
+        let rim = V3::of(palette::SAND_8);
         let mut cloud = body.lerp(shadow, shadow_band * 0.85);
         cloud = cloud.lerp(rim, rim_band);
         // Interior depth: thicker cores are slightly cooler, like a painter's
         // second value under the lit crown.
         let core = smoothstep(0.6, 0.75, shape);
-        cloud = cloud.lerp(V3(0.82, 0.84, 0.95), core * (1.0 - rim_band) * 0.4);
+        cloud = cloud.lerp(V3::of(palette::SKY_7), core * (1.0 - rim_band) * 0.4);
         // Warm the clouds near the sun.
-        cloud = cloud.lerp(V3(1.0, 0.92, 0.80), facing.powf(8.0) * 0.4);
+        cloud = cloud.lerp(V3::of(palette::SAND_8), facing.powf(8.0) * 0.4);
         color = color.lerp(cloud, cover * 0.95);
         // A few high, thin brushed streaks above the deck.
         let streak = fbm(x * 0.35 + 40.0, y * 2.2, 4, 31);
         let wisps = smoothstep(0.66, 0.76, streak) * fade * (1.0 - cover) * 0.22;
-        color = color.lerp(V3(0.96, 0.96, 1.0), wisps);
+        color = color.lerp(V3::of(palette::SKY_8), wisps);
     }
     V3(
         color.0.clamp(0.0, 1.0),

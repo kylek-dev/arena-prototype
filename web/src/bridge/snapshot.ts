@@ -212,6 +212,8 @@ declare global {
       readWeapons?: () => number[];
       readLighting?: () => number[];
       readMap?: () => unknown[];
+      readAppearance?: () => unknown[];
+      readPreview?: () => number[];
       onMapStatus?: (status: unknown) => void;
       onFocusUnit?: (tag: UnitTag) => void;
       onState: (state: unknown) => void;

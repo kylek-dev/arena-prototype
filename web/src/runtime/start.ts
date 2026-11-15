@@ -3,7 +3,8 @@ import { loadEngine } from "../bridge/loader";
 import { readGraphics } from "../state/graphics";
 import { readWeapons } from "../state/weapons";
 import { readLighting } from "../state/lighting";
-import { loadMap, onMapStatus, readMap } from "../state/map-editor";
+import { loadStartupMap, onMapStatus, readMap } from "../state/map-editor";
+import { readAppearance, readPreview } from "../state/appearance";
 import { observeCastResult } from "./cast-feedback";
 import { engine, error, focus, nameplateScene } from "../state/session";
 import { reconcileFocus } from "../domain/units/selection";
@@ -36,6 +37,8 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     readWeapons,
     readLighting,
     readMap,
+    readAppearance,
+    readPreview,
     onMapStatus,
     onFocusUnit: (tag) => interactUnit(tag, "focus"),
     onState(raw) {
@@ -75,8 +78,9 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     };
   const stopFrameTiming = measureFrames(() => (engine.get()?.frames ?? 0) > 30);
   // The arena starts from the map embedded at build time; the file (which the
-  // editor may have saved since) replaces it as soon as it arrives.
-  void loadMap();
+  // editor may have saved since, or the map last opened on this device)
+  // replaces it as soon as it arrives.
+  void loadStartupMap();
   loadEngine().catch((e) => {
     console.error(e);
     fail(String(e.message ?? e));

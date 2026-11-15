@@ -3,6 +3,7 @@
 //
 //   GET /assets/maps/<id>.json        the tracked file, fresh from assets/maps
 //   GET /__map-editor/status          {"writable": true}
+//   GET /__map-editor/maps            {"maps": [{"id", "name"}]} from assets/maps
 //   PUT /__map-editor/maps/<id>.json  writes assets/maps/<id>.json
 //
 // Writes require a loopback Host (blocks DNS rebinding), a same-origin Origin
@@ -10,7 +11,7 @@
 // send that without a preflight this server never approves). The body must be
 // a format-1 map object; Rust validates the gameplay rules before the editor
 // enables saving, and the build and tests validate the tracked file again.
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { readdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -45,6 +46,24 @@ function readBody(req) {
   });
 }
 
+/** Every map file's id and display name, for the editor's Open list. */
+export async function listMapFiles(mapsDir) {
+  const maps = [];
+  for (const file of (await readdir(mapsDir).catch(() => [])).sort()) {
+    const id = file.endsWith(".json") ? file.slice(0, -5) : "";
+    if (!ID.test(id)) continue;
+    let name = id;
+    try {
+      const parsed = JSON.parse(await readFile(path.join(mapsDir, file), "utf8"));
+      if (typeof parsed?.name === "string" && parsed.name.trim()) name = parsed.name;
+    } catch {
+      // Listed by id; opening it reports the problem.
+    }
+    maps.push({ id, name });
+  }
+  return maps;
+}
+
 /** Connect-style middleware; `root` is the repository (tests pass a temp dir). */
 export function mapEditorMiddleware(root = repositoryRoot) {
   const mapsDir = path.join(root, "assets", "maps");
@@ -54,6 +73,8 @@ export function mapEditorMiddleware(root = repositoryRoot) {
     const write = pathname.match(/^\/__map-editor\/maps\/([^/]+)\.json$/);
     if (pathname === "/__map-editor/status" && req.method === "GET")
       return send(res, 200, { writable: true });
+    if (pathname === "/__map-editor/maps" && req.method === "GET")
+      return send(res, 200, { maps: await listMapFiles(mapsDir) });
     if (read && req.method === "GET" && ID.test(read[1])) {
       try {
         return send(res, 200, await readFile(path.join(mapsDir, `${read[1]}.json`), "utf8"));

@@ -1,19 +1,20 @@
 {
   "format": 1,
   "name": "Colosseum",
+  "ground": "stone",
   "floor": { "width": 108, "depth": 84 },
   "pillars": [
-    { "x": -21, "z": -15, "width": 9, "depth": 9 },
-    { "x": 21, "z": -15, "width": 9, "depth": 9 },
-    { "x": -21, "z": 15, "width": 9, "depth": 9 },
-    { "x": 21, "z": 15, "width": 9, "depth": 9 }
+    { "x": -21, "z": -15, "width": 12, "depth": 12 },
+    { "x": 21, "z": -15, "width": 12, "depth": 12 },
+    { "x": -21, "z": 15, "width": 12, "depth": 12 },
+    { "x": 21, "z": 15, "width": 12, "depth": 12 }
   ],
   "rooms": [
     {
       "team": "friendly",
       "edge": "south",
       "offset": 0,
-      "width": 6,
+      "width": 10,
       "depth": 11,
       "ceiling": 6,
       "spawns": [
@@ -26,7 +27,7 @@
       "team": "opposing",
       "edge": "north",
       "offset": 0,
-      "width": 6,
+      "width": 10,
       "depth": 11,
       "ceiling": 6,
       "spawns": [
@@ -46,5 +47,6 @@
     "outerWallThickness": 3,
     "outerWallHeight": 34,
     "pillarHeight": 48
-  }
+  },
+  "props": []
 }

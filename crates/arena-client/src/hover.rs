@@ -1,4 +1,5 @@
 //! Presentation-only picking proxies, independent of targeting and combat rules.
+use crate::prism::Prism;
 use arena_map::MapFile;
 use bevy::prelude::*;
 
@@ -21,36 +22,37 @@ fn box_hit(ray: Ray3d, min: Vec3, max: Vec3) -> Option<f32> {
     (far >= near).then_some(near)
 }
 
-/// Conservative picking proxies for a map's pillars, including base, bands
-/// and crown, as world-space bounds.
-pub(super) fn pillar_blockers(map: &MapFile) -> Vec<(Vec3, Vec3)> {
+/// Conservative picking proxies for a map's hexagonal pillars, grown to
+/// cover the base, bands and crown.
+pub(super) fn pillar_blockers(map: &MapFile) -> Vec<Prism> {
     let top = super::venue::pillar_top(&map.venue);
     map.layout
         .pillars
         .iter()
         .map(|pillar| {
-            let p = super::world(pillar.center);
-            let half = Vec3::new(
+            Prism::hexagon(
+                super::world(pillar.center),
                 pillar.half_x as f32 / 1000.0 + 0.4,
-                0.0,
                 pillar.half_z as f32 / 1000.0 + 0.4,
-            );
-            (p - half, p + half + Vec3::Y * top)
+                0.0,
+                top,
+            )
         })
         .collect()
 }
 
-fn blocker_distance(ray: Ray3d, blockers: &[(Vec3, Vec3)]) -> f32 {
+fn blocker_distance(ray: Ray3d, blockers: &[Prism]) -> f32 {
     blockers
         .iter()
-        .filter_map(|(min, max)| box_hit(ray, *min, *max))
+        .filter_map(|blocker| blocker.entry(ray.origin, *ray.direction, f32::INFINITY, 0.0))
+        .map(|(distance, _)| distance)
         .fold(f32::INFINITY, f32::min)
 }
 
 pub(super) fn pick(
     ray: Ray3d,
     units: impl Iterator<Item = (usize, Vec3)>,
-    blockers: &[(Vec3, Vec3)],
+    blockers: &[Prism],
 ) -> Option<usize> {
     let blocker = blocker_distance(ray, blockers);
     units

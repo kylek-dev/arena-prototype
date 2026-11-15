@@ -3,6 +3,7 @@
 //! palette without editing images by hand. Offline only; never part of combat.
 
 pub mod character;
+pub mod granite;
 pub mod sky;
 
 /// How one source texture becomes a runtime texture.

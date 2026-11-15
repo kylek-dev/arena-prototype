@@ -89,6 +89,13 @@ export function dispatch(action: string) {
     case "jump":
       input.jump = true;
       break;
+    case "autorun":
+      input.autorun = !input.autorun;
+      break;
+    case "forward":
+    case "back":
+      input.autorun = false;
+      break;
     case "menu":
       setPanel(interaction.get().panel === "menu" ? null : "menu");
       break;
