@@ -25,9 +25,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Lint rules and headless runner (no renderer)
-        run: cargo clippy -p arena-sim -p arena-headless --all-targets --locked -- -D warnings
+        run: cargo clippy -p arena-sim -p arena-protocol -p arena-headless --all-targets --locked -- -D warnings
       - name: Test rules and headless runner
-        run: cargo test -p arena-sim -p arena-headless --locked
+        run: cargo test -p arena-sim -p arena-protocol -p arena-headless --locked
       - name: Run headless scenario
         run: cargo run --locked -p arena-headless
   # Keep the required check name; test browser input without compiling Bevy.
