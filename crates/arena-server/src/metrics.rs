@@ -30,6 +30,8 @@ pub struct Metrics {
     pub inputs: AtomicU64,
     pub inputs_stale: AtomicU64,
     pub inputs_overflow: AtomicU64,
+    /// Inputs folded into an earlier one to drain a backlog.
+    pub inputs_folded: AtomicU64,
     /// Outgoing frames dropped because a client's send queue was full.
     pub frames_dropped: AtomicU64,
     pub bytes_out: AtomicU64,
@@ -124,6 +126,12 @@ impl Metrics {
             "counter",
             "Inputs dropped by the per-seat queue bound.",
             get(&self.inputs_overflow),
+        );
+        line(
+            "inputs_folded_total",
+            "counter",
+            "Inputs folded together to drain a backlog.",
+            get(&self.inputs_folded),
         );
         line(
             "frames_dropped_total",

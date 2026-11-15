@@ -129,46 +129,77 @@ fn matches_wait_for_every_seat_before_the_rules_advance() {
 }
 
 #[test]
-fn inputs_drive_only_their_own_seat_and_merge_once_per_tick() {
+fn inputs_apply_one_per_tick_in_order_and_only_to_their_seat() {
     let mut session = running(arena(1));
     let mut replay = session.arena().clone();
-    session.receive(0, conn(0), frame(1));
-    session.receive(
-        0,
-        conn(0),
-        InputFrame {
-            seq: 2,
-            movement: [1000, 0],
-            facing: 77,
-            jump: true,
-            attack: None,
-        },
-    );
-    let out = session.tick();
-    // Identical to the rules advanced directly with the merged slot.
-    replay.advance(&[ActorInput {
-        movement: Some(Axes { x: 1000, z: 0 }),
-        facing: Some(77),
+    let second = InputFrame {
+        seq: 2,
+        movement: [1000, 0],
+        facing: 77,
         jump: true,
         attack: None,
-    }]);
-    assert_eq!(session.arena(), &replay);
-    let own = snapshot(&out, conn(0)).unwrap();
-    assert_eq!((own.ack, own.hash, own.tick), (2, replay.state_hash(), 1));
-    assert_eq!(
-        own.fighters[0],
-        FighterState::new(&replay.fighters()[0], true)
-    );
-    assert!(own.fighters[0].height > 0);
-    assert_eq!(own.fighters[0].facing, 77);
-    let other = snapshot(&out, conn(1)).unwrap();
-    assert_eq!(other.ack, 0);
-    assert_eq!(other.fighters, own.fighters, "everyone sees the same state");
+    };
+    session.receive(0, conn(0), frame(1));
+    session.receive(0, conn(0), second);
+    // Each input is exactly one tick of rules, so a client replaying its
+    // own unacknowledged inputs predicts the same state.
+    for (expected_ack, input) in [(1, frame(1)), (2, second)] {
+        let out = session.tick();
+        let mut slot = ActorInput::default();
+        input.merge_into(&mut slot);
+        replay.advance(&[slot]);
+        assert_eq!(session.arena(), &replay);
+        let own = snapshot(&out, conn(0)).unwrap();
+        assert_eq!((own.ack, own.hash), (expected_ack, replay.state_hash()));
+        assert_eq!(
+            own.fighters[0],
+            FighterState::new(&replay.fighters()[0], true)
+        );
+        let other = snapshot(&out, conn(1)).unwrap();
+        assert_eq!(other.ack, 0);
+        assert_eq!(other.fighters, own.fighters, "everyone sees the same state");
+    }
+    assert!(session.arena().fighters()[0].height > 0);
+    assert_eq!(session.arena().fighters()[0].facing, 77);
     assert_eq!(
         session.arena().fighters()[1],
         arena(1).fighters()[1],
         "the other seat did not move"
     );
+}
+
+#[test]
+fn a_tick_without_input_is_idle_and_a_backlog_is_folded() {
+    let mut session = Session::new(arena(1), 42, Limits { queue: 8, ..LIMITS }, Arc::default());
+    session.attach(0, conn(0));
+    session.attach(1, conn(1));
+    session.tick();
+    // Nothing arrived: the fighter stands still.
+    let start = session.arena().fighters()[0];
+    session.tick();
+    assert_eq!(session.arena().fighters()[0].position, start.position);
+    // A burst of six (a stalled tab catching up): the first applies, three
+    // fold into it, and two stay queued, one per following tick.
+    for seq in 1..=6 {
+        session.receive(
+            0,
+            conn(0),
+            InputFrame {
+                jump: seq == 3,
+                ..frame(seq)
+            },
+        );
+    }
+    let out = session.tick();
+    assert_eq!(snapshot(&out, conn(0)).unwrap().ack, 4);
+    assert_eq!(Metrics::get(&session.metrics.inputs_folded), 3);
+    assert!(
+        session.arena().fighters()[0].height > 0,
+        "a folded jump is kept"
+    );
+    assert_eq!(snapshot(&session.tick(), conn(0)).unwrap().ack, 5);
+    assert_eq!(snapshot(&session.tick(), conn(0)).unwrap().ack, 6);
+    assert_eq!(snapshot(&session.tick(), conn(0)).unwrap().ack, 6);
 }
 
 #[test]
@@ -191,9 +222,12 @@ fn stale_foreign_and_overflowing_inputs_are_dropped() {
     for seq in 6..=9 {
         session.receive(0, conn(0), frame(seq));
     }
+    // The queue holds three: 5 and 6 were dropped, oldest first.
     assert_eq!(Metrics::get(&session.metrics.inputs_overflow), 2);
-    let out = session.tick();
-    assert_eq!(snapshot(&out, conn(0)).unwrap().ack, 9);
+    for expected in [7, 8, 9] {
+        let out = session.tick();
+        assert_eq!(snapshot(&out, conn(0)).unwrap().ack, expected);
+    }
     let fighter = session.arena().fighters()[0];
     assert_eq!(
         fighter.height, 0,

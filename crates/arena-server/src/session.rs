@@ -24,6 +24,10 @@ use crate::metrics::Metrics;
 
 pub type ConnId = u64;
 
+/// Inputs left waiting after a tick before the excess is folded together.
+/// Each waiting input is a tick of delay; two ride out ordinary jitter.
+pub const MAX_BACKLOG: usize = 2;
+
 /// Session limits, in ticks where they are durations.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -239,14 +243,27 @@ impl Session {
                 self.snapshots(&[], 0)
             }
             Phase::Running => {
+                let metrics = &self.metrics;
                 let inputs: Vec<ActorInput> = self
                     .seats
                     .iter_mut()
                     .map(|seat| {
+                        // One input per tick, in order, so a client can
+                        // predict its own movement exactly: input `n` is one
+                        // tick of rules. Nothing waiting means an idle tick.
                         let mut slot = ActorInput::default();
-                        for frame in seat.pending.drain(..) {
+                        if let Some(frame) = seat.pending.pop_front() {
                             frame.merge_into(&mut slot);
                             seat.ack = frame.seq;
+                        }
+                        // A backlog (a burst after a stall) would add a tick
+                        // of delay per queued input; fold the excess into
+                        // this tick instead.
+                        while seat.pending.len() > MAX_BACKLOG {
+                            let frame = seat.pending.pop_front().expect("over the backlog");
+                            frame.merge_into(&mut slot);
+                            seat.ack = frame.seq;
+                            Metrics::add(&metrics.inputs_folded, 1);
                         }
                         slot
                     })

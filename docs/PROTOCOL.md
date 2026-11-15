@@ -34,10 +34,14 @@ yet.
 
 - The server ticks at 30 Hz (`TICKS_PER_SECOND`). Tick numbers are `u64` and
   start at 0 for each match.
-- Inputs that arrive between ticks are merged into the actor's slot for the
-  next tick: the latest movement and facing win, `jump` is set if any input
-  set it, and the latest `attack` target wins. This keeps the rules' one
-  command of each kind per tick.
+- Each tick applies **one** queued input per seat, oldest first, so input
+  `n` is exactly one tick of rules and a client can predict its own
+  movement by replaying its unacknowledged inputs. A tick with nothing
+  queued is idle for that seat. If more than two inputs are still waiting
+  after a tick (a burst after a stall), the excess is folded into that tick
+  with `InputFrame::merge_into`: the latest movement, facing and attack
+  target win, and a jump from any of them is kept. This keeps the delay
+  bounded.
 - Clients interpolate snapshots behind the newest one received (about
   100 ms to start). There is no client prediction in the first milestone.
 
