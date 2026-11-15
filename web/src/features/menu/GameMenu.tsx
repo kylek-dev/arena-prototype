@@ -5,9 +5,12 @@ import { engine } from "../../state/session";
 import { useStore } from "../../state/store";
 import { debugEnabled, diagnosticsVisible } from "../../runtime/diagnostics";
 import { lightingVisible } from "../../state/lighting";
+import { mapEditorVisible } from "../../state/map-editor";
+import { characterKits, customizerVisible } from "../../state/appearance";
 
 export function GameMenu() {
   const size = useStore(engine, (s) => s?.teamSize ?? 1);
+  const customizable = useStore(characterKits, (k) => k.length > 0);
   return (
     <div className="stack game-menu">
       <Text size="2" color="gray">
@@ -35,6 +38,18 @@ export function GameMenu() {
         Changing mode starts a fresh round. Other units are stationary.
       </Text>
       <Separator size="4" />
+      {customizable && (
+        <Button
+          variant="surface"
+          color="gray"
+          onClick={() => {
+            setPanel(null);
+            customizerVisible.set(true);
+          }}
+        >
+          Customize character
+        </Button>
+      )}
       <Button variant="surface" color="gray" onClick={() => setPanel("settings")}>
         Settings
       </Button>
@@ -50,6 +65,16 @@ export function GameMenu() {
         }}
       >
         Lighting tweaks (temporary)
+      </Button>
+      <Button
+        variant="surface"
+        color="gray"
+        onClick={() => {
+          setPanel(null);
+          mapEditorVisible.set(true);
+        }}
+      >
+        Map editor
       </Button>
       <Button
         variant="surface"

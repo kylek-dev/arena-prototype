@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/arena-sim", "crates/arena-headless", "crates/arena-client"]
+members = ["crates/arena-sim", "crates/arena-map", "crates/arena-palette", "crates/arena-headless", "crates/arena-client", "crates/arena-textures"]
 default-members = ["crates/arena-sim", "crates/arena-headless"]
 
 [workspace.package]

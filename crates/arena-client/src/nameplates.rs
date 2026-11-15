@@ -56,13 +56,20 @@ mod tests {
     #[test]
     fn nameplates_remain_visible_and_projected_when_pillars_block_world_hover() {
         let camera = test_camera();
-        let p = super::super::world(arena_sim::arena::PILLARS[0].center);
-        let position = p - Vec3::Z * 3.0;
-        let eye = p + Vec3::new(0.0, 2.25, 5.0);
+        let map = arena_map::colosseum();
+        let pillar = map.layout.pillars[0];
+        let p = super::super::world(pillar.center);
+        let face = pillar.half_z as f32 / 1000.0;
+        let position = p - Vec3::Z * (face + 1.0);
+        let eye = p + Vec3::new(0.0, 2.25, face + 3.0);
         let view = GlobalTransform::from(Transform::from_translation(eye));
         let ray = Ray3d::new(eye, Dir3::new(position + Vec3::Y - eye).unwrap());
         assert_eq!(
-            super::super::hover::pick(ray, [(1, position)].into_iter()),
+            super::super::hover::pick(
+                ray,
+                [(1, position)].into_iter(),
+                &super::super::hover::pillar_blockers(&map)
+            ),
             None
         );
         assert!(

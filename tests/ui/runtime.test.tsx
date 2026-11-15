@@ -117,6 +117,47 @@ describe("production input routing", () => {
     key("KeyJ");
     expect(router.sample()[14]).toBe(0);
   });
+  it("toggles remappable autorun, cancels it with forward/back, and clears it on blur", () => {
+    expect(key("NumLock").defaultPrevented).toBe(true);
+    release("NumLock");
+    expect(router.sample()[1]).toBe(-1);
+    expect(router.sample()[1]).toBe(-1);
+    key("KeyA");
+    expect(router.sample().slice(0, 2)).toEqual([-1, -1]);
+    release("KeyA");
+    key("NumLock", { repeat: true });
+    expect(router.sample()[1]).toBe(-1);
+    key("NumLock");
+    release("NumLock");
+    expect(router.sample()[1]).toBe(0);
+    key("Backquote");
+    release("Backquote");
+    expect(router.sample()[1]).toBe(-1);
+    key("KeyS");
+    expect(router.sample()[1]).toBe(1);
+    release("KeyS");
+    expect(router.sample()[1]).toBe(0);
+    key("NumLock");
+    release("NumLock");
+    key("KeyW");
+    release("KeyW");
+    expect(router.sample()[1]).toBe(0);
+    key("NumLock");
+    release("NumLock");
+    window.dispatchEvent(new Event("blur"));
+    expect(router.sample()[1]).toBe(0);
+    updateConfig((c) => ({
+      ...c,
+      bindings: bind(c.bindings, "autorun", 0, chord({ code: "KeyQ" })),
+    }));
+    key("KeyQ");
+    expect(router.sample()[1]).toBe(-1);
+    release("KeyQ");
+    interaction.set({ ...interaction.get(), panel: "menu" });
+    expect(router.sample()[1]).toBe(0);
+    key("KeyQ");
+    expect(router.sample()[1]).toBe(0);
+  });
   it("highlights only the bound slot while held, even when casting is rejected or empty", () => {
     render(
       <Tooltip.Provider>

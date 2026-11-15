@@ -44,6 +44,16 @@ describe("engine snapshot boundary", () => {
     { ...snapshot(), maxHealth: 100, character: undefined },
     { ...snapshot(), maxHealth: 100, camera: undefined },
     { ...snapshot(), maxHealth: 100, hoveredUnit: "Team4" },
+    {
+      ...snapshot(),
+      maxHealth: 100,
+      startup: { phase: "warming", ready: true, pending: 0, timedOut: false },
+    },
+    {
+      ...snapshot(),
+      maxHealth: 100,
+      startup: { phase: "later", ready: false, pending: 0, timedOut: false },
+    },
   ])("rejects incomplete engine data: %j", (raw) => {
     expect(() => adaptSnapshot(raw)).toThrow();
   });

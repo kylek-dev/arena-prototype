@@ -1,4 +1,5 @@
 /* Single entry point: keep cascade order explicit, independent of React imports. */
+@import "./palette.css";
 @import "./base.css";
 @import "../ui/placement.css";
 @import "../features/nameplates/nameplates.css";

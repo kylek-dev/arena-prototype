@@ -1,6 +1,9 @@
 import { defineConfig } from "vite";
+import { mapEditorServer } from "./scripts/map-editor-server.mjs";
 export default defineConfig({
   root: "web",
+  // Local-only map loading and saving for the in-game editor (dev/preview).
+  plugins: [mapEditorServer()],
   base: "./",
   publicDir: "public",
   build: {

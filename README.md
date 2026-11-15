@@ -8,6 +8,7 @@ Temporary project name. An original, browser-first competitive arena game, inspi
 
 - [Fresh-machine developer setup](docs/DEVELOPMENT.md)
 - [Game direction](docs/GAME.md)
+- [Art direction](docs/ART-DIRECTION.md)
 - [Technology recommendation and alternatives](docs/decisions/0001-stack.md)
 - [Wenilla investigation](docs/research/wenilla.md)
 - [Architecture](docs/ARCHITECTURE.md)
@@ -47,12 +48,19 @@ npm run serve
 
 Open http://127.0.0.1:8000. WASD moves; Space jumps with takeoff momentum; left-drag looks; right-drag turns; both mouse buttons walk and steer. Tab selects, 1 attacks, and R resets. Escape → Practice mode selects 1v1/2v2/3v3. Team frames exclude yourself and appear on the left; opponents appear on the right. Mode changes restart the round; reset preserves mode. Human review of these additions is pending.
 
+Escape → **Map editor** edits and creates arenas (pillars, starting rooms, spawns, decorative props, ground texture, floor and venue sizes) in a top-down view with live preview, undo and validation, and saves `assets/maps/<id>.json` when run with `npm run dev` or `npm run serve`. See [map editor](docs/BROWSER.md#map-editor).
+
 Escape → **Lighting tweaks (temporary)** opens movable live controls for light strength/color/direction, background, exposure, saturation/contrast, shadow/midtone/highlight grading, tone mapping and bloom. No reload is needed while tuning; values are session-only, with Reset and copyable JSON. See [browser controls](docs/BROWSER.md).
 
 The React overlay adds target/focus and team/opponent frames, action bars, an icon-only draggable Pulse spellbook, remappable bindings, quick binding, direct layout editing and local profiles. Settings → Weapons switches cosmetic Verdant Eclipse glaives/Aetherthorn staff and six energy colors, saved on this device. Escape opens the bindable game menu; Shift+Escape clears target. Ordinary HUD clicks retain gameplay focus; typing/dialogs/editing own their keyboard input. Shift+Tab enters normal UI navigation. Layout frames and the editor window are movable. The interface uses Radix Themes with a neutral dark palette. Pulse remains the only ability; non-player units are stationary. Use `npm run dev` for fast UI iteration after the first complete build; `npm run build` rebuilds only the frontend. See [frontend boundaries](docs/FRONTEND.md). Human rendered review of the new team frames and practice modes is pending.
 
-The local `assets/BaseMale.glb` supplies the player's skeletal model and movement/jump/cast presentation after a complete rebuild. Builds without it retain the procedural character. See [character setup and manual review](docs/BROWSER.md#basemale-player-and-animations); human rendered review remains pending.
+The player defaults to the CC0 Quaternius female human with bun hair, eyes/brows and the Ranger armor set. Included takeoff, airborne and landing clips accompany idle, jogging and spell animations. Left/right use a [shared lateral-run strafe library](assets/animations/README.md) matched to the jog's cadence; backward still reverses the forward cycle. Run a complete build; `ARENA_RIGGED_CHARACTER=0` forces the procedural fallback. See [asset inventory and limitations](assets/quaternius/README.md) and [character setup](docs/BROWSER.md#quaternius-default-female-2026-11-14). Human rendered review is pending.
+
+The character now uses bounded runtime textures (9.2 MB model rather than
+57.7 MB), with more visible 0.30 s takeoff and 0.80 s landing phases. The player
+is temporarily unequipped; weapon sources/preferences remain but no weapon is
+spawned or requested. Entry-hitch improvement still needs human browser review.
 
 ## License
 
-Original code and documentation are MIT licensed; see [LICENSE](LICENSE). Binary art has separate terms or unconfirmed publication licensing; see [asset provenance](assets/README.md). The build uses a procedural character fallback when the local BaseMale source is absent. Asset contributions require explicit provenance and licensing. The project name is provisional and does not establish a final brand.
+Original code and documentation are MIT licensed; see [LICENSE](LICENSE). Binary art has separate terms or unconfirmed publication licensing; see [asset provenance](assets/README.md). Quaternius base/animations/outfits/props are CC0; the locally retained races use QAL, not MIT/CC0, and their raw files are excluded from Git. Asset contributions require explicit provenance and licensing. The project name is provisional and does not establish a final brand.

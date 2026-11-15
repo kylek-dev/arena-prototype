@@ -2,7 +2,7 @@
   position: fixed;
   inset: 0;
   z-index: 20;
-  background: #0009;
+  background: color-mix(in srgb, var(--pal-night-1) 60%, transparent);
   pointer-events: auto;
 }
 .dialog {

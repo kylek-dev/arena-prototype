@@ -26,6 +26,21 @@ describe("bindings", () => {
     migrated.bindings.jump = [null, null];
     expect(validateConfig(migrated).bindings.jump).toEqual([null, null]);
   });
+  it("adds autorun defaults to old profiles without taking existing custom bindings", () => {
+    const old = initial().profiles[0].config;
+    delete old.bindings.autorun;
+    expect(validateConfig(old).bindings.autorun).toEqual([
+      chord({ code: "NumLock" }),
+      chord({ code: "Backquote" }),
+    ]);
+    old.bindings["slot:bar-1-s1"] = [chord({ code: "Backquote" }), null];
+    const migrated = validateConfig(old);
+    expect(migrated.bindings.autorun).toEqual([chord({ code: "NumLock" }), null]);
+    expect(migrated.bindings["slot:bar-1-s1"][0]).toEqual(chord({ code: "Backquote" }));
+    migrated.bindings.autorun = [null, null];
+    expect(validateConfig(migrated).bindings.autorun).toEqual([null, null]);
+    expect(unsupported(chord({ code: "NumLock" }))).toBeNull();
+  });
   it("requires explicit conflict replacement and preserves the original", () => {
     const bindings = defaults([newBar("one")]);
     const value = chord({ code: "KeyW" });

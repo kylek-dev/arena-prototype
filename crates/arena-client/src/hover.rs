@@ -1,5 +1,6 @@
 //! Presentation-only picking proxies, independent of targeting and combat rules.
-use arena_sim::arena::PILLARS;
+use crate::prism::Prism;
+use arena_map::MapFile;
 use bevy::prelude::*;
 
 fn box_hit(ray: Ray3d, min: Vec3, max: Vec3) -> Option<f32> {
@@ -21,24 +22,39 @@ fn box_hit(ray: Ray3d, min: Vec3, max: Vec3) -> Option<f32> {
     (far >= near).then_some(near)
 }
 
-fn blocker_distance(ray: Ray3d) -> f32 {
-    PILLARS
+/// Conservative picking proxies for a map's hexagonal pillars, grown to
+/// cover the base, bands and crown.
+pub(super) fn pillar_blockers(map: &MapFile) -> Vec<Prism> {
+    let top = super::venue::pillar_top(&map.venue);
+    map.layout
+        .pillars
         .iter()
-        .filter_map(|pillar| {
-            let p = super::world(pillar.center);
-            let half_size = pillar.half_size as f32 / 1000.0 + 0.175;
-            // Conservative proxy includes the pillar's base and cap.
-            box_hit(
-                ray,
-                p + Vec3::new(-half_size, 0.0, -half_size),
-                p + Vec3::new(half_size, 4.1, half_size),
+        .map(|pillar| {
+            Prism::hexagon(
+                super::world(pillar.center),
+                pillar.half_x as f32 / 1000.0 + 0.4,
+                pillar.half_z as f32 / 1000.0 + 0.4,
+                0.0,
+                top,
             )
         })
+        .collect()
+}
+
+fn blocker_distance(ray: Ray3d, blockers: &[Prism]) -> f32 {
+    blockers
+        .iter()
+        .filter_map(|blocker| blocker.entry(ray.origin, *ray.direction, f32::INFINITY, 0.0))
+        .map(|(distance, _)| distance)
         .fold(f32::INFINITY, f32::min)
 }
 
-pub(super) fn pick(ray: Ray3d, units: impl Iterator<Item = (usize, Vec3)>) -> Option<usize> {
-    let blocker = blocker_distance(ray);
+pub(super) fn pick(
+    ray: Ray3d,
+    units: impl Iterator<Item = (usize, Vec3)>,
+    blockers: &[Prism],
+) -> Option<usize> {
+    let blocker = blocker_distance(ray, blockers);
     units
         .filter_map(|(id, p)| {
             box_hit(
@@ -62,21 +78,49 @@ mod tests {
         assert_eq!(
             pick(
                 ray,
-                [(1, Vec3::ZERO), (0, Vec3::new(0.0, 0.0, 4.0))].into_iter()
+                [(1, Vec3::ZERO), (0, Vec3::new(0.0, 0.0, 4.0))].into_iter(),
+                &[]
             ),
             Some(0)
         );
-        assert_eq!(pick(ray, [(1, Vec3::new(4.0, 0.0, 0.0))].into_iter()), None);
         assert_eq!(
-            pick(ray, [(1, Vec3::new(0.0, 0.0, 10.0))].into_iter()),
+            pick(ray, [(1, Vec3::new(4.0, 0.0, 0.0))].into_iter(), &[]),
+            None
+        );
+        assert_eq!(
+            pick(ray, [(1, Vec3::new(0.0, 0.0, 10.0))].into_iter(), &[]),
             None
         );
     }
     #[test]
     fn pillars_occlude_units() {
-        let p = super::super::world(PILLARS[0].center);
-        let ray = Ray3d::new(p + Vec3::new(0.0, 1.0, 5.0), Dir3::NEG_Z);
-        assert_eq!(pick(ray, [(1, p - Vec3::Z * 3.0)].into_iter()), None);
-        assert_eq!(pick(ray, [(0, p + Vec3::Z * 3.0)].into_iter()), Some(0));
+        let map = arena_map::colosseum();
+        let blockers = pillar_blockers(&map);
+        let pillar = map.layout.pillars[0];
+        let p = super::super::world(pillar.center);
+        let face = pillar.half_z as f32 / 1000.0 + 0.4;
+        let ray = Ray3d::new(p + Vec3::new(0.0, 1.0, face + 3.0), Dir3::NEG_Z);
+        assert_eq!(
+            pick(
+                ray,
+                [(1, p - Vec3::Z * (face + 1.0))].into_iter(),
+                &blockers
+            ),
+            None
+        );
+        assert_eq!(
+            pick(
+                ray,
+                [(0, p + Vec3::Z * (face + 1.0))].into_iter(),
+                &blockers
+            ),
+            Some(0)
+        );
+        // Looking up the shaft never sees past the pillar.
+        let up = Ray3d::new(
+            p + Vec3::new(0.0, 1.0, face + 3.0),
+            Dir3::new(Vec3::new(0.0, 1.0, -0.4)).unwrap(),
+        );
+        assert!(blocker_distance(up, &blockers).is_finite());
     }
 }

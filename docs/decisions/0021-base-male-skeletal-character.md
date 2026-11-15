@@ -27,3 +27,7 @@ Local asset inspection on 2026-11-07 confirmed one generated scene, eight ordere
 ## Human review update — 2026-11-08
 
 The user verified and approved all implemented UI/rendered changes, including character and animation presentation. Historical pending human-review statements above are superseded. Binary redistribution is not authorized by this UI approval. See [review record](../UI-REVIEW.md).
+
+## Update — 2026-11-14
+
+[ADR 0029](0029-base-female-player-character.md) makes BaseFemale the preferred player model when installed. BaseMale remains the second choice, with unchanged placement and clip timing. The runtime path is now chosen by the build manifest's `model` ID rather than fixed to `base-male.glb`.
