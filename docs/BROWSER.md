@@ -212,6 +212,28 @@ The arena floor and stand tiers use hand-painted CC0 flagstones; the pillars, pi
 
 ## Character asset
 
+### Character customization (2026-11-14)
+
+After loading, a start screen shows your saved character with **Enter the
+arena** and **Customize character**; customizing is optional. The customizer
+(also Menu → **Customize character** during play) has Body / Head / Outfit
+tabs: body type, ancestry (elf/orc only when the races pack is installed
+locally), skin tone, underwear/complexion, build (races), hairstyle, hair
+colour, eyebrows, facial hair, horns, eyes, each outfit slot with Ranger and
+Peasant colours, plus Randomize and Reset. Drag the character to turn it;
+scroll or use Full body / Face to zoom. Choices save on the device at once.
+Before the match, **Save** returns to the start screen and **Enter the arena**
+starts a fresh round; during play, Done or Escape returns. The combat HUD is
+hidden meanwhile and movement is ignored. Rebuild with `scripts/build-web.sh`
+after changing Quaternius sources. See
+[ADR 0040](decisions/0040-character-customization-kits.md).
+
+Manual check (pending human review): every option visibly changes the model;
+no skin gaps or clipping at hems for mixed outfit pieces; cross-body
+hairstyles sit on the head; switching body type/ancestry swaps without a flash
+of every part; face view framing in the starting room; HUD returns on close; start screen
+appears after loading and both of its paths start a fresh round.
+
 ### Quaternius default female (2026-11-14)
 
 This supersedes the historical default-off/BaseFemale notes below. A complete

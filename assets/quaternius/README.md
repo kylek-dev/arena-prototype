@@ -60,6 +60,15 @@ permanent backup or repository artifact). The operation is reproducible with
 `python3 scripts/prune_quaternius.py` (dry-run); applying requires `--apply` and
 a fresh `--archive PATH`. A second dry-run reports no remaining changes.
 
+## Customization kits
+
+Since [ADR 0040](../../docs/decisions/0040-character-customization-kits.md)
+the player is assembled from per-body kits built by
+`scripts/character_kits.py`; Git additionally tracks the male base, all rigged
+hairstyles/brows/beard, the Peasant and male outfits and the Ranger 3 /
+Peasant 2 / light-underwear textures. The single dressed-female build below is
+superseded; its default look is the kit's default appearance.
+
 ## Default female player
 
 `scripts/quaternius_character.py` combines

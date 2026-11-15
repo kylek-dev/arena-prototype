@@ -27,6 +27,8 @@ now occupy 0.30/0.80 s. Equipped weapons are temporarily disabled by omitting
 their carrier, preserving source files and preferences. Browser hitch
 resolution remains unverified; no customization UI is added.
 
+[ADR 0040](decisions/0040-character-customization-kits.md) replaces the single dressed female with per-body customization kits: one GLB per body holding every hairstyle/outfit piece as a named node and body regions that outfit pieces hide. The browser resolves the saved look into a render spec (visible nodes, material tints/texture variants, morph) that `arena-client/src/appearance.rs` applies; a close-up preview camera serves the Character screen. Presentation only.
+
 [ADR 0036](decisions/0036-universal-strafe-library.md) replaces the forward-jog
 left/right substitutes with a standalone Blender-authored universal strafe
 library. It targets the common 65-joint skeleton, not the current body/outfit,

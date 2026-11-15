@@ -4,6 +4,7 @@ import { readGraphics } from "../state/graphics";
 import { readWeapons } from "../state/weapons";
 import { readLighting } from "../state/lighting";
 import { loadMap, onMapStatus, readMap } from "../state/map-editor";
+import { readAppearance, readPreview } from "../state/appearance";
 import { observeCastResult } from "./cast-feedback";
 import { engine, error, focus, nameplateScene } from "../state/session";
 import { reconcileFocus } from "../domain/units/selection";
@@ -36,6 +37,8 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     readWeapons,
     readLighting,
     readMap,
+    readAppearance,
+    readPreview,
     onMapStatus,
     onFocusUnit: (tag) => interactUnit(tag, "focus"),
     onState(raw) {
