@@ -30,6 +30,13 @@ function LinkStatistics({ link }: { link: Link }) {
     ["View delay", milliseconds(status?.delayMs ?? null)],
     ["Snapshots", String(status?.snapshots ?? 0)],
     ["Underruns", String(status?.underruns ?? 0)],
+    ["Predicted ahead", `${status?.predictedTicks ?? 0} ticks`],
+    [
+      "Corrections",
+      `${status?.corrections ?? 0}${
+        status?.lastCorrectionMm ? ` · last ${status.lastCorrectionMm} mm` : ""
+      }`,
+    ],
     ["Hash mismatches", String(status?.hashMismatches ?? 0)],
   ];
   return (

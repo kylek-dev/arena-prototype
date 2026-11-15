@@ -36,6 +36,9 @@ const status = (patch: object) => ({
   snapshots: 10,
   underruns: 0,
   hashMismatches: 0,
+  predictedTicks: 3,
+  corrections: 0,
+  lastCorrectionMm: null,
   ...patch,
 });
 
@@ -169,6 +172,8 @@ describe("network match identity", () => {
       status({ rttMs: Number.NaN }),
       status({ underruns: -1 }),
       status({ mapDiffers: "no" }),
+      status({ predictedTicks: 1.5 }),
+      status({ lastCorrectionMm: -1 }),
     ])
       expect(parseStatus(bad)).toBeNull();
   });

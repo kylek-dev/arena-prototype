@@ -1,6 +1,6 @@
 use super::*;
 use arena_protocol::{PROTOCOL_VERSION, Snapshot, TickEvent, Welcome, WireRejection, WireResult};
-use arena_sim::arena::ArenaCommand;
+use arena_sim::arena::{ActorInput, ArenaCommand, Axes};
 
 fn layout() -> Layout {
     arena_map::colosseum().layout
@@ -293,4 +293,114 @@ fn results_and_errors_are_reported_from_this_players_side() {
     let mut session = joined(0, 1);
     session.receive(&feed(1, vec![vec![0xff, 0xff]]), 0.0, &layout());
     assert_eq!(session.phase, Phase::Closed(ErrorCode::Malformed));
+}
+
+/// A running 1v1 seen from seat 0: one server tick so far.
+fn running_session() -> (Session, Arena) {
+    let mut server = Arena::practice(layout(), 1).unwrap();
+    server.step(&[]);
+    let mut session = joined(0, 1);
+    session.receive(
+        &feed(1, vec![snapshot(&server, 0, vec![], &[true, true])]),
+        0.0,
+        &layout(),
+    );
+    assert_eq!(session.phase, Phase::Playing);
+    (session, server)
+}
+
+fn forward() -> ActorInput {
+    ActorInput {
+        movement: Some(Axes { x: 0, z: -1000 }),
+        facing: Some(0),
+        jump: false,
+        attack: None,
+    }
+}
+
+#[test]
+fn the_players_own_fighter_moves_at_once_and_agrees_with_the_server() {
+    let (mut session, mut server) = running_session();
+    let start = session.own().unwrap().current;
+    assert_eq!(start, place(&server.fighters()[0]));
+    // The input moves the fighter before any server reply.
+    session.input([0, -1000], 0, false, None, 0.0).unwrap();
+    let own = session.own().unwrap();
+    let step = arena_sim::arena::MOVE_PER_TICK as f32 / 1000.0;
+    assert_eq!(own.previous, start);
+    assert!((own.current.z - (start.z - step)).abs() < 1e-4);
+    assert_eq!(session.stats.predicted_ticks, 1);
+    // Half-way through the tick it is drawn half-way along the step.
+    assert!((own.at(0.5).z - (start.z - step / 2.0)).abs() < 1e-4);
+    // The server applies the same input: no correction, nothing pending.
+    server.advance(&[forward()]);
+    session.receive(
+        &feed(1, vec![snapshot(&server, 1, vec![], &[true, true])]),
+        0.05,
+        &layout(),
+    );
+    assert_eq!(session.stats.corrections, 0);
+    assert_eq!(session.stats.predicted_ticks, 0);
+    assert_eq!(session.own().unwrap().current, own.current);
+    assert_eq!(session.own().unwrap().offset, Vec3::ZERO);
+    assert_eq!(session.predicted(), Some(server.fighters()[0]));
+    // The HUD and rendering show the predicted fighter, not the delayed view.
+    let view = session.view(0.0, 0.05).unwrap();
+    assert_ne!(view.positions[0], own.current, "the view itself is delayed");
+}
+
+#[test]
+fn a_disagreeing_server_is_eased_in_rather_than_snapped() {
+    let (mut session, mut server) = running_session();
+    session.input([0, -1000], 0, false, None, 0.0).unwrap();
+    let drawn = session.own().unwrap().at(1.0);
+    // The server acknowledges the input but the fighter stood still.
+    server.advance(&[]);
+    session.receive(
+        &feed(1, vec![snapshot(&server, 1, vec![], &[true, true])]),
+        0.05,
+        &layout(),
+    );
+    assert_eq!(session.stats.corrections, 1);
+    assert_eq!(
+        session.stats.last_correction_mm,
+        Some(arena_sim::arena::MOVE_PER_TICK as u64)
+    );
+    let own = session.own().unwrap();
+    assert_eq!(own.current, place(&server.fighters()[0]));
+    // At first it is still drawn where it was ...
+    assert!((own.at(1.0) - drawn).length() < 1e-4);
+    // ... and the difference fades within a few frames.
+    for _ in 0..30 {
+        session.view(1.0 / 60.0, 0.05);
+    }
+    assert!((session.own().unwrap().at(1.0) - own.current).length() < 1e-3);
+    let status: serde_json::Value = serde_json::from_str(&session.status_json()).unwrap();
+    assert_eq!(status["corrections"], 1);
+    assert_eq!(status["lastCorrectionMm"], arena_sim::arena::MOVE_PER_TICK);
+    assert_eq!(status["predictedTicks"], 0);
+}
+
+#[test]
+fn nothing_is_predicted_while_waiting_and_a_new_socket_starts_over() {
+    let mut session = joined(0, 1);
+    let server = Arena::practice(layout(), 1).unwrap();
+    session.receive(
+        &feed(1, vec![snapshot(&server, 0, vec![], &[true, false])]),
+        0.0,
+        &layout(),
+    );
+    assert_eq!(session.phase, Phase::Waiting);
+    session.input([0, -1000], 0, false, None, 0.0).unwrap();
+    assert_eq!(session.own(), None);
+    assert_eq!(session.stats.predicted_ticks, 0);
+    let (mut session, _) = running_session();
+    session.input([0, -1000], 0, false, None, 0.0).unwrap();
+    assert!(session.own().is_some());
+    session.receive(&feed(2, vec![]), 0.1, &layout());
+    assert_eq!(
+        session.own(),
+        None,
+        "a reconnect waits for the server again"
+    );
 }

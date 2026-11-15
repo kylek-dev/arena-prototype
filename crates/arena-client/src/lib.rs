@@ -722,7 +722,11 @@ fn network_receive(
             practice.feedback = rejection_feedback(reason);
         }
     }
-    if let Some(view) = session.view(time.delta_secs_f64(), now) {
+    if let Some(mut view) = session.view(time.delta_secs_f64(), now) {
+        // The HUD's range and sight checks use where the player sees itself.
+        if let Some(predicted) = session.predicted() {
+            view.fighters[0] = predicted;
+        }
         if practice.arena.tick() != view.tick
             || practice.arena.fighters() != view.fighters.as_slice()
             || practice.arena.result() != view.result
@@ -789,9 +793,22 @@ fn present(
     time: Res<Time>,
     mut fighters: Query<(&FighterVisual, &mut Transform, &mut Visibility), Without<Camera>>,
     mut cameras: Query<&mut Transform, (With<Camera>, Without<FighterVisual>)>,
+    net: Option<Res<Net>>,
 ) {
     let positions: Vec<Vec3> = match &practice.remote {
-        Some(remote) => remote.clone(),
+        // In a network match the player's own fighter is predicted, drawn
+        // part-way through the current fixed tick like local practice.
+        Some(remote) => {
+            let mut positions = remote.clone();
+            let own = net
+                .as_ref()
+                .and_then(|net| net.session.as_ref())
+                .and_then(network::Session::own);
+            if let (Some(own), Some(first)) = (own, positions.first_mut()) {
+                *first = own.at(fixed.overstep_fraction());
+            }
+            positions
+        }
         None => (0..practice.arena.fighters().len())
             .map(|i| {
                 practice.previous[i].lerp(

@@ -23,6 +23,11 @@ export type NetworkStatus = {
   snapshots: number;
   underruns: number;
   hashMismatches: number;
+  /** Inputs the player's own fighter is predicted ahead of the server. */
+  predictedTicks: number;
+  /** Times reconciling with the server moved the predicted fighter. */
+  corrections: number;
+  lastCorrectionMm: number | null;
 };
 
 export type LinkPhase = "idle" | "connecting" | "open" | "reconnecting" | "ended";
@@ -228,7 +233,10 @@ export function parseStatus(value: unknown): NetworkStatus | null {
     !Number.isFinite(v.delayMs) ||
     !count(v.snapshots) ||
     !count(v.underruns) ||
-    !count(v.hashMismatches)
+    !count(v.hashMismatches) ||
+    !count(v.predictedTicks) ||
+    !count(v.corrections) ||
+    !(v.lastCorrectionMm === null || count(v.lastCorrectionMm))
   )
     return null;
   return v;
