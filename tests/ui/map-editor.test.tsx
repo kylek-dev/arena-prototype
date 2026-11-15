@@ -123,7 +123,8 @@ it("previews drags in the plan and commits one revision on release, with undo an
   fireEvent.pointerMove(plan, { pointerId: 1, ...at(-10.9, -15.2) });
   // Not sent to the arena until release.
   expect(sentMap().revision).toBe(1);
-  expect(pillar.getAttribute("x")).toBe("-15.5");
+  // The hexagon's +X corner follows the preview (snapped centre −11, 9 m wide).
+  expect(pillar.getAttribute("points")?.split(" ")[0]).toBe("-6.5,-15");
   fireEvent.pointerUp(plan, { pointerId: 1 });
   expect(sentMap().revision).toBe(2);
   expect(sentMap().map.pillars[0]).toMatchObject({ x: -11, z: -15 });

@@ -12,6 +12,7 @@ import {
   moveProp,
   moveRoom,
   moveSpawn,
+  pillarOutline,
   pillarRect,
   planBounds,
   propFootprint,
@@ -259,8 +260,10 @@ export function MapPlan({
         const sel = selected({ kind: "pillar", index: i });
         return (
           <g key={`pillar-${i}`} className={`plan-pillar${sel ? " selected" : ""}`}>
-            <rect
-              {...rectProps(r)}
+            <polygon
+              points={pillarOutline(pillar)
+                .map((p) => `${p.x},${p.z}`)
+                .join(" ")}
               role="button"
               aria-label={`Pillar ${i + 1}`}
               onPointerDown={begin({ kind: "pillar", index: i, mode: "move" })}

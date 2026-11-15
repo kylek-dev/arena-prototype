@@ -1,5 +1,7 @@
-//! Presentation-only camera contact collision. Map boxes supply their own bounds,
-//! so decorative pillar caps, bases and arena rims cannot be missed by the camera.
+//! Presentation-only camera contact collision. Map boxes and hexagonal pillar
+//! pieces supply their own bounds, so decorative pillar caps, bases and arena
+//! rims cannot be missed by the camera.
+use crate::prism::Prism;
 use bevy::prelude::*;
 
 // Covers the near plane as well as the eye; a point ray would still clip corners.
@@ -16,8 +18,7 @@ const NEAR_RETRACT: f32 = 2.0;
 
 #[derive(Component, Clone, Copy)]
 pub(super) struct Obstacle {
-    min: Vec3,
-    max: Vec3,
+    shape: Prism,
     /// Floors, walls and other enclosing structure always shorten the boom.
     /// Only free-standing boxes such as pillars may sit between the player
     /// and a distant camera (ADR 0014).
@@ -28,8 +29,19 @@ pub(super) struct Obstacle {
 pub(super) fn solid_box(transform: Transform) -> (Transform, Obstacle) {
     let half = transform.scale.abs() * 0.5;
     let obstacle = Obstacle {
-        min: transform.translation - half,
-        max: transform.translation + half,
+        shape: Prism::cuboid(transform.translation - half, transform.translation + half),
+        encloses: false,
+    };
+    (transform, obstacle)
+}
+
+/// A hexagonal pillar piece: the hexagon inscribed in the transform's
+/// unrotated, scaled unit cube, like the rules' pillar footprint.
+pub(super) fn solid_pillar(transform: Transform) -> (Transform, Obstacle) {
+    let half = transform.scale.abs() * 0.5;
+    let center = transform.translation;
+    let obstacle = Obstacle {
+        shape: Prism::hexagon(center, half.x, half.z, center.y - half.y, center.y + half.y),
         encloses: false,
     };
     (transform, obstacle)
@@ -54,38 +66,13 @@ struct Hit {
 
 impl Obstacle {
     fn contains(self, point: Vec3) -> bool {
-        point.cmpge(self.min - Vec3::splat(CLEARANCE)).all()
-            && point.cmple(self.max + Vec3::splat(CLEARANCE)).all()
+        self.shape.contains(point, CLEARANCE)
     }
 
     fn entry(self, origin: Vec3, direction: Vec3, limit: f32) -> Option<Hit> {
-        // Sweeping a padded box is conservative at corners, keeping the camera's
-        // near plane outside geometry, not merely its center.
-        let min = self.min - Vec3::splat(CLEARANCE);
-        let max = self.max + Vec3::splat(CLEARANCE);
-        let mut enter: f32 = 0.0;
-        let mut exit = limit;
-        let mut normal = Vec3::ZERO;
-        for axis in 0..3 {
-            if direction[axis].abs() < 1e-6 {
-                if origin[axis] < min[axis] || origin[axis] > max[axis] {
-                    return None;
-                }
-            } else {
-                let a = (min[axis] - origin[axis]) / direction[axis];
-                let b = (max[axis] - origin[axis]) / direction[axis];
-                let entry = a.min(b);
-                if entry >= enter {
-                    enter = entry;
-                    normal = Vec3::ZERO;
-                    normal[axis] = -direction[axis].signum();
-                }
-                exit = exit.min(a.max(b));
-                if enter > exit {
-                    return None;
-                }
-            }
-        }
+        // Sweeping a padded shape is conservative at corners, keeping the
+        // camera's near plane outside geometry, not merely its center.
+        let (enter, normal) = self.shape.entry(origin, direction, limit, CLEARANCE)?;
         Some(Hit {
             distance: (enter - CONTACT_GAP).max(0.0),
             normal,

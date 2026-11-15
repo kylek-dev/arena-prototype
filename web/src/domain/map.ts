@@ -362,6 +362,22 @@ export function pillarRect(p: Pillar): Rect {
   };
 }
 
+/**
+ * A pillar's footprint: the hexagon inscribed in its width × depth box, with
+ * corners on its X axis and flat faces toward ±Z, as the rules use it.
+ */
+export function pillarOutline(p: Pillar): Point[] {
+  const [hx, hz] = [p.width / 2, p.depth / 2];
+  return [
+    { x: p.x + hx, z: p.z },
+    { x: p.x + hx / 2, z: p.z + hz },
+    { x: p.x - hx / 2, z: p.z + hz },
+    { x: p.x - hx, z: p.z },
+    { x: p.x - hx / 2, z: p.z - hz },
+    { x: p.x + hx / 2, z: p.z - hz },
+  ];
+}
+
 export function roomRect(map: ArenaMap, room: Room): Rect {
   const half = room.width / 2;
   return spanRect(

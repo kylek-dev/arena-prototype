@@ -8,7 +8,7 @@
 //! after an edit and the camera tests all see exactly the same geometry.
 //! Starting rooms are cut out of the walls and stands by box subtraction, so a
 //! room can sit on any edge at any size the map allows.
-use crate::{camera, heraldry, textures};
+use crate::{camera, heraldry, palette, textures};
 use arena_map::{Ground, MapFile, Venue};
 use arena_sim::map::Edge;
 use bevy::prelude::*;
@@ -29,6 +29,8 @@ pub(crate) struct VenueEntity;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Surface {
     Floor,
+    /// Starting-room floors: always stone, whatever the map's ground.
+    RoomFloor,
     Sand,
     Snow,
     Grass,
@@ -42,7 +44,10 @@ pub(crate) enum Surface {
     Door,
     Gate,
     PillarStone,
+    /// Bands and crowns: the pillar's light trim.
     PillarEdge,
+    /// The plinth course between the floor and the shaft.
+    PillarBase,
 }
 
 impl Surface {
@@ -56,8 +61,9 @@ impl Surface {
         }
     }
 
-    const ALL: [Surface; 15] = [
+    const ALL: [Surface; 17] = [
         Surface::Floor,
+        Surface::RoomFloor,
         Surface::Sand,
         Surface::Snow,
         Surface::Grass,
@@ -72,19 +78,23 @@ impl Surface {
         Surface::Gate,
         Surface::PillarStone,
         Surface::PillarEdge,
+        Surface::PillarBase,
     ];
 
     /// Texture and metres per repeat. Every venue surface is textured.
     fn texture(self) -> (&'static str, f32) {
         match self {
-            Surface::Floor | Surface::Base | Surface::Stands => {
+            Surface::Floor | Surface::RoomFloor | Surface::Base | Surface::Stands => {
                 (textures::FLOOR_PATH, textures::FLOOR_TILE)
             }
             Surface::Sand => (textures::SAND_PATH, 6.0),
             Surface::Snow => (textures::SNOW_PATH, 7.0),
             Surface::Grass => (textures::GRASS_PATH, 3.0),
-            Surface::PitWall | Surface::Trim | Surface::PillarStone | Surface::PillarEdge => {
-                (textures::BRICKS_PATH, textures::BRICKS_TILE)
+            Surface::PitWall | Surface::Trim => (textures::BRICKS_PATH, textures::BRICKS_TILE),
+            // Pillars are speckled granite, not the walls' bricks, so cover
+            // reads against the wall behind it by pattern, not only tint.
+            Surface::PillarStone | Surface::PillarEdge | Surface::PillarBase => {
+                (textures::GRANITE_PATH, textures::GRANITE_TILE)
             }
             Surface::OuterWall => (textures::STONE_WALL_PATH, 6.0),
             Surface::Bench | Surface::Door => (textures::WOOD_PATH, 1.6),
@@ -95,24 +105,30 @@ impl Surface {
 
     /// Flat tint shown until the texture loads, and multiplied with it after.
     fn tint(self) -> Color {
-        match self {
-            Surface::Floor => Color::srgb(0.41, 0.48, 0.53),
+        palette::color(match self {
+            Surface::Floor | Surface::RoomFloor => palette::STONE_3,
             // Ground textures keep their painted colour.
-            Surface::Sand => Color::srgb(0.98, 0.92, 0.84),
-            Surface::Snow => Color::srgb(0.96, 0.98, 1.0),
-            Surface::Grass => Color::srgb(0.92, 0.96, 0.88),
-            Surface::Base => Color::srgb(0.06, 0.10, 0.14),
-            Surface::PitWall => Color::srgb(0.42, 0.48, 0.58),
-            Surface::Trim => Color::srgb(0.46, 0.50, 0.60),
-            Surface::Stands => Color::srgb(0.86, 0.76, 0.62),
-            Surface::Bench => Color::srgb(0.86, 0.60, 0.40),
-            Surface::OuterWall => Color::srgb(0.95, 0.84, 0.70),
-            Surface::Gold => Color::srgb(1.0, 0.76, 0.34),
-            Surface::Door => Color::srgb(0.66, 0.42, 0.26),
-            Surface::Gate => Color::srgb(0.34, 0.36, 0.44),
-            Surface::PillarStone => Color::srgb(0.50, 0.58, 0.64),
-            Surface::PillarEdge => Color::srgb(0.24, 0.33, 0.39),
-        }
+            Surface::Sand => palette::SAND_8,
+            Surface::Snow => palette::SKY_8,
+            Surface::Grass => palette::LEAF_7,
+            Surface::Base => palette::NIGHT_2,
+            Surface::PitWall => palette::STONE_4,
+            Surface::Trim => palette::STONE_4,
+            Surface::Stands => palette::SAND_6,
+            Surface::Bench => palette::WOOD_4,
+            Surface::OuterWall => palette::SAND_7,
+            Surface::Gold => palette::GOLD_4,
+            Surface::Door => palette::WOOD_3,
+            Surface::Gate => palette::STONE_2,
+            // Stone surfaces share one neutral texture value, so these tints
+            // are what shows. Floor and walls sit together without a seam;
+            // pillars are light granite with lighter bands and crowns
+            // so cover stands out against the walls behind it, and
+            // their plinths step between floor and shaft.
+            Surface::PillarStone => palette::STONE_6,
+            Surface::PillarEdge => palette::STONE_7,
+            Surface::PillarBase => palette::STONE_5,
+        })
     }
 }
 
@@ -139,11 +155,20 @@ impl Piece {
     pub(crate) fn solid(&self) -> bool {
         self.collision != Collision::None
     }
+    /// Pillar pieces are hexagons inscribed in their box, like the rules'
+    /// pillar footprint; everything else is the box itself.
+    fn hexagonal(&self) -> bool {
+        matches!(
+            self.surface,
+            Surface::PillarStone | Surface::PillarEdge | Surface::PillarBase
+        )
+    }
     fn obstacle(&self) -> Option<(Transform, camera::Obstacle)> {
         match self.collision {
             Collision::None => None,
             Collision::Wall => Some(camera::solid_wall(self.transform)),
             Collision::Floor => Some(camera::solid_floor(self.transform)),
+            Collision::Pillar if self.hexagonal() => Some(camera::solid_pillar(self.transform)),
             Collision::Pillar => Some(camera::solid_box(self.transform)),
         }
     }
@@ -490,11 +515,13 @@ pub(crate) fn boxes(map: &MapFile) -> Vec<Piece> {
         let depth = mm(room.depth);
         let ceiling = look.ceiling;
         let b = |along, out, y| plan.edge_box(room.edge, along, out, y);
-        // Flagstone floor, brick-faced side and back walls, a plank ceiling
-        // on cross beams; facings on the solid structure, so none collide.
+        // The arena's flagstone continues through the gate (same texture,
+        // tint and world-aligned UVs), brick-faced side and back walls, a
+        // plank ceiling on cross beams; facings on the solid structure, so
+        // none collide.
         add(
             b((a0, a1), (0.0, depth), (-0.16, 0.0)),
-            Surface::Stands,
+            Surface::RoomFloor,
             Collision::None,
         );
         add(
@@ -566,7 +593,7 @@ pub(crate) fn boxes(map: &MapFile) -> Vec<Piece> {
         let grow = |by: f32| size + Vec3::new(by, 0.0, by);
         add(
             at(c + Vec3::Y * 0.12, grow(0.35) + Vec3::Y * 0.24),
-            Surface::PillarEdge,
+            Surface::PillarBase,
             Collision::Pillar,
         );
         add(
@@ -735,9 +762,14 @@ pub(crate) fn spawn(
 ) {
     for piece in boxes(map) {
         let (_, tile) = piece.surface.texture();
+        let mesh = if piece.hexagonal() {
+            textures::tiled_hexagon(&piece.transform, tile)
+        } else {
+            textures::tiled_cube(&piece.transform, tile)
+        };
         let mut entity = commands.spawn((
             VenueEntity,
-            Mesh3d(meshes.add(textures::tiled_cube(&piece.transform, tile))),
+            Mesh3d(meshes.add(mesh)),
             MeshMaterial3d(assets.material(piece.surface)),
         ));
         match piece.obstacle() {
@@ -956,6 +988,71 @@ mod tests {
             assert_eq!(floor.scale.x, mm(map.layout.half_x) * 2.0);
             assert!(floor.translation.y < 0.0);
         }
+    }
+
+    #[test]
+    fn stone_that_meets_shares_texture_value_and_steps_gently_in_tint() {
+        // Floors and room floors are one material look; walls sit a gentle
+        // step from the floor; pillars use their own granite.
+        let look = |s: Surface| (s.texture(), s.tint());
+        assert_eq!(look(Surface::RoomFloor), look(Surface::Floor));
+        for pillar in [
+            Surface::PillarStone,
+            Surface::PillarEdge,
+            Surface::PillarBase,
+        ] {
+            assert_ne!(pillar.texture(), Surface::PitWall.texture());
+        }
+        assert_eq!(look(Surface::Trim), look(Surface::PitWall));
+        let gentle = |a: Surface, b: Surface| {
+            let (a, b) = (a.tint().to_srgba(), b.tint().to_srgba());
+            for (x, y) in [(a.red, b.red), (a.green, b.green), (a.blue, b.blue)] {
+                assert!((x - y).abs() < 0.06, "{a:?} vs {b:?}");
+            }
+        };
+        gentle(Surface::Floor, Surface::PitWall);
+        // Cover must read against the walls behind it: shafts are at least
+        // twice as bright, and plinths step between the floor and the shaft.
+        let luma = |s: Surface| s.tint().to_linear().luminance();
+        assert!(luma(Surface::PillarStone) > luma(Surface::PitWall) * 2.0);
+        let plinth = luma(Surface::PillarBase);
+        assert!(luma(Surface::Floor) < plinth && plinth < luma(Surface::PillarStone));
+        assert!(luma(Surface::PillarEdge) > luma(Surface::PillarStone));
+        let map = colosseum();
+        let rooms = boxes(&map)
+            .into_iter()
+            .filter(|p| p.surface == Surface::RoomFloor)
+            .count();
+        assert_eq!(rooms, map.layout.rooms.len());
+    }
+
+    #[test]
+    fn spawned_pillars_are_hexagonal_prisms() {
+        let mut world = World::new();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<StandardMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let assets = VenueAssets::new(&mut meshes, &mut materials, &mut images);
+        let map = colosseum();
+        let mut queue = bevy::ecs::world::CommandQueue::default();
+        spawn(
+            &mut Commands::new(&mut queue, &world),
+            &mut meshes,
+            &assets,
+            &map,
+        );
+        queue.apply(&mut world);
+        let shaft = assets.material(Surface::PillarStone);
+        let mut query = world.query::<(&Mesh3d, &MeshMaterial3d<StandardMaterial>)>();
+        let shafts: Vec<usize> = query
+            .iter(&world)
+            .filter(|(_, material)| material.0 == shaft)
+            .map(|(mesh, _)| meshes.get(&mesh.0).unwrap().count_vertices())
+            .collect();
+        // One per pillar, each six side quads and two six-corner caps rather
+        // than a 24-vertex cube.
+        assert_eq!(shafts.len(), map.layout.pillars.len());
+        assert!(shafts.iter().all(|&vertices| vertices == 6 * 4 + 2 * 6));
     }
 
     #[test]

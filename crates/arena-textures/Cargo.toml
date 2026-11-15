@@ -9,6 +9,7 @@ publish = false
 default-run = "arena-textures"
 
 [dependencies]
+arena-palette = { path = "../arena-palette" }
 image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
 
 [lints]

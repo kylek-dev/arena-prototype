@@ -1,6 +1,6 @@
 //! Map layout: the walkable plan the rules use, in integer millimetres.
 //!
-//! A layout is a rectangular floor, rectangular pillars and starting rooms.
+//! A layout is a rectangular floor, hexagonal pillars and starting rooms.
 //! Each room is one straight rectangle running back from a floor edge, exactly
 //! as wide as its opening, so it has no corners to hide in. Layouts are plain
 //! data; parsing and presentation settings live in the `arena-map` crate.
@@ -29,17 +29,133 @@ impl Edge {
     pub const ALL: [Edge; 4] = [Edge::North, Edge::South, Edge::West, Edge::East];
 }
 
-/// An axis-aligned rectangle, centre and half extents.
+/// A hexagonal pillar: the hexagon inscribed in its `half_x` × `half_z` box,
+/// with corners at ±`half_x` on its X axis and flat faces at ±`half_z`.
+/// Bodies keep `BODY_RADIUS` from it, so its walkable outline is the hexagon
+/// grown by a rounded margin: faces to slide along and corners to round.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Block {
+pub struct Pillar {
     pub center: Position,
     pub half_x: i32,
     pub half_z: i32,
 }
-impl Block {
+
+/// Closest point to `p` on segment `a`–`b`, rounded to the millimetre.
+fn closest_on_segment(p: Position, a: Position, b: Position) -> Position {
+    let (abx, abz) = (i64::from(b.x - a.x), i64::from(b.z - a.z));
+    let along = i64::from(p.x - a.x) * abx + i64::from(p.z - a.z) * abz;
+    let length = abx * abx + abz * abz;
+    if along <= 0 || length == 0 {
+        a
+    } else if along >= length {
+        b
+    } else {
+        Position {
+            x: a.x + (abx * along / length) as i32,
+            z: a.z + (abz * along / length) as i32,
+        }
+    }
+}
+
+impl Pillar {
+    /// Corners in counter-clockwise order seen from above (+X toward +Z).
+    pub fn corners(self) -> [Position; 6] {
+        let Position { x, z } = self.center;
+        let (hx, hz, mid) = (self.half_x, self.half_z, self.half_x / 2);
+        [
+            Position { x: x + hx, z },
+            Position {
+                x: x + mid,
+                z: z + hz,
+            },
+            Position {
+                x: x - mid,
+                z: z + hz,
+            },
+            Position { x: x - hx, z },
+            Position {
+                x: x - mid,
+                z: z - hz,
+            },
+            Position {
+                x: x + mid,
+                z: z - hz,
+            },
+        ]
+    }
+
+    fn edges(self) -> impl Iterator<Item = (Position, Position)> {
+        let corners = self.corners();
+        (0..6).map(move |i| (corners[i], corners[(i + 1) % 6]))
+    }
+
+    /// Inside the hexagon or on its outline.
+    fn inside(self, p: Position) -> bool {
+        self.edges().all(|(a, b)| {
+            let cross = i64::from(b.x - a.x) * i64::from(p.z - a.z)
+                - i64::from(b.z - a.z) * i64::from(p.x - a.x);
+            cross >= 0
+        })
+    }
+
+    /// Whether `point` is within `padding` of the hexagon (or inside it).
     pub fn contains(self, point: Position, padding: i32) -> bool {
-        (point.x - self.center.x).abs() <= self.half_x + padding
-            && (point.z - self.center.z).abs() <= self.half_z + padding
+        if self.inside(point) {
+            return true;
+        }
+        let limit = i128::from(padding).pow(2);
+        self.edges().any(|(a, b)| {
+            // Exact squared distance to the segment, compared without division.
+            let (abx, abz) = (i128::from(b.x - a.x), i128::from(b.z - a.z));
+            let (apx, apz) = (i128::from(point.x - a.x), i128::from(point.z - a.z));
+            let along = apx * abx + apz * abz;
+            let length = abx * abx + abz * abz;
+            if along <= 0 || length == 0 {
+                apx * apx + apz * apz <= limit
+            } else if along >= length {
+                let (bpx, bpz) = (i128::from(point.x - b.x), i128::from(point.z - b.z));
+                bpx * bpx + bpz * bpz <= limit
+            } else {
+                let cross = abx * apz - abz * apx;
+                cross * cross <= limit * length
+            }
+        })
+    }
+
+    /// Moves `point` straight out to just beyond `padding` from the nearest
+    /// part of the outline: off a face along its normal, around a corner
+    /// radially. A body pressed into a face therefore keeps the part of its
+    /// step that runs along the face, and rounds corners smoothly.
+    pub(crate) fn push_out(self, point: Position, padding: i32) -> Position {
+        let Some((nearest, (a, b))) = self
+            .edges()
+            .map(|(a, b)| (closest_on_segment(point, a, b), (a, b)))
+            .min_by_key(|(c, _)| c.distance_squared(point))
+        else {
+            return point;
+        };
+        let away = if self.inside(point) || nearest == point {
+            // From inside, leave through the nearest face.
+            Position {
+                x: b.z - a.z,
+                z: a.x - b.x,
+            }
+        } else {
+            Position {
+                x: point.x - nearest.x,
+                z: point.z - nearest.z,
+            }
+        };
+        let length = (i64::from(away.x).pow(2) + i64::from(away.z).pow(2))
+            .isqrt()
+            .max(1);
+        // A few extra millimetres absorb rounding here and when `slide`
+        // trims the step back to its requested length, so the result is clear.
+        let reach = i64::from(padding) + 4;
+        Position {
+            x: nearest.x + (i64::from(away.x) * reach / length) as i32,
+            z: nearest.z + (i64::from(away.z) * reach / length) as i32,
+        }
     }
 }
 
@@ -69,7 +185,7 @@ pub struct Room {
 pub struct Layout {
     pub half_x: i32,
     pub half_z: i32,
-    pub pillars: Vec<Block>,
+    pub pillars: Vec<Pillar>,
     pub rooms: Vec<Room>,
 }
 
@@ -207,8 +323,11 @@ impl Layout {
     }
 
     /// Moves one axis at a time; each axis goes as far toward its target as
-    /// any region containing the body allows, then pillars veto the step.
-    /// The same footprint applies in the air: jumping cannot bypass cover.
+    /// any region containing the body allows. A pillar the step runs into
+    /// pushes the body back out to its surface, so it slides along faces and
+    /// around corners. If that leaves the body wedged (against a wall or a
+    /// second pillar), pillars veto each axis instead. The same footprint
+    /// applies in the air: jumping cannot bypass cover.
     pub fn slide(&self, mut p: Position, delta: Position) -> Position {
         let regions = self.regions();
         let reach = |p: Position, target: i32, along_x: bool| {
@@ -226,6 +345,29 @@ impl Layout {
                     }
                 })
         };
+        let mut target = Position {
+            x: reach(p, p.x + delta.x, true),
+            z: p.z,
+        };
+        target.z = reach(target, target.z + delta.z, false);
+        for pillar in &self.pillars {
+            if pillar.contains(target, BODY_RADIUS) {
+                target = pillar.push_out(target, BODY_RADIUS);
+            }
+        }
+        // Sliding never outruns the requested step: trim millimetre rounding.
+        let step = |q: Position| i64::from(q.x - p.x).pow(2) + i64::from(q.z - p.z).pow(2);
+        let allowed = i64::from(delta.x).pow(2) + i64::from(delta.z).pow(2);
+        if step(target) > allowed {
+            let (have, want) = (step(target).isqrt() + 1, allowed.isqrt());
+            target = Position {
+                x: p.x + (i64::from(target.x - p.x) * want / have) as i32,
+                z: p.z + (i64::from(target.z - p.z) * want / have) as i32,
+            };
+        }
+        if self.walkable(target) {
+            return target;
+        }
         let next = Position {
             x: reach(p, p.x + delta.x, true),
             z: p.z,
@@ -287,30 +429,9 @@ impl Layout {
             if pillar.contains(start, 0) || pillar.contains(end, 0) {
                 return true;
             }
-            let Block {
-                center: Position { x, z },
-                half_x,
-                half_z,
-            } = *pillar;
-            let corners = [
-                Position {
-                    x: x - half_x,
-                    z: z - half_z,
-                },
-                Position {
-                    x: x + half_x,
-                    z: z - half_z,
-                },
-                Position {
-                    x: x + half_x,
-                    z: z + half_z,
-                },
-                Position {
-                    x: x - half_x,
-                    z: z + half_z,
-                },
-            ];
-            (0..4).any(|i| segments_intersect(start, end, corners[i], corners[(i + 1) % 4]))
+            pillar
+                .edges()
+                .any(|(a, b)| segments_intersect(start, end, a, b))
         })
     }
 
@@ -532,7 +653,7 @@ pub(crate) fn segments_intersect(a: Position, b: Position, c: Position, d: Posit
 /// Synthetic layout for rules tests: the shape of the default colosseum.
 #[cfg(test)]
 pub(crate) fn fixture() -> Layout {
-    let pillar = |x, z| Block {
+    let pillar = |x, z| Pillar {
         center: Position { x, z },
         half_x: 4_500,
         half_z: 4_500,
@@ -605,7 +726,7 @@ mod tests {
         assert!(message(|l| l.rooms[0].spawns[1].across = 0).contains("0.9 m apart"));
         assert!(message(|l| l.rooms[0].spawns[0].back = 20_000).contains("inside the room"));
         assert!(
-            message(|l| l.pillars.push(Block {
+            message(|l| l.pillars.push(Pillar {
                 center: Position { x: 0, z: 40_000 },
                 half_x: 4_000,
                 half_z: 1_500,
@@ -614,7 +735,7 @@ mod tests {
         );
         // A wall-to-wall pillar seals the opposing room's half off.
         assert!(
-            message(|l| l.pillars.push(Block {
+            message(|l| l.pillars.push(Pillar {
                 center: Position { x: 0, z: 0 },
                 half_x: 54_000,
                 half_z: 1_000,
