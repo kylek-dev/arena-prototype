@@ -57,6 +57,12 @@
   margin: 0;
   font-variant-numeric: tabular-nums;
 }
+/* Network values ("reconnecting · attempt 3") are wider than frame times. */
+.network-statistics {
+  grid-template-columns: repeat(2, 1fr);
+  padding-top: 8px;
+  border-top: 1px solid var(--gray-6);
+}
 .frame-spikes {
   font-size: 11px;
 }

@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { engine } from "../../state/session";
+import { networkLink } from "../../state/network";
+import type { Link } from "../../runtime/network";
 import { useStore } from "../../state/store";
 import {
   debugEnabled,
@@ -14,6 +16,37 @@ const milliseconds = (value: number | null) => (value === null ? "—" : `${valu
 function SnapshotDetails() {
   const state = useStore(engine, (s) => s);
   return <pre id="debug-state">{JSON.stringify({ state, metrics: metrics() }, null, 2)}</pre>;
+}
+
+function LinkStatistics({ link }: { link: Link }) {
+  const state = useStore(link.state, (s) => s);
+  if (state.phase === "idle") return null;
+  const status = state.status;
+  const rows: [string, string][] = [
+    ["Link", state.attempt ? `${state.phase} · attempt ${state.attempt}` : state.phase],
+    ["Match", status ? `${status.phase}${status.error ? ` · ${status.error}` : ""}` : "—"],
+    ["Ping", milliseconds(status?.rttMs ?? null)],
+    ["Input → ack", milliseconds(status?.inputMs ?? null)],
+    ["View delay", milliseconds(status?.delayMs ?? null)],
+    ["Snapshots", String(status?.snapshots ?? 0)],
+    ["Underruns", String(status?.underruns ?? 0)],
+    ["Hash mismatches", String(status?.hashMismatches ?? 0)],
+  ];
+  return (
+    <dl className="frame-statistics network-statistics" aria-label="Network match">
+      {rows.map(([term, value]) => (
+        <div key={term}>
+          <dt>{term}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function NetworkStatistics() {
+  const link = useStore(networkLink, (l) => l);
+  return link ? <LinkStatistics link={link} /> : null;
 }
 
 function PerformancePanel() {
@@ -59,6 +92,7 @@ function PerformancePanel() {
           <dd>{milliseconds(stats.frameMaxMs)}</dd>
         </div>
       </dl>
+      <NetworkStatistics />
       <div className="frame-spikes">
         Spikes &gt;33.3 ms: <strong>{stats.frameSpikes}</strong> · {stats.frameSamples}/3600 samples
       </div>

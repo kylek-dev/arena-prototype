@@ -14,6 +14,8 @@ import { interactUnit } from "./commands";
 import { installInput } from "./input-router";
 import { installSpellDragging } from "./spell-drag";
 import { debugEnabled, measureFrames, metrics, recordError, recordState } from "./diagnostics";
+import { browserLink, installJoinLinks, takeJoinFragment } from "./network";
+import { networkLink } from "../state/network";
 export function startRuntime(canvas: HTMLCanvasElement) {
   const pointer = installPointer(canvas, () => router.cancel());
   const router = installInput(canvas, pointer.end);
@@ -29,8 +31,17 @@ export function startRuntime(canvas: HTMLCanvasElement) {
   };
   window.addEventListener("error", (e) => fail(e.message));
   window.addEventListener("unhandledrejection", (e) => fail(String(e.reason?.message ?? e.reason)));
+  const link = browserLink();
+  networkLink.set(link);
+  // A join link wins; otherwise a reload rejoins this tab's match.
+  const joining = takeJoinFragment() ?? link.resumable();
+  if (joining) link.join(joining);
+  const stopJoinLinks = installJoinLinks(link);
   let lastDelivery = 0;
   window.arenaShell = {
+    readNetwork: link.read,
+    sendNetwork: link.send,
+    onNetwork: link.onStatus,
     readInput: router.sample,
     readHover: unitHover.read,
     readGraphics,
@@ -86,6 +97,9 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     fail(String(e.message ?? e));
   });
   return () => {
+    stopJoinLinks();
+    link.dispose();
+    networkLink.set(null);
     stopFrameTiming();
     router.dispose();
     pointer.dispose();

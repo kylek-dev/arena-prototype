@@ -1,6 +1,6 @@
 # Developer setup from a fresh machine
 
-This guide is for a developer cloning and modifying the project. Install the tools below once; Cargo and npm then download the pinned project dependencies. There is no separate Bevy/editor installation, database, game server, asset download, or AI service requirement.
+This guide is for a developer cloning and modifying the project. Install the tools below once; Cargo and npm then download the pinned project dependencies. There is no separate Bevy/editor installation, database, asset download, or AI service requirement. The optional match server is built from this workspace (see below).
 
 ## Prerequisites
 
@@ -109,6 +109,38 @@ Open http://localhost:8000. Keep that terminal running; Ctrl+C stops the server.
 - Input/domain/DOM watch loop: `npm run test:watch`; dependency-free legacy input loop: `npm run test:input:watch`.
 - Rules-only test loop: `cargo test -p arena-sim`.
 - Scripted original headless example: `cargo run -p arena-headless`.
+
+### Match server (no browser client yet)
+
+The authoritative match server ([ADR 0044](decisions/0044-authoritative-match-server.md), [protocol](PROTOCOL.md)) runs locally without accounts:
+
+```sh
+cargo run -p arena-server -- --dev            # ws://127.0.0.1:8080/play
+curl -X POST 'http://127.0.0.1:8080/dev/match?team_size=1'   # match id and one hex ticket per seat
+curl http://127.0.0.1:8080/metrics            # Prometheus text counters
+```
+
+`--dev` generates a random ticket key and enables `POST /dev/match`; it refuses non-loopback `--bind` addresses. Without `--dev`, set `ARENA_TICKET_KEY` to at least 32 bytes of hex shared with whatever issues tickets. `--debug-json` logs every message as JSON on stderr. Ctrl+C or SIGTERM drains: readiness (`/readyz`) fails, new matches are refused, running matches get up to `--drain-seconds` (default 60) before players receive `ServerShutdown`. The browser cannot connect yet. Server tests: `cargo test -p arena-server`.
+
+To play a network match in the browser, start the server and the client, then create a match and open one printed link per seat, each in its own tab or browser:
+
+```sh
+cargo run -p arena-server -- --dev        # terminal 1
+npm run serve                              # terminal 2 (after ./scripts/build-web.sh)
+./scripts/dev-match.sh 1                   # team size 1–3; prints one join link per seat
+```
+
+The tab joins its seat, reconnects by itself after a dropped connection, and rejoins after a reload; a banner shows the connection state, and Menu → Leave match returns to practice (Rejoin last match goes back). Add `?debug=1` before the `#` for network statistics in the diagnostics overlay. Tabs in one window work: a background tab keeps its seat while its rendering is paused. The server prints one line per seat change (`match …: seat 1 joined`, `… taken over`, `… disconnected`), which shows which match and seat each tab holds. Join links carry the ticket in the URL fragment; the page removes it from the address bar. The match starts when every seat has joined.
+
+Bot players exercise a running `--dev` server with simulated latency and report latency, consistency and recovery:
+
+```sh
+cargo run --release -p arena-bot -- --matches 1 --rtt 100 --jitter 20 --seconds 20
+cargo run --release -p arena-bot -- --matches 167 --team-size 3 --seconds 30 --rtt 50 --jitter 10 --server-pid <server pid>
+cargo run --release -p arena-bot -- --rtt 100 --reconnect-every 5 --seconds 20   # drop out and rejoin
+```
+
+`./scripts/server-smoke.sh` runs the same short (about 5 s) server-and-bots smoke test that CI runs (after `cargo build -p arena-server -p arena-bot`). `--json` prints the report as JSON. The bot exits non-zero on any error, unexpected close, state hash mismatch or failed rejoin. See the [load baseline](research/match-server-load.md).
 
 ## VS Code tasks
 
