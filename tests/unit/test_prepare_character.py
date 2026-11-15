@@ -200,15 +200,16 @@ class CharacterPreparation(unittest.TestCase):
             with patch.dict(os.environ, {}, clear=True), \
                     patch.object(module.quaternius_character, 'MODEL', model), \
                     patch.object(module.quaternius_character, 'LIBRARY', library), \
-                    patch.object(module.quaternius_character, 'build',
-                                 return_value=b'synthetic prepared GLB') as build:
+                    patch.object(module.character_kits, 'prepare',
+                                 return_value=[{'id': 'human-female'}]) as kits:
                 module.prepare(directory=directory)
                 self.assertEqual(json.loads((directory / 'character.json').read_text()),
-                                 {'available': True, 'model': 'quaternius-female'})
-                build.assert_called_once_with(
-                    texture_processor=module.quaternius_character.runtime_png)
-                output = directory / module.model_path('quaternius-female')
-                self.assertTrue(output.is_file())
+                                 {'available': True, 'model': 'quaternius-kits',
+                                  'kits': [{'id': 'human-female'}]})
+                kits.assert_called_once_with(directory)
+                self.assertFalse((directory / module.model_path('quaternius-female')).exists())
+                output = directory / module.character_kits.DIRECTORY
+                output.mkdir(parents=True)
                 os.environ[module.ENV] = '0'
                 module.prepare(directory=directory)
                 self.assertFalse(output.exists())

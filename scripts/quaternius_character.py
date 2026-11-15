@@ -91,9 +91,11 @@ def normalize(q):
 
 
 def joint_map(document):
-    if len(document.get('skins', [])) != 1:
-        raise ValueError('Expected one humanoid skin')
-    joints = document['skins'][0]['joints']
+    skins = document.get('skins', [])
+    # Several skins may share one skeleton (parts keep their own bind poses).
+    if not skins or any(s['joints'] != skins[0]['joints'] for s in skins):
+        raise ValueError('Expected one humanoid skeleton')
+    joints = skins[0]['joints']
     names = {document['nodes'][i]['name']: i for i in joints}
     if len(names) != len(joints) or not {'root', 'pelvis', 'Head'} <= names.keys():
         raise ValueError('Expected unique named humanoid joints')
@@ -262,12 +264,13 @@ def texture_infos(material):
                 yield from texture_infos(child)
 
 
-def runtime_png(data, kind):
+def runtime_png(data, kind, edge=None):
     """Use the existing pinned offline image crate; no new Python dependency."""
+    if edge is None:
+        edge = TEXTURE_EDGE if kind == 'color' else DETAIL_EDGE
     result = subprocess.run(
         ['cargo', 'run', '--quiet', '--locked', '-p', 'arena-textures',
-         '--bin', 'character-textures', '--', kind,
-         str(TEXTURE_EDGE if kind == 'color' else DETAIL_EDGE)],
+         '--bin', 'character-textures', '--', kind, str(edge)],
         input=data, capture_output=True, check=False)
     if result.returncode:
         raise ValueError('Character texture preparation failed: ' +
@@ -357,9 +360,12 @@ def compact(document, binary):
     accessor_map = retain('accessors', {obj[key] for obj, key in references})
     for obj, key in references:
         obj[key] = accessor_map[obj[key]]
-    views = [(a, 'bufferView') for a in document['accessors']]
-    if any('sparse' in a for a in document['accessors']):
-        raise ValueError('Sparse runtime accessors are not supported')
+    # Sparse accessors (race morph targets) reference their own index/value views.
+    views = [(a, 'bufferView') for a in document['accessors'] if 'bufferView' in a]
+    for a in document['accessors']:
+        if 'sparse' in a:
+            views.extend(((a['sparse']['indices'], 'bufferView'),
+                          (a['sparse']['values'], 'bufferView')))
     views.extend((i, 'bufferView') for i in document.get('images', []))
     view_map = retain('bufferViews', {obj[key] for obj, key in views})
     for obj, key in views:

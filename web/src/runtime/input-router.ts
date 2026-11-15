@@ -10,6 +10,8 @@ import {
   interaction,
   heldSlots,
   inputReset,
+  customizing,
+  prematch,
 } from "../state/session";
 import { isEngineReady } from "../domain/abilities/catalog";
 import { dispatch, input } from "./commands";
@@ -66,6 +68,15 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
       previousProfile = preferences.get().active;
       if (!onlyNameplates) cancel();
     });
+  // Opening the character close-up releases held movement like a menu does.
+  const unCustomize = customizing.subscribe(() => {
+    cancel();
+    focusPolicy.restore();
+  });
+  const unPrematch = prematch.subscribe(() => {
+    cancel();
+    focusPolicy.restore();
+  });
   const unDrag = draggingSpell.subscribe(() => {
     cancel();
     focusPolicy.restore();
@@ -102,6 +113,11 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
       }
       e.preventDefault();
       if (!e.repeat) acceptBinding(destination.action, destination.entry, c);
+      return;
+    }
+    if (customizing.get() && e.code === "Escape" && !mode.panel) {
+      e.preventDefault();
+      customizing.set(false);
       return;
     }
     if (mode.layout && e.code === "Escape") {
@@ -175,6 +191,8 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
       unsubscribe();
       unconfig();
       unDrag();
+      unCustomize();
+      unPrematch();
       unReset();
       unEngine();
       cancel();

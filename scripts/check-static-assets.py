@@ -37,8 +37,14 @@ parser = References()
 parser.feed((DIST / 'index.html').read_text())
 assert parser.urls, 'No built frontend references'
 manifest = json.loads((DIST / 'assets/character.json').read_text())
-character = f"assets/characters/{manifest.get('model')}.glb"
-if manifest['available']:
+# Kit-built players ship one GLB per kit plus every variant texture they name.
+characters = ([f"assets/{kit['path']}" for kit in manifest.get('kits', [])] +
+              sorted({f"assets/{v['texture']}" for kit in manifest.get('kits', [])
+                      for m in kit['materials'].values() for v in m.get('variants', [])
+                      if v['texture']}))
+if manifest['available'] and not characters:
+    characters = [f"assets/characters/{manifest.get('model')}.glb"]
+for character in characters:
     assert (DIST / character).is_file(), character
 
 paths = ['index.html', 'pkg/arena_client.js', 'pkg/arena_client_bg.wasm',
@@ -49,8 +55,7 @@ paths = ['index.html', 'pkg/arena_client.js', 'pkg/arena_client_bg.wasm',
          'assets/textures/wood-planks.png', 'assets/textures/metal-grate.png',
          'assets/textures/metal-panels.png', 'assets/textures/sky.png',
          'assets/maps/colosseum.json', *parser.urls]
-if manifest['available']:
-    paths.append(character)
+paths.extend(characters)
 server = ThreadingHTTPServer(('127.0.0.1', 0), partial(QuietHandler, directory=str(ROOT)))
 thread = Thread(target=server.serve_forever, daemon=True)
 thread.start()
