@@ -130,7 +130,7 @@ cargo run --release -p arena-bot -- --matches 167 --team-size 3 --seconds 30 --r
 cargo run --release -p arena-bot -- --rtt 100 --reconnect-every 5 --seconds 20   # drop out and rejoin
 ```
 
-`./scripts/server-smoke.sh` runs the same short server-and-bots smoke test that CI runs (after `cargo build -p arena-server -p arena-bot`). `--json` prints the report as JSON. The bot exits non-zero on any error, unexpected close, state hash mismatch or failed rejoin. See the [load baseline](research/match-server-load.md).
+`./scripts/server-smoke.sh` runs the same short (about 5 s) server-and-bots smoke test that CI runs (after `cargo build -p arena-server -p arena-bot`). `--json` prints the report as JSON. The bot exits non-zero on any error, unexpected close, state hash mismatch or failed rejoin. See the [load baseline](research/match-server-load.md).
 
 ## VS Code tasks
 

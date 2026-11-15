@@ -37,6 +37,8 @@ pub struct Scenario {
     pub duration: Duration,
     pub link: Link,
     pub reconnect_every: Option<Duration>,
+    /// How long a dropped seat stays away before rejoining.
+    pub away: Duration,
     pub seed: u64,
     /// Linux only: measure this process's CPU time over the run.
     pub server_pid: Option<u32>,
@@ -277,6 +279,7 @@ async fn run_group(
                     link: scenario.link,
                     seed: rng.next_u64(),
                     reconnect_every: scenario.reconnect_every,
+                    away: scenario.away,
                     shared: shared.clone(),
                 };
                 tokio::spawn(bot::play(seat, deadline))

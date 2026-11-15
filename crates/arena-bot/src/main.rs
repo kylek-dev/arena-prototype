@@ -1,5 +1,5 @@
 //! `arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3]
-//!            [--seconds S] [--rtt MS] [--jitter MS] [--reconnect-every S]
+//!            [--seconds S] [--rtt MS] [--jitter MS] [--reconnect-every S] [--away-ms MS]
 //!            [--seed N] [--server-pid PID] [--json]`
 //!
 //! Plays bot matches against a server started with `--dev` and prints a
@@ -12,7 +12,7 @@ use std::time::Duration;
 use arena_bot::link::Link;
 use arena_bot::{Scenario, run};
 
-const USAGE: &str = "usage: arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3] [--seconds S] [--rtt MS] [--jitter MS] [--reconnect-every S] [--seed N] [--server-pid PID] [--json]";
+const USAGE: &str = "usage: arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3] [--seconds S] [--rtt MS] [--jitter MS] [--reconnect-every S] [--away-ms MS] [--seed N] [--server-pid PID] [--json]";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -59,6 +59,7 @@ fn parse() -> Result<(Option<Scenario>, bool), String> {
         duration: Duration::from_secs(10),
         link: Link::default(),
         reconnect_every: None,
+        away: Duration::from_secs(1),
         seed: 1,
         server_pid: None,
     };
@@ -83,6 +84,9 @@ fn parse() -> Result<(Option<Scenario>, bool), String> {
             }
             "--rtt" => rtt = number("--rtt", value("--rtt")?)?,
             "--jitter" => jitter = number("--jitter", value("--jitter")?)?,
+            "--away-ms" => {
+                scenario.away = Duration::from_millis(number("--away-ms", value("--away-ms")?)?);
+            }
             "--reconnect-every" => {
                 scenario.reconnect_every = Some(Duration::from_secs(number(
                     "--reconnect-every",

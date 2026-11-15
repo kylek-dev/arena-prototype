@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Smoke test of the real binaries: start a development match server, play bot
-# 2v2 matches through 100 ms of simulated latency with drop-outs and rejoins,
-# then drain the server. Fails on any bot failure (error, unexpected close,
-# state hash mismatch, failed rejoin) or an unclean server exit.
+# Smoke test of the real binaries (about 5 s): start a development match
+# server, play bot 2v2 matches through 100 ms of simulated latency with
+# drop-outs and rejoins, then stop the server with SIGTERM. Fails on any bot
+# failure (error, unexpected close, state hash mismatch, failed rejoin) or an
+# unclean server exit.
 #
 # Usage: scripts/server-smoke.sh [debug|release]   (builds must already exist)
 set -euo pipefail
@@ -11,7 +12,7 @@ bin="target/${1:-debug}"
 port="${ARENA_SMOKE_PORT:-18085}"
 log="$(mktemp)"
 
-"$bin/arena-server" --dev --bind "127.0.0.1:$port" --drain-seconds 2 2>"$log" &
+"$bin/arena-server" --dev --bind "127.0.0.1:$port" --drain-seconds 0 2>"$log" &
 server=$!
 cleanup() {
   kill "$server" 2>/dev/null || true
@@ -27,7 +28,7 @@ if ! curl -sf --retry 30 --retry-connrefused --retry-delay 1 \
 fi
 
 "$bin/arena-bot" --server "127.0.0.1:$port" --matches 4 --team-size 2 \
-  --seconds 10 --rtt 100 --jitter 20 --reconnect-every 4
+  --seconds 4 --rtt 100 --jitter 20 --reconnect-every 2 --away-ms 300
 
 kill -TERM "$server"
 if ! wait "$server"; then

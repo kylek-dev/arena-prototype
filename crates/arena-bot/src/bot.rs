@@ -30,6 +30,8 @@ pub struct Seat {
     pub seed: u64,
     /// Drop the connection and rejoin this often (staggered per seat).
     pub reconnect_every: Option<Duration>,
+    /// How long a dropped seat stays away before rejoining.
+    pub away: Duration,
     pub shared: Arc<Shared>,
 }
 
@@ -100,7 +102,7 @@ pub async fn play(seat: Seat, deadline: Instant) -> SeatStats {
         match outcome {
             End::Planned if Instant::now() < deadline => {
                 // Stay away a moment so the other players can see it.
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::time::sleep(seat.away).await;
                 if Instant::now() >= deadline {
                     break;
                 }

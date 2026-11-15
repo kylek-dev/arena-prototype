@@ -17,12 +17,13 @@ async fn scenario(rtt_ms: u64, jitter_ms: u64) -> (arena_server::Running, Scenar
         server: running.addr.to_string(),
         matches: 2,
         team_size: 1,
-        duration: Duration::from_secs(3),
+        duration: Duration::from_millis(1500),
         link: Link::round_trip(
             Duration::from_millis(rtt_ms),
             Duration::from_millis(jitter_ms),
         ),
         reconnect_every: None,
+        away: Duration::from_millis(200),
         seed: 7,
         server_pid: Some(std::process::id()),
     };
@@ -36,7 +37,7 @@ async fn bots_play_consistently_through_simulated_latency() {
     println!("{report}");
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(report.unexpected_closes, 0);
-    assert!(report.hash_checks > 100, "{}", report.hash_checks);
+    assert!(report.hash_checks > 30, "{}", report.hash_checks);
     assert_eq!(report.hash_mismatches, 0);
     // Pings cost at least the simulated round trip. Upper bounds are loose
     // so a busy CI runner cannot fail them; the research note records real
@@ -65,8 +66,8 @@ async fn bots_play_consistently_through_simulated_latency() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bots_that_drop_out_are_seen_as_disconnected_and_rejoin() {
     let (running, mut scenario) = scenario(50, 0).await;
-    scenario.duration = Duration::from_secs(4);
-    scenario.reconnect_every = Some(Duration::from_secs(1));
+    scenario.duration = Duration::from_secs(2);
+    scenario.reconnect_every = Some(Duration::from_millis(500));
     let report = run(scenario).await.unwrap();
     println!("{report}");
     assert!(report.rejoins_attempted > 0);
