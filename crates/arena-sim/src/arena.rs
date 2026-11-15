@@ -1,6 +1,22 @@
-//! Planar arena rules for the browser spike; positions are integer millimetres.
-//! Actor order is supplied by the caller; this is a practice scene, not a fair
-//! competitive scheduler. No rendering, networking, floating point, or OS time.
+//! Planar arena rules; positions are integer millimetres. No rendering,
+//! networking, floating point, or OS time.
+//!
+//! Each tick takes one [`ActorInput`] slot per actor. The slot index is the
+//! actor, so an input cannot act for someone else, and one slot carries at
+//! most one movement, one facing, one jump and one attack (the per-tick
+//! budget). Slots resolve in phases, never in caller order (ADR 0044):
+//!
+//! 1. airborne momentum carries every jumping body;
+//! 2. ground movement, then facing, for every actor;
+//! 3. jumps for every actor;
+//! 4. attacks: every attack is validated against the same post-movement
+//!    state and their damage lands together, so swapping actor order never
+//!    changes the outcome and two lethal hits on the same tick both land
+//!    (when both teams fall, the round is a draw);
+//! 5. vertical motion.
+//!
+//! Movement and jumps never depend on another actor (bodies do not collide
+//! with each other), so phases 2 and 3 are order independent too.
 
 use crate::TICKS_PER_SECOND;
 use crate::map::{Layout, MAX_TEAM};
@@ -15,6 +31,10 @@ pub const ATTACK_RANGE: i32 = 6_000;
 pub const ATTACK_COOLDOWN: u64 = TICKS_PER_SECOND;
 pub const ATTACK_DAMAGE: u16 = 25;
 pub const MAX_HEALTH: u16 = 100;
+/// Movement axes are quantized to this magnitude on each axis.
+pub const AXIS_LIMIT: i16 = 1000;
+/// Binary angle of team 1's spawn heading: half a turn from team 0.
+pub const HALF_TURN: u16 = 0x8000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Position {
@@ -38,7 +58,39 @@ pub struct Combatant {
     pub momentum: Position,
     pub health: u16,
     pub ready_at: u64,
+    /// Heading as a binary angle: 65536 units per turn, 0 faces −Z and
+    /// angles grow counter-clockwise seen from above (a yaw about +Y). Every
+    /// value is valid; no rule reads it yet, but it is authoritative state
+    /// that snapshots relay to other players.
+    pub facing: u16,
 }
+
+/// Planar movement intent. Each axis must lie in
+/// `[-AXIS_LIMIT, AXIS_LIMIT]`; the rules normalize the length.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Axes {
+    pub x: i16,
+    pub z: i16,
+}
+
+/// One actor's intent for one tick. `None`/`false` fields are idle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ActorInput {
+    pub movement: Option<Axes>,
+    pub facing: Option<u16>,
+    pub jump: bool,
+    /// Attack this actor index.
+    pub attack: Option<usize>,
+}
+impl ActorInput {
+    pub fn is_idle(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// Convenience command list for scripts and tests; [`Arena::step`] bins it
+/// into per-actor [`ActorInput`] slots. A network server builds the slots
+/// itself from authenticated connections and calls [`Arena::advance`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArenaCommand {
     /// Axes are quantized to [-1000, 1000] and normalized by the rules.
@@ -46,6 +98,10 @@ pub enum ArenaCommand {
         actor: usize,
         x: i16,
         z: i16,
+    },
+    Face {
+        actor: usize,
+        facing: u16,
     },
     Attack {
         actor: usize,
@@ -55,17 +111,35 @@ pub enum ArenaCommand {
         actor: usize,
     },
 }
+impl ArenaCommand {
+    pub fn actor(self) -> usize {
+        match self {
+            Self::Move { actor, .. }
+            | Self::Face { actor, .. }
+            | Self::Attack { actor, .. }
+            | Self::Jump { actor } => actor,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Rejection {
     InvalidActor,
     InvalidTarget,
     InvalidMovement,
-    AlreadyMoved,
+    /// A second command of the same kind for one actor in one tick.
+    Duplicate,
     Airborne,
     MatchOver,
     Cooldown,
     OutOfRange,
     LineOfSight,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RoundResult {
+    /// Every member of the other team is defeated. Teams are actor parity.
+    Won { team: usize },
+    /// Both teams were eliminated on the same tick.
+    Draw,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArenaEvent {
@@ -75,28 +149,33 @@ pub enum ArenaEvent {
     Moved {
         actor: usize,
     },
+    /// `damage` is this hit's own amount against the target's health before
+    /// the attack phase; simultaneous hits never see each other.
     Hit {
         actor: usize,
         target: usize,
         damage: u16,
     },
-    Won {
+    Finished(RoundResult),
+    /// `actor` is the slot (or the actor a scripted command named) whose
+    /// intent was refused, so a server can route it to that player only.
+    Rejected {
         actor: usize,
+        reason: Rejection,
     },
-    Rejected(Rejection),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Arena {
     tick: u64,
     layout: Layout,
     fighters: Vec<Combatant>,
-    winner: Option<usize>,
+    result: Option<RoundResult>,
 }
 impl Arena {
-    /// Local practice roster: even actors are friendly, odd actors are enemies.
-    /// Actor zero is the player; command ordering remains caller supplied.
-    /// Team `t`'s `k`th member starts at that team's `k`th room spawn. The
-    /// layout must already be valid (see `Layout::validate`).
+    /// Practice and match roster: even actors are team 0, odd actors team 1.
+    /// Team `t`'s `k`th member starts at that team's `k`th room spawn, facing
+    /// the other team's rooms. The layout must already be valid (see
+    /// `Layout::validate`).
     pub fn practice(layout: Layout, team_size: usize) -> Option<Self> {
         if !(1..=MAX_TEAM).contains(&team_size) {
             return None;
@@ -113,13 +192,15 @@ impl Arena {
                 height: 0,
                 vertical_velocity: 0,
                 momentum: Position { x: 0, z: 0 },
+                // Team 0's rooms lie toward +Z, so it faces −Z (angle 0).
+                facing: if index % 2 == 0 { 0 } else { HALF_TURN },
             })
             .collect();
         Some(Self {
             tick: 0,
             layout,
             fighters,
-            winner: None,
+            result: None,
         })
     }
 }
@@ -148,11 +229,11 @@ impl Arena {
         self.layout = layout;
         true
     }
-    pub fn winner(&self) -> Option<usize> {
-        self.winner
+    pub fn result(&self) -> Option<RoundResult> {
+        self.result
     }
     pub fn can_attack(&self, actor: usize, target: usize) -> Result<(), Rejection> {
-        if self.winner.is_some() {
+        if self.result.is_some() {
             return Err(Rejection::MatchOver);
         }
         let Some(attacker) = self.fighters.get(actor) else {
@@ -181,43 +262,113 @@ impl Arena {
         }
         Ok(())
     }
+
+    /// Bins a scripted command list into per-actor slots, then advances one
+    /// tick. Commands naming a missing actor and second commands of a kind
+    /// for the same actor are rejected first, in list order; everything else
+    /// resolves exactly as [`Arena::advance`].
     pub fn step(&mut self, commands: &[ArenaCommand]) -> Vec<ArenaEvent> {
         let mut events = Vec::new();
-        let mut moved = vec![false; self.fighters.len()];
-        // Existing airborne momentum resolves before this tick's ordered commands.
-        // Ground momentum expires without a Move, preventing stale running jumps.
-        if self.winner.is_none() {
-            for fighter in &mut self.fighters {
-                if fighter.height > 0 {
-                    fighter.position = self.layout.slide(fighter.position, fighter.momentum);
-                } else {
-                    fighter.momentum = Position { x: 0, z: 0 };
+        let mut inputs = vec![ActorInput::default(); self.fighters.len()];
+        for &command in commands {
+            let actor = command.actor();
+            let Some(slot) = inputs.get_mut(actor) else {
+                events.push(ArenaEvent::Rejected {
+                    actor,
+                    reason: Rejection::InvalidActor,
+                });
+                continue;
+            };
+            let fresh = match command {
+                ArenaCommand::Move { x, z, .. } => {
+                    slot.movement.is_none() && {
+                        slot.movement = Some(Axes { x, z });
+                        true
+                    }
                 }
+                ArenaCommand::Face { facing, .. } => {
+                    slot.facing.is_none() && {
+                        slot.facing = Some(facing);
+                        true
+                    }
+                }
+                ArenaCommand::Jump { .. } => {
+                    !slot.jump && {
+                        slot.jump = true;
+                        true
+                    }
+                }
+                ArenaCommand::Attack { target, .. } => {
+                    slot.attack.is_none() && {
+                        slot.attack = Some(target);
+                        true
+                    }
+                }
+            };
+            if !fresh {
+                events.push(ArenaEvent::Rejected {
+                    actor,
+                    reason: Rejection::Duplicate,
+                });
             }
         }
-        for &command in commands {
-            if self.winner.is_some() {
-                events.push(ArenaEvent::Rejected(Rejection::MatchOver));
-                continue;
+        events.extend(self.advance(&inputs));
+        events
+    }
+
+    /// Advances one tick. `inputs[i]` is actor `i`'s intent; missing slots
+    /// are idle and extra non-idle slots are rejected as invalid actors.
+    /// Events are ordered by phase, then actor index.
+    pub fn advance(&mut self, inputs: &[ActorInput]) -> Vec<ArenaEvent> {
+        let mut events = Vec::new();
+        let count = self.fighters.len();
+        for (actor, input) in inputs.iter().enumerate().skip(count) {
+            if !input.is_idle() {
+                events.push(ArenaEvent::Rejected {
+                    actor,
+                    reason: Rejection::InvalidActor,
+                });
             }
-            match command {
-                ArenaCommand::Move { actor, x, z } => {
-                    if actor >= self.fighters.len() || self.fighters[actor].health == 0 {
-                        events.push(ArenaEvent::Rejected(Rejection::InvalidActor));
-                        continue;
-                    }
-                    if moved[actor] {
-                        events.push(ArenaEvent::Rejected(Rejection::AlreadyMoved));
-                        continue;
-                    }
-                    if !(-1000..=1000).contains(&x) || !(-1000..=1000).contains(&z) {
-                        events.push(ArenaEvent::Rejected(Rejection::InvalidMovement));
-                        continue;
-                    }
-                    moved[actor] = true;
-                    if self.fighters[actor].height > 0 {
-                        continue;
-                    }
+        }
+        let inputs = &inputs[..inputs.len().min(count)];
+        let reject = |events: &mut Vec<ArenaEvent>, actor, reason| {
+            events.push(ArenaEvent::Rejected { actor, reason });
+        };
+        if self.result.is_some() {
+            for (actor, input) in inputs.iter().enumerate() {
+                let commands = usize::from(input.movement.is_some())
+                    + usize::from(input.facing.is_some())
+                    + usize::from(input.jump)
+                    + usize::from(input.attack.is_some());
+                for _ in 0..commands {
+                    reject(&mut events, actor, Rejection::MatchOver);
+                }
+            }
+            self.tick += 1;
+            return events;
+        }
+
+        // 1. Existing airborne momentum resolves first. Ground momentum
+        // expires without a Move, preventing stale running jumps.
+        for fighter in &mut self.fighters {
+            if fighter.height > 0 {
+                fighter.position = self.layout.slide(fighter.position, fighter.momentum);
+            } else {
+                fighter.momentum = Position { x: 0, z: 0 };
+            }
+        }
+
+        // 2. Movement and facing.
+        for (actor, input) in inputs.iter().enumerate() {
+            let alive = self.fighters[actor].health > 0;
+            if let Some(Axes { x, z }) = input.movement {
+                if !alive {
+                    reject(&mut events, actor, Rejection::InvalidActor);
+                } else if !(-AXIS_LIMIT..=AXIS_LIMIT).contains(&x)
+                    || !(-AXIS_LIMIT..=AXIS_LIMIT).contains(&z)
+                {
+                    reject(&mut events, actor, Rejection::InvalidMovement);
+                } else if self.fighters[actor].height == 0 {
                     let length = ((i64::from(x).pow(2) + i64::from(z).pow(2)) as u64)
                         .isqrt()
                         .max(1000) as i32;
@@ -232,61 +383,129 @@ impl Arena {
                     };
                     events.push(ArenaEvent::Moved { actor });
                 }
-                ArenaCommand::Jump { actor } => {
-                    let Some(fighter) = self.fighters.get_mut(actor) else {
-                        events.push(ArenaEvent::Rejected(Rejection::InvalidActor));
-                        continue;
-                    };
-                    if fighter.health == 0 {
-                        events.push(ArenaEvent::Rejected(Rejection::InvalidActor));
-                        continue;
-                    }
-                    if fighter.height > 0 || fighter.vertical_velocity > 0 {
-                        events.push(ArenaEvent::Rejected(Rejection::Airborne));
-                        continue;
-                    }
-                    fighter.vertical_velocity = JUMP_SPEED;
-                    events.push(ArenaEvent::Jumped { actor });
-                }
-                ArenaCommand::Attack { actor, target } => {
-                    if let Err(reason) = self.can_attack(actor, target) {
-                        events.push(ArenaEvent::Rejected(reason));
-                        continue;
-                    }
-                    let damage = ATTACK_DAMAGE.min(self.fighters[target].health);
-                    self.fighters[target].health -= damage;
-                    self.fighters[actor].ready_at = self.tick + ATTACK_COOLDOWN;
-                    events.push(ArenaEvent::Hit {
-                        actor,
-                        target,
-                        damage,
-                    });
-                    if self
-                        .fighters
-                        .iter()
-                        .enumerate()
-                        .all(|(index, fighter)| index % 2 == actor % 2 || fighter.health == 0)
-                    {
-                        self.winner = Some(actor);
-                        events.push(ArenaEvent::Won { actor });
-                    }
-                }
+            }
+            // Turning is free while alive, including in the air; the dead
+            // keep the heading they fell with.
+            if let Some(facing) = input.facing
+                && alive
+            {
+                self.fighters[actor].facing = facing;
             }
         }
-        if self.winner.is_none() {
-            for fighter in &mut self.fighters {
-                if fighter.height > 0 || fighter.vertical_velocity > 0 {
-                    fighter.height = (fighter.height + fighter.vertical_velocity).max(0);
-                    fighter.vertical_velocity -= GRAVITY;
-                    if fighter.height == 0 {
-                        fighter.vertical_velocity = 0;
-                        fighter.momentum = Position { x: 0, z: 0 };
-                    }
+
+        // 3. Jumps.
+        for (actor, input) in inputs.iter().enumerate() {
+            if !input.jump {
+                continue;
+            }
+            let fighter = &mut self.fighters[actor];
+            if fighter.health == 0 {
+                reject(&mut events, actor, Rejection::InvalidActor);
+            } else if fighter.height > 0 || fighter.vertical_velocity > 0 {
+                reject(&mut events, actor, Rejection::Airborne);
+            } else {
+                fighter.vertical_velocity = JUMP_SPEED;
+                events.push(ArenaEvent::Jumped { actor });
+            }
+        }
+
+        // 4. Attacks, validated against one shared state and applied together.
+        let mut incoming = vec![0u16; count];
+        for (actor, input) in inputs.iter().enumerate() {
+            let Some(target) = input.attack else {
+                continue;
+            };
+            if let Err(reason) = self.can_attack(actor, target) {
+                reject(&mut events, actor, reason);
+                continue;
+            }
+            let damage = ATTACK_DAMAGE.min(self.fighters[target].health);
+            incoming[target] = incoming[target].saturating_add(damage);
+            self.fighters[actor].ready_at = self.tick + ATTACK_COOLDOWN;
+            events.push(ArenaEvent::Hit {
+                actor,
+                target,
+                damage,
+            });
+        }
+        for (fighter, damage) in self.fighters.iter_mut().zip(incoming) {
+            fighter.health = fighter.health.saturating_sub(damage);
+        }
+        let standing = |team: usize| {
+            self.fighters
+                .iter()
+                .enumerate()
+                .any(|(index, fighter)| index % 2 == team && fighter.health > 0)
+        };
+        self.result = match (standing(0), standing(1)) {
+            (true, true) => None,
+            (true, false) => Some(RoundResult::Won { team: 0 }),
+            (false, true) => Some(RoundResult::Won { team: 1 }),
+            (false, false) => Some(RoundResult::Draw),
+        };
+        if let Some(result) = self.result {
+            events.push(ArenaEvent::Finished(result));
+            self.tick += 1;
+            return events;
+        }
+
+        // 5. Vertical motion.
+        for fighter in &mut self.fighters {
+            if fighter.height > 0 || fighter.vertical_velocity > 0 {
+                fighter.height = (fighter.height + fighter.vertical_velocity).max(0);
+                fighter.vertical_velocity -= GRAVITY;
+                if fighter.height == 0 {
+                    fighter.vertical_velocity = 0;
+                    fighter.momentum = Position { x: 0, z: 0 };
                 }
             }
         }
         self.tick += 1;
         events
+    }
+
+    /// Deterministic 64-bit FNV-1a digest of the tick, result and every
+    /// fighter, for comparing a server's state with a replay or a client's
+    /// prediction. The layout is fixed per match and versioned separately.
+    pub fn state_hash(&self) -> u64 {
+        let mut hash = Fnv::default();
+        hash.write(&self.tick.to_le_bytes());
+        hash.write(&match self.result {
+            None => [0, 0],
+            Some(RoundResult::Won { team }) => [1, team as u8],
+            Some(RoundResult::Draw) => [2, 0],
+        });
+        for fighter in &self.fighters {
+            for value in [
+                fighter.position.x,
+                fighter.position.z,
+                fighter.height,
+                fighter.vertical_velocity,
+                fighter.momentum.x,
+                fighter.momentum.z,
+            ] {
+                hash.write(&value.to_le_bytes());
+            }
+            hash.write(&fighter.health.to_le_bytes());
+            hash.write(&fighter.ready_at.to_le_bytes());
+            hash.write(&fighter.facing.to_le_bytes());
+        }
+        hash.0
+    }
+}
+
+struct Fnv(u64);
+impl Default for Fnv {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+impl Fnv {
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 ^= u64::from(byte);
+            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+        }
     }
 }
 
@@ -304,6 +523,9 @@ mod tests {
     }
     fn line_of_sight(a: Position, b: Position) -> bool {
         fixture().line_of_sight(a, b)
+    }
+    fn rejected(actor: usize, reason: Rejection) -> ArenaEvent {
+        ArenaEvent::Rejected { actor, reason }
     }
     #[test]
     fn relayout_keeps_the_round_only_while_every_fighter_stays_walkable() {
@@ -340,7 +562,7 @@ mod tests {
                         actor: 0,
                         target: 2
                     }]),
-                    vec![ArenaEvent::Rejected(Rejection::InvalidTarget)]
+                    vec![rejected(0, Rejection::InvalidTarget)]
                 );
                 assert_eq!(arena.fighters, before.fighters);
                 replay = arena.clone();
@@ -355,8 +577,11 @@ mod tests {
                     arena.step(&command);
                     commands.push(command);
                 }
-                assert_eq!(arena.winner(), (target == size * 2 - 1).then_some(0));
-                if arena.winner().is_none() {
+                assert_eq!(
+                    arena.result(),
+                    (target == size * 2 - 1).then_some(RoundResult::Won { team: 0 })
+                );
+                if arena.result().is_none() {
                     assert_eq!(arena.can_attack(0, target), Err(Rejection::InvalidTarget));
                     assert_eq!(arena.can_attack(target, 0), Err(Rejection::InvalidActor));
                     let frozen = arena.fighters[target];
@@ -419,7 +644,7 @@ mod tests {
                         },
                         JUMP
                     ])
-                    .contains(&ArenaEvent::Rejected(Rejection::Airborne))
+                    .contains(&rejected(0, Rejection::Airborne))
             );
             ticks += 1;
             apex = apex.max(arena.fighters[0].height);
@@ -443,8 +668,8 @@ mod tests {
         assert_eq!(
             arena.step(&[JUMP, JUMP]),
             vec![
-                ArenaEvent::Jumped { actor: 0 },
-                ArenaEvent::Rejected(Rejection::Airborne),
+                rejected(0, Rejection::Duplicate),
+                ArenaEvent::Jumped { actor: 0 }
             ]
         );
         for _ in 0..30 {
@@ -454,13 +679,10 @@ mod tests {
         assert_eq!(arena.fighters[0].height, 0);
         assert_eq!(
             arena.step(&[ArenaCommand::Jump { actor: usize::MAX }]),
-            vec![ArenaEvent::Rejected(Rejection::InvalidActor)]
+            vec![rejected(usize::MAX, Rejection::InvalidActor)]
         );
-        arena.winner = Some(1);
-        assert_eq!(
-            arena.step(&[JUMP]),
-            vec![ArenaEvent::Rejected(Rejection::MatchOver)]
-        );
+        arena.result = Some(RoundResult::Won { team: 1 });
+        assert_eq!(arena.step(&[JUMP]), vec![rejected(0, Rejection::MatchOver)]);
     }
 
     #[test]
@@ -484,12 +706,25 @@ mod tests {
                 target: 0,
             },
         ]);
-        assert_eq!(events[0], ArenaEvent::Rejected(Rejection::InvalidMovement));
-        assert_eq!(events[1], ArenaEvent::Rejected(Rejection::AlreadyMoved));
+        // One movement per slot: the first (malformed) one is kept and
+        // rejected, so the extra ones cannot replace it.
+        assert_eq!(
+            events,
+            vec![
+                rejected(0, Rejection::Duplicate),
+                rejected(0, Rejection::Duplicate),
+                rejected(0, Rejection::InvalidMovement),
+                ArenaEvent::Hit {
+                    actor: 1,
+                    target: 0,
+                    damage: ATTACK_DAMAGE
+                },
+            ]
+        );
         assert_eq!(arena.fighters[0].health, 75);
         assert_eq!(arena.fighters[0].position.z, before.z - MOVE_PER_TICK);
         assert!(arena.fighters[0].height > 0);
-        arena.winner = Some(1);
+        arena.result = Some(RoundResult::Won { team: 1 });
         let frozen = arena.fighters.clone();
         arena.step(&[forward(), JUMP]);
         assert_eq!(arena.fighters, frozen);
@@ -547,7 +782,7 @@ mod tests {
         let mut arena = default_arena();
         assert_eq!(
             arena.step(&[ATTACK]),
-            vec![ArenaEvent::Rejected(Rejection::OutOfRange)]
+            vec![rejected(0, Rejection::OutOfRange)]
         );
         let gap = arena.fighters()[0].position.z - arena.fighters()[1].position.z;
         for _ in 0..(gap - ATTACK_RANGE) / MOVE_PER_TICK + 1 {
@@ -559,7 +794,7 @@ mod tests {
         while arena.tick() < ready {
             assert_eq!(
                 arena.step(&[ATTACK]),
-                vec![ArenaEvent::Rejected(Rejection::Cooldown)]
+                vec![rejected(0, Rejection::Cooldown)]
             );
         }
         for _ in 0..3 {
@@ -568,10 +803,10 @@ mod tests {
             }
             arena.step(&[ATTACK]);
         }
-        assert_eq!(arena.winner(), Some(0));
+        assert_eq!(arena.result(), Some(RoundResult::Won { team: 0 }));
         assert_eq!(
             arena.step(&[forward(), ATTACK]),
-            vec![ArenaEvent::Rejected(Rejection::MatchOver); 2]
+            vec![rejected(0, Rejection::MatchOver); 2]
         );
         assert_eq!(arena.fighters()[1].health, 0);
     }
@@ -596,9 +831,9 @@ mod tests {
                 }
             ]),
             vec![
-                ArenaEvent::Rejected(Rejection::InvalidActor),
-                ArenaEvent::Rejected(Rejection::InvalidMovement),
-                ArenaEvent::Rejected(Rejection::InvalidTarget)
+                rejected(usize::MAX, Rejection::InvalidActor),
+                rejected(0, Rejection::InvalidMovement),
+                rejected(0, Rejection::InvalidTarget)
             ]
         );
         let before = arena.fighters()[0].position;
@@ -870,4 +1105,337 @@ mod tests {
         // Both rooms see each other straight down their openings.
         assert!(line_of_sight(inside, Position { x: 0, z: -inside.z }));
     }
+
+    /// Places every fighter on the open floor, `spacing` mm apart along X,
+    /// all within range and sight of each other.
+    fn close_quarters(team_size: usize, spacing: i32) -> Arena {
+        let mut arena = Arena::practice(fixture(), team_size).unwrap();
+        for (index, fighter) in arena.fighters.iter_mut().enumerate() {
+            fighter.position = Position {
+                x: index as i32 * spacing,
+                z: 0,
+            };
+        }
+        arena
+    }
+
+    #[test]
+    fn simultaneous_lethal_hits_both_land_and_draw() {
+        let mut arena = close_quarters(1, 3_000);
+        arena.fighters[0].health = ATTACK_DAMAGE;
+        arena.fighters[1].health = ATTACK_DAMAGE;
+        let mut swapped = arena.clone();
+        let commands = [
+            ArenaCommand::Attack {
+                actor: 0,
+                target: 1,
+            },
+            ArenaCommand::Attack {
+                actor: 1,
+                target: 0,
+            },
+        ];
+        let events = arena.step(&commands);
+        let mut reversed = commands;
+        reversed.reverse();
+        assert_eq!(swapped.step(&reversed), events, "list order is irrelevant");
+        assert_eq!(arena, swapped);
+        assert_eq!(
+            events,
+            vec![
+                ArenaEvent::Hit {
+                    actor: 0,
+                    target: 1,
+                    damage: ATTACK_DAMAGE
+                },
+                ArenaEvent::Hit {
+                    actor: 1,
+                    target: 0,
+                    damage: ATTACK_DAMAGE
+                },
+                ArenaEvent::Finished(RoundResult::Draw),
+            ]
+        );
+        assert_eq!(arena.result(), Some(RoundResult::Draw));
+        assert!(arena.fighters.iter().all(|fighter| fighter.health == 0));
+        // A finished round refuses everything and only advances the clock.
+        let tick = arena.tick();
+        assert_eq!(
+            arena.step(&commands),
+            vec![
+                rejected(0, Rejection::MatchOver),
+                rejected(1, Rejection::MatchOver)
+            ]
+        );
+        assert_eq!(arena.tick(), tick + 1);
+    }
+
+    #[test]
+    fn focus_fire_hits_are_independent_and_the_last_standing_team_wins() {
+        // 2v2: both enemies strike actor 0 (30 health) and actor 2 strikes
+        // back at actor 1 on the same tick. Each hit is judged on the shared
+        // pre-attack state, so both land, actor 0 falls, and actor 0's own
+        // attack still resolves because it acted in the same tick.
+        let mut arena = close_quarters(2, 1_000);
+        arena.fighters[0].health = 30;
+        let commands = [
+            ArenaCommand::Attack {
+                actor: 3,
+                target: 0,
+            },
+            ArenaCommand::Attack {
+                actor: 1,
+                target: 0,
+            },
+            ArenaCommand::Attack {
+                actor: 0,
+                target: 1,
+            },
+        ];
+        let events = arena.step(&commands);
+        assert_eq!(
+            events,
+            vec![
+                ArenaEvent::Hit {
+                    actor: 0,
+                    target: 1,
+                    damage: ATTACK_DAMAGE
+                },
+                ArenaEvent::Hit {
+                    actor: 1,
+                    target: 0,
+                    damage: ATTACK_DAMAGE
+                },
+                ArenaEvent::Hit {
+                    actor: 3,
+                    target: 0,
+                    damage: ATTACK_DAMAGE
+                },
+            ]
+        );
+        assert_eq!(arena.fighters[0].health, 0);
+        assert_eq!(arena.fighters[1].health, MAX_HEALTH - ATTACK_DAMAGE);
+        assert_eq!(arena.result(), None, "actor 2 still stands for team 0");
+        assert!(
+            [0, 1, 3]
+                .iter()
+                .all(|&actor| arena.fighters[actor].ready_at == arena.tick() - 1 + ATTACK_COOLDOWN)
+        );
+        // Last enemy of team 0 falls: team 1 wins.
+        arena.fighters[2].health = 10;
+        while arena.can_attack(1, 2).is_err() {
+            arena.step(&[]);
+        }
+        assert_eq!(
+            arena
+                .step(&[ArenaCommand::Attack {
+                    actor: 1,
+                    target: 2
+                }])
+                .last(),
+            Some(&ArenaEvent::Finished(RoundResult::Won { team: 1 }))
+        );
+    }
+
+    #[test]
+    fn command_list_order_never_changes_the_outcome() {
+        // Every actor in a 3v3 moves, turns, jumps and attacks on one tick;
+        // any permutation of the list gives the same events and state.
+        let base = close_quarters(3, 1_000);
+        let mut commands = Vec::new();
+        for actor in 0..6 {
+            commands.push(ArenaCommand::Move {
+                actor,
+                x: 1000 - actor as i16 * 300,
+                z: 500,
+            });
+            commands.push(ArenaCommand::Face {
+                actor,
+                facing: actor as u16 * 9_000,
+            });
+            if actor % 3 == 0 {
+                commands.push(ArenaCommand::Jump { actor });
+            }
+            commands.push(ArenaCommand::Attack {
+                actor,
+                target: (actor + 1) % 6,
+            });
+        }
+        let mut expected = base.clone();
+        let events = expected.step(&commands);
+        for rotation in 1..commands.len() {
+            for reverse in [false, true] {
+                let mut order = commands.clone();
+                order.rotate_left(rotation);
+                if reverse {
+                    order.reverse();
+                }
+                let mut arena = base.clone();
+                assert_eq!(arena.step(&order), events);
+                assert_eq!(arena, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn facing_is_authoritative_free_while_alive_and_frozen_when_defeated() {
+        for size in 1..=3 {
+            let arena = Arena::practice(fixture(), size).unwrap();
+            for (index, fighter) in arena.fighters().iter().enumerate() {
+                assert_eq!(fighter.facing, if index % 2 == 0 { 0 } else { HALF_TURN });
+            }
+        }
+        let mut arena = default_arena();
+        arena.step(&[ArenaCommand::Face {
+            actor: 0,
+            facing: u16::MAX,
+        }]);
+        assert_eq!(arena.fighters[0].facing, u16::MAX);
+        // Turning in the air is allowed; it does not steer.
+        arena.step(&[forward(), JUMP]);
+        let momentum = arena.fighters[0].momentum;
+        arena.step(&[ArenaCommand::Face {
+            actor: 0,
+            facing: 12_345,
+        }]);
+        assert_eq!(arena.fighters[0].facing, 12_345);
+        assert_eq!(arena.fighters[0].momentum, momentum);
+        assert_eq!(
+            arena.step(&[
+                ArenaCommand::Face {
+                    actor: 0,
+                    facing: 1
+                },
+                ArenaCommand::Face {
+                    actor: 0,
+                    facing: 2
+                }
+            ]),
+            vec![rejected(0, Rejection::Duplicate)]
+        );
+        assert_eq!(arena.fighters[0].facing, 1, "the first facing wins");
+        arena.fighters[0].health = 0;
+        arena.fighters[1].health = 1;
+        arena.step(&[ArenaCommand::Face {
+            actor: 0,
+            facing: 7,
+        }]);
+        assert_eq!(arena.fighters[0].facing, 1);
+    }
+
+    #[test]
+    fn input_slots_bound_the_roster_and_budget() {
+        let mut arena = default_arena();
+        let before = arena.clone();
+        let jump = ActorInput {
+            jump: true,
+            ..ActorInput::default()
+        };
+        // Missing slots are idle; extra idle slots are ignored; extra
+        // non-idle slots are refused without touching anyone.
+        assert_eq!(arena.advance(&[]), vec![]);
+        assert_eq!(
+            arena.advance(&[
+                ActorInput::default(),
+                ActorInput::default(),
+                ActorInput::default(),
+                jump
+            ]),
+            vec![rejected(3, Rejection::InvalidActor)]
+        );
+        assert_eq!(arena.fighters, before.fighters);
+        assert_eq!(arena.tick(), 2);
+        // A slot cannot name its actor, so an opponent's slot only moves the
+        // opponent: actor identity is the slot index.
+        assert_eq!(
+            arena.advance(&[ActorInput::default(), jump]),
+            vec![ArenaEvent::Jumped { actor: 1 }]
+        );
+        assert_eq!(arena.fighters[0], before.fighters[0]);
+        assert!(arena.fighters[1].height > 0);
+        // `step` and `advance` agree on the same intent.
+        let mut a = default_arena();
+        let mut b = default_arena();
+        let input = ActorInput {
+            movement: Some(Axes { x: 300, z: -1000 }),
+            facing: Some(42),
+            jump: true,
+            attack: Some(1),
+        };
+        assert_eq!(
+            a.advance(&[input]),
+            b.step(&[
+                ArenaCommand::Attack {
+                    actor: 0,
+                    target: 1
+                },
+                JUMP,
+                ArenaCommand::Face {
+                    actor: 0,
+                    facing: 42
+                },
+                ArenaCommand::Move {
+                    actor: 0,
+                    x: 300,
+                    z: -1000
+                },
+            ])
+        );
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn state_hash_is_stable_and_covers_authoritative_state() {
+        let mut arena = Arena {
+            tick: 7,
+            layout: fixture(),
+            fighters: vec![
+                Combatant {
+                    position: Position {
+                        x: -1_000,
+                        z: 2_000,
+                    },
+                    height: 0,
+                    vertical_velocity: 0,
+                    momentum: Position { x: 0, z: 0 },
+                    health: MAX_HEALTH,
+                    ready_at: 0,
+                    facing: 0,
+                },
+                Combatant {
+                    position: Position {
+                        x: 1_000,
+                        z: -2_000,
+                    },
+                    height: 220,
+                    vertical_velocity: 200,
+                    momentum: Position { x: 240, z: 0 },
+                    health: 75,
+                    ready_at: 30,
+                    facing: HALF_TURN,
+                },
+            ],
+            result: None,
+        };
+        // Golden value: the digest is a cross-build contract (server, replay,
+        // browser), so its byte layout must only change deliberately.
+        assert_eq!(arena.state_hash(), GOLDEN_STATE_HASH);
+        assert_eq!(arena.clone().state_hash(), arena.state_hash());
+        let mut seen = vec![arena.state_hash()];
+        let mutations: [fn(&mut Arena); 6] = [
+            |a| a.fighters[0].facing = 1,
+            |a| a.fighters[1].health -= 1,
+            |a| a.fighters[0].position.x += 1,
+            |a| a.fighters[1].ready_at += 1,
+            |a| a.tick += 1,
+            |a| a.result = Some(RoundResult::Draw),
+        ];
+        for mutate in mutations {
+            mutate(&mut arena);
+            let hash = arena.state_hash();
+            assert!(!seen.contains(&hash));
+            seen.push(hash);
+        }
+    }
+    const GOLDEN_STATE_HASH: u64 = 395_746_746_345_043_275;
 }

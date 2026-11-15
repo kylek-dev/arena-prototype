@@ -25,7 +25,7 @@ mod weapons;
 use arena_map::MapFile;
 use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::{
-    ATTACK_COOLDOWN, ATTACK_DAMAGE, ATTACK_RANGE, Arena, ArenaCommand, ArenaEvent, Combatant,
+    ATTACK_COOLDOWN, ATTACK_DAMAGE, ATTACK_RANGE, ActorInput, Arena, ArenaEvent, Axes, Combatant,
     Position,
 };
 use bevy::{asset::AssetMetaCheck, core_pipeline::tonemapping::Tonemapping, prelude::*};
@@ -225,6 +225,11 @@ fn spawn_facings(fighters: &[Combatant]) -> Vec<f32> {
             (-toward.x).atan2(-toward.z)
         })
         .collect()
+}
+/// Presentation yaw (radians about +Y, 0 facing −Z) to the rules' binary
+/// angle: 65536 units per turn, wrapping.
+fn binary_angle(yaw: f32) -> u16 {
+    ((yaw / std::f32::consts::TAU).rem_euclid(1.0) * 65536.0).round() as u32 as u16
 }
 fn world(position: Position) -> Vec3 {
     Vec3::new(position.x as f32 / 1000.0, 0.0, position.z as f32 / 1000.0)
@@ -555,24 +560,25 @@ fn simulate(mut practice: ResMut<Practice>) {
         .copied()
         .map(fighter_world)
         .collect();
-    let mut commands = vec![ArenaCommand::Move {
-        actor: 0,
-        x: (practice.movement.x * 1000.0) as i16,
-        z: (practice.movement.y * 1000.0) as i16,
-    }];
-    if practice.jump {
-        practice.jump = false;
-        commands.push(ArenaCommand::Jump { actor: 0 });
-    }
-    if practice.attack {
-        practice.attack = false;
+    // Slot 0 is the local player's whole intent for this tick; the other
+    // practice actors stay idle.
+    let mut input = ActorInput {
+        movement: Some(Axes {
+            x: (practice.movement.x * 1000.0) as i16,
+            z: (practice.movement.y * 1000.0) as i16,
+        }),
+        facing: Some(binary_angle(practice.facing)),
+        jump: std::mem::take(&mut practice.jump),
+        attack: None,
+    };
+    if std::mem::take(&mut practice.attack) {
         if let Some(target) = practice.selected {
-            commands.push(ArenaCommand::Attack { actor: 0, target });
+            input.attack = Some(target);
         } else {
             practice.feedback = "Select a target first";
         }
     }
-    for event in practice.arena.step(&commands) {
+    for event in practice.arena.advance(&[input]) {
         match event {
             ArenaEvent::Hit {
                 actor,
@@ -585,10 +591,15 @@ fn simulate(mut practice: ResMut<Practice>) {
                 practice.feedback = "Pulse hit · 25 damage";
                 practice.zap = Some(lightning::Zap::new(actor, target, practice.arena.tick()));
             }
-            ArenaEvent::Won { .. } => practice.feedback = "Round complete · reset to play again",
+            ArenaEvent::Finished(_) => {
+                practice.feedback = "Round complete · reset to play again";
+            }
             // A second press in flight is harmless, not a spell-cast error.
-            ArenaEvent::Rejected(arena_sim::arena::Rejection::Airborne) => (),
-            ArenaEvent::Rejected(reason) => {
+            ArenaEvent::Rejected {
+                reason: arena_sim::arena::Rejection::Airborne,
+                ..
+            } => (),
+            ArenaEvent::Rejected { actor: 0, reason } => {
                 practice.feedback = match reason {
                     arena_sim::arena::Rejection::OutOfRange => "Out of range · move closer",
                     arena_sim::arena::Rejection::Cooldown => "Pulse is recharging",
@@ -843,7 +854,7 @@ fn publish(
         cooldown,
         attack_status,
         practice.feedback,
-        practice.arena.winner().is_some(),
+        practice.arena.result().is_some(),
         orbit.yaw,
         orbit.pitch,
         orbit.distance,
@@ -1017,6 +1028,7 @@ fn focus_cursor(x: f32, y: f32) -> Option<Vec2> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arena_sim::arena::ArenaCommand;
 
     #[test]
     fn browser_hud_focus_does_not_enable_event_driven_low_power_updates() {
@@ -1109,6 +1121,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn simulate_sends_the_player_heading_as_authoritative_facing() {
+        use std::f32::consts::{FRAC_PI_2, PI, TAU};
+        assert_eq!(binary_angle(0.0), 0);
+        assert_eq!(binary_angle(FRAC_PI_2), 0x4000);
+        assert_eq!(binary_angle(PI), 0x8000);
+        assert_eq!(binary_angle(-FRAC_PI_2), 0xC000);
+        assert_eq!(binary_angle(TAU), 0);
+        assert_eq!(
+            binary_angle(-0.000_001),
+            0,
+            "rounding wraps, never saturates"
+        );
+        let mut app = App::new();
+        app.init_resource::<Practice>()
+            .add_systems(FixedUpdate, simulate);
+        app.world_mut().resource_mut::<Practice>().facing = -FRAC_PI_2;
+        app.world_mut().run_schedule(FixedUpdate);
+        let practice = app.world().resource::<Practice>();
+        assert_eq!(practice.arena.fighters()[0].facing, 0xC000);
+        // Opponents keep their rule-owned spawn heading.
+        assert_eq!(practice.arena.fighters()[1].facing, 0x8000);
     }
 
     #[test]
@@ -1525,7 +1561,10 @@ mod tests {
                 actor: 0,
                 target: 0
             }])[0],
-            ArenaEvent::Rejected(arena_sim::arena::Rejection::InvalidTarget)
+            ArenaEvent::Rejected {
+                actor: 0,
+                reason: arena_sim::arena::Rejection::InvalidTarget
+            }
         ));
         assert_eq!(practice.arena.fighters(), before);
         update_selection(
