@@ -12,7 +12,8 @@ concurrency:
 jobs:
   rust:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The match server's Axum/Tokio stack makes cold-cache builds slower.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -24,10 +25,10 @@ jobs:
           shared-key: unit
       - name: Check formatting
         run: cargo fmt --all -- --check
-      - name: Lint rules and headless runner (no renderer)
-        run: cargo clippy -p arena-sim -p arena-protocol -p arena-headless --all-targets --locked -- -D warnings
-      - name: Test rules and headless runner
-        run: cargo test -p arena-sim -p arena-protocol -p arena-headless --locked
+      - name: Lint rules, protocol, match server and headless runner (no renderer)
+        run: cargo clippy -p arena-sim -p arena-protocol -p arena-server -p arena-headless --all-targets --locked -- -D warnings
+      - name: Test rules, protocol, match server and headless runner
+        run: cargo test -p arena-sim -p arena-protocol -p arena-server -p arena-headless --locked
       - name: Run headless scenario
         run: cargo run --locked -p arena-headless
   # Keep the required check name; test browser input without compiling Bevy.

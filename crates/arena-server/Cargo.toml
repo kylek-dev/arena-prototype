@@ -1,0 +1,27 @@
+[package]
+name = "arena-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Authoritative match server: runs the shared rules per match at a fixed tick behind a WebSocket endpoint."
+
+[dependencies]
+arena-sim = { path = "../arena-sim" }
+arena-map = { path = "../arena-map" }
+arena-protocol = { path = "../arena-protocol" }
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "ws", "query", "json"] }
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+hmac = "=0.13.0"
+sha2 = "=0.11.1"
+getrandom = "=0.4.3"
+postcard = { version = "=1.1.3", default-features = false, features = ["alloc"] }
+
+[dev-dependencies]
+tokio-tungstenite = "=0.29.0"
+futures-util = "=0.3.34"
+
+[lints]
+workspace = true
