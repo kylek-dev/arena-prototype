@@ -27,6 +27,10 @@ now occupy 0.30/0.80 s. Equipped weapons are temporarily disabled by omitting
 their carrier, preserving source files and preferences. Browser hitch
 resolution remains unverified; no customization UI is added.
 
+[ADR 0043](decisions/0043-hexagonal-pillars.md) makes pillars hexagons inscribed in their map box. The rules test exact integer hexagon contact and sight lines, and movement pushes a body out to the pillar's surface so it slides along faces and rounds corners; the camera, picking, meshes and map editor share the same hexagon. The map format is unchanged.
+
+[ADR 0042](decisions/0042-closed-color-palette.md) makes [`docs/palette.json`](palette.json) the closed color palette. `scripts/palette.mjs` generates CSS variables (and Radix scale overrides), a TypeScript map and the engine-free `arena-palette` crate; the client, the sky painter and the HUD take every color from it, with spell effects as the only exemption. Tests reject other color literals.
+
 [ADR 0040](decisions/0040-character-customization-kits.md) replaces the single dressed female with per-body customization kits: one GLB per body holding every hairstyle/outfit piece as a named node and body regions that outfit pieces hide. The browser resolves the saved look into a render spec (visible nodes, material tints/texture variants, morph) that `arena-client/src/appearance.rs` applies; a close-up preview camera serves the Character screen. Presentation only.
 
 [ADR 0036](decisions/0036-universal-strafe-library.md) replaces the forward-jog

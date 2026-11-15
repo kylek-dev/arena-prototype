@@ -8,7 +8,7 @@
 //! character heights tall.
 
 use arena_sim::arena::Position;
-use arena_sim::map::{Block, Edge, Layout, Room, Spawn};
+use arena_sim::map::{Edge, Layout, Pillar, Room, Spawn};
 use serde::{Deserialize, Serialize};
 
 /// The file format this crate reads and writes.
@@ -233,7 +233,7 @@ pub fn parse(json: &str) -> Result<MapFile, Vec<String>> {
         pillars: file
             .pillars
             .iter()
-            .map(|p| Block {
+            .map(|p| Pillar {
                 center: Position {
                     x: mm(p.x, "Pillar x", &mut errors),
                     z: mm(p.z, "Pillar z", &mut errors),

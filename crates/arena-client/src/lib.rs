@@ -13,6 +13,8 @@ mod humanoid;
 mod lighting;
 mod lightning;
 mod nameplates;
+mod palette;
+mod prism;
 mod props;
 mod sky;
 mod startup;
@@ -115,7 +117,7 @@ struct FighterVisual(usize);
 pub fn run() {
     App::new()
         .insert_resource(practice_window_settings(cfg!(target_arch = "wasm32")))
-        .insert_resource(ClearColor(Color::srgb(0.18, 0.21, 0.25)))
+        .insert_resource(ClearColor(palette::color(palette::NIGHT_6)))
         .insert_resource(GlobalAmbientLight {
             brightness: 500.0,
             ..default()
@@ -279,8 +281,8 @@ fn setup(
     ));
     commands.insert_resource(venue_assets);
     commands.insert_resource(sky::Sky::load(&asset_server));
-    let teal = material(&mut materials, Color::srgb(0.15, 0.84, 0.75));
-    let orange = material(&mut materials, Color::srgb(1.0, 0.39, 0.19));
+    let teal = material(&mut materials, palette::color(palette::TEAL_4));
+    let orange = material(&mut materials, palette::color(palette::EMBER_4));
     let character_meshes = graphics::CharacterMeshes::new(&mut meshes);
     let painted = textures::PaintedTextures::new(&mut images);
     for index in 0..6 {
@@ -340,7 +342,7 @@ fn setup(
     commands.spawn((
         lighting::ArenaLight::Key,
         DirectionalLight {
-            color: Color::srgb(1.0, 0.95, 0.88),
+            color: palette::color(palette::SAND_8),
             illuminance: 6500.0,
             shadow_maps_enabled: false,
             ..default()
@@ -351,7 +353,7 @@ fn setup(
         Name::new("Cool arena fill"),
         lighting::ArenaLight::Fill,
         DirectionalLight {
-            color: Color::srgb(0.88, 0.93, 1.0),
+            color: palette::color(palette::SKY_7),
             illuminance: 3200.0,
             shadow_maps_enabled: false,
             ..default()

@@ -14,7 +14,6 @@ import {
   type Appearance,
   type Group,
   type Kit,
-  type Rgb,
   type Swatch,
 } from "../../domain/appearance";
 import {
@@ -44,11 +43,6 @@ const materialLabels: Record<string, string> = {
   Peasant: "Peasant colours",
   Hair_Fantasy: "Hair shade",
 };
-// Approximate on-screen colour of each tinted atlas, for the swatches.
-const skinBase: Rgb = [0.86, 0.62, 0.48];
-const hairBase: Rgb = [0.78, 0.78, 0.76];
-const css = (base: Rgb, tint: Rgb) =>
-  `rgb(${base.map((b, i) => Math.round(Math.min(1, b * tint[i]) * 255)).join(" ")})`;
 
 function Choices({
   label,
@@ -86,13 +80,11 @@ function Swatches({
   label,
   options,
   value,
-  base,
   onChange,
 }: {
   label: string;
   options: Swatch[];
   value: string;
-  base: Rgb;
   onChange: (id: string) => void;
 }) {
   const current = options.find((o) => o.id === value);
@@ -111,7 +103,7 @@ function Swatches({
             aria-label={option.label}
             title={option.label}
             className="customizer-swatch"
-            style={{ background: css(base, option.rgb) }}
+            style={{ background: `var(--pal-${option.color})` }}
             onClick={() => onChange(option.id)}
           />
         ))}
@@ -169,7 +161,6 @@ function BodyTab({ kits, kit, look, set }: TabProps) {
         label="Skin tone"
         options={skinTones}
         value={look.skinTone}
-        base={skinBase}
         onChange={(skinTone) => set({ ...look, skinTone })}
       />
       {skin.length > 1 && (
@@ -224,7 +215,6 @@ function HeadTab({ kit, look, set }: TabProps) {
         label="Hair colour"
         options={hairColors}
         value={look.hairColor}
-        base={hairBase}
         onChange={(hairColor) => set({ ...look, hairColor })}
       />
       {shades.length > 1 && (

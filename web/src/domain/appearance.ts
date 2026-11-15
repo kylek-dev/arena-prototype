@@ -3,6 +3,8 @@
 // the engine applies: visible part nodes, material tints/textures, a morph.
 // Presentation only: nothing here affects combat.
 
+import { palette, type PaletteId } from "./palette";
+
 export interface KitOption {
   id: string;
   label: string;
@@ -38,39 +40,66 @@ export type Rgb = readonly [number, number, number];
 export interface Swatch {
   id: string;
   label: string;
+  /** The on-screen colour, from the closed palette (docs/palette.json). */
+  color: PaletteId;
+  /** sRGB multiplier over the source atlas that lands on `color`. */
   rgb: Rgb;
 }
-// sRGB multipliers over the source textures. The skin atlases are a light
-// tan, so "Natural" is the untinted source; lighter tones lift slightly.
+
+/** sRGB channels (0..1) of a palette swatch. */
+export function srgb(id: PaletteId): Rgb {
+  const hex = palette[id];
+  return [1, 3, 5].map((at) => Number.parseInt(hex.slice(at, at + 2), 16) / 255) as unknown as Rgb;
+}
+
+// Approximate average sRGB colour of each tintable atlas. A swatch's tint is
+// its palette colour divided by the atlas, so the tinted atlas reads as that
+// palette colour and the customizer can show the swatch itself.
+export const skinAtlas: Rgb = [0.86, 0.62, 0.48];
+export const hairAtlas: Rgb = [0.78, 0.78, 0.76];
+const tone =
+  (atlas: Rgb) =>
+  (id: string, label: string, color: PaletteId): Swatch => ({
+    id,
+    label,
+    color,
+    rgb: srgb(color).map((c, i) => Math.round((c / atlas[i]) * 100) / 100) as unknown as Rgb,
+  });
+const skin = tone(skinAtlas);
+const hair = tone(hairAtlas);
+
+// The skin atlases are a light tan, so "Natural" is the untinted source;
+// lighter tones lift slightly.
 export const skinTones: Swatch[] = [
-  { id: "porcelain", label: "Porcelain", rgb: [1.1, 1.05, 1.03] },
-  { id: "fair", label: "Fair", rgb: [1.04, 1.0, 0.96] },
-  { id: "natural", label: "Natural", rgb: [1, 1, 1] },
-  { id: "olive", label: "Olive", rgb: [0.88, 0.85, 0.7] },
-  { id: "tan", label: "Tan", rgb: [0.82, 0.7, 0.58] },
-  { id: "bronze", label: "Bronze", rgb: [0.66, 0.52, 0.4] },
-  { id: "brown", label: "Brown", rgb: [0.5, 0.37, 0.28] },
-  { id: "deep", label: "Deep", rgb: [0.36, 0.26, 0.2] },
-  { id: "ebony", label: "Ebony", rgb: [0.25, 0.18, 0.14] },
+  skin("porcelain", "Porcelain", "skin-porcelain"),
+  skin("fair", "Fair", "skin-fair"),
+  skin("natural", "Natural", "skin-natural"),
+  skin("olive", "Olive", "skin-olive"),
+  skin("tan", "Tan", "skin-tan"),
+  skin("bronze", "Bronze", "skin-bronze"),
+  skin("brown", "Brown", "skin-brown"),
+  skin("deep", "Deep", "skin-deep"),
+  skin("ebony", "Ebony", "skin-ebony"),
 ];
 // The human hair atlases are near-white greys meant to be tinted. Unknown or
 // retired ids (such as an earlier "natural") fall back to the untinted atlas.
+// Fantasy shades borrow the palette's hue ramps.
 export const hairColors: Swatch[] = [
-  { id: "black", label: "Black", rgb: [0.1, 0.09, 0.085] },
-  { id: "dark-brown", label: "Dark brown", rgb: [0.26, 0.17, 0.11] },
-  { id: "brown", label: "Brown", rgb: [0.45, 0.3, 0.18] },
-  { id: "chestnut", label: "Chestnut", rgb: [0.56, 0.28, 0.14] },
-  { id: "auburn", label: "Auburn", rgb: [0.66, 0.25, 0.12] },
-  { id: "ginger", label: "Ginger", rgb: [0.9, 0.45, 0.18] },
-  { id: "strawberry", label: "Strawberry blonde", rgb: [0.98, 0.66, 0.46] },
-  { id: "blonde", label: "Blonde", rgb: [0.98, 0.82, 0.5] },
-  { id: "platinum", label: "Platinum", rgb: [1.08, 1.04, 0.92] },
-  { id: "grey", label: "Grey", rgb: [0.68, 0.68, 0.68] },
-  { id: "white", label: "White", rgb: [1.18, 1.18, 1.18] },
-  { id: "crimson", label: "Crimson", rgb: [0.75, 0.08, 0.1] },
-  { id: "violet", label: "Violet", rgb: [0.5, 0.25, 0.85] },
-  { id: "azure", label: "Azure", rgb: [0.2, 0.5, 1.0] },
-  { id: "emerald", label: "Emerald", rgb: [0.15, 0.7, 0.35] },
+  hair("black", "Black", "hair-black"),
+  hair("dark-brown", "Dark brown", "hair-dark-brown"),
+  hair("brown", "Brown", "hair-brown"),
+  hair("chestnut", "Chestnut", "hair-chestnut"),
+  hair("auburn", "Auburn", "hair-auburn"),
+  hair("ginger", "Ginger", "hair-ginger"),
+  hair("strawberry", "Strawberry blonde", "hair-strawberry"),
+  hair("blonde", "Blonde", "hair-blonde"),
+  hair("platinum", "Platinum", "hair-platinum"),
+  hair("grey", "Grey", "hair-grey"),
+  hair("white", "White", "hair-white"),
+  hair("crimson", "Crimson", "ember-3"),
+  hair("violet", "Violet", "arcane-4"),
+  hair("azure", "Azure", "sky-4"),
+  hair("emerald", "Emerald", "leaf-4"),
 ];
 
 export const outfitSlots = ["head", "shoulders", "torso", "arms", "legs", "feet"] as const;

@@ -1,4 +1,5 @@
 //! Original procedural humanoids. Appearance is presentation data, not fighter rules.
+use crate::palette;
 use bevy::prelude::*;
 
 use crate::animation::{Joint, JointKind};
@@ -28,9 +29,9 @@ impl Appearance {
     pub fn practice(index: usize, clothing: Handle<StandardMaterial>) -> Self {
         if index == 0 {
             Self {
-                skin: Color::srgb(0.64, 0.40, 0.27),
-                hair: Color::srgb(0.065, 0.045, 0.035),
-                eyes: Color::srgb(0.12, 0.52, 0.39),
+                skin: palette::color(palette::SKIN_TAN),
+                hair: palette::color(palette::HAIR_BLACK),
+                eyes: palette::color(palette::LEAF_3),
                 clothing,
                 height: 1.0,
                 build: 1.0,
@@ -38,9 +39,9 @@ impl Appearance {
             }
         } else {
             Self {
-                skin: Color::srgb(0.84, 0.62, 0.45),
-                hair: Color::srgb(0.23, 0.075, 0.035),
-                eyes: Color::srgb(0.19, 0.34, 0.60),
+                skin: palette::color(palette::SKIN_NATURAL),
+                hair: palette::color(palette::HAIR_DARK_BROWN),
+                eyes: palette::color(palette::SKY_3),
                 clothing,
                 height: 1.0,
                 build: 1.06,
@@ -321,20 +322,20 @@ impl Humanoid {
                 0.8,
             )),
             eyes: materials.add(appearance.eyes),
-            white: materials.add(Color::srgb(0.92, 0.90, 0.84)),
+            white: materials.add(palette::color(palette::NIGHT_12)),
             dark: materials.add(StandardMaterial {
-                base_color: Color::srgb(0.045, 0.055, 0.065),
+                base_color: palette::color(palette::NIGHT_1),
                 perceptual_roughness: 0.85,
                 ..default()
             }),
             clothing: materials.add(painted_matte(lift(accent, 1.12), &painted.cloth, 0.85)),
             trousers: materials.add(painted_matte(
-                Color::srgb(0.19, 0.21, 0.28),
+                palette::color(palette::NIGHT_6),
                 &painted.cloth,
                 0.9,
             )),
             leather: materials.add(painted_matte(
-                Color::srgb(0.40, 0.27, 0.18),
+                palette::color(palette::WOOD_2),
                 &painted.leather,
                 0.75,
             )),

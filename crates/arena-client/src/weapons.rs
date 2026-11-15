@@ -1,5 +1,6 @@
 //! Selectable Verdant Eclipse glaives and Aetherthorn staff with procedural fallbacks.
 //! All geometry, mounting and effects are presentation-only; no combat rules.
+use crate::palette;
 use bevy::{
     asset::RenderAssetUsages, gltf::GltfMaterialName, mesh::PrimitiveTopology, prelude::*,
     world_serialization::WorldInstanceReady,
@@ -22,14 +23,14 @@ pub enum Variant {
 
 impl Variant {
     fn color(self) -> Color {
-        match self {
-            Self::Purple => Color::srgb(0.72, 0.08, 1.0),
-            Self::Yellow => Color::srgb(1.0, 0.85, 0.025),
-            Self::Red => Color::srgb(1.0, 0.035, 0.025),
-            Self::Blue => Color::srgb(0.035, 0.3, 1.0),
-            Self::Green => Color::srgb(0.08, 1.0, 0.012),
-            Self::Cyan => Color::srgb(0.035, 0.65, 0.9),
-        }
+        palette::color(match self {
+            Self::Purple => palette::ARCANE_4,
+            Self::Yellow => palette::GOLD_4,
+            Self::Red => palette::EMBER_4,
+            Self::Blue => palette::SKY_4,
+            Self::Green => palette::LEAF_5,
+            Self::Cyan => palette::TEAL_4,
+        })
     }
 
     fn emission(self, strength: f32) -> LinearRgba {
@@ -139,7 +140,7 @@ fn spawn_staff(
     let shaft = meshes.add(Cylinder::new(0.075, 3.8));
     let crystal = meshes.add(Sphere::new(0.3).mesh().uv(6, 4));
     let dark = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.012, 0.026, 0.046),
+        base_color: palette::color(palette::NIGHT_1),
         metallic: 0.65,
         ..default()
     });
@@ -454,13 +455,13 @@ impl BackBlades {
             cube: meshes.add(Cuboid::from_size(Vec3::ONE)),
             gem: meshes.add(Sphere::new(0.085).mesh().uv(12, 8)),
             metal: materials.add(StandardMaterial {
-                base_color: Color::srgb(0.055, 0.13, 0.105),
+                base_color: palette::color(palette::LEAF_1),
                 metallic: 0.8,
                 perceptual_roughness: 0.3,
                 ..default()
             }),
             grip: materials.add(StandardMaterial {
-                base_color: Color::srgb(0.025, 0.045, 0.035),
+                base_color: palette::color(palette::NIGHT_1),
                 perceptual_roughness: 0.85,
                 ..default()
             }),

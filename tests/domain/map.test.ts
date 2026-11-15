@@ -22,6 +22,7 @@ import {
   newMap,
   nudge,
   parseMap,
+  pillarOutline,
   planBounds,
   propFootprint,
   reconcileSelection,
@@ -61,6 +62,18 @@ describe("map files", () => {
 });
 
 describe("plan geometry", () => {
+  it("draws pillars as the rules' hexagon inscribed in their box", () => {
+    const outline = pillarOutline({ x: 2, z: -3, width: 9, depth: 8 });
+    expect(outline).toEqual([
+      { x: 6.5, z: -3 },
+      { x: 4.25, z: 1 },
+      { x: -0.25, z: 1 },
+      { x: -2.5, z: -3 },
+      { x: -0.25, z: -7 },
+      { x: 4.25, z: -7 },
+    ]);
+  });
+
   it("mirrors the rules' edge frames for every edge", () => {
     const map = colosseum();
     for (const edge of EDGES) {

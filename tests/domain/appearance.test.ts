@@ -87,7 +87,7 @@ describe("character appearance", () => {
     );
     expect(materials.Skin.tint).toEqual([0.36, 0.26, 0.2]);
     expect(materials.Skin.texture).toBe("characters/kits/textures/skin-light.png");
-    expect(materials.Hair_2.tint).toEqual([0.1, 0.09, 0.085]);
+    expect(materials.Hair_2.tint).toEqual([0.1, 0.09, 0.08]);
     expect(materials.Eyes.texture).toBe("characters/kits/textures/eye-blue.png");
     expect(materials.Ranger).toEqual({ name: "Ranger", tint: [1, 1, 1], texture: null });
     // Unknown ids fall back rather than breaking the look.

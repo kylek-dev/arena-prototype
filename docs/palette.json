@@ -1,0 +1,228 @@
+{
+  "name": "Arena palette",
+  "version": 1,
+  "companion": "docs/ART-DIRECTION.md",
+  "summary": "The closed color palette for the whole game. Every color the game shows must be one of these swatches, so the arena, characters, weapons, sky, HUD and tools read as one hand-painted world. Spell effects are the only exemption: they are meant to stand out.",
+  "rules": [
+    "Only swatches in this file may be used. This covers environment tints, materials, characters, weapons, props, the sky, light colors, the HTML/CSS HUD, menus and the map editor.",
+    "Reference swatches by id through the generated bindings, never by copying a hex value: Rust `arena_palette::NIGHT_1` (with `palette::color` / `palette::vec3` in the client), TypeScript `palette[\"night-1\"]`, CSS `var(--pal-night-1)`.",
+    "A swatch may be shown at any opacity (CSS `color-mix(in srgb, var(--pal-night-1) 60%, transparent)`, or a material alpha). Opacity does not create a new color.",
+    "Blends between swatches are allowed (sky gradients, painted shading, hover mixes), but every anchor of the blend must be a swatch.",
+    "Lighting math is not a new color: exposure, light intensity, emission strength and linear lifts may scale a swatch, as long as its hue comes from the palette.",
+    "White (1, 1, 1) used as an identity multiplier, meaning 'leave this texture untinted', is allowed. Near-neutral light-to-shadow multipliers inside procedural texture painters are shading, not color, and are allowed.",
+    "Textures ship near-neutral and are tinted in code with swatches. Hand-authored textures and imported models must be painted from, or recolored to, this palette before they ship.",
+    "Spell effects are exempt and may use any color or intensity. Nothing else may out-glow or out-saturate them: weapons, team markers and UI use the brightest palette steps at most.",
+    "Families are ramps ordered dark (1) to light. Prefer reusing an existing swatch. To add or change one, edit this file, run `node scripts/palette.mjs`, explain the need in the pull request, and keep each family a clean ramp."
+  ],
+  "exemptions": [
+    {
+      "scope": "Spell effects",
+      "paths": ["crates/arena-client/src/lightning.rs"],
+      "why": "Spell animations are the one thing meant to stand out from the palette."
+    }
+  ],
+  "enforcement": [
+    "`node scripts/palette.mjs --check` fails when the generated CSS, TypeScript or Rust bindings drift from this file.",
+    "tests/unit/palette.test.mjs fails on hex, rgb(), hsl() or named color literals in web/src or web/index.html, on Radix color props or scales the palette does not drive, and on lighting.json light colors that are not swatches.",
+    "arena-client's palette test fails on literal Color/Srgba/LinearRgba values outside test code and the exempt spell modules."
+  ],
+  "families": [
+    {
+      "name": "night",
+      "role": "Cool blue-black neutrals: deepest shadow, outlines, HUD panels, text and the backdrop. Also the Radix gray scale, step for step.",
+      "swatches": [
+        { "id": "night-1", "hex": "#0a1118", "use": "Ink: page background, text shadows, overlays, darkest metal and grips" },
+        { "id": "night-2", "hex": "#111a23", "use": "Arena base slab, panel background, nameplate border" },
+        { "id": "night-3", "hex": "#18212c", "use": "Raised panel, input background" },
+        { "id": "night-4", "hex": "#1e2834", "use": "Nameplate body, empty bar track" },
+        { "id": "night-5", "hex": "#252f3b", "use": "Pressed control background" },
+        { "id": "night-6", "hex": "#2e3541", "use": "Clear color behind the sky, cloth trousers, subtle border" },
+        { "id": "night-7", "hex": "#3b4452", "use": "Border" },
+        { "id": "night-8", "hex": "#4f5a6a", "use": "Strong border, focus-adjacent outline" },
+        { "id": "night-9", "hex": "#5f6b7c", "use": "Solid neutral control" },
+        { "id": "night-10", "hex": "#6e7a8a", "use": "Hovered neutral control" },
+        { "id": "night-11", "hex": "#aab3bf", "use": "Secondary text" },
+        { "id": "night-12", "hex": "#e9eef3", "use": "Primary text, eye whites, cloud bodies, highlights in place of pure white" }
+      ]
+    },
+    {
+      "name": "stone",
+      "role": "Blue-grey arena stone: floors, pit walls, trim, gates and pillars.",
+      "swatches": [
+        { "id": "stone-1", "hex": "#3d5463", "use": "Deep stone accents" },
+        { "id": "stone-2", "hex": "#575d72", "use": "Iron gates" },
+        { "id": "stone-3", "hex": "#697a87", "use": "Arena and starting-room floors" },
+        { "id": "stone-4", "hex": "#6b7a94", "use": "Pit walls, trim and starting-room walls" },
+        { "id": "stone-5", "hex": "#7484a0", "use": "Pillar plinths (the step between floor and shaft), sky below the horizon" },
+        { "id": "stone-6", "hex": "#a9b8c4", "use": "Pillar shafts, so cover stands out against the darker walls; snow ground and pillars on the map plan" },
+        { "id": "stone-7", "hex": "#d5dee6", "use": "Pillar bands and crowns: the light trim that outlines cover against the walls" }
+      ]
+    },
+    {
+      "name": "sand",
+      "role": "Warm sandstone and parchment: stands, outer walls, sand, frames and the map plan.",
+      "swatches": [
+        { "id": "sand-1", "hex": "#2a2119", "use": "Map plan buildings and outlines" },
+        { "id": "sand-2", "hex": "#3b2f24", "use": "Map plan stands" },
+        { "id": "sand-3", "hex": "#5a4f43", "use": "Map plan pit wall" },
+        { "id": "sand-4", "hex": "#8b7a62", "use": "Map plan floor" },
+        { "id": "sand-5", "hex": "#b6a27f", "use": "Parchment frame border for selected units, map plan sand" },
+        { "id": "sand-6", "hex": "#dbc29e", "use": "Spectator stands" },
+        { "id": "sand-7", "hex": "#f7d9b3", "use": "Outer walls, warm horizon" },
+        { "id": "sand-8", "hex": "#fff2e0", "use": "Sand ground, sunlight (key light), the sun's glow" }
+      ]
+    },
+    {
+      "name": "wood",
+      "role": "Warm wood and leather.",
+      "swatches": [
+        { "id": "wood-1", "hex": "#3b2616", "use": "Dark wood, prop outlines on the map plan" },
+        { "id": "wood-2", "hex": "#664530", "use": "Leather" },
+        { "id": "wood-3", "hex": "#a86b42", "use": "Doors" },
+        { "id": "wood-4", "hex": "#db9966", "use": "Benches" },
+        { "id": "wood-5", "hex": "#f0be78", "use": "Pale wood, prop markers on the map plan" }
+      ]
+    },
+    {
+      "name": "gold",
+      "role": "Gold leaf and warm highlights: venue gold, heraldic metal, warnings, outgoing damage.",
+      "swatches": [
+        { "id": "gold-1", "hex": "#3a2610", "use": "Darkest gold shadow" },
+        { "id": "gold-2", "hex": "#854d1f", "use": "Heraldic gold in shadow" },
+        { "id": "gold-3", "hex": "#e6a33d", "use": "Heraldic gold" },
+        { "id": "gold-4", "hex": "#ffc257", "use": "Venue gold trim, yellow weapons" },
+        { "id": "gold-5", "hex": "#ffdb75", "use": "Gold highlight, selection, damage text, warnings" },
+        { "id": "gold-6", "hex": "#f7e3a6", "use": "Cream heraldic accent" }
+      ]
+    },
+    {
+      "name": "ember",
+      "role": "Crimson to coral: the opposing team, health loss, errors and red weapons.",
+      "swatches": [
+        { "id": "ember-1", "hex": "#3d1015", "use": "Darkest red" },
+        { "id": "ember-2", "hex": "#7a1e26", "use": "Deep red surface" },
+        { "id": "ember-3", "hex": "#c23a44", "use": "Hostile health bars, crimson hair" },
+        { "id": "ember-4", "hex": "#f0583a", "use": "Opposing team marker, red weapons, combat errors" },
+        { "id": "ember-5", "hex": "#ff8a6e", "use": "Light coral outline" },
+        { "id": "ember-6", "hex": "#ffb8a8", "use": "Pale coral, opposing spawns on the map plan" }
+      ]
+    },
+    {
+      "name": "leaf",
+      "role": "Saturated greens: grass, friendly health, healing and green weapons.",
+      "swatches": [
+        { "id": "leaf-1", "hex": "#12291f", "use": "Deep green, dark jade metal" },
+        { "id": "leaf-2", "hex": "#1a4d36", "use": "Shadowed foliage" },
+        { "id": "leaf-3", "hex": "#1a754d", "use": "Heraldic green, map plan grass" },
+        { "id": "leaf-4", "hex": "#3fa36b", "use": "Friendly health bars" },
+        { "id": "leaf-5", "hex": "#6ad68c", "use": "Healing text, green weapons" },
+        { "id": "leaf-6", "hex": "#b5e3a1", "use": "Pale leaf" },
+        { "id": "leaf-7", "hex": "#ebf5e0", "use": "Grass ground tint" }
+      ]
+    },
+    {
+      "name": "teal",
+      "role": "Teal and cyan: the friendly team marker, cyan weapons and diagnostics.",
+      "swatches": [
+        { "id": "teal-1", "hex": "#0d3236", "use": "Darkest teal" },
+        { "id": "teal-2", "hex": "#145f61", "use": "Deep teal" },
+        { "id": "teal-3", "hex": "#1f8f86", "use": "Teal eyes" },
+        { "id": "teal-4", "hex": "#26d6bf", "use": "Friendly team marker, cyan weapons" },
+        { "id": "teal-5", "hex": "#7fd3d6", "use": "Diagnostics text and graph" }
+      ]
+    },
+    {
+      "name": "sky",
+      "role": "Rich blues: the sky, resource bars, friendly rooms, fill light, snow and the HUD accent.",
+      "swatches": [
+        { "id": "sky-1", "hex": "#142545", "use": "Darkest blue" },
+        { "id": "sky-2", "hex": "#1c3a85", "use": "Deep blue" },
+        { "id": "sky-3", "hex": "#2b5cc7", "use": "Zenith, heraldic blue, HUD accent, blue eyes" },
+        { "id": "sky-4", "hex": "#438bdd", "use": "Resource bars, friendly rooms, blue weapons" },
+        { "id": "sky-5", "hex": "#5c9ef0", "use": "Upper sky, friendly room outlines" },
+        { "id": "sky-6", "hex": "#9cc3ff", "use": "Light blue text, friendly spawns on the map plan" },
+        { "id": "sky-7", "hex": "#e0edff", "use": "Fill light, pale heraldic accent, cloud cores" },
+        { "id": "sky-8", "hex": "#f5faff", "use": "Snow ground, high wisps" }
+      ]
+    },
+    {
+      "name": "arcane",
+      "role": "Purples and dusk lavender: heraldry, purple weapons, painted sky wash and cloud shadows.",
+      "swatches": [
+        { "id": "arcane-1", "hex": "#2e1730", "use": "Plum ink for heraldic linework" },
+        { "id": "arcane-2", "hex": "#4a2275", "use": "Deep purple" },
+        { "id": "arcane-3", "hex": "#662b9e", "use": "Heraldic purple" },
+        { "id": "arcane-4", "hex": "#8b4fd9", "use": "Purple weapons, violet hair, sky wash" },
+        { "id": "arcane-5", "hex": "#b48cf0", "use": "Light violet" },
+        { "id": "arcane-6", "hex": "#b3b8e0", "use": "Dusk lavender: cloud shadows" }
+      ]
+    },
+    {
+      "name": "skin",
+      "role": "Skin tones as they appear on screen. Code derives each texture tint as swatch / atlas base.",
+      "swatches": [
+        { "id": "skin-porcelain", "hex": "#f1a67e", "use": "Porcelain" },
+        { "id": "skin-fair", "hex": "#e49e76", "use": "Fair" },
+        { "id": "skin-natural", "hex": "#db9e7a", "use": "Natural: the untinted atlas" },
+        { "id": "skin-olive", "hex": "#c18656", "use": "Olive" },
+        { "id": "skin-tan", "hex": "#b46f47", "use": "Tan" },
+        { "id": "skin-bronze", "hex": "#915231", "use": "Bronze" },
+        { "id": "skin-brown", "hex": "#6e3a22", "use": "Brown" },
+        { "id": "skin-deep", "hex": "#4f2918", "use": "Deep" },
+        { "id": "skin-ebony", "hex": "#371c11", "use": "Ebony" }
+      ]
+    },
+    {
+      "name": "hair",
+      "role": "Natural hair colors as they appear on screen. Fantasy hair uses the ember, arcane, sky and leaf ramps.",
+      "swatches": [
+        { "id": "hair-black", "hex": "#141210", "use": "Black" },
+        { "id": "hair-dark-brown", "hex": "#342215", "use": "Dark brown" },
+        { "id": "hair-brown", "hex": "#5a3c23", "use": "Brown" },
+        { "id": "hair-chestnut", "hex": "#6f381b", "use": "Chestnut" },
+        { "id": "hair-auburn", "hex": "#833217", "use": "Auburn" },
+        { "id": "hair-ginger", "hex": "#b35a23", "use": "Ginger" },
+        { "id": "hair-strawberry", "hex": "#c38359", "use": "Strawberry blonde" },
+        { "id": "hair-blonde", "hex": "#c3a361", "use": "Blonde" },
+        { "id": "hair-platinum", "hex": "#d7cfb2", "use": "Platinum" },
+        { "id": "hair-grey", "hex": "#878784", "use": "Grey" },
+        { "id": "hair-white", "hex": "#ebebe5", "use": "White" }
+      ]
+    }
+  ],
+  "radix": {
+    "note": "Radix Themes draws the HUD's menus and dialogs. These maps replace the Radix scales the UI uses with palette swatches, so third-party components follow the palette too. Each alpha step is [swatch, opacity percent].",
+    "scales": {
+      "slate": {
+        "solid": ["night-1", "night-2", "night-3", "night-4", "night-5", "night-6", "night-7", "night-8", "night-9", "night-10", "night-11", "night-12"],
+        "alpha": [["night-12", 0], ["night-12", 3], ["night-12", 8], ["night-12", 11], ["night-12", 15], ["night-12", 19], ["night-12", 25], ["night-12", 36], ["night-12", 43], ["night-12", 48], ["night-12", 71], ["night-12", 94]],
+        "contrast": "night-12"
+      },
+      "indigo": {
+        "solid": ["night-1", "night-2", "sky-1", "sky-1", "sky-1", "sky-2", "sky-2", "sky-3", "sky-3", "sky-4", "sky-6", "sky-7"],
+        "alpha": [["sky-4", 0], ["sky-4", 4], ["sky-4", 15], ["sky-4", 22], ["sky-4", 30], ["sky-4", 38], ["sky-4", 46], ["sky-4", 58], ["sky-3", 90], ["sky-4", 92], ["sky-6", 100], ["sky-7", 100]],
+        "contrast": "night-12"
+      },
+      "red": {
+        "solid": ["night-1", "ember-1", "ember-1", "ember-1", "ember-2", "ember-2", "ember-2", "ember-3", "ember-3", "ember-4", "ember-5", "ember-6"],
+        "alpha": [["ember-4", 0], ["ember-4", 4], ["ember-4", 15], ["ember-4", 22], ["ember-4", 30], ["ember-4", 38], ["ember-4", 46], ["ember-4", 58], ["ember-3", 90], ["ember-4", 92], ["ember-5", 100], ["ember-6", 100]],
+        "contrast": "night-12"
+      },
+      "green": {
+        "solid": ["night-1", "leaf-1", "leaf-1", "leaf-1", "leaf-2", "leaf-2", "leaf-2", "leaf-3", "leaf-4", "leaf-4", "leaf-5", "leaf-7"],
+        "alpha": [["leaf-4", 0], ["leaf-4", 4], ["leaf-4", 15], ["leaf-4", 22], ["leaf-4", 30], ["leaf-4", 38], ["leaf-4", 46], ["leaf-4", 58], ["leaf-4", 90], ["leaf-4", 92], ["leaf-5", 100], ["leaf-7", 100]],
+        "contrast": "night-1"
+      },
+      "amber": {
+        "solid": ["night-1", "gold-1", "gold-1", "gold-1", "gold-2", "gold-2", "gold-2", "gold-3", "gold-4", "gold-4", "gold-5", "gold-6"],
+        "alpha": [["gold-4", 0], ["gold-4", 4], ["gold-4", 15], ["gold-4", 22], ["gold-4", 30], ["gold-4", 38], ["gold-4", 46], ["gold-4", 58], ["gold-4", 90], ["gold-4", 92], ["gold-5", 100], ["gold-6", 100]],
+        "contrast": "night-1"
+      }
+    },
+    "overlays": {
+      "black": "night-1",
+      "white": "night-12",
+      "percent": [5, 10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 95]
+    }
+  }
+}
