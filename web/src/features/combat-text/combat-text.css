@@ -10,11 +10,11 @@
   font-size: 24px;
   font-weight: 800;
   text-shadow:
-    0 2px 3px #000,
-    1px 0 2px #000,
-    -1px 0 2px #000;
-  color: #ffe080;
+    0 2px 3px var(--pal-night-1),
+    1px 0 2px var(--pal-night-1),
+    -1px 0 2px var(--pal-night-1);
+  color: var(--pal-gold-5);
 }
 .floating-combat-text .healing {
-  color: #65f58b;
+  color: var(--pal-leaf-5);
 }

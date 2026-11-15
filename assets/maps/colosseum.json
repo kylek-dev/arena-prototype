@@ -1,0 +1,52 @@
+{
+  "format": 1,
+  "name": "Colosseum",
+  "ground": "stone",
+  "floor": { "width": 108, "depth": 84 },
+  "pillars": [
+    { "x": -21, "z": -15, "width": 12, "depth": 12 },
+    { "x": 21, "z": -15, "width": 12, "depth": 12 },
+    { "x": -21, "z": 15, "width": 12, "depth": 12 },
+    { "x": 21, "z": 15, "width": 12, "depth": 12 }
+  ],
+  "rooms": [
+    {
+      "team": "friendly",
+      "edge": "south",
+      "offset": 0,
+      "width": 10,
+      "depth": 11,
+      "ceiling": 6,
+      "spawns": [
+        { "across": 0, "back": 5 },
+        { "across": -2, "back": 5 },
+        { "across": 2, "back": 5 }
+      ]
+    },
+    {
+      "team": "opposing",
+      "edge": "north",
+      "offset": 0,
+      "width": 10,
+      "depth": 11,
+      "ceiling": 6,
+      "spawns": [
+        { "across": 0, "back": 5 },
+        { "across": -2, "back": 5 },
+        { "across": 2, "back": 5 }
+      ]
+    }
+  ],
+  "venue": {
+    "pitWallHeight": 7,
+    "pitWallThickness": 1.5,
+    "tiers": 10,
+    "tierRise": 0.85,
+    "tierTread": 1.9,
+    "concourseDepth": 3,
+    "outerWallThickness": 3,
+    "outerWallHeight": 34,
+    "pillarHeight": 48
+  },
+  "props": []
+}

@@ -193,3 +193,4 @@ mod tests {
 }
 
 pub mod arena;
+pub mod map;

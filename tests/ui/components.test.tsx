@@ -233,6 +233,25 @@ it("renders actionable startup errors and a failed-character fallback notice", (
   expect(screen.getByRole("status").textContent).toContain("procedural fallback");
 });
 
+it("keeps the loading screen over the arena until render warmup settles", () => {
+  const warming = { phase: "warming" as const, ready: false, pending: 0, timedOut: false };
+  act(() => {
+    error.set("");
+    engine.set(snapshot({ frames: 500, startup: { ...warming, phase: "assets" } }));
+  });
+  const { rerender } = render(<Loading />);
+  expect(screen.getByRole("status").textContent).toContain("Loading character");
+  act(() => engine.set(snapshot({ frames: 520, startup: warming })));
+  rerender(<Loading />);
+  expect(screen.getByRole("region", { name: "Arena startup" })).toBeTruthy();
+  expect(screen.getByRole("status").textContent).toContain("Preparing the arena");
+  act(() =>
+    engine.set(snapshot({ frames: 560, startup: { ...warming, phase: "ready", ready: true } })),
+  );
+  rerender(<Loading />);
+  expect(screen.queryByRole("region", { name: "Arena startup" })).toBeNull();
+});
+
 it("focus frame follows live health independently of actual target selection", async () => {
   engine.set(snapshot({ selected: false }));
   render(<Frames />);

@@ -23,9 +23,31 @@ export type Snapshot = {
   feedback: string;
   won: boolean;
   character: { status: string };
+  /** Render warmup behind the loading screen; absent from older clients. */
+  startup?: StartupState;
   camera: { yaw: number; pitch: number; distance: number };
   pulse: { damage: number; cooldown: number; range: number };
 };
+
+export type StartupState = {
+  phase: "assets" | "render" | "warming" | "ready";
+  ready: boolean;
+  pending: number;
+  timedOut: boolean;
+};
+
+function validStartup(value: unknown): value is StartupState {
+  const s = value as StartupState;
+  return (
+    !!s &&
+    ["assets", "render", "warming", "ready"].includes(s.phase) &&
+    typeof s.ready === "boolean" &&
+    s.ready === (s.phase === "ready") &&
+    Number.isInteger(s.pending) &&
+    s.pending >= 0 &&
+    typeof s.timedOut === "boolean"
+  );
+}
 
 export function needsImmediateDelivery(previous: Snapshot | null, next: Snapshot) {
   return (
@@ -34,6 +56,7 @@ export function needsImmediateDelivery(previous: Snapshot | null, next: Snapshot
     next.teamSize !== previous.teamSize ||
     next.selectedActor !== previous.selectedActor ||
     next.won !== previous.won ||
+    next.startup?.ready !== previous.startup?.ready ||
     next.hoveredUnit !== previous.hoveredUnit ||
     next.cooldown > previous.cooldown ||
     (next.cooldown === 0) !== (previous.cooldown === 0)
@@ -70,6 +93,7 @@ export function adaptSnapshot(raw: unknown): Snapshot {
   if (!["ready", "failed", "placeholder", "loading"].includes(r.character?.status)) {
     throw new Error("Invalid character loading status");
   }
+  if (r.startup !== undefined && !validStartup(r.startup)) throw new Error("Invalid startup state");
   if (
     typeof r.selected !== "boolean" ||
     (r.selectedPlayer !== undefined && typeof r.selectedPlayer !== "boolean") ||
@@ -181,12 +205,16 @@ export function adaptSnapshot(raw: unknown): Snapshot {
 declare global {
   interface Window {
     arenaShell: {
-      hasCharacterModel?: boolean;
+      characterModel?: string;
       readInput: () => number[];
       readHover?: () => number[];
       readGraphics?: () => number[];
       readWeapons?: () => number[];
       readLighting?: () => number[];
+      readMap?: () => unknown[];
+      readAppearance?: () => unknown[];
+      readPreview?: () => number[];
+      onMapStatus?: (status: unknown) => void;
       onFocusUnit?: (tag: UnitTag) => void;
       onState: (state: unknown) => void;
     };

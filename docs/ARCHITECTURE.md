@@ -4,6 +4,55 @@
 
 ## Implemented today
 
+[ADR 0033](decisions/0033-quaternius-default-female.md) supersedes the historical
+default-off character selection below: the CC0 Quaternius female base plus
+offline-retargeted UAL1 clips is the default when its sources are installed.
+Only `quaternius-female.glb` ships, with embedded textures and canonical
+animation states, using the existing manifest and Bevy controller. Backward
+still uses a documented reverse-cycle substitute. Procedural
+loading/error fallback and all simulation rules remain unchanged.
+
+[ADR 0034](decisions/0034-dressed-character-and-jump-edges.md) adds source bun
+hair and Ranger armor on that same verified skeleton, excludes covered base-body
+triangles and appends the included UAL1 `Jump_Start`/`Jump_Land` clips to its
+graph. Cosmetic takeoff/flight/landing phases follow rule-owned altitude;
+landing cannot lock movement, casts or another jump. Foot discs and the world
+target ring are removed; HUD selection feedback remains.
+
+[ADR 0035](decisions/0035-character-startup-budget.md) bounds character PNGs
+offline using the existing pinned native image crate and compacts unused/
+duplicate glTF data, reducing the dressed model from 57.7 MB to 9.2 MB.
+No image-preparation dependency enters the client/simulation. Takeoff/landing
+now occupy 0.30/0.80 s. Equipped weapons are temporarily disabled by omitting
+their carrier, preserving source files and preferences. Browser hitch
+resolution remains unverified; no customization UI is added.
+
+[ADR 0043](decisions/0043-hexagonal-pillars.md) makes pillars hexagons inscribed in their map box. The rules test exact integer hexagon contact and sight lines, and movement pushes a body out to the pillar's surface so it slides along faces and rounds corners; the camera, picking, meshes and map editor share the same hexagon. The map format is unchanged.
+
+[ADR 0042](decisions/0042-closed-color-palette.md) makes [`docs/palette.json`](palette.json) the closed color palette. `scripts/palette.mjs` generates CSS variables (and Radix scale overrides), a TypeScript map and the engine-free `arena-palette` crate; the client, the sky painter and the HUD take every color from it, with spell effects as the only exemption. Tests reject other color literals.
+
+[ADR 0040](decisions/0040-character-customization-kits.md) replaces the single dressed female with per-body customization kits: one GLB per body holding every hairstyle/outfit piece as a named node and body regions that outfit pieces hide. The browser resolves the saved look into a render spec (visible nodes, material tints/texture variants, morph) that `arena-client/src/appearance.rs` applies; a close-up preview camera serves the Character screen. Presentation only.
+
+[ADR 0036](decisions/0036-universal-strafe-library.md) replaces the forward-jog
+left/right substitutes with a standalone Blender-authored universal strafe
+library. It targets the common 65-joint skeleton, not the current body/outfit,
+and retargets offline into the unchanged graph indices. No QAL race data ships
+in that library. New curves carry an MIT notice; Quaternius reference data
+retains CC0 provenance. Compatibility checks cover all ten supplied humanoid
+targets; browser animation review remains pending.
+
+[ADR 0038](decisions/0038-matched-locomotion-and-jump-transitions.md) re-authors
+those strafes as jog-cadence lateral runs (frame-aligned footfalls, speed-matched
+planted feet) with a standard-library Python script. The client strafes on
+diagonals (with boundary hysteresis), carries step phase across aligned loops, plays the complete
+takeoff and skips the planted landing recovery while moving. All of this stays
+presentation-only; browser review is pending.
+
+[ADR 0039](decisions/0039-render-warmup-behind-loading-screen.md) holds the
+loading screen until the render world settles: a camera sweep and beam draw
+behind the overlay, with readiness read from pipeline/GPU-asset state during
+extraction and a 15 s cap. The bridge snapshot gains an optional `startup` field.
+
 `arena-headless` supplies a scripted list of commands to `arena-sim`. The simulation contains a deliberately tiny one-dimensional duel: bounded movement, range, damage, cooldown, and match completion. The script prints tick-tagged events. Rules run at a proposed 30 Hz and use integer state. Commands resolve in supplied order; ties are not simultaneous. The test replays the same input twice and compares events and state.
 
 The browser spike adds `arena_sim::arena`: planar movement with integer coordinates, normalized movement limits, wall/pillar collision, range and line-of-sight checks, cooldowns and round completion. `arena-client` presents these rules in a Bevy 3D scene with character-relative movement and a React HTML/CSS HUD. Browser input is sampled before fixed updates; positions interpolate for rendering. See [ADR 0002](decisions/0002-browser-spike.md) and [ADR 0007](decisions/0007-react-combat-ui.md).
@@ -24,7 +73,13 @@ Node tests exercise legacy input directly; Vitest exercises domain modules and p
 
 [ADR 0023](decisions/0023-world-model-focus.md) extends right-click focus to world models. One-shot coordinates append at input indices 15–16; Rust uses rendered-unit/pillar picking shared with left-click targeting and returns a local tag through optional `onFocusUnit`. Browser focus remains independent of selection; misses preserve focus and drags/chords do not focus. Nameplates remain usable through pillars. Human rendered review of model focus is pending separately from earlier approvals.
 
+[ADR 0030](decisions/0030-stylized-surface-textures.md) textures procedural geometry. Prepared CC0 hand-painted tiling PNGs (built offline by `crates/arena-textures`, never a client dependency) are attached to arena materials after load with client-generated mips, on world-anchored box UVs that leave collision transforms unchanged. Character parts use original painted-light textures generated at startup. Flat colours remain the loading/failure fallback. Human rendered review is pending.
+
+[ADR 0029](decisions/0029-base-female-player-character.md) makes BaseFemale the preferred player model, then BaseMale, then the procedural fallback. Rigged players are currently disabled by default (opt in with `ARENA_RIGGED_CHARACTER=1` at build time), so the player is procedural. The build writes only the chosen model and names it in the manifest; per-model client profiles hold the runtime path, rest-bound normalization and authored Jump/Cast segments. Rules and the opponent are unchanged. Human browser review is pending.
+
 The optional BaseMale glTF character is a presentation child of the existing player entity, normalized to the arena scale. A generated asset manifest lets builds without the local source use the procedural fallback without fetching a missing model. Loading state is exposed through the existing debug snapshot; collision and game rules do not depend on model geometry. See [asset provenance](../assets/README.md).
+
+[ADR 0028](decisions/0028-rounded-procedural-motion.md) refines procedural bodies with overlapping ellipsoid limbs/joints and hands with thumbs. Chest/head pivots add directional lean, counter-motion and breathing; outward-only lateral hip steps replace leg-crossing strafes. Simulation, authored BaseMale animation and mesh-quality caching are unchanged. Human rendered review of this refinement is pending.
 
 [ADR 0015](decisions/0015-procedural-humanoids.md) replaces capsule placeholders with procedural humanoids. Internal appearance data separates skin/hair/eye colors, clothing, proportions and hairstyle from simulation identity; customization UI/persistence and skeletal animation remain deferred. The player humanoid is also the optional model's loading/error fallback. Human rendered review is pending.
 
@@ -81,3 +136,9 @@ Keep simulation time separate from rendering and transport. Browser prediction m
 A future development bridge should expose structured state and command injection for browser automation and screenshots. Keep debug capabilities out of public competitive sessions. Do not require editor interaction or an external AI service to run tests.
 
 Model-focus review update (2026-11-08): the user approved the completed ADR 0023 change. Its pending human-review statement above is superseded; see [review record](UI-REVIEW.md#subsequent-changes).
+
+[ADR 0031](decisions/0031-colosseum-venue-and-larger-arena.md) triples the arena and pillar layout, raises movement to 7.2 m/s and adds presentation-only venue geometry (`venue.rs`: one pure box list for pit wall, textured stands, outer building, gates and 48 m pillars), painted heraldic banners and pennants (`heraldry.rs`) and an offline-painted 6×1024² cubemap sky loaded by `sky.rs`. The orbit camera now takes an unobstructed boom position directly, so it cannot wedge in concave venue corners. Every unit spawns facing the opposing team. Rules remain integer and graphics-free. Human rendered review is pending.
+
+[ADR 0037](decisions/0037-map-files-and-browser-map-editor.md) moves the layout into `assets/maps/*.json`, the single source for the rules (`arena_sim::map::Layout`, integer mm, gameplay validation) and the venue (`arena-map`: parsing and presentation checks; the WASM embeds the default map). The browser editor sends revisions through `readMap`/`onMapStatus`; Rust validates each one, applies valid maps live (`Arena::relayout` keeps the round when every fighter stays walkable) and reports problems. A Vite plugin for dev/preview only saves files from loopback, same-origin JSON requests. Human browser review is pending.
+
+[ADR 0032](decisions/0032-starting-rooms-camera-and-weapon-fit.md) adds walkable starting rooms behind gateways to the rules (overlapping walkable rectangles; walls block sight), carves them into the venue, limits camera occlusion to pillars, retracts the boom for obstacles beside the player, hides the player model when the camera is inside it, and fits back weapons flush per body. Human rendered review is pending.

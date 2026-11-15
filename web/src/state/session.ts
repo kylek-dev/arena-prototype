@@ -24,9 +24,16 @@ export const interaction = createStore({
   capture: null as { action: string; entry: 0 | 1 } | null,
 });
 export const error = createStore("");
+// Set by the character customizer; kept here so input does not import UI state.
+export const customizing = createStore(false);
+// The start screen before the first round: the player may customize, then
+// enters the arena. Gameplay waits until then.
+export const prematch = createStore(false);
 export function blocksGameplay() {
   const mode = interaction.get();
   return (
+    customizing.get() ||
+    prematch.get() ||
     !!mode.capture ||
     mode.quick ||
     mode.layout ||

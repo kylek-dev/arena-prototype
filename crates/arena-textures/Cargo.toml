@@ -1,0 +1,16 @@
+[package]
+name = "arena-textures"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Offline preparation of third-party tiling textures; not a runtime dependency."
+publish = false
+default-run = "arena-textures"
+
+[dependencies]
+arena-palette = { path = "../arena-palette" }
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
+
+[lints]
+workspace = true

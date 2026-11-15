@@ -1,6 +1,6 @@
 @media (prefers-reduced-motion: reduce) {
   .cooldown {
-    background: #0007;
+    background: color-mix(in srgb, var(--pal-night-1) 47%, transparent);
   }
   *,
   *::before,
