@@ -49,7 +49,9 @@ pub(crate) fn weapon_bloom() -> Bloom {
 /// Explicit exposure and a gentle shoulder: retain a readable arena rather
 /// than relying on the camera default and ACES's darker toe.
 pub(crate) fn arena_exposure() -> bevy::camera::Exposure {
-    bevy::camera::Exposure { ev100: 10.0 }
+    bevy::camera::Exposure {
+        ev100: super::lighting::Settings::default().exposure(),
+    }
 }
 
 #[derive(Component, Clone, Copy)]
@@ -134,7 +136,10 @@ mod tests {
 
     #[test]
     fn explicit_arena_exposure_preserves_the_users_tuned_starting_value() {
-        assert_eq!(arena_exposure().ev100, 10.0);
+        assert_eq!(
+            arena_exposure().ev100,
+            super::super::lighting::Settings::default().exposure()
+        );
         assert!(arena_exposure().exposure().is_finite());
     }
 

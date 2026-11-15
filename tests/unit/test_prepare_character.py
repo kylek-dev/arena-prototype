@@ -1,12 +1,16 @@
-"""Synthetic GLBs: no dependency on the user's unpublished character asset."""
+"""Synthetic GLBs: no dependency on the user's unpublished character assets."""
 import importlib.util
 import json
+import os
+import sys
 from pathlib import Path
 import struct
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'scripts'))
 spec = importlib.util.spec_from_file_location(
     'prepare_character', Path(__file__).resolve().parents[2] / 'scripts/prepare_character.py')
 module = importlib.util.module_from_spec(spec)
@@ -108,22 +112,124 @@ class CharacterPreparation(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module.character_glb(invalid)
 
-    def test_optional_source_manifest_and_stale_output(self):
+    def test_named_rig_is_required_for_each_character(self):
+        doc = fixture()
+        doc['nodes'][0]['name'] = 'BaseFemale_Rig'
+        result, _ = decode(module.character_glb(encode(doc), 'BaseFemale'))
+        self.assertEqual(result['scenes'],
+                         [{'name': 'BaseFemale | Character only', 'nodes': [0]}])
+        with self.assertRaises(ValueError):
+            module.character_glb(encode(doc), 'BaseMale')
+        with self.assertRaises(ValueError):
+            module.character_glb(encode(fixture()), 'BaseFemale')
+
+    def test_first_installed_character_manifest_and_stale_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            source, directory = root / 'BaseMale.glb', root / 'public'
-            source.write_bytes(encode(fixture()))
-            module.prepare(source, directory)
-            target = directory / module.MODEL
-            self.assertTrue(target.is_file())
-            self.assertEqual(json.loads((directory / 'character.json').read_text()),
-                             {'available': True})
-            source.unlink()
-            module.prepare(source, directory)
-            self.assertFalse(target.exists())
-            self.assertEqual(json.loads((directory / 'character.json').read_text()),
-                             {'available': False})
+            female, male = root / 'BaseFemale.glb', root / 'BaseMale.glb'
+            characters = (('base-female', female, 'BaseFemale'),
+                          ('base-male', male, 'BaseMale'))
+            directory = root / 'public'
+            female_doc = fixture()
+            female_doc['nodes'][0]['name'] = 'BaseFemale_Rig'
 
+            def outputs():
+                manifest = json.loads((directory / 'character.json').read_text())
+                present = [i for i, _, _ in characters
+                           if (directory / module.model_path(i)).is_file()]
+                return manifest, present
+
+            male.write_bytes(encode(fixture()))
+            module.prepare(characters, directory, enabled=True)
+            self.assertEqual(outputs(), ({'available': True, 'model': 'base-male'},
+                                         ['base-male']))
+            female.write_bytes(encode(female_doc))
+            module.prepare(characters, directory, enabled=True)
+            self.assertEqual(outputs(), ({'available': True, 'model': 'base-female'},
+                                         ['base-female']))
+            result, _ = decode((directory / module.model_path('base-female')).read_bytes())
+            self.assertEqual(result['scenes'][0]['name'], 'BaseFemale | Character only')
+            female.unlink()
+            male.unlink()
+            module.prepare(characters, directory, enabled=True)
+            self.assertEqual(outputs(), ({'available': False, 'model': None}, []))
+
+    def test_malformed_preferred_character_fails_instead_of_falling_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            female, male = root / 'BaseFemale.glb', root / 'BaseMale.glb'
+            female.write_bytes(encode(fixture()))  # Wrong rig name.
+            male.write_bytes(encode(fixture()))
+            with self.assertRaises(ValueError):
+                module.prepare((('base-female', female, 'BaseFemale'),
+                                ('base-male', male, 'BaseMale')), root / 'public',
+                               enabled=True)
+
+    def test_explicitly_disabled_removes_outputs_even_when_sources_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            female, male = root / 'BaseFemale.glb', root / 'BaseMale.glb'
+            female_doc = fixture()
+            female_doc['nodes'][0]['name'] = 'BaseFemale_Rig'
+            female.write_bytes(encode(female_doc))
+            male.write_bytes(encode(fixture()))
+            characters = (('base-female', female, 'BaseFemale'),
+                          ('base-male', male, 'BaseMale'))
+            directory = root / 'public'
+            module.prepare(characters, directory, enabled=True)
+            self.assertTrue((directory / module.model_path('base-female')).is_file())
+            environment = dict(os.environ)
+            try:
+                os.environ[module.ENV] = '0'
+                module.prepare(characters, directory)
+            finally:
+                os.environ.clear()
+                os.environ.update(environment)
+            self.assertEqual(json.loads((directory / 'character.json').read_text()),
+                             {'available': False, 'model': None})
+            for identifier, _, _ in characters:
+                self.assertFalse((directory / module.model_path(identifier)).exists())
+
+    def test_default_quaternius_selection_and_procedural_override(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model, library = root / 'female.gltf', root / 'library.glb'
+            model.touch()
+            library.touch()
+            directory = root / 'public'
+            with patch.dict(os.environ, {}, clear=True), \
+                    patch.object(module.quaternius_character, 'MODEL', model), \
+                    patch.object(module.quaternius_character, 'LIBRARY', library), \
+                    patch.object(module.quaternius_character, 'build',
+                                 return_value=b'synthetic prepared GLB') as build:
+                module.prepare(directory=directory)
+                self.assertEqual(json.loads((directory / 'character.json').read_text()),
+                                 {'available': True, 'model': 'quaternius-female'})
+                build.assert_called_once_with(
+                    texture_processor=module.quaternius_character.runtime_png)
+                output = directory / module.model_path('quaternius-female')
+                self.assertTrue(output.is_file())
+                os.environ[module.ENV] = '0'
+                module.prepare(directory=directory)
+                self.assertFalse(output.exists())
+                self.assertEqual(json.loads((directory / 'character.json').read_text()),
+                                 {'available': False, 'model': None})
+
+    def test_default_without_quaternius_does_not_ship_unconfirmed_legacy_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            legacy = root / 'legacy.glb'
+            doc = fixture()
+            doc['nodes'][0]['name'] = 'BaseFemale_Rig'
+            legacy.write_bytes(encode(doc))
+            characters = (('base-female', legacy, 'BaseFemale'),)
+            with patch.dict(os.environ, {}, clear=True), \
+                    patch.object(module, 'CHARACTERS', characters), \
+                    patch.object(module.quaternius_character, 'MODEL', root / 'absent'):
+                module.prepare(characters=characters, directory=root / 'public')
+                self.assertEqual(
+                    json.loads((root / 'public/character.json').read_text()),
+                    {'available': False, 'model': None})
 
 if __name__ == '__main__':
     unittest.main()

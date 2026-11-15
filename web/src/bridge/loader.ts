@@ -4,7 +4,13 @@ export async function loadEngine() {
   if (!assetResponse.ok)
     throw new Error("Asset configuration is missing. Run scripts/build-web.sh.");
   const assetConfig = await assetResponse.json();
-  window.arenaShell.hasCharacterModel = assetConfig.available === true;
+  // Builds before BaseFemale only recorded availability; those were BaseMale.
+  window.arenaShell.characterModel =
+    assetConfig.available === true
+      ? typeof assetConfig.model === "string"
+        ? assetConfig.model
+        : "base-male"
+      : undefined;
   const url = new URL("pkg/arena_client.js", document.baseURI).href;
   const { default: init } = await import(/* @vite-ignore */ url);
   await init();

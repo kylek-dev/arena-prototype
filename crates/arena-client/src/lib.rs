@@ -6,16 +6,21 @@ mod character;
 mod character_animation;
 mod combat_text;
 mod graphics;
+mod heraldry;
 mod hover;
 mod humanoid;
 mod lighting;
 mod nameplates;
+mod sky;
+mod textures;
+mod venue;
 mod weapons;
 
+use arena_map::MapFile;
 use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::{
-    ARENA_X, ARENA_Z, ATTACK_COOLDOWN, ATTACK_DAMAGE, ATTACK_RANGE, Arena, ArenaCommand,
-    ArenaEvent, Combatant, PILLARS, Position,
+    ATTACK_COOLDOWN, ATTACK_DAMAGE, ATTACK_RANGE, Arena, ArenaCommand, ArenaEvent, Combatant,
+    Position,
 };
 use bevy::{asset::AssetMetaCheck, core_pipeline::tonemapping::Tonemapping, prelude::*};
 
@@ -25,6 +30,8 @@ struct Practice {
     previous: Vec<Vec3>,
     movement: Vec2,
     facing: f32,
+    /// Spawn headings: each unit starts facing the opposing team's spawns.
+    facings: Vec<f32>,
     selected: Option<usize>,
     attack: bool,
     jump: bool,
@@ -35,12 +42,15 @@ struct Practice {
 }
 impl Default for Practice {
     fn default() -> Self {
-        Self::new(1)
+        Self::new(&arena_map::colosseum(), 1)
     }
 }
 impl Practice {
-    fn new(size: usize) -> Self {
-        let arena = Arena::practice(size).expect("validated practice size");
+    /// A fresh round on `map`, which must already be valid.
+    fn new(map: &MapFile, size: usize) -> Self {
+        let arena =
+            Arena::practice(map.layout.clone(), size).expect("validated map and practice size");
+        let facings = spawn_facings(arena.fighters());
         let previous = arena
             .fighters()
             .iter()
@@ -51,7 +61,8 @@ impl Practice {
             arena,
             previous,
             movement: Vec2::ZERO,
-            facing: 0.0,
+            facing: facings[0],
+            facings,
             selected: None,
             attack: false,
             jump: false,
@@ -79,10 +90,21 @@ impl Default for Orbit {
         }
     }
 }
+/// The map in play. Replacing it rebuilds the venue and starts a fresh round.
+#[derive(Resource)]
+struct ActiveMap(MapFile);
+impl Default for ActiveMap {
+    fn default() -> Self {
+        Self(arena_map::colosseum())
+    }
+}
+/// The last map revision received from the editor, if any.
+#[derive(Resource, Default)]
+struct MapEdits {
+    revision: Option<f64>,
+}
 #[derive(Component)]
 struct FighterVisual(usize);
-#[derive(Component)]
-struct TargetRing;
 #[derive(Component)]
 struct AttackBeam;
 
@@ -96,6 +118,8 @@ pub fn run() {
             ..default()
         })
         .insert_resource(Time::<Fixed>::from_hz(TICKS_PER_SECOND as f64))
+        .init_resource::<ActiveMap>()
+        .init_resource::<MapEdits>()
         .init_resource::<Practice>()
         .init_resource::<Orbit>()
         .init_resource::<animation::Settings>()
@@ -127,17 +151,21 @@ pub fn run() {
                 )
                     .chain(),
                 weapons::read_selection.pipe(weapons::apply),
-                read_controls,
+                (apply_map_edits, read_controls).chain(),
             ),
         )
         .add_systems(FixedUpdate, simulate)
         .add_systems(
             Update,
             (
+                rebuild_venue.run_if(resource_changed::<ActiveMap>),
                 character::check_loading,
+                textures::attach_arena_textures,
+                sky::attach,
                 present,
                 animation::animate,
                 character_animation::animate,
+                weapons::fit_to_body,
                 weapons::animate,
                 weapons::animate_staff,
             )
@@ -162,6 +190,23 @@ fn practice_window_settings(browser: bool) -> bevy::winit::WinitSettings {
         bevy::winit::WinitSettings::game()
     }
 }
+/// Every unit starts facing the centre of the opposing team. Models look down
+/// their local −Z, so a heading `f` faces `(−sin f, −cos f)` in plan.
+fn spawn_facings(fighters: &[Combatant]) -> Vec<f32> {
+    (0..fighters.len())
+        .map(|actor| {
+            let opponents: Vec<Vec3> = fighters
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| other % 2 != actor % 2)
+                .map(|(_, fighter)| world(fighter.position))
+                .collect();
+            let centre = opponents.iter().sum::<Vec3>() / opponents.len().max(1) as f32;
+            let toward = centre - world(fighters[actor].position);
+            (-toward.x).atan2(-toward.z)
+        })
+        .collect()
+}
 fn world(position: Position) -> Vec3 {
     Vec3::new(position.x as f32 / 1000.0, 0.0, position.z as f32 / 1000.0)
 }
@@ -175,23 +220,36 @@ fn material(materials: &mut Assets<StandardMaterial>, color: Color) -> Handle<St
         ..default()
     })
 }
+#[allow(clippy::too_many_arguments)]
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     asset_server: Res<AssetServer>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
+    mut images: ResMut<Assets<Image>>,
+    practice: Res<Practice>,
 ) {
     let character = character::CharacterModel::load(
-        platform::has_character_model(),
+        platform::character_model().and_then(|id| character::Profile::from_id(&id)),
         &asset_server,
         &mut graphs,
     );
     let player_scene = character.scene.clone();
+    let player_transform = character
+        .profile
+        .map(character::Profile::transform)
+        .unwrap_or_default();
     commands.insert_resource(character);
-    let stone = material(&mut materials, Color::srgb(0.28, 0.34, 0.38));
-    let edge = material(&mut materials, Color::srgb(0.13, 0.19, 0.23));
-    let dark = material(&mut materials, Color::srgb(0.06, 0.10, 0.14));
+    // The venue itself is spawned (and respawned after edits) from the
+    // active map by `rebuild_venue`; its materials and textures load once.
+    let venue_assets = venue::VenueAssets::new(&mut meshes, &mut materials, &mut images);
+    commands.insert_resource(textures::ArenaTextures::load(
+        &asset_server,
+        venue_assets.texture_sets(),
+    ));
+    commands.insert_resource(venue_assets);
+    commands.insert_resource(sky::Sky::load(&asset_server));
     let teal = material(&mut materials, Color::srgb(0.15, 0.84, 0.75));
     let orange = material(&mut materials, Color::srgb(1.0, 0.39, 0.19));
     let gold = materials.add(StandardMaterial {
@@ -199,106 +257,9 @@ fn setup(
         unlit: true,
         ..default()
     });
-    let line = material(&mut materials, Color::srgb(0.37, 0.44, 0.46));
     let cube = meshes.add(Cuboid::from_size(Vec3::ONE));
-    let half_x = ARENA_X as f32 / 1000.0;
-    let half_z = ARENA_Z as f32 / 1000.0;
-    let width = half_x * 2.0;
-    let depth = half_z * 2.0;
-    commands.spawn((
-        Mesh3d(cube.clone()),
-        MeshMaterial3d(dark.clone()),
-        camera::solid_floor(Transform::from_xyz(0.0, -0.5, 0.0).with_scale(Vec3::new(
-            width + 2.0,
-            0.8,
-            depth + 2.0,
-        ))),
-    ));
-    commands.spawn((
-        Mesh3d(cube.clone()),
-        MeshMaterial3d(stone.clone()),
-        camera::solid_floor(
-            Transform::from_xyz(0.0, -0.08, 0.0).with_scale(Vec3::new(width, 0.16, depth)),
-        ),
-    ));
-    // Thin seams make camera movement and scale readable without external textures.
-    for x in (-ARENA_X + 2000..ARENA_X).step_by(2000) {
-        commands.spawn((
-            Mesh3d(cube.clone()),
-            MeshMaterial3d(edge.clone()),
-            Transform::from_xyz(x as f32 / 1000.0, 0.006, 0.0)
-                .with_scale(Vec3::new(0.025, 0.01, depth)),
-        ));
-    }
-    for z in (-ARENA_Z + 1000..ARENA_Z).step_by(2000) {
-        commands.spawn((
-            Mesh3d(cube.clone()),
-            MeshMaterial3d(edge.clone()),
-            Transform::from_xyz(0.0, 0.007, z as f32 / 1000.0)
-                .with_scale(Vec3::new(width, 0.01, 0.025)),
-        ));
-    }
-    for (x, z, sx, sz) in [
-        (0.0, -half_z - 0.2, width + 0.8, 0.4),
-        (0.0, half_z + 0.2, width + 0.8, 0.4),
-        (-half_x - 0.2, 0.0, 0.4, depth),
-        (half_x + 0.2, 0.0, 0.4, depth),
-    ] {
-        commands.spawn((
-            Mesh3d(cube.clone()),
-            MeshMaterial3d(edge.clone()),
-            camera::solid_box(Transform::from_xyz(x, 0.25, z).with_scale(Vec3::new(sx, 0.5, sz))),
-        ));
-        commands.spawn((
-            Mesh3d(cube.clone()),
-            MeshMaterial3d(line.clone()),
-            camera::solid_box(Transform::from_xyz(x, 0.51, z).with_scale(Vec3::new(sx, 0.025, sz))),
-        ));
-    }
-    for pillar in PILLARS {
-        let p = world(pillar.center);
-        let size = pillar.half_size as f32 / 1000.0 * 2.0;
-        commands.spawn((
-            Mesh3d(cube.clone()),
-            MeshMaterial3d(edge.clone()),
-            camera::solid_box(
-                Transform::from_translation(p + Vec3::Y * 0.12).with_scale(Vec3::new(
-                    size + 0.35,
-                    0.24,
-                    size + 0.35,
-                )),
-            ),
-        ));
-        commands.spawn((
-            Mesh3d(cube.clone()),
-            MeshMaterial3d(stone.clone()),
-            camera::solid_box(
-                Transform::from_translation(p + Vec3::Y * 2.0)
-                    .with_scale(Vec3::new(size, 4.0, size)),
-            ),
-        ));
-        commands.spawn((
-            Mesh3d(cube.clone()),
-            MeshMaterial3d(line.clone()),
-            camera::solid_box(
-                Transform::from_translation(p + Vec3::Y * 4.03).with_scale(Vec3::new(
-                    size + 0.14,
-                    0.14,
-                    size + 0.14,
-                )),
-            ),
-        ));
-        commands.spawn((
-            Mesh3d(cube.clone()),
-            MeshMaterial3d(teal.clone()),
-            camera::solid_box(
-                Transform::from_translation(p + Vec3::new(0.0, 3.3, size / 2.0 + 0.006))
-                    .with_scale(Vec3::new(0.55, 0.06, 0.02)),
-            ),
-        ));
-    }
-    let circle = meshes.add(Circle::new(0.65));
     let character_meshes = graphics::CharacterMeshes::new(&mut meshes);
+    let painted = textures::PaintedTextures::new(&mut images);
     for index in 0..6 {
         let accent = if index % 2 == 0 {
             teal.clone()
@@ -308,6 +269,7 @@ fn setup(
         let humanoid = humanoid::Humanoid::new(
             humanoid::Appearance::practice(index, accent),
             &mut materials,
+            &painted,
         );
         commands
             .spawn((
@@ -316,12 +278,6 @@ fn setup(
                 Visibility::default(),
             ))
             .with_children(|parent| {
-                parent.spawn((
-                    Mesh3d(circle.clone()),
-                    MeshMaterial3d(dark.clone()),
-                    Transform::from_xyz(0.0, 0.015, 0.0)
-                        .with_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
-                ));
                 parent
                     .spawn((
                         animation::Animator::new(index),
@@ -329,7 +285,7 @@ fn setup(
                         Visibility::default(),
                     ))
                     .with_children(|body| {
-                        if index == 0 {
+                        if index == 0 && weapons::EQUIPPED {
                             body.spawn((
                                 weapons::EquipmentCarrier,
                                 Transform::default(),
@@ -342,7 +298,7 @@ fn setup(
                         {
                             body.spawn((
                                 WorldAssetRoot(scene.clone()),
-                                character::model_transform(),
+                                player_transform,
                                 Visibility::Hidden,
                             ))
                             .observe(character::on_ready);
@@ -351,13 +307,7 @@ fn setup(
             });
     }
     commands.insert_resource(character_meshes);
-    commands.spawn((
-        TargetRing,
-        Mesh3d(meshes.add(Annulus::new(0.72, 0.80))),
-        MeshMaterial3d(gold.clone()),
-        Transform::from_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
-        Visibility::Hidden,
-    ));
+    commands.insert_resource(painted);
     commands.spawn((
         AttackBeam,
         Mesh3d(cube),
@@ -386,7 +336,7 @@ fn setup(
         },
         Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.45, 2.3, 0.0)),
     ));
-    let focus = world(Arena::default().fighters()[0].position) + Vec3::Y;
+    let focus = world(practice.arena.fighters()[0].position) + Vec3::Y;
     commands.spawn((
         Camera3d::default(),
         bevy::camera::Hdr,
@@ -397,9 +347,75 @@ fn setup(
         Transform::from_translation(focus + Vec3::new(0.0, 7.8, 10.3)).looking_at(focus, Vec3::Y),
     ));
 }
+/// Applies a map revision from the browser editor. A valid, different map
+/// becomes active (rebuilding the venue); the round continues when every
+/// fighter is still walkable and restarts otherwise. Problems are reported
+/// back and the current map stays in play.
+fn apply_map_edits(
+    mut edits: ResMut<MapEdits>,
+    mut map: ResMut<ActiveMap>,
+    mut practice: ResMut<Practice>,
+    mut orbit: ResMut<Orbit>,
+) {
+    let Some((revision, json)) = platform::read_map() else {
+        return;
+    };
+    if edits.revision == Some(revision) {
+        return;
+    }
+    edits.revision = Some(revision);
+    let errors = match arena_map::parse(&json) {
+        Ok(next) => {
+            if next != map.0 {
+                // Keep the round (and the camera) while everyone still has
+                // somewhere to stand, so editing previews in place.
+                if !practice.arena.relayout(next.layout.clone()) {
+                    let size = practice.arena.fighters().len() / 2;
+                    restart(&mut practice, &mut orbit, &next, size);
+                }
+                map.0 = next;
+            }
+            Vec::new()
+        }
+        Err(errors) => errors,
+    };
+    platform::map_status(&map_status_json(revision, &errors));
+}
+fn map_status_json(revision: f64, errors: &[String]) -> String {
+    format!(
+        r#"{{"revision":{revision},"errors":{}}}"#,
+        serde_json::to_string(errors).expect("strings serialize")
+    )
+}
+/// Replaces the venue with one built from the active map.
+fn rebuild_venue(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    assets: Res<venue::VenueAssets>,
+    map: Res<ActiveMap>,
+    old: Query<Entity, With<venue::VenueEntity>>,
+    mut orbit: ResMut<Orbit>,
+) {
+    for entity in &old {
+        commands.entity(entity).despawn();
+    }
+    venue::spawn(&mut commands, &mut meshes, &assets, &map.0);
+    // The previous eye may now be inside new geometry.
+    orbit.eye = None;
+}
+/// Starts a fresh round on `map`, keeping the team size, with the camera
+/// behind the player's spawn heading.
+fn restart(practice: &mut Practice, orbit: &mut Orbit, map: &MapFile, size: usize) {
+    *practice = Practice::new(map, size);
+    *orbit = Orbit {
+        yaw: practice.facing,
+        ..default()
+    };
+}
 fn read_controls(
     mut practice: ResMut<Practice>,
     mut orbit: ResMut<Orbit>,
+    map: Res<ActiveMap>,
     cameras: Query<(&Camera, &GlobalTransform)>,
     visuals: Query<(&FighterVisual, &GlobalTransform)>,
 ) {
@@ -408,9 +424,9 @@ fn read_controls(
         let size = input
             .team_size
             .unwrap_or(practice.arena.fighters().len() / 2);
-        *practice = Practice::new(size);
-        *orbit = Orbit::default();
+        restart(&mut practice, &mut orbit, &map.0, size);
     }
+    let blockers = hover::pillar_blockers(&map.0);
     orbit.yaw -= input.orbit_x * 0.005;
     orbit.pitch = (orbit.pitch + input.orbit_y * 0.004).clamp(-1.2, 1.2);
     orbit.distance = (orbit.distance + input.zoom * 0.01).clamp(6.0, 22.0);
@@ -426,6 +442,7 @@ fn read_controls(
                         .iter()
                         .filter(|(unit, _)| unit.0 < actor_count)
                         .map(|(unit, transform)| (unit.0, transform.translation())),
+                    &blockers,
                 )
             })
         })
@@ -557,34 +574,12 @@ fn present(
     time: Res<Time>,
     mut fighters: Query<
         (&FighterVisual, &mut Transform, &mut Visibility),
-        (Without<Camera>, Without<TargetRing>, Without<AttackBeam>),
+        (Without<Camera>, Without<AttackBeam>),
     >,
-    mut cameras: Query<
-        &mut Transform,
-        (
-            With<Camera>,
-            Without<FighterVisual>,
-            Without<TargetRing>,
-            Without<AttackBeam>,
-        ),
-    >,
-    mut ring: Query<
-        (&mut Transform, &mut Visibility),
-        (
-            With<TargetRing>,
-            Without<FighterVisual>,
-            Without<Camera>,
-            Without<AttackBeam>,
-        ),
-    >,
+    mut cameras: Query<&mut Transform, (With<Camera>, Without<FighterVisual>, Without<AttackBeam>)>,
     mut beam: Query<
         (&mut Transform, &mut Visibility),
-        (
-            With<AttackBeam>,
-            Without<FighterVisual>,
-            Without<Camera>,
-            Without<TargetRing>,
-        ),
+        (With<AttackBeam>, Without<FighterVisual>, Without<Camera>),
     >,
 ) {
     let positions: Vec<Vec3> = (0..practice.arena.fighters().len())
@@ -596,20 +591,7 @@ fn present(
         })
         .collect();
     practice.combat_text.advance(time.delta_secs());
-    for (fighter, mut transform, mut visibility) in &mut fighters {
-        *visibility = if fighter.0 < positions.len() {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-        if fighter.0 >= positions.len() {
-            continue;
-        }
-        transform.translation = positions[fighter.0];
-        if fighter.0 == 0 {
-            transform.rotation = Quat::from_rotation_y(practice.facing);
-        }
-    }
+    let mut hide_player = false;
     if let Ok(mut camera) = cameras.single_mut() {
         let focus = positions[0] + Vec3::Y;
         let direction =
@@ -624,17 +606,27 @@ fn present(
             &obstacles,
         );
         orbit.eye = Some(eye);
+        // Never render the player's own model from inside it.
+        hide_player = camera::hides_player(focus, eye);
         // Keep a valid view direction even if the focus is inside an obstacle.
         let view = (focus - eye).try_normalize().unwrap_or(-direction);
         *camera = Transform::from_translation(eye).looking_to(view, Vec3::Y);
     }
-    if let Ok((mut transform, mut visibility)) = ring.single_mut() {
-        transform.translation = positions[practice.selected.unwrap_or(1)] + Vec3::Y * 0.03;
-        *visibility = if practice.selected.is_some() {
-            Visibility::Visible
+    for (fighter, mut transform, mut visibility) in &mut fighters {
+        *visibility = if fighter.0 < positions.len() && !(fighter.0 == 0 && hide_player) {
+            Visibility::Inherited
         } else {
             Visibility::Hidden
         };
+        if fighter.0 >= positions.len() {
+            continue;
+        }
+        transform.translation = positions[fighter.0];
+        transform.rotation = Quat::from_rotation_y(if fighter.0 == 0 {
+            practice.facing
+        } else {
+            practice.facings[fighter.0]
+        });
     }
     practice.flash = (practice.flash - time.delta_secs()).max(0.0);
     if let Ok((mut transform, mut visibility)) = beam.single_mut() {
@@ -653,6 +645,7 @@ fn present(
 }
 fn publish(
     practice: Res<Practice>,
+    map: Res<ActiveMap>,
     orbit: Res<Orbit>,
     character: Res<character::CharacterModel>,
     cameras: Query<(&Camera, &GlobalTransform)>,
@@ -697,6 +690,7 @@ fn publish(
                     .iter()
                     .filter(|(unit, _)| unit.0 < fighters.len())
                     .map(|(unit, transform)| (unit.0, transform.translation())),
+                &hover::pillar_blockers(&map.0),
             )
         });
     let hovered = hovered
@@ -782,7 +776,7 @@ fn publish(
         character.status(),
         character.meshes,
         true,
-        Arena::default().fighters()[0].health,
+        arena_sim::arena::MAX_HEALTH,
         ATTACK_DAMAGE,
         ATTACK_RANGE / 1000,
         ATTACK_COOLDOWN as f64 / TICKS_PER_SECOND as f64,
@@ -827,10 +821,10 @@ mod platform {
     use bevy::prelude::Vec2;
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen(
-        inline_js = "export function arena_has_character() { return globalThis.arenaShell.hasCharacterModel === true; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(tag) { globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); }"
+        inline_js = "export function arena_character() { const id = globalThis.arenaShell.characterModel; return typeof id === 'string' ? id : undefined; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(tag) { globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); } export function arena_map() { return globalThis.arenaShell.readMap?.() ?? []; } export function arena_map_status(json) { globalThis.arenaShell.onMapStatus?.(JSON.parse(json)); }"
     )]
     extern "C" {
-        fn arena_has_character() -> bool;
+        fn arena_character() -> Option<String>;
         fn arena_input() -> js_sys::Array;
         fn arena_hover() -> js_sys::Array;
         fn arena_graphics() -> js_sys::Array;
@@ -838,9 +832,20 @@ mod platform {
         fn arena_lighting() -> js_sys::Array;
         fn arena_state(json: &str);
         fn arena_focus(tag: &str);
+        fn arena_map() -> js_sys::Array;
+        fn arena_map_status(json: &str);
     }
-    pub fn has_character_model() -> bool {
-        arena_has_character()
+    /// The editor's current map as `[revision, json]`; older shells send none.
+    pub fn read_map() -> Option<(f64, String)> {
+        let values = arena_map();
+        let revision = values.get(0).as_f64().filter(|r| r.is_finite())?;
+        Some((revision, values.get(1).as_string()?))
+    }
+    pub fn map_status(json: &str) {
+        arena_map_status(json);
+    }
+    pub fn character_model() -> Option<String> {
+        arena_character()
     }
     pub fn read_graphics() -> super::graphics::Settings {
         let values = arena_graphics();
@@ -960,7 +965,8 @@ mod tests {
             })
             .collect();
         for size in [1, 2, 3, 1] {
-            *app.world_mut().resource_mut::<Practice>() = Practice::new(size);
+            *app.world_mut().resource_mut::<Practice>() =
+                Practice::new(&arena_map::colosseum(), size);
             for actor in 0..size * 2 {
                 update_selection(
                     &mut app.world_mut().resource_mut::<Practice>(),
@@ -1033,7 +1039,9 @@ mod tests {
         );
         {
             let mut practice = app.world_mut().resource_mut::<Practice>();
-            for _ in 0..30 {
+            let fighters = practice.arena.fighters();
+            let gap = fighters[0].position.z - fighters[1].position.z;
+            for _ in 0..(gap - ATTACK_RANGE) / arena_sim::arena::MOVE_PER_TICK + 1 {
                 practice.arena.step(&[ArenaCommand::Move {
                     actor: 0,
                     x: 0,
@@ -1169,6 +1177,127 @@ mod tests {
     }
 
     #[test]
+    fn editor_maps_rebuild_the_venue_keep_or_restart_rounds_and_report_problems() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .init_asset::<Image>()
+            .init_resource::<ActiveMap>()
+            .init_resource::<MapEdits>()
+            .init_resource::<Practice>()
+            .init_resource::<Orbit>()
+            .add_systems(
+                Update,
+                (
+                    apply_map_edits,
+                    rebuild_venue.run_if(resource_changed::<ActiveMap>),
+                )
+                    .chain(),
+            );
+        let assets = {
+            let world = app.world_mut();
+            let (mut meshes, mut materials, mut images) = (
+                world.remove_resource::<Assets<Mesh>>().unwrap(),
+                world.remove_resource::<Assets<StandardMaterial>>().unwrap(),
+                world.remove_resource::<Assets<Image>>().unwrap(),
+            );
+            let assets = venue::VenueAssets::new(&mut meshes, &mut materials, &mut images);
+            world.insert_resource(meshes);
+            world.insert_resource(materials);
+            world.insert_resource(images);
+            assets
+        };
+        app.insert_resource(assets);
+        app.update();
+        let count = |app: &mut App| {
+            app.world_mut()
+                .query_filtered::<(), With<venue::VenueEntity>>()
+                .iter(app.world())
+                .count()
+        };
+        let initial = count(&mut app);
+        assert!(initial > 100);
+        // A valid edit: one pillar fewer and a wider floor.
+        let mut value: serde_json::Value = serde_json::from_str(arena_map::COLOSSEUM_JSON).unwrap();
+        value["pillars"].as_array_mut().unwrap().pop();
+        value["floor"]["width"] = 120.into();
+        app.world_mut()
+            .resource_mut::<Practice>()
+            .arena
+            .step(&[ArenaCommand::Move {
+                actor: 0,
+                x: 1000,
+                z: 0,
+            }]);
+        *platform::MAP.lock().unwrap() = Some((1.0, value.to_string()));
+        app.update();
+        let status = platform::STATUS.lock().unwrap().clone().unwrap();
+        assert_eq!(status, r#"{"revision":1,"errors":[]}"#);
+        assert_eq!(app.world().resource::<ActiveMap>().0.layout.half_x, 60_000);
+        assert_eq!(
+            app.world().resource::<ActiveMap>().0.layout.pillars.len(),
+            3
+        );
+        // Everyone can still stand where they are, so the round continues.
+        let practice = app.world().resource::<Practice>();
+        assert_eq!(practice.arena.tick(), 1);
+        assert_eq!(practice.arena.layout().half_x, 60_000);
+        let player = practice.arena.fighters()[0].position;
+        assert_ne!(player, practice.arena.layout().spawns(0)[0]);
+        assert_ne!(count(&mut app), initial);
+        // Sliding the player's starting room away leaves them inside the
+        // stands, so the round restarts at the map's spawns.
+        assert!(
+            player.z > 42_000,
+            "the player is still in the starting room"
+        );
+        value["rooms"][0]["offset"] = 20.into();
+        *platform::MAP.lock().unwrap() = Some((1.5, value.to_string()));
+        app.update();
+        let practice = app.world().resource::<Practice>();
+        assert_eq!(practice.arena.tick(), 0);
+        assert_eq!(
+            practice.arena.fighters()[0].position,
+            practice.arena.layout().spawns(0)[0]
+        );
+        // An invalid edit is reported and leaves the current map in play.
+        value["rooms"][0]["ceiling"] = 4.into();
+        *platform::MAP.lock().unwrap() = Some((2.0, value.to_string()));
+        app.update();
+        let status = platform::STATUS.lock().unwrap().clone().unwrap();
+        assert!(status.contains(r#""revision":2"#) && status.contains("three character heights"));
+        assert_eq!(
+            app.world().resource::<ActiveMap>().0.layout.pillars.len(),
+            3
+        );
+        // The same revision is not re-applied every frame.
+        *platform::STATUS.lock().unwrap() = None;
+        app.update();
+        assert!(platform::STATUS.lock().unwrap().is_none());
+        *platform::MAP.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn every_team_size_spawns_both_teams_facing_each_other() {
+        for size in 1..=3 {
+            let practice = Practice::new(&arena_map::colosseum(), size);
+            let fighters = practice.arena.fighters();
+            assert_eq!(practice.facing, practice.facings[0]);
+            for (actor, fighter) in fighters.iter().enumerate() {
+                // Models look down their local −Z.
+                let forward = Quat::from_rotation_y(practice.facings[actor]) * Vec3::NEG_Z;
+                for (other, opponent) in fighters.iter().enumerate() {
+                    if other % 2 != actor % 2 {
+                        let toward = world(opponent.position) - world(fighter.position);
+                        assert!(forward.dot(toward.normalize()) > 0.8, "{actor}->{other}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn queued_jump_drains_once_and_presentation_uses_rule_height() {
         let mut app = App::new();
         app.init_resource::<Practice>()
@@ -1241,8 +1370,7 @@ mod tests {
 
     #[test]
     fn pulse_presentation_metadata_matches_the_practice_rules() {
-        let arena = Arena::default();
-        let health = arena.fighters()[1].health;
+        let health = arena_sim::arena::MAX_HEALTH;
         assert_eq!(health.div_ceil(ATTACK_DAMAGE), 4);
         assert_eq!(ATTACK_RANGE / 1000, 6);
         assert_eq!(ATTACK_COOLDOWN as f64 / TICKS_PER_SECOND as f64, 1.0);
@@ -1362,12 +1490,22 @@ mod platform {
     pub fn read_hover() -> Option<bevy::prelude::Vec2> {
         None
     }
-    pub fn has_character_model() -> bool {
-        false
+    pub fn character_model() -> Option<String> {
+        None
     }
     pub fn read_input() -> super::Input {
         super::Input::default()
     }
     pub fn publish(_: &str) {}
     pub fn focus_unit(_: usize) {}
+    pub fn read_map() -> Option<(f64, String)> {
+        MAP.lock().unwrap().clone()
+    }
+    pub fn map_status(json: &str) {
+        *STATUS.lock().unwrap() = Some(json.to_owned());
+    }
+    /// Tests stand in for the browser editor through these. Systems run on
+    /// worker threads, so these are process-wide rather than thread-local.
+    pub static MAP: std::sync::Mutex<Option<(f64, String)>> = std::sync::Mutex::new(None);
+    pub static STATUS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 }

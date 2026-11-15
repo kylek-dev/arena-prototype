@@ -1,0 +1,15 @@
+[package]
+name = "arena-map"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Map files: parsing, validation and the default colosseum. No rendering or I/O."
+
+[dependencies]
+arena-sim = { path = "../arena-sim" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+
+[lints]
+workspace = true

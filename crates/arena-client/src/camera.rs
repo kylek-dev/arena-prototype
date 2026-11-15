@@ -6,12 +6,22 @@ use bevy::prelude::*;
 const CLEARANCE: f32 = 0.3;
 const CONTACT_GAP: f32 = 0.01;
 const RECOVERY_RATE: f32 = 5.0;
+/// An eye this far from its target that gained less than `STUCK_PROGRESS` in
+/// a frame is wedged rather than travelling.
+const STUCK_GAP: f32 = 0.05;
+const STUCK_PROGRESS: f32 = 0.01;
+/// Obstacles entered this close to the focus retract the boom even when the
+/// requested eye lies beyond them; farther pillars may still occlude.
+const NEAR_RETRACT: f32 = 2.0;
 
 #[derive(Component, Clone, Copy)]
 pub(super) struct Obstacle {
     min: Vec3,
     max: Vec3,
-    floor: bool,
+    /// Floors, walls and other enclosing structure always shorten the boom.
+    /// Only free-standing boxes such as pillars may sit between the player
+    /// and a distant camera (ADR 0014).
+    encloses: bool,
 }
 
 /// The static map uses unrotated unit cubes scaled to their visible dimensions.
@@ -20,14 +30,20 @@ pub(super) fn solid_box(transform: Transform) -> (Transform, Obstacle) {
     let obstacle = Obstacle {
         min: transform.translation - half,
         max: transform.translation + half,
-        floor: false,
+        encloses: false,
     };
     (transform, obstacle)
 }
 
 pub(super) fn solid_floor(transform: Transform) -> (Transform, Obstacle) {
+    solid_wall(transform)
+}
+
+/// Enclosing structure (walls, stands, ceilings): the camera never sits
+/// behind it, so it cannot wedge into corners of a room or the stands.
+pub(super) fn solid_wall(transform: Transform) -> (Transform, Obstacle) {
     let (transform, mut obstacle) = solid_box(transform);
-    obstacle.floor = true;
+    obstacle.encloses = true;
     (transform, obstacle)
 }
 
@@ -87,14 +103,21 @@ pub(super) fn resolve_distance(
 ) -> f32 {
     let obstacles: Vec<_> = obstacles.into_iter().collect();
     let mut safe = requested;
-    // Only contact at the requested eye causes pillar retraction. A pillar
-    // elsewhere on the boom may obscure the player; that is not camera contact.
+    // Contact at the requested eye, or an obstacle right beside the player,
+    // retracts. A pillar farther along the boom may obscure the player.
     // Repeat because retracting out of one overlapping box can enter another.
     for _ in 0..=obstacles.len() {
         let before = safe;
         for obstacle in &obstacles {
-            if (obstacle.floor || obstacle.contains(focus + direction * safe))
-                && let Some(hit) = obstacle.entry(focus, direction, safe)
+            let Some(hit) = obstacle.entry(focus, direction, safe) else {
+                continue;
+            };
+            // A wall or pillar right beside the player always shortens the
+            // boom: the eye stays on the boom instead of being dragged along
+            // the face next to the player's head, which swung the view.
+            if obstacle.encloses
+                || hit.distance < NEAR_RETRACT
+                || obstacle.contains(focus + direction * safe)
             {
                 safe = safe.min(hit.distance);
             }
@@ -157,7 +180,42 @@ pub(super) fn resolve_eye(
         obstacles.iter().copied(),
     );
     let target = focus + direction * distance;
-    previous.map_or(target, |eye| slide(eye, target, obstacles))
+    previous.map_or(target, |eye| {
+        let slid = slide(eye, target, obstacles);
+        // Sliding can wedge into concave corners (stand steps, a parapet over
+        // the pit wall) whose only way out is up and over. Only when the eye
+        // is truly stuck, and the player can see the boom directly, does it
+        // rejoin the boom, at no more than its current distance so zoom stays
+        // continuous. Moving eyes, and blocked booms such as orbiting behind
+        // a pillar, keep sliding smoothly.
+        let remaining = slid.distance(target);
+        let stuck = remaining > STUCK_GAP && eye.distance(target) - remaining < STUCK_PROGRESS;
+        if stuck && boom_clear(focus, target, obstacles) {
+            focus + direction * distance.min(eye.distance(focus))
+        } else {
+            slid
+        }
+    })
+}
+
+/// Below this distance from the focus the eye is inside the player's own
+/// body, so the player model is hidden rather than rendered from within.
+pub(super) const HIDE_PLAYER_WITHIN: f32 = 1.1;
+
+pub(super) fn hides_player(focus: Vec3, eye: Vec3) -> bool {
+    focus.distance(eye) < HIDE_PLAYER_WITHIN
+}
+
+fn boom_clear(focus: Vec3, target: Vec3, obstacles: &[Obstacle]) -> bool {
+    let offset = target - focus;
+    let length = offset.length();
+    if length < 1e-6 {
+        return true;
+    }
+    let direction = offset / length;
+    !obstacles
+        .iter()
+        .any(|obstacle| obstacle.entry(focus, direction, length).is_some())
 }
 
 #[cfg(test)]
@@ -288,5 +346,125 @@ mod tests {
         for obstacles in [[near, far], [far, near]] {
             assert!((resolve(Vec3::Y, Vec3::Z, &obstacles) - 7.69).abs() < 1e-5);
         }
+    }
+    /// Regression: the orbit camera must never end up inside, or stay snagged
+    /// on, the stepped stands while orbiting from spots along the pit wall.
+    #[test]
+    fn orbiting_against_the_stands_never_traps_the_camera() {
+        let map = arena_map::colosseum();
+        let (hx, hz) = (
+            map.layout.half_x as f32 / 1000.0,
+            map.layout.half_z as f32 / 1000.0,
+        );
+        // The venue includes the floor and the starting rooms.
+        let obstacles = crate::venue::obstacles(&map);
+        let edge = 0.45 + 0.05;
+        let spots = [
+            Vec3::new(0.0, 1.0, hz - edge),
+            Vec3::new(3.0, 1.0, -hz + edge),
+            Vec3::new(hx - edge, 1.0, 5.0),
+            Vec3::new(-hx + edge, 1.0, -9.0),
+            Vec3::new(hx - edge, 1.0, hz - edge),
+            Vec3::new(-hx + edge, 2.3, -hz + edge),
+            // Inside each starting room, and standing in a gateway.
+            Vec3::new(0.0, 1.0, hz + 5.0),
+            Vec3::new(-2.0, 1.0, -hz - 9.0),
+            Vec3::new(2.0, 1.0, hz + 0.7),
+        ];
+        let dt = 1.0 / 60.0;
+        let direction = |yaw: f32, pitch: f32| {
+            Quat::from_rotation_y(yaw) * Vec3::new(0.0, pitch.sin(), pitch.cos())
+        };
+        for focus in spots {
+            for distance in [13.0, 22.0] {
+                let mut eye = None;
+                let mut frame = 0;
+                // Sweep yaw twice around while pitch rolls between low and high.
+                while frame < 900 {
+                    let yaw = frame as f32 * 0.014;
+                    let pitch = 0.45 + 0.75 * (frame as f32 * 0.021).sin();
+                    let next =
+                        resolve_eye(focus, direction(yaw, pitch), distance, eye, dt, &obstacles);
+                    assert!(
+                        !obstacles.iter().any(|o| o.contains(next)),
+                        "eye inside geometry at {next:?} (focus {focus:?}, frame {frame})"
+                    );
+                    eye = Some(next);
+                    frame += 1;
+                }
+                // Then look back toward the arena: the eye must settle on the
+                // boom (no longer wedged off it) and hold still there.
+                let toward_center = (Vec3::new(0.0, focus.y, 0.0) - focus).normalize();
+                let yaw = toward_center.x.atan2(toward_center.z);
+                let wanted = direction(yaw, 0.5);
+                for _ in 0..240 {
+                    eye = Some(resolve_eye(focus, wanted, distance, eye, dt, &obstacles));
+                }
+                let settled = eye.unwrap();
+                let boom = (settled - focus).normalize_or_zero();
+                assert!(
+                    boom.dot(wanted) > 0.999,
+                    "eye off the boom at {settled:?}, wanted direction {wanted:?} (focus {focus:?})"
+                );
+                let again = resolve_eye(focus, wanted, distance, eye, dt, &obstacles);
+                assert!(
+                    settled.distance(again) < 1e-3,
+                    "eye still moving at {focus:?}"
+                );
+            }
+        }
+    }
+    /// Walking past a pillar corner with the camera tucked behind the pillar
+    /// must not teleport the eye, and holding still against a wall or pillar
+    /// with the camera pressed in must leave the eye perfectly still.
+    #[test]
+    fn camera_stays_smooth_against_pillars_and_walls() {
+        let map = arena_map::colosseum();
+        let pillar = map.layout.pillars[3];
+        let p = crate::world(pillar.center);
+        let h = pillar.half_z as f32 / 1000.0;
+        let obstacles = crate::venue::obstacles(&map);
+        let dt = 1.0 / 60.0;
+        for yaw in (0..24).map(|i| i as f32 / 24.0 * std::f32::consts::TAU) {
+            for pitch in [-0.3_f32, 0.0, 0.3, 0.65, 1.0] {
+                let direction =
+                    Quat::from_rotation_y(yaw) * Vec3::new(0.0, pitch.sin(), pitch.cos());
+                let start = Vec3::new(p.x, 1.0, p.z - h - 0.45);
+                let mut eye = None;
+                for frame in 0..240 {
+                    let focus = start + Vec3::X * 7.2 * dt * frame as f32;
+                    let next = resolve_eye(focus, direction, 13.0, eye, dt, &obstacles);
+                    if let Some(old) = eye {
+                        // Never more than a full immediate retraction (13 m)
+                        // would allow, and never a sideways teleport.
+                        let jump: Vec3 = next - old - Vec3::X * 7.2 * dt;
+                        let along_boom = jump.dot(direction).abs();
+                        let sideways = (jump - direction * jump.dot(direction)).length();
+                        assert!(
+                            sideways < 1.0 || along_boom > sideways,
+                            "sideways pop {sideways} at yaw {yaw} pitch {pitch} frame {frame}"
+                        );
+                    }
+                    eye = Some(next);
+                }
+                for start in [
+                    Vec3::new(p.x + 1.0, 1.0, p.z - h - 0.45),
+                    Vec3::new(10.0, 1.0, -42.0 + 0.45),
+                ] {
+                    let mut eye = None;
+                    for _ in 0..120 {
+                        eye = Some(resolve_eye(start, direction, 13.0, eye, dt, &obstacles));
+                    }
+                    let settled = eye.unwrap();
+                    let again = resolve_eye(start, direction, 13.0, eye, dt, &obstacles);
+                    assert!(
+                        settled.distance(again) < 1e-4,
+                        "still eye moved at yaw {yaw}"
+                    );
+                }
+            }
+        }
+        assert!(hides_player(Vec3::Y, Vec3::Y + Vec3::Z * 0.4));
+        assert!(!hides_player(Vec3::Y, Vec3::Y + Vec3::Z * 3.0));
     }
 }

@@ -10,6 +10,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 arena-sim = { path = "../arena-sim" }
+arena-map = { path = "../arena-map" }
+serde_json = "=1.0.154"
 bevy = { version = "=0.20.1", default-features = false, features = [
   "default_app", "bevy_pbr", "bevy_gltf", "gltf_animation", "bevy_post_process", "png", "std", "bevy_winit", "webgl2", "x11", "multi_threaded"
 ] }

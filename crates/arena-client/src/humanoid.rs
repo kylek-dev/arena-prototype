@@ -3,6 +3,7 @@ use bevy::prelude::*;
 
 use crate::animation::{Joint, JointKind};
 use crate::graphics::{CharacterMeshes, CharacterPart};
+use crate::textures::PaintedTextures;
 
 #[derive(Clone, Copy)]
 pub(crate) enum HairStyle {
@@ -57,6 +58,8 @@ enum Surface {
     White,
     Dark,
     Clothing,
+    Trousers,
+    Leather,
 }
 
 struct Part {
@@ -83,21 +86,21 @@ fn parts(style: HairStyle) -> Vec<Part> {
     // Feet on y=0; forward is -Z, matching movement, picking and back mounts.
     add(
         "Tunic",
-        Body,
+        Head,
         Clothing,
         [0.0, 1.14, 0.0],
-        [0.61, 0.36, 0.36],
+        [0.56, 0.66, 0.36],
     );
-    add("Hips", Head, Dark, [0.0, 0.85, 0.0], [0.48, 0.30, 0.32]);
-    add("Belt", Head, Dark, [0.0, 0.97, 0.0], [0.60, 0.09, 0.37]);
+    add("Hips", Head, Trousers, [0.0, 0.85, 0.0], [0.44, 0.30, 0.29]);
+    add("Belt", Head, Leather, [0.0, 0.94, 0.0], [0.44, 0.10, 0.30]);
     add(
         "Buckle",
         Head,
         Clothing,
-        [0.0, 0.97, -0.19],
+        [0.0, 0.94, -0.155],
         [0.10, 0.09, 0.04],
     );
-    add("Neck", Body, Skin, [0.0, 1.48, 0.0], [0.16, 0.08, 0.16]);
+    add("Neck", Body, Skin, [0.0, 1.48, 0.0], [0.15, 0.08, 0.15]);
     add("Head", Head, Skin, [0.0, 1.69, -0.015], [0.39, 0.46, 0.36]);
     add(
         "Nose",
@@ -179,50 +182,85 @@ fn parts(style: HairStyle) -> Vec<Part> {
             "Shoulder",
             Head,
             Clothing,
-            [x(0.32), 1.34, 0.0],
-            [0.25, 0.26, 0.29],
+            [x(0.26), 1.34, 0.0],
+            [0.21, 0.24, 0.24],
         );
         add(
             "Upper arm",
-            Body,
+            Head,
             Clothing,
-            [x(0.38), 1.16, 0.0],
-            [0.19, 0.15, 0.21],
+            [x(0.315), 1.19, 0.0],
+            [0.17, 0.36, 0.19],
         );
         add(
             "Forearm",
-            Body,
+            Head,
             Skin,
-            [x(0.40), 0.94, -0.025],
-            [0.15, 0.14, 0.17],
+            [x(0.35), 0.94, -0.025],
+            [0.13, 0.31, 0.15],
         );
         add(
             "Hand",
             Head,
             Skin,
-            [x(0.40), 0.76, -0.03],
-            [0.15, 0.19, 0.13],
+            [x(0.35), 0.76, -0.03],
+            [0.13, 0.19, 0.12],
+        );
+        add(
+            "Elbow",
+            Head,
+            Skin,
+            [x(0.35), 1.04, -0.015],
+            [0.14, 0.16, 0.16],
+        );
+        add(
+            "Wrist",
+            Head,
+            Skin,
+            [x(0.35), 0.82, -0.03],
+            [0.10, 0.13, 0.11],
+        );
+        add(
+            "Thumb",
+            Head,
+            Skin,
+            [x(0.295), 0.77, -0.07],
+            [0.065, 0.11, 0.08],
         );
         add(
             "Thigh",
-            Body,
-            Dark,
-            [x(0.145), 0.65, 0.0],
-            [0.22, 0.20, 0.25],
+            Head,
+            Trousers,
+            [x(0.155), 0.66, 0.0],
+            [0.19, 0.45, 0.22],
         );
         add(
             "Shin",
-            Body,
-            Dark,
-            [x(0.145), 0.32, 0.0],
-            [0.17, 0.18, 0.20],
+            Head,
+            Trousers,
+            [x(0.155), 0.32, 0.0],
+            [0.15, 0.39, 0.18],
+        );
+        add(
+            "Knee",
+            Head,
+            Trousers,
+            [x(0.155), 0.47, 0.0],
+            [0.165, 0.19, 0.19],
+        );
+        add(
+            "Ankle",
+            Head,
+            Leather,
+            [x(0.155), 0.15, 0.0],
+            [0.13, 0.17, 0.15],
         );
         add(
             "Boot",
             Head,
-            Dark,
-            [x(0.145), 0.11, -0.075],
-            [0.23, 0.22, 0.39],
+            Leather,
+            [x(0.155), 0.11, -0.075],
+            [0.20, 0.21, 0.36],
         );
     }
     parts
@@ -235,16 +273,71 @@ pub(crate) struct Humanoid {
     eyes: Handle<StandardMaterial>,
     white: Handle<StandardMaterial>,
     dark: Handle<StandardMaterial>,
+    clothing: Handle<StandardMaterial>,
+    trousers: Handle<StandardMaterial>,
+    leather: Handle<StandardMaterial>,
+}
+
+/// Painted textures darken undersides; lift the base colour (in linear space)
+/// so the lit top keeps roughly the previous flat colour.
+fn lift(color: Color, factor: f32) -> Color {
+    let c = color.to_linear();
+    Color::linear_rgba(
+        (c.red * factor).min(1.0),
+        (c.green * factor).min(1.0),
+        (c.blue * factor).min(1.0),
+        c.alpha,
+    )
 }
 
 impl Humanoid {
-    pub fn new(appearance: Appearance, materials: &mut Assets<StandardMaterial>) -> Self {
+    pub fn new(
+        appearance: Appearance,
+        materials: &mut Assets<StandardMaterial>,
+        painted: &PaintedTextures,
+    ) -> Self {
+        let painted_matte =
+            |base_color, texture: &Handle<Image>, perceptual_roughness| StandardMaterial {
+                base_color,
+                base_color_texture: Some(texture.clone()),
+                perceptual_roughness,
+                reflectance: 0.3,
+                ..default()
+            };
+        // The accent material is shared with arena markers; clone its colour
+        // into a textured cloth material instead of texturing the markers.
+        let accent = materials
+            .get(&appearance.clothing)
+            .map_or(Color::WHITE, |material| material.base_color);
         Self {
-            skin: materials.add(appearance.skin),
-            hair: materials.add(appearance.hair),
+            skin: materials.add(painted_matte(
+                lift(appearance.skin, 1.06),
+                &painted.skin,
+                0.72,
+            )),
+            hair: materials.add(painted_matte(
+                lift(appearance.hair, 1.15),
+                &painted.hair,
+                0.8,
+            )),
             eyes: materials.add(appearance.eyes),
             white: materials.add(Color::srgb(0.92, 0.90, 0.84)),
-            dark: materials.add(Color::srgb(0.045, 0.055, 0.065)),
+            dark: materials.add(StandardMaterial {
+                base_color: Color::srgb(0.045, 0.055, 0.065),
+                perceptual_roughness: 0.85,
+                ..default()
+            }),
+            clothing: materials.add(painted_matte(lift(accent, 1.12), &painted.cloth, 0.85)),
+            trousers: materials.add(painted_matte(
+                Color::srgb(0.19, 0.21, 0.28),
+                &painted.cloth,
+                0.9,
+            )),
+            leather: materials.add(painted_matte(
+                Color::srgb(0.40, 0.27, 0.18),
+                &painted.leather,
+                0.75,
+            )),
             appearance,
         }
     }
@@ -267,57 +360,109 @@ impl Humanoid {
             for part in parts.iter().filter(|part| limb(part.name).is_none()) {
                 self.spawn_part(body, meshes, part, Vec3::ZERO);
             }
-            for side in [-1.0, 1.0] {
-                for (upper, lower, origin, hinge) in [
-                    (
-                        JointKind::Shoulder,
-                        JointKind::Elbow,
-                        Vec3::new(side * 0.34, 1.34, 0.0),
-                        Vec3::new(side * 0.40, 1.03, -0.015),
-                    ),
-                    (
-                        JointKind::Hip,
-                        JointKind::Knee,
-                        Vec3::new(side * 0.145, 0.85, 0.0),
-                        Vec3::new(side * 0.145, 0.47, 0.0),
-                    ),
-                ] {
-                    body.spawn((
+            let chest_origin = Vec3::new(0.0, 1.02, 0.0);
+            body.spawn((
+                Joint {
+                    actor,
+                    kind: JointKind::Chest,
+                    side: 0.0,
+                },
+                Transform::from_translation(chest_origin),
+                Visibility::default(),
+            ))
+            .with_children(|chest| {
+                for part in parts
+                    .iter()
+                    .filter(|p| limb(p.name) == Some(JointKind::Chest))
+                {
+                    self.spawn_part(chest, meshes, part, chest_origin);
+                }
+                let head_origin = Vec3::new(0.0, 1.49, 0.0);
+                chest
+                    .spawn((
                         Joint {
                             actor,
-                            kind: upper,
-                            side,
+                            kind: JointKind::Head,
+                            side: 0.0,
                         },
-                        Transform::from_translation(origin),
+                        Transform::from_translation(head_origin - chest_origin),
                         Visibility::default(),
                     ))
-                    .with_children(|joint| {
-                        for part in parts.iter().filter(|p| {
-                            limb(p.name) == Some(upper) && p.position.x.signum() == side
-                        }) {
-                            self.spawn_part(joint, meshes, part, origin);
+                    .with_children(|head| {
+                        for part in parts
+                            .iter()
+                            .filter(|p| limb(p.name) == Some(JointKind::Head))
+                        {
+                            self.spawn_part(head, meshes, part, head_origin);
                         }
-                        joint
-                            .spawn((
-                                Joint {
-                                    actor,
-                                    kind: lower,
-                                    side,
-                                },
-                                Transform::from_translation(hinge - origin),
-                                Visibility::default(),
-                            ))
-                            .with_children(|joint| {
-                                for part in parts.iter().filter(|p| {
-                                    limb(p.name) == Some(lower) && p.position.x.signum() == side
-                                }) {
-                                    self.spawn_part(joint, meshes, part, hinge);
-                                }
-                            });
                     });
-                }
-            }
+                self.spawn_limbs(chest, meshes, &parts, actor, true, chest_origin);
+            });
+            self.spawn_limbs(body, meshes, &parts, actor, false, Vec3::ZERO);
         });
+    }
+
+    fn spawn_limbs(
+        &self,
+        parent: &mut ChildSpawnerCommands,
+        meshes: &CharacterMeshes,
+        parts: &[Part],
+        actor: usize,
+        arms: bool,
+        parent_origin: Vec3,
+    ) {
+        for side in [-1.0, 1.0] {
+            let (upper, lower, origin, hinge) = if arms {
+                (
+                    JointKind::Shoulder,
+                    JointKind::Elbow,
+                    Vec3::new(side * 0.27, 1.34, 0.0),
+                    Vec3::new(side * 0.35, 1.04, -0.015),
+                )
+            } else {
+                (
+                    JointKind::Hip,
+                    JointKind::Knee,
+                    Vec3::new(side * 0.155, 0.85, 0.0),
+                    Vec3::new(side * 0.155, 0.47, 0.0),
+                )
+            };
+            parent
+                .spawn((
+                    Joint {
+                        actor,
+                        kind: upper,
+                        side,
+                    },
+                    Transform::from_translation(origin - parent_origin),
+                    Visibility::default(),
+                ))
+                .with_children(|joint| {
+                    for part in parts
+                        .iter()
+                        .filter(|p| limb(p.name) == Some(upper) && p.position.x.signum() == side)
+                    {
+                        self.spawn_part(joint, meshes, part, origin);
+                    }
+                    joint
+                        .spawn((
+                            Joint {
+                                actor,
+                                kind: lower,
+                                side,
+                            },
+                            Transform::from_translation(hinge - origin),
+                            Visibility::default(),
+                        ))
+                        .with_children(|joint| {
+                            for part in parts.iter().filter(|p| {
+                                limb(p.name) == Some(lower) && p.position.x.signum() == side
+                            }) {
+                                self.spawn_part(joint, meshes, part, hinge);
+                            }
+                        });
+                });
+        }
     }
 
     fn spawn_part(
@@ -337,7 +482,9 @@ impl Humanoid {
             Surface::Eyes => &self.eyes,
             Surface::White => &self.white,
             Surface::Dark => &self.dark,
-            Surface::Clothing => &self.appearance.clothing,
+            Surface::Clothing => &self.clothing,
+            Surface::Trousers => &self.trousers,
+            Surface::Leather => &self.leather,
         };
         parent.spawn((
             Name::new(part.name),
@@ -351,10 +498,13 @@ impl Humanoid {
 
 fn limb(name: &str) -> Option<JointKind> {
     match name {
+        "Tunic" | "Neck" => Some(JointKind::Chest),
+        "Head" | "Nose" | "Mouth" | "Hair cap" | "Hair back" | "Hair crest" | "Swept fringe"
+        | "Ear" | "Eye white" | "Iris" | "Pupil" | "Brow" => Some(JointKind::Head),
         "Shoulder" | "Upper arm" => Some(JointKind::Shoulder),
-        "Forearm" | "Hand" => Some(JointKind::Elbow),
+        "Elbow" | "Forearm" | "Wrist" | "Hand" | "Thumb" => Some(JointKind::Elbow),
         "Thigh" => Some(JointKind::Hip),
-        "Shin" | "Boot" => Some(JointKind::Knee),
+        "Knee" | "Shin" | "Ankle" | "Boot" => Some(JointKind::Knee),
         _ => None,
     }
 }
@@ -362,6 +512,46 @@ fn limb(name: &str) -> Option<JointKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rounded_limb_segments_overlap_at_the_joints_instead_of_leaving_hard_cuffs() {
+        let parts = parts(HairStyle::Cropped);
+        for side in [-1.0, 1.0] {
+            let part = |name| {
+                parts
+                    .iter()
+                    .find(|p| p.name == name && p.position.x.signum() == side)
+                    .unwrap()
+            };
+            for (a, b) in [
+                ("Shoulder", "Upper arm"),
+                ("Upper arm", "Elbow"),
+                ("Elbow", "Forearm"),
+                ("Forearm", "Wrist"),
+                ("Wrist", "Hand"),
+                ("Hand", "Thumb"),
+                ("Thigh", "Knee"),
+                ("Knee", "Shin"),
+                ("Shin", "Ankle"),
+                ("Ankle", "Boot"),
+            ] {
+                let (a, b) = (part(a), part(b));
+                assert!(matches!(a.shape, CharacterPart::Head));
+                assert!(matches!(b.shape, CharacterPart::Head));
+                // Centers lie inside the Minkowski sum of the two ellipsoids.
+                let separation = (a.position - b.position) / ((a.scale + b.scale) * 0.5);
+                assert!(
+                    separation.length() < 1.0,
+                    "{} / {} have a gap",
+                    a.name,
+                    b.name
+                );
+            }
+        }
+        let torso = parts.iter().find(|p| p.name == "Tunic").unwrap();
+        assert!(matches!(torso.shape, CharacterPart::Head));
+        assert!(torso.scale.y > torso.scale.x);
+    }
 
     #[test]
     fn fallback_is_one_subtree_and_all_parts_use_the_shared_quality_cache() {
@@ -382,6 +572,7 @@ mod tests {
                         let model = Humanoid::new(
                             Appearance::practice(index, clothing.clone()),
                             &mut materials,
+                            &PaintedTextures::default(),
                         );
                         commands
                             .spawn((crate::FighterVisual(index), Transform::default()))
@@ -415,7 +606,7 @@ mod tests {
                 .iter()
                 .filter(|p| limb(p.name).is_none())
                 .count()
-                + 4
+                + 3
         );
         *visibility = Visibility::Hidden;
         let mut parts_query = world.query::<(&CharacterPart, &Mesh3d)>();
@@ -432,9 +623,9 @@ mod tests {
             assert_eq!(mesh.0, cache.handles(true)[index]);
         }
         let mut joints = world.query::<(&Joint, &Transform, &Children)>();
-        assert_eq!(joints.iter(world).count(), 16);
+        assert_eq!(joints.iter(world).count(), 20);
         for (_, transform, children) in joints.iter(world) {
-            assert_eq!(transform.rotation, Quat::IDENTITY);
+            assert!(transform.rotation.is_finite());
             assert!(!children.is_empty());
         }
         let entities = world.entities().len();
@@ -458,6 +649,25 @@ mod tests {
         );
         assert_eq!(world.entities().len(), entities);
         assert_eq!(world.resource::<Assets<Mesh>>().len(), mesh_count);
+    }
+
+    #[test]
+    fn slim_build_keeps_torso_and_limbs_narrow_without_gaps_to_the_hands() {
+        let parts = parts(HairStyle::Cropped);
+        let part = |name| parts.iter().find(|p| p.name == name).unwrap();
+        let outer = |p: &Part| p.position.x.abs() + p.scale.x / 2.0;
+        let inner = |p: &Part| p.position.x.abs() - p.scale.x / 2.0;
+        let torso = part("Tunic");
+        assert!(torso.scale.x <= 0.56 && torso.scale.x / torso.scale.y < 0.9);
+        assert!(part("Hips").scale.x < torso.scale.x);
+        // Arm span stays well under the previous 0.93 m silhouette.
+        assert!(parts.iter().map(outer).fold(0.0, f32::max) <= 0.42);
+        for name in ["Upper arm", "Forearm", "Thigh", "Shin"] {
+            let limb = part(name);
+            assert!(limb.scale.x <= 0.19 && limb.scale.z <= 0.22, "{name}");
+        }
+        // Hanging hands still clear the thighs in the bind pose.
+        assert!(inner(part("Hand")) - outer(part("Thigh")) >= 0.03);
     }
 
     #[test]

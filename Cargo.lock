@@ -234,9 +234,11 @@ dependencies = [
 name = "arena-client"
 version = "0.1.0"
 dependencies = [
+ "arena-map",
  "arena-sim",
  "bevy",
  "js-sys",
+ "serde_json",
  "wasm-bindgen",
 ]
 
@@ -248,8 +250,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "arena-map"
+version = "0.1.0"
+dependencies = [
+ "arena-sim",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "arena-sim"
 version = "0.1.0"
+
+[[package]]
+name = "arena-textures"
+version = "0.1.0"
+dependencies = [
+ "image",
+]
 
 [[package]]
 name = "arrayvec"

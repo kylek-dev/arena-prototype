@@ -37,14 +37,20 @@ parser = References()
 parser.feed((DIST / 'index.html').read_text())
 assert parser.urls, 'No built frontend references'
 manifest = json.loads((DIST / 'assets/character.json').read_text())
+character = f"assets/characters/{manifest.get('model')}.glb"
 if manifest['available']:
-    assert (DIST / 'assets/characters/base-male.glb').is_file()
+    assert (DIST / character).is_file(), character
 
 paths = ['index.html', 'pkg/arena_client.js', 'pkg/arena_client_bg.wasm',
+         'assets/licenses/universal-strafes-MIT.txt',
          'assets/character.json', 'assets/weapons/verdant-eclipse.glb',
-         'assets/weapons/aetherthorn.glb', *parser.urls]
+         'assets/weapons/aetherthorn.glb', 'assets/textures/stone-floor.png',
+         'assets/textures/stone-bricks.png', 'assets/textures/stone-wall.png',
+         'assets/textures/wood-planks.png', 'assets/textures/metal-grate.png',
+         'assets/textures/metal-panels.png', 'assets/textures/sky.png',
+         'assets/maps/colosseum.json', *parser.urls]
 if manifest['available']:
-    paths.append('assets/characters/base-male.glb')
+    paths.append(character)
 server = ThreadingHTTPServer(('127.0.0.1', 0), partial(QuietHandler, directory=str(ROOT)))
 thread = Thread(target=server.serve_forever, daemon=True)
 thread.start()

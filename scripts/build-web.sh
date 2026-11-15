@@ -10,7 +10,17 @@ start_seconds=$SECONDS
 cargo build --locked -p arena-client --target wasm32-unknown-unknown --profile "$profile"
 mkdir -p web/public/pkg web/public/assets/characters
 python3 scripts/prepare_character.py
+mkdir -p web/public/assets/licenses
+cp assets/animations/LICENSE.txt web/public/assets/licenses/universal-strafes-MIT.txt
 python3 scripts/prepare_weapon.py
+# Prepared CC0 textures are tracked; regenerate them with scripts/fetch_textures.py.
+rm -rf web/public/assets/textures
+mkdir -p web/public/assets/textures
+cp assets/textures/*.png web/public/assets/textures/
+# Map files for the in-game editor; the WASM also embeds colosseum.json.
+rm -rf web/public/assets/maps
+mkdir -p web/public/assets/maps
+cp assets/maps/*.json web/public/assets/maps/
 bindgen_flags=(--remove-producers-section)
 if [[ "${ARENA_DEBUG_SYMBOLS:-0}" != 1 ]]; then
   bindgen_flags+=(--remove-name-section)

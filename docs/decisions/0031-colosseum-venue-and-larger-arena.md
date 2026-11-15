@@ -1,0 +1,35 @@
+# ADR 0031: Colosseum venue, larger arena and faster movement
+
+Date: 2026-11-14. **Status: accepted for implementation**, at the user's request, then revised the same day after first feedback (crowd removed, venue textured, heraldry detailed, sky resolution raised, camera snag fixed). Human rendered review is pending.
+
+## Decision
+
+**Rules (`arena_sim::arena`).**
+
+- Base movement rises 50%, from 160 to 240 mm per tick (4.8 → 7.2 m/s at 30 Hz). Jump arcs and airborne momentum keep their existing rules, so a running jump now carries 50% farther.
+- The playable floor triples in each dimension, from 36×28 m to 108×84 m (`ARENA_X`/`ARENA_Z` 54 000/42 000 mm half-extents). The pillar layout scales with it: four 9×9 m pillars centred at (±21, ±15) m, keeping the same proportions and open central lanes.
+- *Superseded by [ADR 0032](0032-starting-rooms-camera-and-weapon-fit.md): teams now spawn in starting rooms.* Practice spawns scale by the same factor: friendly rows at z = 16.5 m and opponents at z = −10.5 m, with teammates offset ±7.5 m. Attack range (6 m) is unchanged, so opening approaches take about 3 s.
+
+**Presentation (`arena-client`).**
+
+- Every unit spawns facing the opposing team. The player keeps its own steerable heading; other units are drawn with a fixed team heading (`spawn_facing`) instead of the previous identity rotation, which had the opponents facing away.
+- Pillars rise to 48 m with periodic bands and a crown. The highest reachable camera eye is about 23 m, so pillar tops are never visible and cannot be looked over. Picking proxies cover the full height.
+- `venue.rs` describes the venue as one pure list of boxes (`boxes()`), used both to spawn it and by camera tests: a 5 m pit wall with a parapet and gold coping, ten stepped sandstone tiers (0.85 m rise, 1.9 m tread) each with a wooden bench, a concourse, and a 34 m outer wall with pilasters, framed wooden doors with gold keystones, and an overhanging cornice with a gold band. Team gates with iron portcullises, stone jambs and gold lintels mark each spawn end. Every structural box is a camera obstacle and a solid block from the ground up.
+- The spectator crowd from the first pass is removed at the user's request; the stands stay empty.
+- **Textures.** Every venue surface is textured except the flat team-colour marker strips (kept saturated for gameplay, art direction rule 3). Four more hand-painted CC0 sets from 3DTextures.me are prepared by `arena-textures` exactly like ADR 0030's: Stylized Stone Wall 002 (outer wall), Stylized Wood Planks 002 (benches, doors), Stylized Metal Plates 001 (portcullis) and Stylized Metal Pattern 001 (gold trim). The tiers reuse the floor flagstones; walls, trim and pillars reuse the bricks. `textures::ArenaTextures` now takes any list of (texture, materials) sets. Provenance and hashes are in `assets/textures/README.md`.
+- **Heraldry.** `heraldry.rs` paints three original liveries at startup (violet sun, blue crescent and star, green crown; no downloads): lit cloth with brush variation, a stitched gold-embroidered border, an ink-outlined medallion with the sigil, accent lines, and a chevron hem with gold dogtooth. Banners are swallowtail cloth meshes with three soft folds, hung from gold rods with finials and tassels in every facade bay. Rooftop flagpoles along the cornice fly matching rippling pennants in one prevailing wind. The liveries use deep violet, blue and green with gold, staying clear of the teal/orange team colours.
+- **Sky.** The painted cubemap moves offline: `arena-textures` renders six 1024² faces (16× the texels of the first 256² pass) into one stacked `assets/textures/sky.png` (~1.8 MB), so the browser does no procedural work at startup. The painting is richer: a brushed wash in the clear sky, gently domain-warped clouds with cool shadowed undersides, bright sun-side crowns and cooler cores, warm light near the sun, and a few thin high streaks. The client loads it as a six-layer array, views it as a cube, and only then adds `Skybox` to the camera, so the renderer never binds a non-cube view; if loading fails, the lighting panel's background colour remains.
+
+**Camera fix.** The orbit camera could wedge permanently in concave corners such as the pit-wall top under the parapet: the eye sweep slid into the corner, the requested spot lay behind the parapet, and eased zoom recovery measures from the stuck eye, so the target never moved. `camera::resolve_eye` now goes straight to the resolved boom position whenever the segment from the player to it is unobstructed. Blocked booms (orbiting behind a pillar) still slide, keeping ADR 0014's anti-tunnelling behaviour.
+
+## Consequences
+
+Matches take longer to close distance even with faster movement; this is a deliberate first step and may need retuning after play. The sim stays integer and graphics-free; no input, bridge or protocol change. Combat line of sight and collision use the same pillar footprints as before, only larger. The web build gains about 3.7 MB of PNGs (four 512² textures and the sky).
+
+## Verification
+
+Simulation tests derive distances from the constants (approach tick counts, wall walks, pillar offsets) and gained a within-range corner line-of-sight case. Client tests cover spawn facing for all team sizes, venue boxes staying off the floor, every non-marker surface being textured, pillar and wall heights above the highest camera eye, banner placement and facing, painted liveries (gold borders and sigils, lit fields, distinct sigils), cloth mesh outlines and normals, the stacked-to-cube view, and pillar picking over the full height. A new camera regression test orbits at two zoom levels from six spots along the pit wall, gates and corners using the real venue geometry: the eye must never enter an obstacle and must reach its target once the view is clear. It failed before the fix (eye wedged under the parapet) and passes after. Texture-tool tests cover cube face directions, sky colour (blue overhead, warm horizon, sun glow) and deterministic rendering.
+
+Local verification on 2026-11-14: `./scripts/check.sh` passed (85 client, 13 simulation, 6 texture-tool, 28 Node input and 166 Vitest tests, plus Python, Clippy, format and frontend checks). WASM Clippy with warnings denied passed, `./scripts/build-web.sh` and its static check passed (15 resources, including all seven PNGs), and the headless scenario ran. The new textures, the sky faces and the banner and pennant artwork were inspected as offline previews. No browser was launched.
+
+Human review should check, on Low and High with MSAA on and off: movement feel at the new speed, camera behaviour against the pit wall, stands and pillars (especially that it no longer sticks), that pillar tops are never visible, texture scale and seams on the stands, outer wall, doors, gates and gold trim, banner and pennant readability from the arena floor, sky brightness and resolution under different exposure settings, frame rate, and that units face each other at spawn and after reset.
