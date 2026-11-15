@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 # The client is type-checked above; rendered behavior is reviewed manually.
-cargo test -p arena-sim -p arena-protocol -p arena-server -p arena-headless -p arena-textures -p arena-map -p arena-palette --locked
+cargo test -p arena-sim -p arena-protocol -p arena-server -p arena-bot -p arena-headless -p arena-textures -p arena-map -p arena-palette --locked
 # Presentation contracts and character-relative movement regressions.
 cargo test -p arena-client --lib --locked
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests/unit -p 'test_*.py'

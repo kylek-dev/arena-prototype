@@ -231,6 +231,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "arena-bot"
+version = "0.1.0"
+dependencies = [
+ "arena-protocol",
+ "arena-server",
+ "arena-sim",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
 name = "arena-client"
 version = "0.1.0"
 dependencies = [

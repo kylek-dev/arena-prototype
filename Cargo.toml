@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/arena-sim", "crates/arena-protocol", "crates/arena-server", "crates/arena-map", "crates/arena-palette", "crates/arena-headless", "crates/arena-client", "crates/arena-textures"]
-default-members = ["crates/arena-sim", "crates/arena-protocol", "crates/arena-server", "crates/arena-headless"]
+members = ["crates/arena-sim", "crates/arena-protocol", "crates/arena-server", "crates/arena-bot", "crates/arena-map", "crates/arena-palette", "crates/arena-headless", "crates/arena-client", "crates/arena-textures"]
+default-members = ["crates/arena-sim", "crates/arena-protocol", "crates/arena-server", "crates/arena-bot", "crates/arena-headless"]
 
 [workspace.package]
 version = "0.1.0"
