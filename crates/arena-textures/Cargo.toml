@@ -9,7 +9,7 @@ publish = false
 default-run = "arena-textures"
 
 [dependencies]
-image = { version = "=0.25.10", default-features = false, features = ["png"] }
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg"] }
 
 [lints]
 workspace = true

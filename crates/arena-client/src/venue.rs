@@ -9,7 +9,7 @@
 //! Starting rooms are cut out of the walls and stands by box subtraction, so a
 //! room can sit on any edge at any size the map allows.
 use crate::{camera, heraldry, textures};
-use arena_map::{MapFile, Venue};
+use arena_map::{Ground, MapFile, Venue};
 use arena_sim::map::Edge;
 use bevy::prelude::*;
 
@@ -29,6 +29,9 @@ pub(crate) struct VenueEntity;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Surface {
     Floor,
+    Sand,
+    Snow,
+    Grass,
     Base,
     PitWall,
     Trim,
@@ -43,8 +46,21 @@ pub(crate) enum Surface {
 }
 
 impl Surface {
-    const ALL: [Surface; 12] = [
+    /// The arena floor's surface for a map's ground choice.
+    pub(crate) fn ground(ground: Ground) -> Self {
+        match ground {
+            Ground::Stone => Surface::Floor,
+            Ground::Sand => Surface::Sand,
+            Ground::Snow => Surface::Snow,
+            Ground::Grass => Surface::Grass,
+        }
+    }
+
+    const ALL: [Surface; 15] = [
         Surface::Floor,
+        Surface::Sand,
+        Surface::Snow,
+        Surface::Grass,
         Surface::Base,
         Surface::PitWall,
         Surface::Trim,
@@ -64,6 +80,9 @@ impl Surface {
             Surface::Floor | Surface::Base | Surface::Stands => {
                 (textures::FLOOR_PATH, textures::FLOOR_TILE)
             }
+            Surface::Sand => (textures::SAND_PATH, 6.0),
+            Surface::Snow => (textures::SNOW_PATH, 7.0),
+            Surface::Grass => (textures::GRASS_PATH, 3.0),
             Surface::PitWall | Surface::Trim | Surface::PillarStone | Surface::PillarEdge => {
                 (textures::BRICKS_PATH, textures::BRICKS_TILE)
             }
@@ -78,6 +97,10 @@ impl Surface {
     fn tint(self) -> Color {
         match self {
             Surface::Floor => Color::srgb(0.41, 0.48, 0.53),
+            // Ground textures keep their painted colour.
+            Surface::Sand => Color::srgb(0.98, 0.92, 0.84),
+            Surface::Snow => Color::srgb(0.96, 0.98, 1.0),
+            Surface::Grass => Color::srgb(0.92, 0.96, 0.88),
             Surface::Base => Color::srgb(0.06, 0.10, 0.14),
             Surface::PitWall => Color::srgb(0.42, 0.48, 0.58),
             Surface::Trim => Color::srgb(0.46, 0.50, 0.60),
@@ -448,7 +471,7 @@ pub(crate) fn boxes(map: &MapFile) -> Vec<Piece> {
     let (hx, hz) = (plan.hx, plan.hz);
     add(
         Transform::from_xyz(0.0, -0.08, 0.0).with_scale(Vec3::new(hx * 2.0, 0.16, hz * 2.0)),
-        Surface::Floor,
+        Surface::ground(map.ground),
         Collision::Floor,
     );
     let base = v.footprint() * 2.0 + 2.0;
@@ -844,7 +867,7 @@ mod tests {
             })
         };
         for piece in boxes(&map) {
-            if matches!(piece.surface, Surface::Floor | Surface::Base) {
+            if piece.transform.translation.y < 0.0 {
                 continue;
             }
             let (min, max) = bounds(&piece.transform);
@@ -917,6 +940,22 @@ mod tests {
         let spawn = map.layout.spawns(0)[0];
         assert!(!blocked(Vec3::new(mm(spawn.x), 1.0, mm(spawn.z))));
         assert!(blocked(Vec3::new(mm(spawn.x), 1.0, mm(spawn.z) + 4.0)));
+    }
+
+    #[test]
+    fn the_map_ground_surfaces_only_the_arena_floor() {
+        for ground in Ground::ALL {
+            let mut map = colosseum();
+            map.ground = ground;
+            let floors: Vec<_> = boxes(&map)
+                .into_iter()
+                .filter(|p| p.surface == Surface::ground(ground))
+                .collect();
+            assert_eq!(floors.len(), 1, "{ground:?}");
+            let floor = floors[0].transform;
+            assert_eq!(floor.scale.x, mm(map.layout.half_x) * 2.0);
+            assert!(floor.translation.y < 0.0);
+        }
     }
 
     #[test]

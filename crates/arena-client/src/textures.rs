@@ -19,6 +19,9 @@ pub const STONE_WALL_PATH: &str = "textures/stone-wall.png";
 pub const WOOD_PATH: &str = "textures/wood-planks.png";
 pub const GRATE_PATH: &str = "textures/metal-grate.png";
 pub const PANELS_PATH: &str = "textures/metal-panels.png";
+pub const SAND_PATH: &str = "textures/ground-sand.png";
+pub const SNOW_PATH: &str = "textures/ground-snow.png";
+pub const GRASS_PATH: &str = "textures/ground-grass.png";
 /// Metres covered by one repeat of each tiling texture.
 pub const FLOOR_TILE: f32 = 4.0;
 pub const BRICKS_TILE: f32 = 2.0;

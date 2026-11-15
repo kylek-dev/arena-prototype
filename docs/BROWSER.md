@@ -88,15 +88,21 @@ After rebuilding the complete client, manually compare Off/4× and Low/High whil
 Open **Escape → Map editor**. The movable window shows the arena from above
 (north up), with the stands and building around the floor. Its parts:
 
-- **Plan:** drag pillars, rooms and spawns. Selected pillars get a corner size
+- **Files:** **Open map** switches between the maps in `assets/maps`;
+  **New map…** starts a blank arena (name, file id, ground). The map opened
+  or saved last is the one the arena starts with on this device.
+- **Plan:** drag pillars, rooms, spawns and props. Selected pillars get a corner size
   handle and selected rooms a back-wall depth handle. Moves snap to 0.5 m,
   or 0.1 m while holding Alt.
 - **Inspector:** typed values for the selection. With nothing selected it
-  shows the map name, floor size and venue settings (pit wall, tiers,
+  shows the map name, ground (stone, sand, snow or grass), floor size and venue settings (pit wall, tiers,
   concourse, outer wall, pillar height). Values apply on Enter or when the
   field loses focus; Escape reverts a field.
+- **Props:** pick a model and **Add prop**, then drag it; the inspector sets
+  model, position, height, turn and scale. Props are decoration only:
+  fighters, spells and the camera pass through them.
 - **Keys:** arrows nudge 0.5 m (Shift: 2 m); Delete removes; Ctrl+D duplicates
-  a pillar; Ctrl+Z and Ctrl+Shift+Z (or Ctrl+Y) undo and redo; Escape clears
+  a pillar or prop; R / Shift+R turns a prop 15°; Ctrl+Z and Ctrl+Shift+Z (or Ctrl+Y) undo and redo; Escape clears
   the selection, then closes.
 
 Each committed edit goes live in the arena. The round continues unless a unit
@@ -105,14 +111,15 @@ game validates every edit and lists the problems (room ceilings, hiding
 corners, blocked openings, unreachable spawns and so on). An invalid map is
 never applied; the last valid one stays in play.
 
-**Save to assets/maps** appears under `npm run dev` and `npm run serve`. It
-writes `assets/maps/colosseum.json` in the repository and only accepts
+**Save as <id>.json** appears under `npm run dev` and `npm run serve`. It
+writes `assets/maps/<id>.json` in the repository and only accepts
 requests from the local machine, and only after the game has accepted the
 map. Reload the page to start from the saved file; rebuild to embed it in the
 WASM. Static hosting has no save endpoint, so use **Download** and **Import…**
 there. Closing the window keeps your edits for the session, and the browser
 warns before leaving with unsaved changes. See
-[ADR 0037](decisions/0037-map-files-and-browser-map-editor.md). Human browser
+[ADR 0037](decisions/0037-map-files-and-browser-map-editor.md) and
+[ADR 0041](decisions/0041-map-props-grounds-and-new-maps.md). Human browser
 review is pending.
 
 ## Temporary live lighting tweaks

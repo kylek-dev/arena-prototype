@@ -48,7 +48,7 @@ npm run serve
 
 Open http://127.0.0.1:8000. WASD moves; Space jumps with takeoff momentum; left-drag looks; right-drag turns; both mouse buttons walk and steer. Tab selects, 1 attacks, and R resets. Escape → Practice mode selects 1v1/2v2/3v3. Team frames exclude yourself and appear on the left; opponents appear on the right. Mode changes restart the round; reset preserves mode. Human review of these additions is pending.
 
-Escape → **Map editor** edits the arena layout (pillars, starting rooms, spawns, floor and venue sizes) in a top-down view with live preview, undo and validation, and saves `assets/maps/colosseum.json` when run with `npm run dev` or `npm run serve`. See [map editor](docs/BROWSER.md#map-editor).
+Escape → **Map editor** edits and creates arenas (pillars, starting rooms, spawns, decorative props, ground texture, floor and venue sizes) in a top-down view with live preview, undo and validation, and saves `assets/maps/<id>.json` when run with `npm run dev` or `npm run serve`. See [map editor](docs/BROWSER.md#map-editor).
 
 Escape → **Lighting tweaks (temporary)** opens movable live controls for light strength/color/direction, background, exposure, saturation/contrast, shadow/midtone/highlight grading, tone mapping and bloom. No reload is needed while tuning; values are session-only, with Reset and copyable JSON. See [browser controls](docs/BROWSER.md).
 

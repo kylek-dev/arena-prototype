@@ -74,6 +74,47 @@
 .plan-floor {
   fill: #8b7a62;
 }
+.plan-floor.ground-sand {
+  fill: #b89a68;
+}
+.plan-floor.ground-snow {
+  fill: #b9c6cf;
+}
+.plan-floor.ground-grass {
+  fill: #66804a;
+}
+.plan-prop rect:first-child {
+  fill: rgba(240, 190, 120, 0.55);
+  stroke: #3b2a16;
+  stroke-width: 1;
+  cursor: grab;
+}
+.plan-prop {
+  cursor: grab;
+}
+.plan-prop-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+.plan-prop-dot {
+  fill: #f0be78;
+  stroke: #3b2a16;
+  stroke-width: 1;
+  pointer-events: none;
+}
+.map-plan .plan-prop.selected .plan-prop-dot {
+  fill: #ffd65c;
+}
+.map-plan .plan-prop.selected .plan-prop-hit {
+  fill: rgba(255, 214, 92, 0.18);
+  stroke: #ffd65c;
+  stroke-width: 1.5;
+}
+.plan-prop-front {
+  stroke: #3b2a16;
+  stroke-width: 2;
+  pointer-events: none;
+}
 .plan-grid {
   stroke: rgba(255, 255, 255, 0.12);
   stroke-width: 1;
@@ -179,4 +220,23 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+.map-new {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--gray-6);
+  border-radius: 6px;
+}
+.map-new .map-actions {
+  justify-content: flex-start;
+}
+.map-props-add {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.map-props-add select {
+  flex: 1;
+  min-width: 0;
 }

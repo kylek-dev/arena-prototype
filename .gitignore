@@ -67,5 +67,11 @@
 !/assets/quaternius/outfits/Exports/glTF (Godot-Unreal)/Outfits/T_Regular_Male_*.png
 !/assets/quaternius/outfits/Textures/Peasant/T_Peasant_2_BaseColor.png
 !/assets/quaternius/outfits/Textures/Ranger/T_Ranger_3_BaseColor.png
+# Map props (scripts/prepare_props.py): every glTF prop of the CC0 Fantasy
+# Props MegaKit with its BIN and shared trim-sheet textures.
+!/assets/quaternius/props/License_Standard.txt
+!/assets/quaternius/props/Exports/glTF/*.gltf
+!/assets/quaternius/props/Exports/glTF/*.bin
+!/assets/quaternius/props/Exports/glTF/*.png
 # QAL permits game use, not standalone redistribution of the raw race pack.
 /assets/quaternius/races/

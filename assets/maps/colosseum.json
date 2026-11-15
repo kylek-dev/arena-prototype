@@ -1,6 +1,7 @@
 {
   "format": 1,
   "name": "Colosseum",
+  "ground": "stone",
   "floor": { "width": 108, "depth": 84 },
   "pillars": [
     { "x": -21, "z": -15, "width": 9, "depth": 9 },
@@ -46,5 +47,6 @@
     "outerWallThickness": 3,
     "outerWallHeight": 34,
     "pillarHeight": 48
-  }
+  },
+  "props": []
 }

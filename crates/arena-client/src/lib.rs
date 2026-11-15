@@ -12,6 +12,7 @@ mod hover;
 mod humanoid;
 mod lighting;
 mod nameplates;
+mod props;
 mod sky;
 mod startup;
 mod textures;
@@ -122,6 +123,7 @@ pub fn run() {
         .insert_resource(Time::<Fixed>::from_hz(TICKS_PER_SECOND as f64))
         .init_resource::<ActiveMap>()
         .init_resource::<MapEdits>()
+        .init_resource::<props::PropModels>()
         .init_resource::<Practice>()
         .init_resource::<Orbit>()
         .init_resource::<animation::Settings>()
@@ -413,10 +415,13 @@ fn map_status_json(revision: f64, errors: &[String]) -> String {
     )
 }
 /// Replaces the venue with one built from the active map.
+#[allow(clippy::too_many_arguments)]
 fn rebuild_venue(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     assets: Res<venue::VenueAssets>,
+    server: Res<AssetServer>,
+    mut prop_models: ResMut<props::PropModels>,
     map: Res<ActiveMap>,
     old: Query<Entity, With<venue::VenueEntity>>,
     mut orbit: ResMut<Orbit>,
@@ -425,6 +430,7 @@ fn rebuild_venue(
         commands.entity(entity).despawn();
     }
     venue::spawn(&mut commands, &mut meshes, &assets, &map.0);
+    props::spawn(&mut commands, &server, &mut prop_models, &map.0);
     // The previous eye may now be inside new geometry.
     orbit.eye = None;
 }
@@ -1320,6 +1326,8 @@ mod tests {
             .init_asset::<Image>()
             .init_resource::<ActiveMap>()
             .init_resource::<MapEdits>()
+            .init_resource::<props::PropModels>()
+            .init_asset::<WorldAsset>()
             .init_resource::<Practice>()
             .init_resource::<Orbit>()
             .init_resource::<appearance::Preview>()
@@ -1358,6 +1366,12 @@ mod tests {
         let mut value: serde_json::Value = serde_json::from_str(arena_map::COLOSSEUM_JSON).unwrap();
         value["pillars"].as_array_mut().unwrap().pop();
         value["floor"]["width"] = 120.into();
+        value["ground"] = "sand".into();
+        value["props"] = serde_json::json!([
+            { "model": "Barrel", "x": 3, "z": 4 },
+            { "model": "Barrel", "x": -3, "z": 4, "rotation": 45 },
+            { "model": "Bench", "x": 0, "z": -6 }
+        ]);
         app.world_mut()
             .resource_mut::<Practice>()
             .arena
@@ -1382,6 +1396,12 @@ mod tests {
         let player = practice.arena.fighters()[0].position;
         assert_ne!(player, practice.arena.layout().spawns(0)[0]);
         assert_ne!(count(&mut app), initial);
+        let mut props = app
+            .world_mut()
+            .query_filtered::<&Name, (With<venue::VenueEntity>, With<WorldAssetRoot>)>();
+        assert_eq!(props.iter(app.world()).count(), 3);
+        // Two barrels share one loaded model.
+        assert_eq!(app.world().resource::<props::PropModels>().len(), 2);
         // Sliding the player's starting room away leaves them inside the
         // stands, so the round restarts at the map's spawns.
         assert!(

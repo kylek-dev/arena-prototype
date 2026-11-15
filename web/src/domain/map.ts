@@ -12,6 +12,15 @@ export type Team = "friendly" | "opposing";
 export type Edge = "north" | "south" | "west" | "east";
 export const EDGES: readonly Edge[] = ["north", "south", "west", "east"];
 export const TEAMS: readonly Team[] = ["friendly", "opposing"];
+export type Ground = "stone" | "sand" | "snow" | "grass";
+export const GROUNDS: readonly { id: Ground; label: string }[] = [
+  { id: "stone", label: "Stone flagstones" },
+  { id: "sand", label: "Sand" },
+  { id: "snow", label: "Snow" },
+  { id: "grass", label: "Grass" },
+];
+/** Map ids: file names in assets/maps (matches the save endpoint). */
+export const MAP_ID = /^[a-z0-9][a-z0-9-]{0,40}$/;
 
 export interface Pillar {
   x: number;
@@ -46,18 +55,42 @@ export interface Venue {
   outerWallHeight: number;
   pillarHeight: number;
 }
+/** A decorative model; the rules ignore props, so units pass through them. */
+export interface MapProp {
+  /** Catalog id, e.g. "Barrel". */
+  model: string;
+  x: number;
+  z: number;
+  /** Height above the floor. */
+  y: number;
+  /** Degrees, counter-clockwise seen from above. */
+  rotation: number;
+  scale: number;
+}
 export interface ArenaMap {
   format: number;
   name: string;
+  ground: Ground;
   floor: { width: number; depth: number };
   pillars: Pillar[];
   rooms: Room[];
   venue: Venue;
+  props: MapProp[];
+}
+
+/** One placeable model from assets/props/catalog.json; bounds in metres. */
+export interface PropInfo {
+  id: string;
+  label: string;
+  category: string;
+  min: [number, number, number];
+  max: [number, number, number];
 }
 
 export type Selection =
   | { kind: "floor" }
   | { kind: "pillar"; index: number }
+  | { kind: "prop"; index: number }
   | { kind: "room"; index: number }
   | { kind: "spawn"; room: number; index: number }
   | null;
@@ -133,7 +166,95 @@ export function parseMap(text: string): ArenaMap {
     venueFields.map((f) => f.key),
     "venue",
   );
-  return structuredClone(raw) as unknown as ArenaMap;
+  const ground = raw.ground ?? "stone";
+  if (!GROUNDS.some((g) => g.id === ground))
+    throw new Error("The map's ground must be stone, sand, snow or grass.");
+  const props = raw.props ?? [];
+  if (!Array.isArray(props)) fail("prop list");
+  const optional = (value: unknown, fallback: number, what: string) => {
+    if (value === undefined) return fallback;
+    if (!isNumber(value)) fail(what);
+    return value as number;
+  };
+  const clean = structuredClone(raw) as unknown as ArenaMap;
+  // Fixed key order, defaults filled in, so saved files are canonical.
+  return {
+    format: clean.format,
+    name: clean.name,
+    ground: ground as Ground,
+    floor: clean.floor,
+    pillars: clean.pillars,
+    rooms: clean.rooms,
+    venue: clean.venue,
+    props: (props as unknown[]).map((p) => {
+      if (!isObject(p) || typeof p.model !== "string") throw new Error("Each prop needs a model.");
+      numbers(p, ["x", "z"], "prop");
+      return {
+        model: p.model,
+        x: p.x as number,
+        z: p.z as number,
+        y: optional(p.y, 0, "prop height"),
+        rotation: optional(p.rotation, 0, "prop rotation"),
+        scale: optional(p.scale, 1, "prop scale"),
+      };
+    }),
+  };
+}
+
+/** Lowercase-dash id for a map name, e.g. "Frozen Pit" → "frozen-pit". */
+export function mapIdFor(name: string): string {
+  const id = name
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 41)
+    .replace(/-+$/, "");
+  return id || "map";
+}
+
+/** Default venue for new maps (matches the colosseum's). */
+export const DEFAULT_VENUE: Venue = {
+  pitWallHeight: 7,
+  pitWallThickness: 1.5,
+  tiers: 10,
+  tierRise: 0.85,
+  tierTread: 1.9,
+  concourseDepth: 3,
+  outerWallThickness: 3,
+  outerWallHeight: 34,
+  pillarHeight: 48,
+};
+
+/**
+ * A blank, valid arena: open floor, one starting room per team facing each
+ * other across it, no pillars or props.
+ */
+export function newMap(name: string, ground: Ground = "stone"): ArenaMap {
+  const room = (team: Team, edge: Edge): Room => ({
+    team,
+    edge,
+    offset: 0,
+    width: 6,
+    depth: 11,
+    ceiling: 6,
+    spawns: [
+      { across: 0, back: 5 },
+      { across: -2, back: 5 },
+      { across: 2, back: 5 },
+    ],
+  });
+  return {
+    format: MAP_FORMAT,
+    name,
+    ground,
+    floor: { width: 72, depth: 56 },
+    pillars: [],
+    rooms: [room("friendly", "south"), room("opposing", "north")],
+    venue: { ...DEFAULT_VENUE },
+    props: [],
+  };
 }
 
 /**
@@ -216,6 +337,22 @@ function spanRect(a: Point, b: Point): Rect {
   };
 }
 
+/** Fallback footprint for a model missing from the catalog. */
+const UNKNOWN_PROP: Pick<PropInfo, "min" | "max"> = { min: [-0.5, 0, -0.5], max: [0.5, 1, 0.5] };
+
+/** A prop's footprint in its own frame (metres, scaled, before turning). */
+export function propFootprint(prop: MapProp, catalog: readonly PropInfo[]): Rect {
+  const info = catalog.find((c) => c.id === prop.model) ?? UNKNOWN_PROP;
+  // Thin wall pieces still get a grabbable outline.
+  const pad = (lo: number, hi: number) => {
+    const grow = Math.max(0, 0.3 - (hi - lo)) / 2;
+    return [lo - grow, hi + grow];
+  };
+  const [minX, maxX] = pad(info.min[0] * prop.scale, info.max[0] * prop.scale);
+  const [minZ, maxZ] = pad(info.min[2] * prop.scale, info.max[2] * prop.scale);
+  return { minX, minZ, maxX, maxZ };
+}
+
 export function pillarRect(p: Pillar): Rect {
   return {
     minX: p.x - p.width / 2,
@@ -260,6 +397,52 @@ const clamp = (value: number, low: number, high: number) =>
 
 export function setName(map: ArenaMap, name: string): ArenaMap {
   return { ...map, name };
+}
+
+export function setGround(map: ArenaMap, ground: Ground): ArenaMap {
+  return { ...map, ground };
+}
+
+/** Wraps degrees into (−180, 180]. */
+export const wrapDegrees = (degrees: number) => {
+  const d = round(((((degrees + 180) % 360) + 360) % 360) - 180);
+  return d === -180 ? 180 : d;
+};
+
+export function updateProp(map: ArenaMap, index: number, patch: Partial<MapProp>): ArenaMap {
+  const props = map.props.map((p, i) => {
+    if (i !== index) return p;
+    const next = { ...p, ...patch };
+    return {
+      model: next.model,
+      x: round(next.x),
+      z: round(next.z),
+      y: round(next.y),
+      rotation: wrapDegrees(next.rotation),
+      scale: round(next.scale),
+    };
+  });
+  return { ...map, props };
+}
+
+/** Moves a prop's origin to `point`, snapped and kept inside the building. */
+export function moveProp(map: ArenaMap, index: number, point: Point, step = SNAP): ArenaMap {
+  const box = planBounds(map);
+  return updateProp(map, index, {
+    x: clamp(snap(point.x, step), box.minX, box.maxX),
+    z: clamp(snap(point.z, step), box.minZ, box.maxZ),
+  });
+}
+
+export function rotateProp(map: ArenaMap, index: number, degrees: number): ArenaMap {
+  return updateProp(map, index, { rotation: map.props[index].rotation + degrees });
+}
+
+export function addProp(map: ArenaMap, model: string, at: Point = { x: 0, z: 0 }): ArenaMap {
+  return {
+    ...map,
+    props: [...map.props, { model, x: snap(at.x), z: snap(at.z), y: 0, rotation: 0, scale: 1 }],
+  };
 }
 
 export function setFloor(map: ArenaMap, key: "width" | "depth", value: number): ArenaMap {
@@ -440,6 +623,11 @@ export function duplicate(
   map: ArenaMap,
   selection: Selection,
 ): { map: ArenaMap; selection: Selection } {
+  if (selection?.kind === "prop") {
+    const p = map.props[selection.index];
+    const next = { ...map, props: [...map.props, { ...p, x: round(p.x + 1.5) }] };
+    return { map: next, selection: { kind: "prop", index: next.props.length - 1 } };
+  }
   if (selection?.kind !== "pillar") return { map, selection };
   const p = map.pillars[selection.index];
   const next = { ...map, pillars: [...map.pillars, { ...p, x: p.x + p.width + 2 }] };
@@ -451,6 +639,8 @@ export function removeSelected(map: ArenaMap, selection: Selection): ArenaMap {
   switch (selection?.kind) {
     case "pillar":
       return { ...map, pillars: map.pillars.filter((_, i) => i !== selection.index) };
+    case "prop":
+      return { ...map, props: map.props.filter((_, i) => i !== selection.index) };
     case "room":
       return { ...map, rooms: map.rooms.filter((_, i) => i !== selection.index) };
     case "spawn":
@@ -474,6 +664,10 @@ export function nudge(map: ArenaMap, selection: Selection, dx: number, dz: numbe
       const p = map.pillars[selection.index];
       return movePillar(map, selection.index, { x: p.x + dx, z: p.z + dz }, 0.001);
     }
+    case "prop": {
+      const p = map.props[selection.index];
+      return moveProp(map, selection.index, { x: p.x + dx, z: p.z + dz }, 0.001);
+    }
     case "room": {
       const room = map.rooms[selection.index];
       const at = edgePoint(map, room.edge, room.offset, 0);
@@ -494,6 +688,8 @@ export function reconcileSelection(map: ArenaMap, selection: Selection): Selecti
   switch (selection?.kind) {
     case "pillar":
       return selection.index < map.pillars.length ? selection : null;
+    case "prop":
+      return selection.index < map.props.length ? selection : null;
     case "room":
       return selection.index < map.rooms.length ? selection : null;
     case "spawn":
