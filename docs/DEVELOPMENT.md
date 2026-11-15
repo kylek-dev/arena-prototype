@@ -78,20 +78,22 @@ rustup show active-toolchain
 rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.122 --locked
 
-# Install the exact JavaScript dependencies and a browser for automated checks.
+# Install pinned frontend tools; no browser installation is required.
 npm ci
-npx playwright install --with-deps chromium
+npm test
 
-# Native lint/rules checks, browser-specific Rust checks, then the browser build.
+# Native and JavaScript unit checks, WASM checks, then the browser build.
 ./scripts/check.sh
 cargo clippy -p arena-client --target wasm32-unknown-unknown --locked -- -D warnings
 ./scripts/build-web.sh
 
-# Starts its own temporary local server and runs the Chromium interaction checks.
-npm run test:browser
+# Start the game for manual E2E review (see docs/BROWSER.md).
+npm run serve
 ```
 
-Playwright's Linux system dependency installation can request sudo. It does not mean a separate game engine needs installation. The first Rust build compiles dependencies and takes longer than subsequent work; generated output stays outside version control.
+The first Rust build compiles dependencies and takes longer than subsequent work; generated output stays outside version control.
+
+The optional PixelLabs reference character has a separate download and license; see [character setup](../assets/characters/README.md). It is not required to build or test a clean clone.
 
 ## Run and iterate
 
@@ -102,8 +104,33 @@ npm run serve
 Open http://localhost:8000. Keep that terminal running; Ctrl+C stops the server. Open `/?debug=1` for read-only game state and diagnostics.
 
 - Rust rules/client changes: rerun the relevant checks and `./scripts/build-web.sh`, then reload the browser.
-- HTML/CSS/JavaScript changes in web/: reload the browser; no Rust rebuild is needed.
+- React/TypeScript/CSS changes: `npm run dev` for hot reload using the existing generated engine; no Rust rebuild. `npm run build` rebuilds production UI only.
+- Frontend checks: `npm run typecheck`, `npm run lint`, `npm run format:check`, `npm test`; write readable formatting with `npm run format`.
+- Input/domain/DOM watch loop: `npm run test:watch`; dependency-free legacy input loop: `npm run test:input:watch`.
 - Rules-only test loop: `cargo test -p arena-sim`.
 - Scripted original headless example: `cargo run -p arena-headless`.
 
-See [browser development](BROWSER.md) for controls, optional Firefox coverage, pointer-lock automation, and how measurements are collected. Ubuntu native/WASM checks and browser checks run in GitHub Actions; fresh macOS and Windows/WSL installations have not been exhaustively rehearsed on pristine machines.
+## VS Code tasks
+
+Open the repository folder in VS Code (on Windows, use **WSL: Open Folder in WSL**). The tasks in [`.vscode/tasks.json`](../.vscode/tasks.json) use the same tools and prerequisites as the commands above; they do not install Rust or the WASM tooling automatically.
+
+- **Terminal → Run Build Task** (`Ctrl+Shift+B`): complete browser build, including Rust/WASM and frontend.
+- **Tasks: Run Test Task**: frontend/input tests by default. Rules-only and dependency-free input tasks are also available.
+- **Tasks: Run Task → Check: frontend**: types, lint, formatting and tests without compiling Rust.
+- **Check: complete project**: native/frontend checks, WASM Clippy and a complete browser build, in sequence. This does not run a browser or establish rendered acceptance.
+- **Dev: frontend hot reload** / **Dev: serve production build**: start a persistent server using an existing complete build. Use **Tasks: Terminate Task** to stop servers or the test watcher.
+- Other tasks install npm dependencies, run the headless scenario, run individual checks, watch tests, or explicitly format frontend/Rust files.
+
+Run **Setup: npm dependencies** once after cloning or when the lockfile changes, then **Build: complete browser client** before starting either server. Tasks do not run automatically when opening the folder; Playwright remains an explicitly manual diagnostic command.
+
+### Debugging with F5
+
+Select a configuration from **Run and Debug** in [`.vscode/launch.json`](../.vscode/launch.json):
+
+- **Browser: frontend hot reload** starts Vite, waits for readiness, then launches Chrome with the read-only diagnostics panel enabled. Uses VS Code's built-in JavaScript debugger; install Chrome first. TypeScript/JavaScript breakpoints use Vite's development source maps.
+- **Browser: production preview** serves the existing `dist/` build and opens Chrome. It does not rebuild; run the complete browser build after Rust changes or the frontend-only build after UI changes. Production source maps are not enabled, so use hot reload for source-level UI debugging.
+- **Rust: headless scenario (CodeLLDB)** builds and debugs `arena-headless`. Install the **CodeLLDB** extension (`vadimcn.vscode-lldb`) in the workspace environment (inside WSL when applicable).
+
+Browser launches require an existing complete browser build and do not debug Rust/WASM source. The servers use strict port 8000 to avoid silently debugging a different port; stop any other server on that port before switching configurations. Stopping the browser debugger may leave its server running; use **Tasks: Terminate Task** to stop it. Launching a browser is not a recorded manual acceptance pass.
+
+See [browser development](BROWSER.md) for controls, optional Firefox coverage, pointer-lock automation, and how measurements are collected. Ubuntu native/JavaScript tests and WASM compile checks run in GitHub Actions; E2E validation is manual; fresh macOS and Windows/WSL installations have not been exhaustively rehearsed on pristine machines.

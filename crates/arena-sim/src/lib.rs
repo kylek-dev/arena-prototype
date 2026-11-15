@@ -204,3 +204,4 @@ pub mod classes;
 pub mod specs;
 pub mod stat_templates;
 pub mod formulas;
+pub mod map;

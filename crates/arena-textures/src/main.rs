@@ -1,0 +1,158 @@
+//! `cargo run -p arena-textures --release -- <source-dir> <output-dir>`
+//! `cargo run -p arena-textures --release -- --sky <output-dir>`
+//!
+//! Reads the downloaded CC0 maps named in `TEXTURES` and writes small tiling
+//! PNGs for the game, then paints the original sky cubemap. The `--sky` form
+//! needs no downloads. scripts/fetch_textures.py downloads and verifies sources.
+use std::path::{Path, PathBuf};
+
+use arena_textures::{Recipe, Rgb, prepare, sky};
+
+/// Texels per sky cube face edge.
+const SKY_FACE: u32 = 1024;
+
+struct Texture {
+    output: &'static str,
+    color: &'static str,
+    occlusion: Option<&'static str>,
+    recipe: Recipe,
+}
+
+const TEXTURES: [Texture; 6] = [
+    Texture {
+        output: "stone-floor.png",
+        color: "Stylized_Stone_Floor_010_basecolor.png",
+        occlusion: Some("Stylized_Stone_Floor_010_ambientOcclusion.png"),
+        recipe: Recipe {
+            chroma: 0.2,
+            occlusion: 0.4,
+            saturated_lift: 0.0,
+            // Clean, readable ground: keep the stones, soften the grout lines.
+            contrast: 0.7,
+            mean: 0.72,
+        },
+    },
+    Texture {
+        output: "stone-bricks.png",
+        color: "Stylized_Bricks_005_basecolor.png",
+        // Its occlusion map is nearly flat; the painted colour carries the depth.
+        occlusion: None,
+        recipe: Recipe {
+            chroma: 0.12,
+            occlusion: 0.0,
+            saturated_lift: 0.5,
+            contrast: 0.85,
+            mean: 0.62,
+        },
+    },
+    Texture {
+        output: "stone-wall.png",
+        color: "Stylized_Stone_Wall_002_basecolor.png",
+        occlusion: Some("Stylized_Stone_Wall_002_ambientOcclusion.png"),
+        recipe: Recipe {
+            chroma: 0.1,
+            occlusion: 0.5,
+            saturated_lift: 0.0,
+            // Calm the painted grime streaks; keep the carved chevron frieze.
+            contrast: 0.75,
+            mean: 0.66,
+        },
+    },
+    Texture {
+        output: "wood-planks.png",
+        color: "Stylized_Wood_Planks_002_basecolor.png",
+        occlusion: Some("Stylized_Wood_Planks_002_ambientOcclusion.png"),
+        recipe: Recipe {
+            chroma: 0.3,
+            occlusion: 0.4,
+            saturated_lift: 0.0,
+            contrast: 0.9,
+            mean: 0.6,
+        },
+    },
+    Texture {
+        output: "metal-grate.png",
+        color: "Stylized_Metal_Plates_001_basecolor.png",
+        occlusion: Some("Stylized_Metal_Plates_001_ambientOcclusion.png"),
+        recipe: Recipe {
+            chroma: 0.05,
+            occlusion: 0.5,
+            // The saturated lattice reads brighter than its frames once grey.
+            saturated_lift: 0.35,
+            contrast: 0.95,
+            mean: 0.55,
+        },
+    },
+    Texture {
+        output: "metal-panels.png",
+        color: "Stylized_Metal_Pattern_001_basecolor.png",
+        occlusion: Some("Stylized_Metal_Pattern_001_ambientOcclusion.png"),
+        recipe: Recipe {
+            chroma: 0.0,
+            occlusion: 0.5,
+            saturated_lift: 0.0,
+            contrast: 0.9,
+            mean: 0.7,
+        },
+    },
+];
+
+fn write_sky(output: &Path) -> Result<(), String> {
+    let path = output.join("sky.png");
+    image::RgbImage::from_raw(SKY_FACE, SKY_FACE * 6, sky::render(SKY_FACE))
+        .ok_or("sky buffer size mismatch")?
+        .save(&path)
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    println!("{} ({SKY_FACE}×{})", path.display(), SKY_FACE * 6);
+    Ok(())
+}
+
+fn read(path: &Path) -> Result<image::DynamicImage, String> {
+    image::open(path).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+fn main() -> Result<(), String> {
+    let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    if let [flag, output] = args.as_slice()
+        && flag.as_os_str() == "--sky"
+    {
+        std::fs::create_dir_all(output).map_err(|error| error.to_string())?;
+        return write_sky(output);
+    }
+    let [source, output] = args.as_slice() else {
+        return Err("usage: arena-textures <source-dir> <output-dir> | --sky <output-dir>".into());
+    };
+    std::fs::create_dir_all(output).map_err(|error| error.to_string())?;
+    for texture in &TEXTURES {
+        let color = read(&source.join(texture.color))?.to_rgb8();
+        let (width, height) = color.dimensions();
+        let color = Rgb {
+            width,
+            height,
+            pixels: color.pixels().map(|p| p.0).collect(),
+        };
+        let occlusion = match texture.occlusion {
+            Some(name) => {
+                let ao = read(&source.join(name))?.to_luma8();
+                if ao.dimensions() != (width, height) {
+                    return Err(format!("{name}: size differs from its colour map"));
+                }
+                Some(ao.into_raw())
+            }
+            None => None,
+        };
+        let prepared = prepare(&color, occlusion.as_deref(), texture.recipe);
+        let path = output.join(texture.output);
+        image::RgbImage::from_raw(prepared.width, prepared.height, prepared.pixels.concat())
+            .ok_or("prepared buffer size mismatch")?
+            .save(&path)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        println!(
+            "{} ({}×{})",
+            path.display(),
+            prepared.width,
+            prepared.height
+        );
+    }
+    write_sky(output)
+}

@@ -8,17 +8,31 @@ fi
 profile="${ARENA_WEB_PROFILE:-web}"
 start_seconds=$SECONDS
 cargo build --locked -p arena-client --target wasm32-unknown-unknown --profile "$profile"
-mkdir -p web/pkg
+mkdir -p web/public/pkg web/public/assets/characters
+python3 scripts/prepare_character.py
+mkdir -p web/public/assets/licenses
+cp assets/animations/LICENSE.txt web/public/assets/licenses/universal-strafes-MIT.txt
+python3 scripts/prepare_weapon.py
+# Prepared CC0 textures are tracked; regenerate them with scripts/fetch_textures.py.
+rm -rf web/public/assets/textures
+mkdir -p web/public/assets/textures
+cp assets/textures/*.png web/public/assets/textures/
+# Map files for the in-game editor; the WASM also embeds colosseum.json.
+rm -rf web/public/assets/maps
+mkdir -p web/public/assets/maps
+cp assets/maps/*.json web/public/assets/maps/
 bindgen_flags=(--remove-producers-section)
 if [[ "${ARENA_DEBUG_SYMBOLS:-0}" != 1 ]]; then
   bindgen_flags+=(--remove-name-section)
 fi
-wasm-bindgen --target web "${bindgen_flags[@]}" --out-dir web/pkg --out-name arena_client "target/wasm32-unknown-unknown/$profile/arena_client.wasm"
+wasm-bindgen --target web "${bindgen_flags[@]}" --out-dir web/public/pkg --out-name arena_client "target/wasm32-unknown-unknown/$profile/arena_client.wasm"
 python3 - <<'PY'
 import gzip
 from pathlib import Path
-p = Path('web/pkg/arena_client_bg.wasm')
+p = Path('web/public/pkg/arena_client_bg.wasm')
 print(f'WASM: {p.stat().st_size:,} bytes; gzip: {len(gzip.compress(p.read_bytes())):,} bytes')
 PY
 echo "Build and bindings: $((SECONDS-start_seconds)) seconds"
-echo 'Serve: python3 -m http.server 8000 --directory web --bind 127.0.0.1'
+npm run build
+python3 scripts/check-static-assets.py
+echo 'Serve production: npm run serve; UI development: npm run dev'

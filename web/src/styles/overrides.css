@@ -1,0 +1,19 @@
+@media (prefers-reduced-motion: reduce) {
+  .cooldown {
+    background: #0007;
+  }
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+@media (max-width: 600px) {
+  .binding-row {
+    grid-template-columns: 1fr;
+  }
+  .dialog {
+    padding: 16px;
+  }
+}

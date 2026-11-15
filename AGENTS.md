@@ -6,6 +6,8 @@ Build an original browser-first arena combat game. Arena Prototype is a placehol
 
 ## Working agreement
 
+- Develop and verify locally; ordinary edits, intermediate milestones and local commits do not require pushing or opening a pull request. Keep work local until it is complete and the user requests publication.
+- When pushing completed work, never push directly to `main`. Push to a new working branch and open a pull request targeting `main`, including for documentation and configuration changes. Treat a request to push completed work as authorization for this branch-and-PR workflow, not a direct push to `main`. Never bypass required reviews, status checks or branch protections, even if credentials allow it.
 - Carry authorized tasks through implementation and relevant verification. Do not introduce repeated confirmation steps for ordinary reversible work.
 - Keep code, game rules, docs, and operational instructions readable as text. Prefer focused patches and ordinary open source tools over editor-only workflows.
 - Use pinned dependencies and their version-specific documentation. Do not guess APIs from a different Bevy release.
@@ -19,7 +21,7 @@ Build an original browser-first arena combat game. Arena Prototype is a placehol
 
 ## Verification
 
-Run `./scripts/check.sh` for Rust changes. Add behavioral tests for game rules, exploit boundaries, replay order, and regressions. For client changes, also run the WASM Clippy check and browser checks documented in docs/BROWSER.md. Rendering changes need observed browser evidence. Use `cargo run -p arena-headless` for the scripted scenario.
+Run `./scripts/check.sh` for Rust changes. Add behavioral tests for game rules, exploit boundaries, replay order, and regressions. Use `npm test` (or `npm run test:watch`) for fast, deterministic JavaScript input unit tests. For client changes, also run the WASM Clippy check and build documented in docs/BROWSER.md. E2E and rendered browser validation are performed manually by the user; do not automatically run Playwright as a development or CI gate. Rendering changes require human browser review before merge/release; record its actual status without claiming an unobserved pass. Use `cargo run -p arena-headless` for the scripted scenario.
 
 ## Repository map
 
@@ -27,7 +29,8 @@ Run `./scripts/check.sh` for Rust changes. Add behavioral tests for game rules, 
 - crates/arena-headless: executable scenario runner
 - crates/arena-client: Bevy rendering and narrow browser bridge
 - web: HTML/CSS HUD and browser input
-- tests/browser: Playwright interaction checks
+- tests/unit: deterministic JavaScript input unit tests
+- tests/browser: optional, manually invoked Playwright diagnostics
 - docs/research: dated findings with source links
 - docs/decisions: proposals, evidence, and accepted decisions
 - docs/wiki: versioned wiki pages

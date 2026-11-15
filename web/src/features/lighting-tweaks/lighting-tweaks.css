@@ -1,0 +1,42 @@
+.movable-window.lighting-window {
+  width: min(380px, calc(100vw - 56px));
+}
+.lighting-tweaks {
+  max-height: calc(100vh - 150px);
+  overflow-y: auto;
+  padding-right: 6px;
+}
+.lighting-tweaks p {
+  margin: 0;
+  font-size: 12px;
+}
+.lighting-tweaks fieldset {
+  min-width: 0;
+  border: 1px solid var(--gray-6);
+  border-radius: 6px;
+}
+.lighting-tweaks select {
+  display: block;
+  width: 100%;
+}
+.lighting-tweaks .lighting-tweak {
+  display: grid;
+  grid-template-columns: 1fr 52px;
+  gap: 2px 8px;
+}
+.lighting-tweak span {
+  grid-column: 1 / -1;
+}
+.lighting-tweaks input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+}
+.lighting-tweak output {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.lighting-tweaks textarea {
+  width: 100%;
+  box-sizing: border-box;
+}

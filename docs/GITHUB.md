@@ -4,6 +4,14 @@ Repository: https://github.com/kylek-dev/arena-prototype (temporary name).
 
 Code, design records, research, wiki sources and issue definitions belong in the main Git repository. GitHub issue discussion, Projects and the GitHub wiki are separate data stores; a normal code clone does not back them up.
 
+## Local-only default
+
+Develop and verify locally. Ordinary edits, intermediate milestones and local commits do not require a push or pull request. Keep work local until it is complete and the user requests publication; permission to edit or commit locally is not permission to publish.
+
+When pushing completed work, always push to a new working branch and open a pull request targeting `main`, including for documentation and configuration changes. A request to push completed work authorizes this branch-and-PR workflow. Never push directly to `main` or bypass required reviews, status checks or branch protections.
+
+Publishing the wiki, changing issues/projects and manually triggering remote workflows require separate user authorization. The commands below are reference procedures, not standing authorization to run them.
+
 ## Initial publication
 
 The public repository, wiki, and Project are published. The authenticated account now has the required project access. Do not store tokens in this repo.
@@ -36,3 +44,15 @@ Initial GitHub Actions CI passed: https://github.com/kylek-dev/arena-prototype/a
 `planning/exports/project.json` records the public Project description/readme, field definitions and option names, issue URLs and statuses, and Board/table layouts. To recreate it, create a new public Project, link the repository, recreate fields/options by name, add the exported issue URLs, assign each exported status, and recreate the recorded views. GitHub IDs change on recreation: map by field/option name and issue URL, never reuse old IDs blindly. This is a documented manual recovery procedure, not an automated importer. Initial verification checked six exported issue URLs against all six Project items, all three Status options, public visibility, and Status grouping of the Board.
 
 For wiki recovery, initialize a replacement wiki and run `./scripts/sync-wiki.sh` from a clone of the main repo. This restores the maintained page content, not the entire wiki edit history. To preserve edit history as well, separately mirror the wiki remote with `git clone --mirror https://github.com/kylek-dev/arena-prototype.wiki.git` into your backup storage.
+
+## Repository security — verified 2026-11-01
+
+`main` requires a pull request, one write-access approval, approval of the latest reviewable push, dismissal of stale approvals, resolved review conversations, and up-to-date `rust`, `browser`, and `client-build` checks from the GitHub Actions app (15368). The `rust` job lints/tests rules and the headless runner; `browser` checks JavaScript syntax and input unit tests. The `client-build` gate requires successful native/WASM builds when Rust/dependency/build inputs change, or successful detection of an unrelated change with both builds intentionally skipped (ADR 0006). Manual dispatch always requests full builds. E2E review is manual (ADR 0004). The full-build workflow always reports the gate, avoiding pending required checks on unrelated PRs. Rules apply to admins; force pushes and branch deletion are blocked. Your own PR needs another collaborator's approval. CODEOWNERS requests owner attention for sensitive paths but is not an additional merge requirement.
+
+Actions has read-only default tokens and cannot approve PRs. Only GitHub-owned actions and `Swatinem/rust-cache` are allowed, with full commit SHA pinning required. All external fork contributors require workflow approval. Review their workflow and executable changes before approving a run. CI disables persisted checkout credentials and limits fast CI jobs to 10 minutes and full client-build jobs to 30 minutes. Changes to the action allowlist require an admin settings update as well as a reviewed workflow change.
+
+Secret scanning and push protection are enabled. Dependabot alerts and security updates and private vulnerability reporting are enabled. Weekly Cargo, npm and Actions update PRs are configured in `.github/dependabot.yml`; dependency updates still require review and CI. Merged branches are automatically deleted. See [SECURITY.md](../SECURITY.md) for private reporting and credential incident guidance.
+
+Verify live settings with `gh api repos/kylek-dev/arena-prototype/branches/main/protection`, `/actions/permissions`, `/actions/permissions/selected-actions`, `/actions/permissions/workflow`, `/actions/permissions/fork-pr-contributor-approval`, `/private-vulnerability-reporting`, and `/automated-security-fixes` (append each suffix to the same repository API path). `gh api repos/kylek-dev/arena-prototype/vulnerability-alerts` returns HTTP 204 when alerts are enabled. Inspect repository `security_and_analysis` for secret scanning settings. These server settings are not restored by a Git clone or by merging this documentation.
+
+Account follow-up: each collaborator should enable strong 2FA or passkeys, protect recovery codes, and periodically review personal tokens, SSH keys and authorized apps. Repository settings cannot enforce 2FA for collaborators on this personal-account repository. Keep write access limited to trusted contributors; admins can still edit protection settings. Required checks attest to the workflow in the PR, so workflow changes need careful human review.

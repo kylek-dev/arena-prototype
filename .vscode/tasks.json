@@ -1,0 +1,201 @@
+{
+  "version": "2.0.0",
+  "options": {
+    "cwd": "${workspaceFolder}"
+  },
+  "tasks": [
+    {
+      "label": "Setup: npm dependencies",
+      "type": "process",
+      "command": "npm",
+      "args": ["ci"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Build: complete browser client",
+      "detail": "Build Rust/WASM, bindings, assets and frontend. Requires the pinned wasm-bindgen CLI and WASM target.",
+      "type": "process",
+      "command": "bash",
+      "args": ["./scripts/build-web.sh"],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Build: frontend only",
+      "detail": "Reuses generated engine assets; run the complete browser build first on a fresh checkout.",
+      "type": "process",
+      "command": "npm",
+      "args": ["run", "build"],
+      "group": "build",
+      "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "Dev: frontend hot reload",
+      "detail": "Reuses the last complete browser build. Stop with Terminate Task.",
+      "type": "process",
+      "command": "npm",
+      "args": ["run", "dev", "--", "--strictPort"],
+      "options": { "env": { "FORCE_COLOR": "0" } },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite-dev",
+        "pattern": {
+          "regexp": "^(.*):(\\d+):(\\d+): (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "message": 4
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".+",
+          "endsPattern": "Local:\\s+http://127\\.0\\.0\\.1:8000/"
+        }
+      },
+      "presentation": { "panel": "dedicated" },
+      "runOptions": { "instanceLimit": 1 }
+    },
+    {
+      "label": "Dev: serve production build",
+      "detail": "Serve existing dist/ at http://127.0.0.1:8000 for manual browser review. Does not rebuild.",
+      "type": "process",
+      "command": "npm",
+      "args": ["run", "serve", "--", "--strictPort"],
+      "options": { "env": { "FORCE_COLOR": "0" } },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite-preview",
+        "pattern": {
+          "regexp": "^(.*):(\\d+):(\\d+): (.*)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "message": 4
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".+",
+          "endsPattern": "Local:\\s+http://127\\.0\\.0\\.1:8000/"
+        }
+      },
+      "presentation": { "panel": "dedicated" },
+      "runOptions": { "instanceLimit": 1 }
+    },
+    {
+      "label": "Run: headless scenario",
+      "type": "process",
+      "command": "cargo",
+      "args": ["run", "-p", "arena-headless", "--locked"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Test: frontend and input",
+      "type": "process",
+      "command": "npm",
+      "args": ["test"],
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Test: watch frontend and input",
+      "type": "process",
+      "command": "npm",
+      "args": ["run", "test:watch"],
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "panel": "dedicated" },
+      "runOptions": { "instanceLimit": 1 }
+    },
+    {
+      "label": "Test: input only (no npm install)",
+      "type": "process",
+      "command": "npm",
+      "args": ["run", "test:input"],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Test: simulation rules",
+      "type": "process",
+      "command": "cargo",
+      "args": ["test", "-p", "arena-sim", "--locked"],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Check: frontend types",
+      "type": "process",
+      "command": "npm",
+      "args": ["run", "typecheck"],
+      "problemMatcher": ["$tsc"]
+    },
+    {
+      "label": "Check: frontend lint",
+      "type": "process",
+      "command": "npm",
+      "args": ["run", "lint"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Check: frontend formatting",
+      "type": "process",
+      "command": "npm",
+      "args": ["run", "format:check"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Check: frontend",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "Check: frontend types",
+        "Check: frontend lint",
+        "Check: frontend formatting",
+        "Test: frontend and input"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Check: native and frontend",
+      "detail": "Run the repository check script: Rust formatting, Clippy, tests and frontend checks.",
+      "type": "process",
+      "command": "bash",
+      "args": ["./scripts/check.sh"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Check: WASM Clippy",
+      "type": "process",
+      "command": "cargo",
+      "args": [
+        "clippy", "-p", "arena-client", "--target", "wasm32-unknown-unknown",
+        "--locked", "--", "-D", "warnings"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Check: complete project",
+      "detail": "Native/frontend checks, WASM Clippy and complete browser build. No browser/E2E automation.",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "Check: native and frontend",
+        "Check: WASM Clippy",
+        "Build: complete browser client"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Format: frontend (writes files)",
+      "type": "process",
+      "command": "npm",
+      "args": ["run", "format"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Format: Rust (writes files)",
+      "type": "process",
+      "command": "cargo",
+      "args": ["fmt", "--all"],
+      "problemMatcher": []
+    }
+  ]
+}

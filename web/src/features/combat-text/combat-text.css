@@ -1,0 +1,20 @@
+.floating-combat-text {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.floating-combat-text span {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  font-size: 24px;
+  font-weight: 800;
+  text-shadow:
+    0 2px 3px #000,
+    1px 0 2px #000,
+    -1px 0 2px #000;
+  color: #ffe080;
+}
+.floating-combat-text .healing {
+  color: #65f58b;
+}
