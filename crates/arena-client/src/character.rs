@@ -28,6 +28,7 @@ pub const BASE_FEMALE: Profile = Profile {
         jump: (8.0 / 30.0, 25.0 / 30.0),
         cast: (14.0 / 30.0, 36.0 / 30.0),
         jump_edges: None,
+        locomotion_cycle: None,
     },
 };
 
@@ -49,11 +50,15 @@ pub const QUATERNIUS_FEMALE: Profile = Profile {
         jump: (0.0, 2.5),
         cast: (0.0, 0.5),
         jump_edges: Some(JumpEdges {
-            // Included UAL1 takeoff segment and full landing/recovery.
-            // No gameplay windup; world takeoff still happens immediately.
-            start: (0.0, 0.35),
+            // The complete UAL1 takeoff (it ends on Jump_Loop's first pose) and
+            // full landing/recovery. No gameplay windup; world takeoff still
+            // happens immediately.
+            start: (0.0, 40.0 / 30.0),
             land: (0.0, 38.0 / 30.0),
         }),
+        // Jog_Fwd_Loop and the universal lateral run: 28 frames, left foot
+        // planted from frame 1 and right from frame 15.
+        locomotion_cycle: Some(28.0 / 30.0),
     },
 };
 
@@ -292,7 +297,8 @@ mod tests {
         }
         for name in ["Strafe_Left", "Strafe_Right"] {
             let clip = clips.get(gltf.named_animations.get(name).unwrap()).unwrap();
-            assert!((clip.duration() - 0.8).abs() < 1e-5);
+            // Frame-aligned with Jog_Fwd_Loop (28 frames at 30 samples/s).
+            assert!((clip.duration() - 28.0 / 30.0).abs() < 1e-5);
         }
         for (_, image) in app.world().resource::<Assets<Image>>().iter() {
             assert!(image.width() <= 1024 && image.height() <= 1024);

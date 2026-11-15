@@ -35,6 +35,18 @@ in that library. New curves carry an MIT notice; Quaternius reference data
 retains CC0 provenance. Compatibility checks cover all ten supplied humanoid
 targets; browser animation review remains pending.
 
+[ADR 0038](decisions/0038-matched-locomotion-and-jump-transitions.md) re-authors
+those strafes as jog-cadence lateral runs (frame-aligned footfalls, speed-matched
+planted feet) with a standard-library Python script. The client strafes on
+diagonals (with boundary hysteresis), carries step phase across aligned loops, plays the complete
+takeoff and skips the planted landing recovery while moving. All of this stays
+presentation-only; browser review is pending.
+
+[ADR 0039](decisions/0039-render-warmup-behind-loading-screen.md) holds the
+loading screen until the render world settles: a camera sweep and beam draw
+behind the overlay, with readiness read from pipeline/GPU-asset state during
+extraction and a 15 s cap. The bridge snapshot gains an optional `startup` field.
+
 `arena-headless` supplies a scripted list of commands to `arena-sim`. The simulation contains a deliberately tiny one-dimensional duel: bounded movement, range, damage, cooldown, and match completion. The script prints tick-tagged events. Rules run at a proposed 30 Hz and use integer state. Commands resolve in supplied order; ties are not simultaneous. The test replays the same input twice and compares events and state.
 
 The browser spike adds `arena_sim::arena`: planar movement with integer coordinates, normalized movement limits, wall/pillar collision, range and line-of-sight checks, cooldowns and round completion. `arena-client` presents these rules in a Bevy 3D scene with character-relative movement and a React HTML/CSS HUD. Browser input is sampled before fixed updates; positions interpolate for rendering. See [ADR 0002](decisions/0002-browser-spike.md) and [ADR 0007](decisions/0007-react-combat-ui.md).

@@ -12,6 +12,7 @@ mod humanoid;
 mod lighting;
 mod nameplates;
 mod sky;
+mod startup;
 mod textures;
 mod venue;
 mod weapons;
@@ -141,6 +142,7 @@ pub fn run() {
                     ..default()
                 }),
         )
+        .add_plugins(startup::StartupPlugin)
         .add_systems(Startup, setup)
         .add_systems(
             PreUpdate,
@@ -162,6 +164,7 @@ pub fn run() {
                 character::check_loading,
                 textures::attach_arena_textures,
                 sky::attach,
+                startup::update,
                 present,
                 animation::animate,
                 character_animation::animate,
@@ -569,6 +572,7 @@ fn simulate(mut practice: ResMut<Practice>) {
 fn present(
     mut practice: ResMut<Practice>,
     mut orbit: ResMut<Orbit>,
+    startup: Res<startup::State>,
     obstacles: Query<&camera::Obstacle>,
     fixed: Res<Time<Fixed>>,
     time: Res<Time>,
@@ -594,18 +598,22 @@ fn present(
     let mut hide_player = false;
     if let Ok(mut camera) = cameras.single_mut() {
         let focus = positions[0] + Vec3::Y;
-        let direction =
-            Quat::from_rotation_y(orbit.yaw) * Vec3::new(0.0, orbit.pitch.sin(), orbit.pitch.cos());
+        // Behind the loading overlay the camera sweeps around the player so
+        // every direction is drawn (and its GPU work done) before play. The
+        // eye snaps there and back rather than easing into the first view.
+        let sweep = startup.sweep();
+        let direction = Quat::from_rotation_y(orbit.yaw + sweep.unwrap_or(0.0))
+            * Vec3::new(0.0, orbit.pitch.sin(), orbit.pitch.cos());
         let obstacles: Vec<_> = obstacles.iter().copied().collect();
         let eye = camera::resolve_eye(
             focus,
             direction,
             orbit.distance,
-            orbit.eye,
+            orbit.eye.filter(|_| sweep.is_none()),
             time.delta_secs(),
             &obstacles,
         );
-        orbit.eye = Some(eye);
+        orbit.eye = sweep.is_none().then_some(eye);
         // Never render the player's own model from inside it.
         hide_player = camera::hides_player(focus, eye);
         // Keep a valid view direction even if the focus is inside an obstacle.
@@ -635,7 +643,8 @@ fn present(
         *transform = Transform::from_translation((from + to) * 0.5)
             .looking_at(to, Vec3::Y)
             .with_scale(Vec3::new(0.065, 0.065, from.distance(to)));
-        *visibility = if practice.flash > 0.0 {
+        // Drawn once during warmup so the first Pulse does not compile it.
+        *visibility = if practice.flash > 0.0 || startup.sweep().is_some() {
             Visibility::Visible
         } else {
             Visibility::Hidden
@@ -645,6 +654,7 @@ fn present(
 }
 fn publish(
     practice: Res<Practice>,
+    startup: Res<startup::State>,
     map: Res<ActiveMap>,
     orbit: Res<Orbit>,
     character: Res<character::CharacterModel>,
@@ -740,7 +750,8 @@ fn publish(
         .collect::<Vec<_>>()
         .join(",");
     let extra = format!(
-        r#""teamSize":{},"selectedActor":{},"roster":[{}],"#,
+        r#""startup":{},"teamSize":{},"selectedActor":{},"roster":[{}],"#,
+        startup.json(),
         fighters.len() / 2,
         practice
             .selected
@@ -951,6 +962,7 @@ mod tests {
             .init_resource::<Orbit>()
             .init_resource::<Time>()
             .init_resource::<Time<Fixed>>()
+            .init_resource::<startup::State>()
             .add_systems(Update, (present, animation::animate).chain())
             .init_resource::<animation::Settings>();
         let visuals: Vec<_> = (0..6)
@@ -1130,6 +1142,7 @@ mod tests {
             })
             .init_resource::<Time>()
             .init_resource::<Time<Fixed>>()
+            .init_resource::<startup::State>()
             .add_systems(Update, present);
         let focus = app.world().resource::<Practice>().previous[0] + Vec3::Y;
         let camera = app

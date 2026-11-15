@@ -61,3 +61,6 @@ No browser was launched. **Whether the entry hitch is resolved remains pending
 human browser review**, along with reduced-texture appearance and longer jump
 phases. If a hitch remains, capture engine/browser frame timings and asset or
 shader/GPU activity rather than assuming payload size was the sole cause.
+
+Follow-up: [ADR 0039](0039-render-warmup-behind-loading-screen.md) keeps the
+loading screen up until GPU uploads and pipeline compilation settle.
