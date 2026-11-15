@@ -1,4 +1,11 @@
-export type Entity = { id: string; name: string; health: number; maxHealth: number };
+export type Entity = {
+  id: string;
+  name: string;
+  health: number;
+  maxHealth: number;
+  /** In a network match: the unit's player is not attached (it stands idle). */
+  disconnected?: boolean;
+};
 export function reconcileFocus(focus: string | null, entities: Entity[], reset = false) {
   return !reset && entities.some((e) => e.id === focus) ? focus : null;
 }

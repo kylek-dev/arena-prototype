@@ -10,21 +10,10 @@ import {
   isFinalError,
   parseStatus,
   parseTicket,
+  type LinkState,
   type MatchTicket,
-  type NetworkStatus,
 } from "../domain/network";
 import { createStore } from "../state/store";
-
-export type LinkPhase = "idle" | "connecting" | "open" | "reconnecting" | "ended";
-export type LinkState = {
-  phase: LinkPhase;
-  /** Reconnect attempts since the last open socket. */
-  attempt: number;
-  /** Why the link ended: a server error code or `expired`. */
-  ended: string | null;
-  /** The latest status Rust reported, if any. */
-  status: NetworkStatus | null;
-};
 
 type SocketLike = {
   binaryType: string;

@@ -32,9 +32,9 @@ export function Nameplates() {
           <button
             key={tag}
             type="button"
-            className={`nameplate ${friendly ? "friendly" : "enemy"}`}
+            className={`nameplate ${friendly ? "friendly" : "enemy"}${unit.disconnected ? " disconnected" : ""}`}
             style={{ left: `${x * 100}%`, top: `${y * 100}%` }}
-            aria-label={`${unit.name} health ${unit.health}/${unit.maxHealth}. Target; right-click to focus`}
+            aria-label={`${unit.name}${unit.disconnected ? " (disconnected)" : ""} health ${unit.health}/${unit.maxHealth}. Target; right-click to focus`}
             aria-pressed={unit.id === selectedId}
             onMouseDown={(e) => {
               press.current = { x: e.clientX, y: e.clientY };
@@ -57,7 +57,7 @@ export function Nameplates() {
               style={{ width: `${(unit.health / unit.maxHealth) * 100}%` }}
             />
             <span className="nameplate-name" aria-hidden="true">
-              {unit.name}
+              {unit.disconnected ? `${unit.name} · Disconnected` : unit.name}
             </span>
           </button>
         ),

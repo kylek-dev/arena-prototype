@@ -981,11 +981,19 @@ fn publish(
         .iter()
         .enumerate()
         .map(|(actor, fighter)| {
+            // Network matches say whether each player is attached.
+            let connected = practice
+                .connected
+                .as_ref()
+                .and_then(|connected| connected.get(actor))
+                .map(|connected| format!(r#","connected":{connected}"#))
+                .unwrap_or_default();
             format!(
-                r#"{{"actor":{},"tag":"{}","health":{}}}"#,
+                r#"{{"actor":{},"tag":"{}","health":{}{}}}"#,
                 actor,
                 unit_tag(actor),
-                fighter.health
+                fighter.health,
+                connected
             )
         })
         .collect::<Vec<_>>()

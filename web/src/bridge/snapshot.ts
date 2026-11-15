@@ -14,6 +14,8 @@ export type Snapshot = {
   teamSize?: 1 | 2 | 3;
   selectedActor?: number | null;
   roster?: RosterEntry[];
+  /** A network match: the roster reports which players are attached. */
+  networked?: boolean;
   nameplates?: NameplateProjection[];
   combatText?: CombatTextProjection[];
   distance: number;
@@ -138,6 +140,7 @@ export function adaptSnapshot(raw: unknown): Snapshot {
   if (!Number.isFinite(maxHealth) || !maxHealth || maxHealth < 1)
     throw new Error("Invalid maximum health");
   let roster: RosterEntry[] | undefined;
+  let networked = false;
   if (r.roster !== undefined) {
     if (
       ![1, 2, 3].includes(r.teamSize ?? 0) ||
@@ -145,6 +148,10 @@ export function adaptSnapshot(raw: unknown): Snapshot {
       r.roster.length !== (r.teamSize ?? 0) * 2
     )
       throw new Error("Invalid practice roster");
+    const connected = r.roster.map((unit) => (unit as { connected?: unknown }).connected);
+    networked = connected.some((value) => value !== undefined);
+    if (networked && !connected.every((value) => typeof value === "boolean"))
+      throw new Error("Invalid connection flags");
     roster = r.roster.map((unit, actor) => {
       const tag =
         actor === 0
@@ -176,7 +183,10 @@ export function adaptSnapshot(raw: unknown): Snapshot {
             ? "Player"
             : actor % 2 === 0
               ? `Teammate ${actor / 2}`
-              : `Enemy Bot${actor === 1 ? "" : ` ${Math.floor(actor / 2) + 1}`}`,
+              : networked
+                ? `Opponent ${Math.floor(actor / 2) + 1}`
+                : `Enemy Bot${actor === 1 ? "" : ` ${Math.floor(actor / 2) + 1}`}`,
+        ...(connected[actor] === false ? { disconnected: true } : {}),
       };
     });
     if (
@@ -195,11 +205,19 @@ export function adaptSnapshot(raw: unknown): Snapshot {
   ) {
     throw new Error("Invalid engine rule metadata");
   }
+  const opponent = roster?.[1];
   return {
     ...r,
     roster,
+    networked,
     player: { ...r.player, maxHealth, id: "practice-player", name: "Player" },
-    target: { ...r.target, maxHealth, id: "practice-opponent", name: "Enemy Bot" },
+    target: {
+      ...r.target,
+      maxHealth,
+      id: "practice-opponent",
+      name: opponent?.name ?? "Enemy Bot",
+      ...(opponent?.disconnected ? { disconnected: true } : {}),
+    },
   };
 }
 declare global {

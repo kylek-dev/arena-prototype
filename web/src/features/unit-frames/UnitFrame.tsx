@@ -8,9 +8,13 @@ export function UnitFrame({
   unit: Entity | null;
 }) {
   return (
-    <section className={`unit-frame ${role}`} aria-label={`${role} status`}>
+    <section
+      className={`unit-frame ${role}${unit?.disconnected ? " disconnected" : ""}`}
+      aria-label={`${role} status`}
+    >
       <div className="unit-heading">
         <strong>{unit?.name ?? "—"}</strong>
+        {unit?.disconnected && <span className="unit-status">Disconnected</span>}
       </div>
       <div
         className="health-track"

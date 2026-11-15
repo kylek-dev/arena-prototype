@@ -13,6 +13,7 @@ import { QuickBinding } from "../features/keybindings/QuickBinding";
 import { BindingConflict } from "../features/keybindings/BindingsEditor";
 import { LayoutToolbar } from "../features/layout-editor/LayoutSettings";
 import { CombatErrors } from "../features/combat-errors/CombatErrors";
+import { MatchStatus } from "../features/match-status/MatchStatus";
 import { Loading } from "../features/loading/Loading";
 import { Diagnostics } from "../features/diagnostics/Diagnostics";
 import { LightingTweaks } from "../features/lighting-tweaks/LightingTweaks";
@@ -69,6 +70,7 @@ export function App() {
             <ActionBars />
             <SpellDragPreview />
             <CombatErrors />
+            <MatchStatus />
             <QuickBinding />
             <LayoutToolbar />
           </>

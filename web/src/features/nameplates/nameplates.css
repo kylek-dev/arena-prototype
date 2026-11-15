@@ -47,6 +47,11 @@ button.nameplate[aria-pressed="true"] {
   pointer-events: none;
 }
 
+.nameplate.disconnected {
+  filter: grayscale(1);
+  opacity: 0.6;
+}
+
 .nameplate.friendly .nameplate-fill {
   background: var(--pal-leaf-4);
 }

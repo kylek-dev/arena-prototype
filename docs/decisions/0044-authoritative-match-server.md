@@ -3,10 +3,9 @@
 Date: 2026-11-15. **Status: mixed.** The fair tick resolution and authoritative
 facing in `arena-sim`, the `arena-protocol` message layer and the
 `arena-server` match server, the `arena-bot` load tester and the browser's
-network transport and authoritative view (Phase 5a) are **accepted and
-implemented**. The Phase 5b match UI (disconnected/reconnecting display,
-join and rejoin controls, network diagnostics) is **accepted as the plan**
-and not yet implemented. No browser has run a network match yet. The scaling topology is **proposed**: it stays open
+network transport, authoritative view (Phase 5a) and match UI (Phase 5b)
+are **accepted and implemented**. No browser has run a network match yet:
+human browser review is pending ([UI review](../UI-REVIEW.md)). The scaling topology is **proposed**: it stays open
 until load measurements from the bot exist.
 
 Builds on [ADR 0001](0001-stack.md) (Axum/Tokio, WebSockets, one regional
@@ -129,8 +128,12 @@ Browser behavior (Phase 5a implemented unless marked 5b):
   ticket, end the link and delete both stored copies. Other errors (such as
   `ServerShutdown`) keep retrying.
 - (5b) A disconnected fighter is shown greyed out, with "Disconnected" on its
-  unit frame and nameplate, until `connected` returns; the local player sees
-  "Reconnecting…" while the link retries.
+  unit frame and nameplate, until `connected` returns. A match banner shows
+  connecting, waiting for players, "Connection lost · reconnecting…", why a
+  match ended (with Dismiss), and "Rejoin match" when the browser remembers
+  an open match. The menu offers Leave match during a match (hiding the
+  practice-only mode and reset controls) and Rejoin last match afterwards.
+  Network opponents are named "Opponent N" rather than "Enemy Bot".
 - The ticket is a bearer credential for one seat in one match only and
   expires (two hours by default). It is never logged or sent in a query
   string. Development join links (`scripts/dev-match.sh`) carry it in the
@@ -169,6 +172,10 @@ snapshots and errors with `arena-protocol`.
   ignores local reset and practice-size changes and defers map-editor
   edits. A different map digest is reported. When the runtime ends the
   match, a fresh local practice round starts.
+- Snapshot roster entries carry `connected` during a match. The
+  diagnostics overlay (`?debug=1`) shows the link phase and attempts, the
+  match phase and error, ping, input-to-acknowledgement time, view delay,
+  snapshots, underruns and hash mismatches.
 
 ### Bots and load testing (implemented)
 

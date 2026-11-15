@@ -25,6 +25,65 @@ export type NetworkStatus = {
   hashMismatches: number;
 };
 
+export type LinkPhase = "idle" | "connecting" | "open" | "reconnecting" | "ended";
+export type LinkState = {
+  phase: LinkPhase;
+  /** Reconnect attempts since the last open socket. */
+  attempt: number;
+  /** Why the link ended: a server error code or `expired`. */
+  ended: string | null;
+  /** The latest status Rust reported, if any. */
+  status: NetworkStatus | null;
+};
+
+/** What the match banner says and offers. `null` when nothing needs saying. */
+export type MatchMessage = {
+  text: string;
+  tone: "info" | "warning";
+  action: "rejoin" | "dismiss" | null;
+};
+const ENDED: Record<string, string> = {
+  MatchOver: "The match is over.",
+  BadTicket: "This match link is not valid.",
+  VersionMismatch: "This game version cannot join that server.",
+  MatchFull: "That seat is taken.",
+  expired: "The match link has expired.",
+};
+export function matchMessage(state: LinkState, rememberedMatch: boolean): MatchMessage | null {
+  switch (state.phase) {
+    case "idle":
+      return rememberedMatch
+        ? { text: "A match you joined is still open.", tone: "info", action: "rejoin" }
+        : null;
+    case "connecting":
+      return { text: "Connecting to the match…", tone: "info", action: null };
+    case "reconnecting":
+      return {
+        text: `Connection lost · reconnecting${state.attempt > 1 ? ` (attempt ${state.attempt})` : ""}…`,
+        tone: "warning",
+        action: null,
+      };
+    case "ended":
+      return {
+        text: ENDED[state.ended ?? ""] ?? "You left the match.",
+        tone: "info",
+        action: "dismiss",
+      };
+    case "open":
+      if (!state.status || state.status.phase === "connecting")
+        return { text: "Joining the match…", tone: "info", action: null };
+      if (state.status.phase === "waiting")
+        return { text: "Waiting for every player to join…", tone: "info", action: null };
+      if (state.status.mapDiffers)
+        return {
+          text: "This build's map differs from the server's.",
+          tone: "warning",
+          action: null,
+        };
+      return null;
+  }
+}
+
 /** Errors after which retrying cannot help: the seat is gone for good. */
 const FINAL_ERRORS = new Set(["MatchOver", "BadTicket", "VersionMismatch", "MatchFull"]);
 export function isFinalError(error: string | null) {
