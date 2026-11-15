@@ -5,10 +5,14 @@ export function Loading() {
   const state = useStore(engine, (s) => s);
   const failure = useStore(error, (s) => s);
   const characterStatus = state?.character.status;
+  const startup = state?.startup;
+  // The client keeps rendering behind this overlay until its GPU warmup
+  // settles, so play does not begin with shader-compile and upload hitches.
   const ready =
     state &&
-    state.frames > 10 &&
-    ["ready", "failed", "placeholder"].includes(characterStatus ?? "");
+    (startup
+      ? startup.ready
+      : state.frames > 10 && ["ready", "failed", "placeholder"].includes(characterStatus ?? ""));
 
   if (ready && !failure) {
     return characterStatus === "failed" ? (
@@ -28,7 +32,11 @@ export function Loading() {
         </h1>
         <p id="loading-message" role={failure ? "alert" : "status"}>
           {failure ||
-            (state ? "Loading character and textures…" : "Loading the Rust / WebAssembly client…")}
+            (!state
+              ? "Loading the Rust / WebAssembly client…"
+              : startup && startup.phase !== "assets"
+                ? "Preparing the arena…"
+                : "Loading character and textures…")}
         </p>
         {!failure && <div className="loading-line" />}
         {failure && <button onClick={() => location.reload()}>Reload arena</button>}

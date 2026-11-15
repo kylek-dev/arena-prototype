@@ -2,7 +2,7 @@
 
 **Human UI review: verified and approved by the user on 2026-11-08 for all implemented UI changes, including earlier pending revisions and nameplates.** See [review record](UI-REVIEW.md). Earlier pending-review statements below are historical and superseded by that confirmation; the manual scenarios remain a regression checklist. Browser/device details, individual console results and performance measurements were not supplied.
 
-This is a local solo practice scene. Start the original Rust headless example with `cargo run -p arena-headless`, or build the browser client below. The player uses the rigged BaseMale model when `assets/BaseMale.glb` is installed; otherwise it uses a procedural fallback without optional downloads or credentials. See [asset provenance](../assets/README.md) before redistributing binary art. Rebuild the complete client after changing a source GLB.
+This is a local solo practice scene. Start the original Rust headless example with `cargo run -p arena-headless`, or build the browser client below. The player defaults to the animated Quaternius female human when its curated sources are installed; otherwise it uses a procedural fallback without credentials. See [character setup](#quaternius-default-female-2026-11-14) and [asset provenance](../assets/README.md) before redistributing binary art. Rebuild the complete client after changing character sources.
 
 ## Build and play
 
@@ -27,12 +27,13 @@ After one complete build, `npm run dev` provides frontend hot reload using the e
 Controls:
 
 - **WASD:** move relative to character facing. W/S move forward/backward; A/D strafe left/right. Movement never turns the character.
+- **NumLock (or `):** toggle autorun forward (remappable in Settings → Bindings → movement). Strafing and jumping keep it running; pressing forward/back, walking with both mouse buttons, or the autorun key again stops it, as do menus, focus loss and reset. Single-button clicks and drags (look, turn, target, focus) keep it running. Existing custom NumLock/` bindings are preserved.
 - **Space:** jump, carrying takeoff momentum until landing (remappable in Settings → Bindings → movement). No air steering, double-jump, or automatic repeat while held. Walls/pillars still block movement; jumping does not avoid attacks or bypass cover. Existing custom Space bindings are preserved.
 - **Left-drag:** orbit the camera only. Character facing and movement direction remain independent of the camera, including after release or stopping and restarting movement.
 - **Right-drag:** orbit the camera and turn the character to face that direction.
 - **Ordinary right-click on a character model:** focus that character without changing target. Empty space leaves focus unchanged. Both model buttons use nearest rendered-character picking and respect pillars; nameplate buttons remain usable through pillars. Rebuild WASM and frontend together. Human rendered review of model right-click focus is pending.
 - **Left + right held:** walk forward while steering and turning with the camera.
-- **Wheel:** zoom. **Tab or ordinary left-click:** select. **Escape:** game menu. **Shift+Escape:** clear target.
+- **Wheel:** zoom from 22 m down to 1.5 m, then one more step snaps into first person at eye level (your character is hidden; zoom out to return). The orbit pivot rises from chest to eye height inside 6 m. Dragging can raise the camera to just short of directly overhead (and as far below), so it can pass up and over the character. Rebuild the complete client for these camera changes. **Tab or ordinary left-click:** select. **Escape:** game menu. **Shift+Escape:** clear target.
 - **1 / Pulse:** attack. **R / Reset:** restart.
 - **F:** set focus from selected target. **O:** settings. **P:** spellbook. Bind clear/target focus and other interface commands in Settings.
 - **V:** toggle enemy nameplates. **Shift+V:** toggle friendly nameplates. Both are remappable in Settings → Bindings. Existing custom uses of these keys are preserved.
@@ -43,7 +44,7 @@ World nameplates are compact health-only bars floating above other characters (r
 
 Successful outgoing damage now floats above the recipient in gold, rising/fading over 1.2 seconds. Healing text supports green `+amount` numbers, but there is no healing ability yet. Other people's contributions and all numbers above your own character are excluded. Text is independent of target selection and nameplate visibility, passes pointer input through, and clears on reset. V/Shift+V and Settings nameplate changes show yellow **Enemy/Friendly nameplates enabled/disabled** notices for 2.5 seconds in the same top-center area as red cast errors. Rebuild the complete client; human rendered review of these additions is pending. See [ADR 0024](decisions/0024-outgoing-combat-text.md) for the manual checklist and verification.
 
-The camera automatically pulls in before hitting the floor, arena rims or pillars
+The camera automatically pulls in before hitting the floor, pit walls, stands, room walls or pillars, and your own character is hidden while the camera is inside it
 (including their bases/caps). Continue orbiting to move along/around obstructions;
 when the view clears, it smoothly returns to your chosen wheel zoom. Collision may
 bring it closer than the normal wheel minimum without changing that preference.
@@ -69,7 +70,7 @@ Spellbook contains only Pulse as an action-slot-sized draggable icon; tooltips s
 Quick bind edits a hovered/focused slot's primary key, offers Unbind, and exits with Escape/Done. Settings edits both entries with explicit Replace/Cancel for conflicts. Target/focus hide when absent. Layout editing always shows labelled sample frames, including hidden/absent units. Click a frame/bar to select it and drag its whole body (or use arrows): no frame dropdown, X/Y sliders or frame drag bars. Move the editor window by its title; adjust selected visibility/scale/lock and reset selected/all; Done/Escape exits. Assignment/position locks are independent. Limits remain four bars, twelve slots each, eight local profiles. Import adds unique profiles without overwriting another; invalid/future storage is preserved until explicit recovery. Export when saving fails. Minimum desktop viewport: 800×600; oversized content fits the viewport. Styling uses Radix Themes ([ADR 0008](decisions/0008-gameplay-first-ui.md)).
 
 
-The opponent is stationary and does not attack. Its health reaching zero ends the round. The playable arena is 36×28 metres, with four 3×3 metre square pillars (4 metres tall) centered at (±7, ±5) metres, leaving open central lanes. Walls and pillars block movement. Pillars also block Pulse's line of sight. Human rendered review of the enlarged arena is pending. All unit frames show only the unit name, green health bar and blue resource bar, with current/maximum values centered inside the taller bars. Resource values remain placeholders (identified in the tooltip and accessible text): resource costs and regeneration are not implemented. Role, selection/focus labels and frame descriptions are not displayed. Default/reset placement puts player and target side by side at the upper left, focus toward the center-right, and opponents at the right; existing saved positions are preserved. Use Layout → Reset all positions to adopt the new defaults in an existing profile.
+The opponent is stationary and does not attack. Its health reaching zero ends the round. The playable arena is 108×84 metres, sunk in a pit beneath empty tiered stands with wooden benches, inside an enclosing textured colosseum hung with painted heraldic banners and rooftop pennants, under a high-resolution painted sky. Four 9×9 metre square pillars centered at (±21, ±15) metres rise 48 metres, leaving open central lanes. Base movement is 7.2 m/s. Each team spawns facing the other inside its own starting room behind a gateway at either end of the pit, so an opening approach takes about 12 seconds (see [ADR 0032](decisions/0032-starting-rooms-camera-and-weapon-fit.md)). Walls and pillars block movement. Pillars also block Pulse's line of sight. Human rendered review of the venue and enlarged arena is pending; see [ADR 0031](decisions/0031-colosseum-venue-and-larger-arena.md). All unit frames show only the unit name, green health bar and blue resource bar, with current/maximum values centered inside the taller bars. Resource values remain placeholders (identified in the tooltip and accessible text): resource costs and regeneration are not implemented. Role, selection/focus labels and frame descriptions are not displayed. Default/reset placement puts player and target side by side at the upper left, focus toward the center-right, and opponents at the right; existing saved positions are preserved. Use Layout → Reset all positions to adopt the new defaults in an existing profile.
 
 The practice-round box is removed; reset remains available through R and the game menu. A dedicated top-center area shows bold red errors only when an attempted spell cast fails (including missing target, range, line of sight, recharge or an authoritative rejection). Passive availability changes do not show errors. Messages expire after 2.5 seconds; repeated failed attempts restart that interval, while a valid cast attempt or reset clears them immediately. Empty slots and suspended gameplay/editing do not count as cast attempts. Startup failures and recovery remain in the loading panel, not the combat-error area. Human rendered review of these HUD changes is pending; automated DOM tests, frontend lint/format checks, WASM Clippy and the complete web build passed locally on 2026-11-07. No rendered/browser pass is claimed.
 
@@ -82,6 +83,45 @@ Open **Settings → Graphics** (O, or Escape → Settings). **4× MSAA** and **H
 **Weapon glow (bloom)** is on by default and adds thresholded soft halos around bright energy. Toggle it off to reduce post-processing cost; HDR/Reinhard tone mapping and explicit exposure stay active. Existing saved graphics settings acquire the on default without being overwritten simply by loading. After user review found the initial HDR revision too dark, lighting is restored to brighter ambient/key levels with explicit EV100 8.0 exposure and gentler tone mapping. The lit staff crystal now emits above the bloom threshold in every palette. Independent camera-facing soft halos at the crystal/shaft channels and twelve animated orbiting sparks remain visible even with bloom off; the toggle controls post-processing, not those local effects. Source geometry, facets and GLBs are preserved. This approximates the intended glow, not Blender's exact studio render or diffraction streaks. Review Off/On, all colors, arena readability, both MSAA settings, halo depth/occlusion, switching during loading, console errors and intended GPU performance manually. **Human rendered review of this correction is pending.** See [ADR 0019](decisions/0019-weapon-lighting-and-visibility.md).
 
 After rebuilding the complete client, manually compare Off/4× and Low/High while orbiting/zooming, check targeting/world hover, reload persistence, optional-model/fallback behavior, and browser console errors on the intended GPU/browser. **Human rendered/browser review is pending**; automated tests/builds do not establish appearance or performance.
+
+## Map editor
+
+Open **Escape → Map editor**. The movable window shows the arena from above
+(north up), with the stands and building around the floor. Its parts:
+
+- **Files:** **Open map** switches between the maps in `assets/maps`;
+  **New map…** starts a blank arena (name, file id, ground). The map opened
+  or saved last is the one the arena starts with on this device.
+- **Plan:** drag pillars, rooms, spawns and props. Selected pillars get a corner size
+  handle and selected rooms a back-wall depth handle. Moves snap to 0.5 m,
+  or 0.1 m while holding Alt.
+- **Inspector:** typed values for the selection. With nothing selected it
+  shows the map name, ground (stone, sand, snow or grass), floor size and venue settings (pit wall, tiers,
+  concourse, outer wall, pillar height). Values apply on Enter or when the
+  field loses focus; Escape reverts a field.
+- **Props:** pick a model and **Add prop**, then drag it; the inspector sets
+  model, position, height, turn and scale. Props are decoration only:
+  fighters, spells and the camera pass through them.
+- **Keys:** arrows nudge 0.5 m (Shift: 2 m); Delete removes; Ctrl+D duplicates
+  a pillar or prop; R / Shift+R turns a prop 15°; Ctrl+Z and Ctrl+Shift+Z (or Ctrl+Y) undo and redo; Escape clears
+  the selection, then closes.
+
+Each committed edit goes live in the arena. The round continues unless a unit
+would end up inside a wall, in which case it restarts at the new spawns. The
+game validates every edit and lists the problems (room ceilings, hiding
+corners, blocked openings, unreachable spawns and so on). An invalid map is
+never applied; the last valid one stays in play.
+
+**Save as <id>.json** appears under `npm run dev` and `npm run serve`. It
+writes `assets/maps/<id>.json` in the repository and only accepts
+requests from the local machine, and only after the game has accepted the
+map. Reload the page to start from the saved file; rebuild to embed it in the
+WASM. Static hosting has no save endpoint, so use **Download** and **Import…**
+there. Closing the window keeps your edits for the session, and the browser
+warns before leaving with unsaved changes. See
+[ADR 0037](decisions/0037-map-files-and-browser-map-editor.md) and
+[ADR 0041](decisions/0041-map-props-grounds-and-new-maps.md). Human browser
+review is pending.
 
 ## Temporary live lighting tweaks
 
@@ -172,7 +212,119 @@ For an incremental build timing, change a small client detail and rerun the buil
 
 The mouse adapter tracks `mousedown`/`mouseup` because `pointerdown` fires only on the first button press in a chord ([MDN](https://developer.mozilla.org/en-US/docs/Web/API/Element/mousedown_event)). Cursor capture uses the [Pointer Lock API](https://developer.mozilla.org/en-US/docs/Web/API/Pointer_Lock_API); zero-button recentering events are ignored instead of being treated as drags.
 
+## Stylized surface textures (2026-11-14)
+
+The arena floor and stand tiers use hand-painted CC0 flagstones; the pillars, pit wall and trim use painted stone bricks; the outer wall, benches and doors, portcullis gates and gold trim use further CC0 stone, wood and metal sets, all tinted in code (see [ADR 0031](decisions/0031-colosseum-venue-and-larger-arena.md)). Procedural characters get original painted shading generated in code: warm tops with cool undersides, cloth hems, leather boots and belt, and hair strands. Rebuild with `./scripts/build-web.sh`; it copies `assets/textures/*.png` into the build. Surfaces show their flat colours until each texture loads, and keep them if loading fails. The former floor grid seams are removed.
+
+**Human rendered review is pending.** Check floor readability and distance shimmer, brick scale and seams, the load-time switch, character/nameplate/spell contrast against the ground, the painted character shading in motion, Low/High, MSAA on/off and console errors. To change or add textures, see [free texture sources](research/free-texture-sources.md) and [ADR 0030](decisions/0030-stylized-surface-textures.md).
+
+## Pulse lightning (2026-11-15)
+
+A successful Pulse now throws five thin, forking blue lightning strands from the caster's raised left hand (the `middle_01_l` knuckles of a Quaternius kit, or the procedural model's left hand) to the target's chest, replacing the single gold bar from the stomach. The strands bow apart so they read separately, sprout short branches, grow to the target over 0.05 s, re-fork 26 times a second and fade out over 0.42 s, with soft flares at the hand and the impact. It is one additive, unlit mesh rebuilt in world space each frame after transform propagation, so it tracks the animated hand. Its HDR colour feeds the existing bloom. Presentation only: the rules still resolve the hit instantly, and the client never reports anything back.
+
+**Human rendered review is pending.** Check that the strands leave the hand during the cast at every orbit angle and when running, that they hit the target and do not pass through it, how readable they are against the floor and sky, Bloom off/on, MSAA off/on, any first-cast hitch after loading, close/inside-player camera views, kit swaps and the procedural fallback, and console errors. Automated tests cover geometry, timing, hand selection and visibility, not appearance.
+
 ## Character asset
+
+### Character customization (2026-11-14)
+
+After loading, a start screen shows your saved character with **Enter the
+arena** and **Customize character**; customizing is optional. The customizer
+(also Menu → **Customize character** during play) has Body / Head / Outfit
+tabs: body type, ancestry (elf/orc only when the races pack is installed
+locally), skin tone, underwear/complexion, build (races), hairstyle, hair
+colour, eyebrows, facial hair, horns, eyes, each outfit slot with Ranger and
+Peasant colours, plus Randomize and Reset. Drag the character to turn it;
+scroll or use Full body / Face to zoom. Choices save on the device at once.
+Before the match, **Save** returns to the start screen and **Enter the arena**
+starts a fresh round; during play, Done or Escape returns. The combat HUD is
+hidden meanwhile and movement is ignored. Rebuild with `scripts/build-web.sh`
+after changing Quaternius sources. See
+[ADR 0040](decisions/0040-character-customization-kits.md).
+
+Manual check (pending human review): every option visibly changes the model;
+no skin gaps or clipping at hems for mixed outfit pieces; cross-body
+hairstyles sit on the head; switching body type/ancestry swaps without a flash
+of every part; face view framing in the starting room; HUD returns on close; start screen
+appears after loading and both of its paths start a fresh round.
+
+### Quaternius default female (2026-11-14)
+
+This supersedes the historical default-off/BaseFemale notes below. A complete
+`./scripts/build-web.sh` now uses the CC0 Quaternius female full-body human base
+and selected UAL1 Standard clips from `assets/quaternius` by default, generating
+`characters/quaternius-female.glb` with embedded textures. The female now has
+bun hair, source eyes/brows and Ranger armor (torso/belts, arms/bracers,
+pauldrons, leggings and boots), without the hood. Covered base-body triangles
+are excluded to prevent outfit clipping. Other practice units remain procedural.
+
+Idle, forward jogging, airborne posing and successful Pulse spell presentation
+use the source library. The actual included **`Jump_Start` → `Jump_Loop` →
+`Jump_Land`** clips provide takeoff, flight and recovery, without delaying the
+rule-owned jump or locking movement/casting during landing.
+The complete takeoff now plays over the first 70% of flight and hands over on
+the airborne loop's first pose. A standing landing plays the 0.80 second
+recovery. Landing while moving, or starting to move during recovery, goes
+straight into the gait ([ADR 0038](decisions/0038-matched-locomotion-and-jump-transitions.md)).
+**Left/right use the shared universal lateral run clips**, re-authored
+2026-11-14 to the jog's cadence and footfall frames so planted feet keep up
+with 7.2 m/s. Diagonals (W/S with A/D) always play the strafe, and
+switching keeps the step phase. **Backward still reverses the jog cycle**;
+the downloaded free Standard libraries lack a dedicated backward jog. Jump height and all
+movement/combat rules remain simulation-owned.
+
+The [110 KB shared strafe library](../assets/animations/README.md) contains no
+character, outfit or race meshes/textures. Both directions passed numerical
+retargeting checks on all ten supplied humanoid base/race/outfit rigs. Numeric
+and stick-figure checks are not a browser pass. Review A/D at full speed,
+diagonals, rapid forward↔strafe switching, stopping, steering, standing/running
+jumps and landing into a run in the actual game.
+
+Dark foot discs and the gold world target ring are removed. Selection feedback
+remains in HUD frames/nameplates.
+
+**Entry-hitch mitigation:** character preparation now caps color images at
+1024px and normal/detail maps at 512px, shares duplicate textures and drops
+unused assets. The dressed GLB fell from 57.7 MB to 9.2 MB. This is measured
+payload reduction, not a verified browser frame-time improvement; review a
+fresh entry, texture quality and console errors on the intended device.
+The loading screen now stays up while the scene renders behind it. The camera
+sweeps around the player and the Pulse lightning is drawn once, until GPU uploads
+and shader compilation settle; warmup gives up after 15 s
+([ADR 0039](decisions/0039-render-warmup-behind-loading-screen.md)).
+**The player is temporarily unequipped:** no weapon/effect models are requested
+or spawned. Existing weapon settings are retained but cannot equip anything
+until the engine-side flag is re-enabled. See [ADR 0035](decisions/0035-character-startup-budget.md).
+
+`ARENA_RIGGED_CHARACTER=0 ./scripts/build-web.sh` forces procedural presentation.
+Missing Quaternius sources also use the procedural fallback; installed malformed
+sources fail preparation. Only an explicit `ARENA_RIGGED_CHARACTER=1` permits
+the historical BaseFemale/BaseMale fallback sources if Quaternius is absent.
+Their publication licensing remains unconfirmed. The normal build does not
+silently ship them.
+
+**Human browser review is pending:** check source-base appearance, deformation,
+scale/facing/feet, all WASD directions and transitions, jump/landing, Pulse
+success/rejection, both weapons' clearance, reset/tab resume and load failure.
+Check hair/face visibility, neck/hand skin seams, armor clipping, repeated jumps
+and movement/casts during landing recovery.
+The real-loader headless test and static HTTP checks are not a rendered pass.
+See [inventory and license distinctions](../assets/quaternius/README.md) and
+[ADR 0033](decisions/0033-quaternius-default-female.md).
+
+### Rounded procedural model and strafe refinement (2026-11-08)
+
+The procedural fallback and practice units now use an oval torso, rounded tapered limbs, overlapping shoulder/elbow/knee/wrist/ankle shapes and rounded hands with thumbs. Chest/head movement, relaxed shoulders and variable elbow flexion add expression to breathing and locomotion. Strafing uses alternating outward steps that close back to each leg's resting lane, rather than swinging across the other leg. This remains a procedural gait, not foot-planting IK; some ground sliding is possible. The optional BaseMale model/clips are unchanged.
+
+Rebuild with `./scripts/build-web.sh` and reload; a frontend-only build cannot install these changes. **Human rendered review is pending for this refinement**, independently of earlier approvals. Check close front/side/rear silhouettes and joint seams, hands, Low/High detail, A/D and all diagonals/reversals, W/S, stopping against pillars, idle transitions, standing/moving jumps and landing/reset/tab resume. Check both back weapons for clearance, picking/hover and optional-model success/fallback. See [ADR 0028](decisions/0028-rounded-procedural-motion.md).
+
+### BaseFemale player (2026-11-14)
+
+**Rigged players are currently disabled.** By default the build ignores installed character sources and the player uses the procedural model. Run `ARENA_RIGGED_CHARACTER=1 ./scripts/build-web.sh` to use the behavior described in this section and the next. The procedural body was also slimmed on 2026-11-14 (narrower torso, hips and limbs; same height and weapon mounts). Human rendered review is pending; see the [ADR 0028 update](decisions/0028-rounded-procedural-motion.md#update--2026-11-14-slimmer-build).
+
+When enabled, the build prefers **`assets/BaseFemale.glb`** for the player and falls back to `assets/BaseMale.glb`, then to the procedural character. Only the chosen model is generated, as `web/public/assets/characters/base-female.glb` or `base-male.glb`, and `character.json` names it (`{"available": true, "model": "base-female"}`). Rebuild with `./scripts/build-web.sh` and reload; a frontend-only build cannot install the change. The opponent stays procedural, and there is no in-game body selector. BaseFemale is normalized to the shared 1.9 m height and uses her own Jump/Cast timing; the locomotion, jump, Pulse and fallback behavior described below applies to her as well.
+
+**Human rendered/browser review is pending.** Check her scale, facing and feet, back weapon clearance against hair/ponytail/shoulders for both weapons, all movement directions, jumps and landing, Pulse success/rejection, reset/tab resume, loading/failure fallback and console errors. See [ADR 0029](decisions/0029-base-female-player-character.md).
 
 ### BaseMale player and animations
 

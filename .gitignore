@@ -17,3 +17,61 @@
 
 # Pixabay stock model: local use only; do not redistribute the raw download.
 /assets/characters/pixellabs-undead-3417.glb
+
+# Raw third-party texture downloads; prepared outputs in assets/textures are tracked.
+/assets/textures/source/
+
+# Quaternius packs: track only the CC0 sources scripts/quaternius_character.py
+# reads, plus provenance and licenses. Other downloaded files stay local until
+# the game uses them; add an exception here when integrating a new source.
+/assets/quaternius/**
+!/assets/quaternius/**/
+!/assets/quaternius/README.md
+!/assets/quaternius/base/License_Standard.txt
+!/assets/quaternius/animation v1/License.txt
+!/assets/quaternius/outfits/License_Standard.txt
+!/assets/quaternius/animation v1/Unreal-Godot/UAL1_Standard.glb
+!/assets/quaternius/base/Base Characters/Godot - UE/Superhero_Female_FullBody.gltf
+!/assets/quaternius/base/Base Characters/Godot - UE/Superhero_Female_FullBody.bin
+!/assets/quaternius/base/Base Characters/Godot - UE/T_Hair_2_Normal.png
+!/assets/quaternius/base/Base Characters/Godot - UE/T_Hair_2_BaseColor.png
+!/assets/quaternius/base/Base Characters/Godot - UE/T_Eye_Normal.png
+!/assets/quaternius/base/Base Characters/Godot - UE/T_Eye_Brown.png
+!/assets/quaternius/base/Base Characters/Godot - UE/T_Superhero_Female_Normal.png
+!/assets/quaternius/base/Base Characters/Godot - UE/T_Superhero_Female_Dark_BaseColor.png
+!/assets/quaternius/base/Base Characters/Godot - UE/T_Superhero_Female_Roughness.png
+!/assets/quaternius/base/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/Hair_Buns.gltf
+!/assets/quaternius/base/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/Hair_Buns.bin
+!/assets/quaternius/base/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/T_Hair_2_Normal.png
+!/assets/quaternius/base/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/T_Hair_2_BaseColor.png
+!/assets/quaternius/outfits/Exports/glTF (Godot-Unreal)/Outfits/Female_Ranger.gltf
+!/assets/quaternius/outfits/Exports/glTF (Godot-Unreal)/Outfits/Female_Ranger.bin
+!/assets/quaternius/outfits/Exports/glTF (Godot-Unreal)/Outfits/T_Ranger_*.png
+!/assets/quaternius/outfits/Exports/glTF (Godot-Unreal)/Outfits/T_Regular_Female_Normal.png
+!/assets/quaternius/outfits/Exports/glTF (Godot-Unreal)/Outfits/T_Regular_Female_Dark_BaseColor.png
+!/assets/quaternius/outfits/Exports/glTF (Godot-Unreal)/Outfits/T_Regular_Female_Roughness.png
+# Customizable kits (scripts/character_kits.py, ADR 0040): male base, every
+# rigged hairstyle/brow/beard, peasant and male outfits and texture variants.
+!/assets/quaternius/base/Base Characters/Godot - UE/Superhero_Male_FullBody.gltf
+!/assets/quaternius/base/Base Characters/Godot - UE/Superhero_Male_FullBody.bin
+!/assets/quaternius/base/Base Characters/Godot - UE/T_Hair_1_*.png
+!/assets/quaternius/base/Base Characters/Godot - UE/T_Superhero_Male_*.png
+!/assets/quaternius/base/Base Characters/Textures/T_Superhero_Female_Light_BaseColor.png
+!/assets/quaternius/base/Base Characters/Textures/T_Superhero_Male_Ligh.png
+!/assets/quaternius/base/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/*.gltf
+!/assets/quaternius/base/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/*.bin
+!/assets/quaternius/base/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/T_Hair_1_*.png
+!/assets/quaternius/outfits/Exports/glTF (Godot-Unreal)/Outfits/*.gltf
+!/assets/quaternius/outfits/Exports/glTF (Godot-Unreal)/Outfits/*.bin
+!/assets/quaternius/outfits/Exports/glTF (Godot-Unreal)/Outfits/T_Peasant_*.png
+!/assets/quaternius/outfits/Exports/glTF (Godot-Unreal)/Outfits/T_Regular_Male_*.png
+!/assets/quaternius/outfits/Textures/Peasant/T_Peasant_2_BaseColor.png
+!/assets/quaternius/outfits/Textures/Ranger/T_Ranger_3_BaseColor.png
+# Map props (scripts/prepare_props.py): every glTF prop of the CC0 Fantasy
+# Props MegaKit with its BIN and shared trim-sheet textures.
+!/assets/quaternius/props/License_Standard.txt
+!/assets/quaternius/props/Exports/glTF/*.gltf
+!/assets/quaternius/props/Exports/glTF/*.bin
+!/assets/quaternius/props/Exports/glTF/*.png
+# QAL permits game use, not standalone redistribution of the raw race pack.
+/assets/quaternius/races/
