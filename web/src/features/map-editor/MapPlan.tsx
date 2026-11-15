@@ -1,12 +1,20 @@
-import { useRef, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useLayoutEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type RefObject,
+} from "react";
 import {
   deepenRoom,
   edgePoint,
   movePillar,
+  moveProp,
   moveRoom,
   moveSpawn,
   pillarRect,
   planBounds,
+  propFootprint,
   resizePillar,
   roomRect,
   SNAP,
@@ -17,10 +25,12 @@ import {
   type Rect,
   type Selection,
 } from "../../domain/map";
-import { commitMap, mapPreview, mapSelection } from "../../state/map-editor";
+import { commitMap, mapPreview, mapSelection, propCatalog } from "../../state/map-editor";
+import { useStore } from "../../state/store";
 
 type Grab =
   | { kind: "pillar"; index: number; mode: "move" | "resize" }
+  | { kind: "prop"; index: number }
   | { kind: "room"; index: number; mode: "move" | "depth" }
   | { kind: "spawn"; room: number; index: number };
 
@@ -29,6 +39,30 @@ const BODY = 0.45;
 const GRID = 6;
 /** Pointer travel (px) before a press becomes a drag. */
 const DRAG_SLOP = 3;
+/** On-screen radius (px) of every prop's click target and of its marker dot. */
+const PROP_HIT_PX = 9;
+const PROP_DOT_PX = 2.5;
+
+/** Screen pixels per plan metre, tracking the SVG's size. */
+function usePixelsPerMetre(svg: RefObject<SVGSVGElement | null>, box: Rect) {
+  const [scale, setScale] = useState(4);
+  const width = box.maxX - box.minX;
+  const height = box.maxZ - box.minZ;
+  useLayoutEffect(() => {
+    const element = svg.current;
+    if (!element) return;
+    const measure = () => {
+      const r = element.getBoundingClientRect();
+      const next = Math.min(r.width / width, r.height / height);
+      if (next > 0 && Number.isFinite(next)) setScale(next);
+    };
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(element);
+    return () => observer?.disconnect();
+  }, [svg, width, height]);
+  return scale;
+}
 
 /** Screen point to plan metres for an SVG drawn with `xMidYMid meet`. */
 export function toPlan(
@@ -50,6 +84,7 @@ export function toPlan(
 
 const grabPoint = (map: ArenaMap, grab: Grab): Point => {
   if (grab.kind === "pillar") return map.pillars[grab.index];
+  if (grab.kind === "prop") return map.props[grab.index];
   if (grab.kind === "room") {
     const room = map.rooms[grab.index];
     return edgePoint(map, room.edge, room.offset, 0);
@@ -64,6 +99,7 @@ function applyGrab(base: ArenaMap, grab: Grab, at: Point, offset: Point, step: n
     return grab.mode === "move"
       ? movePillar(base, grab.index, moved, step)
       : resizePillar(base, grab.index, at, step);
+  if (grab.kind === "prop") return moveProp(base, grab.index, moved, step);
   if (grab.kind === "room")
     return grab.mode === "move"
       ? moveRoom(base, grab.index, moved, step)
@@ -98,6 +134,8 @@ export function MapPlan({
   // Bounds follow the committed map so the view stays still while dragging.
   const box = planBounds(map);
   const svg = useRef<SVGSVGElement>(null);
+  const catalog = useStore(propCatalog, (c) => c);
+  const pixelsPerMetre = usePixelsPerMetre(svg, box);
   const drag = useRef<{
     grab: Grab;
     start: { x: number; y: number };
@@ -160,7 +198,11 @@ export function MapPlan({
       aria-label="Map plan (north is up)"
       tabIndex={0}
       onPointerDown={(e) => {
-        if (e.button === 0) mapSelection.set(null);
+        if (e.button !== 0) return;
+        // Focus first so an inspector field being edited blurs and commits
+        // before the selection (and with it the field) goes away.
+        svg.current?.focus({ preventScroll: true });
+        mapSelection.set(null);
       }}
       onPointerMove={move}
       onPointerUp={end}
@@ -172,7 +214,7 @@ export function MapPlan({
       <rect className="plan-building" {...rectProps(box)} />
       <rect className="plan-stands" {...rectProps(grow(floor, wallInner(shown.venue)))} />
       <rect className="plan-pit-wall" {...rectProps(grow(floor, shown.venue.pitWallThickness))} />
-      <rect className="plan-floor" {...rectProps(floor)} />
+      <rect className={`plan-floor ground-${shown.ground}`} {...rectProps(floor)} />
       {grid.map(([x1, z1, x2, z2]) => (
         <line
           key={`${x1},${z1},${x2},${z2}`}
@@ -235,6 +277,28 @@ export function MapPlan({
                 onPointerDown={begin({ kind: "pillar", index: i, mode: "resize" })}
               />
             )}
+          </g>
+        );
+      })}
+      {shown.props.map((prop, i) => {
+        const r = propFootprint(prop, catalog);
+        const sel = selected({ kind: "prop", index: i });
+        return (
+          <g
+            key={`prop-${i}`}
+            className={`plan-prop${sel ? " selected" : ""}`}
+            transform={`translate(${prop.x} ${prop.z}) rotate(${-prop.rotation})`}
+            role="button"
+            aria-label={`Prop ${i + 1} (${prop.model})`}
+            onPointerDown={begin({ kind: "prop", index: i })}
+          >
+            <rect {...rectProps(r)} />
+            {/* Front marker: the model's +Z side. */}
+            <line className="plan-prop-front" x1={r.minX} y1={r.maxZ} x2={r.maxX} y2={r.maxZ} />
+            {/* Small props are a pixel or two wide at this zoom: a fixed-size
+                target and dot keep every prop visible and easy to grab. */}
+            <circle className="plan-prop-hit" r={PROP_HIT_PX / pixelsPerMetre} />
+            <circle className="plan-prop-dot" r={PROP_DOT_PX / pixelsPerMetre} />
           </g>
         );
       })}

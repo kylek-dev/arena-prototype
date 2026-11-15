@@ -10,7 +10,7 @@ license. These assets are **not covered by the repository's MIT license**.
 | `animation v1` | [Universal Animation Library](https://quaternius.com/packs/universalanimationlibrary.html) | CC0 1.0 | Core animation source used by the player |
 | `animation v2` | [Universal Animation Library 2](https://quaternius.com/packs/universalanimationlibrary2.html) | CC0 1.0 | Compatible supplemental clips; retained for future use |
 | `outfits` | [Modular Character Outfits — Fantasy](https://quaternius.com/packs/modularcharacteroutfitsfantasy.html) | CC0 1.0 | Ranger armor used by the player; peasant and modular parts retained |
-| `props` | [Fantasy Props MegaKit](https://quaternius.com/packs/fantasypropsmegakit.html) | CC0 1.0 | 94 glTF props retained; not yet integrated |
+| `props` | [Fantasy Props MegaKit](https://quaternius.com/packs/fantasypropsmegakit.html) | CC0 1.0 | All 94 glTF props placeable on maps ([ADR 0041](../../docs/decisions/0041-map-props-grounds-and-new-maps.md)) |
 | `races` | [Characters — Fantasy Races](https://quaternius.com/packs/charactersfantasyraces.html) | **QAL v1.0**, not CC0 | Four elf/orc bases and texture variants, retained locally |
 
 CC0 requires no attribution; we retain provenance voluntarily. QAL also requires
@@ -36,6 +36,14 @@ game starts using one. `races/` stays ignored for the QAL reason above.
 Tools that scan the whole library, such as
 `scripts/check_animation_compatibility.py` and `scripts/prune_quaternius.py`,
 see only the tracked subset in a fresh clone.
+
+## Map props
+
+Since ADR 0041 Git also tracks the props pack's `License_Standard.txt` and every
+`Exports/glTF` prop (`.gltf`, `.bin`) with its 13 shared trim-sheet PNGs
+(about 43 MB). `scripts/prepare_props.py` copies the glTF/BIN files unchanged
+to `web/public/assets/props`, shrinks the shared textures (colour 1024 px,
+normal/ORM 512 px) and writes the tracked `assets/props/catalog.json`.
 
 ## What was kept and removed
 

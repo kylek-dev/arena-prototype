@@ -18,7 +18,7 @@ struct Texture {
     recipe: Recipe,
 }
 
-const TEXTURES: [Texture; 6] = [
+const TEXTURES: [Texture; 9] = [
     Texture {
         output: "stone-floor.png",
         color: "Stylized_Stone_Floor_010_basecolor.png",
@@ -93,6 +93,46 @@ const TEXTURES: [Texture; 6] = [
             saturated_lift: 0.0,
             contrast: 0.9,
             mean: 0.7,
+        },
+    },
+    // Ground options for map floors keep most of their painted colour; the
+    // game shows them untinted.
+    Texture {
+        output: "ground-sand.png",
+        color: "Stylized_Sand_002_basecolor.png",
+        occlusion: Some("Stylized_Sand_002_ambientOcclusion.png"),
+        recipe: Recipe {
+            chroma: 0.75,
+            occlusion: 0.3,
+            saturated_lift: 0.0,
+            contrast: 0.75,
+            mean: 0.62,
+        },
+    },
+    Texture {
+        output: "ground-snow.png",
+        color: "Snow_005_basecolor.png",
+        occlusion: Some("Snow_005_ambientOcclusion.png"),
+        recipe: Recipe {
+            chroma: 0.8,
+            occlusion: 0.3,
+            saturated_lift: 0.0,
+            // The source is very flat; stretch it so drifts read from above.
+            contrast: 1.35,
+            mean: 0.86,
+        },
+    },
+    Texture {
+        output: "ground-grass.png",
+        color: "Stylized_Grass_003_basecolor.jpg",
+        occlusion: Some("Stylized_Grass_003_ambientOcclusion.jpg"),
+        recipe: Recipe {
+            chroma: 0.85,
+            occlusion: 0.3,
+            saturated_lift: 0.0,
+            // Calm the blade pattern so it does not shimmer at distance.
+            contrast: 0.65,
+            mean: 0.42,
         },
     },
 ];

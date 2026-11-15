@@ -54,7 +54,11 @@ paths = ['index.html', 'pkg/arena_client.js', 'pkg/arena_client_bg.wasm',
          'assets/textures/stone-bricks.png', 'assets/textures/stone-wall.png',
          'assets/textures/wood-planks.png', 'assets/textures/metal-grate.png',
          'assets/textures/metal-panels.png', 'assets/textures/sky.png',
-         'assets/maps/colosseum.json', *parser.urls]
+         'assets/textures/ground-sand.png', 'assets/textures/ground-snow.png',
+         'assets/textures/ground-grass.png', 'assets/maps/colosseum.json',
+         'assets/maps/index.json', 'assets/props/catalog.json',
+         'assets/props/Barrel.gltf', 'assets/props/Barrel.bin',
+         'assets/props/T_Trim_Furniture_BaseColor.png', *parser.urls]
 paths.extend(characters)
 server = ThreadingHTTPServer(('127.0.0.1', 0), partial(QuietHandler, directory=str(ROOT)))
 thread = Thread(target=server.serve_forever, daemon=True)

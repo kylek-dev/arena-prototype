@@ -47,6 +47,9 @@ test('serves the tracked map fresh and reports that saving is available', async 
   assert.equal((await request('GET', '/assets/maps/missing.json')).text, 'next');
   assert.equal((await request('GET', '/assets/maps/..%2Fsecret.json')).text, 'next');
   assert.deepEqual(JSON.parse((await request('GET', '/__map-editor/status')).text), { writable: true });
+  assert.deepEqual(JSON.parse((await request('GET', '/__map-editor/maps')).text), {
+    maps: [{ id: 'colosseum', name: 'colosseum' }],
+  });
   assert.equal((await request('GET', '/other')).text, 'next');
 });
 
@@ -83,4 +86,17 @@ test('refuses cross-origin, rebinding, non-JSON, oversized, malformed and unsafe
   }
   assert.equal(await readFile(path.join(root, 'assets', 'maps', 'colosseum.json'), 'utf8'), '{"format":1}\n');
   assert.ok(host);
+});
+
+test('lists map files by id with their names, skipping other files', async (t) => {
+  const { root, request } = await serve(t);
+  const dir = path.join(root, 'assets', 'maps');
+  await writeFile(path.join(dir, 'frozen-pit.json'), JSON.stringify({ format: 1, name: 'Frozen Pit' }));
+  await writeFile(path.join(dir, 'Bad Name.json'), '{}');
+  await writeFile(path.join(dir, 'notes.txt'), 'x');
+  const listed = JSON.parse((await request('GET', '/__map-editor/maps')).text);
+  assert.deepEqual(listed.maps, [
+    { id: 'colosseum', name: 'colosseum' },
+    { id: 'frozen-pit', name: 'Frozen Pit' },
+  ]);
 });

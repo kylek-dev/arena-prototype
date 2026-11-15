@@ -2,29 +2,41 @@ import { describe, expect, it } from "vitest";
 import colosseumText from "../../assets/maps/colosseum.json?raw";
 import {
   addPillar,
+  addProp,
   addRoom,
   addSpawn,
   commit,
   deepenRoom,
+  duplicate,
   edgeFrame,
   edgePoint,
   EDGES,
   historyOf,
   HISTORY_LIMIT,
+  MAP_ID,
+  mapIdFor,
   movePillar,
+  moveProp,
   moveRoom,
   moveSpawn,
+  newMap,
   nudge,
   parseMap,
+  planBounds,
+  propFootprint,
   reconcileSelection,
   redo,
   removeSelected,
   resizePillar,
   roomRect,
+  rotateProp,
   serializeMap,
+  setGround,
   setVenue,
   spawnPoint,
   undo,
+  wrapDegrees,
+  type PropInfo,
 } from "../../web/src/domain/map";
 
 const colosseum = () => parseMap(colosseumText);
@@ -128,5 +140,86 @@ describe("history", () => {
     for (let i = 0; i < HISTORY_LIMIT + 20; i++)
       history = commit(history, setVenue(history.present, "pillarHeight", 40 + i));
     expect(history.past).toHaveLength(HISTORY_LIMIT);
+  });
+});
+
+describe("grounds, props and new maps", () => {
+  it("fills in ground and prop defaults in a fixed key order", () => {
+    const value = JSON.parse(colosseumText);
+    delete value.ground;
+    delete value.props;
+    const old = parseMap(JSON.stringify(value));
+    expect(old.ground).toBe("stone");
+    expect(serializeMap(old)).toBe(colosseumText);
+    value.props = [{ model: "Barrel", x: 1, z: 2 }];
+    expect(parseMap(JSON.stringify(value)).props).toEqual([
+      { model: "Barrel", x: 1, z: 2, y: 0, rotation: 0, scale: 1 },
+    ]);
+    value.ground = "lava";
+    expect(() => parseMap(JSON.stringify(value))).toThrow(/stone, sand, snow or grass/);
+    value.ground = "sand";
+    value.props = [{ model: "Barrel", x: "1", z: 2 }];
+    expect(() => parseMap(JSON.stringify(value))).toThrow(/prop x/);
+  });
+
+  it("moves props inside the building, wraps turns and duplicates beside", () => {
+    let map = addProp(colosseum(), "Barrel", { x: 2.2, z: -1.1 });
+    expect(map.props[0]).toMatchObject({ x: 2, z: -1 });
+    map = moveProp(map, 0, { x: 999, z: 0 });
+    expect(map.props[0].x).toBe(planBounds(map).maxX);
+    map = rotateProp(map, 0, 200);
+    expect(map.props[0].rotation).toBe(-160);
+    expect(wrapDegrees(-180)).toBe(180);
+    expect(wrapDegrees(720)).toBe(0);
+    const copy = duplicate(map, { kind: "prop", index: 0 });
+    expect(copy.map.props).toHaveLength(2);
+    expect(copy.selection).toEqual({ kind: "prop", index: 1 });
+    expect(nudge(map, { kind: "prop", index: 0 }, -2, 1).props[0].z).toBe(1);
+    expect(removeSelected(map, { kind: "prop", index: 0 }).props).toEqual([]);
+    expect(reconcileSelection(colosseum(), { kind: "prop", index: 0 })).toBeNull();
+    expect(setGround(map, "grass").ground).toBe("grass");
+  });
+
+  it("measures prop footprints from the catalog, scaled, with a grabbable minimum", () => {
+    const catalog: PropInfo[] = [
+      {
+        id: "Bench",
+        label: "Bench",
+        category: "Furniture",
+        min: [-1.4, 0, -0.26],
+        max: [1.4, 0.5, 0.27],
+      },
+      {
+        id: "Coin",
+        label: "Coin",
+        category: "Small",
+        min: [-0.03, 0, -0.01],
+        max: [0.03, 0, 0.01],
+      },
+    ];
+    const prop = { model: "Bench", x: 0, z: 0, y: 0, rotation: 0, scale: 2 };
+    expect(propFootprint(prop, catalog)).toEqual({
+      minX: -2.8,
+      minZ: -0.52,
+      maxX: 2.8,
+      maxZ: 0.54,
+    });
+    const coin = propFootprint({ ...prop, model: "Coin", scale: 1 }, catalog);
+    expect(coin.maxX - coin.minX).toBeCloseTo(0.3);
+    expect(propFootprint({ ...prop, model: "Unknown", scale: 1 }, catalog).maxX).toBe(0.5);
+  });
+
+  it("makes ids from names and starts new maps as an open floor with two rooms", () => {
+    expect(mapIdFor("Frozen Pit!")).toBe("frozen-pit");
+    expect(mapIdFor("  Ñandú   Arena ")).toBe("nandu-arena");
+    expect(mapIdFor("!!!")).toBe("map");
+    expect(MAP_ID.test(mapIdFor("x".repeat(80)))).toBe(true);
+    const map = newMap("Dunes", "sand");
+    expect(map).toMatchObject({ name: "Dunes", ground: "sand", pillars: [], props: [] });
+    expect(parseMap(serializeMap(map))).toEqual(map);
+    expect(map.rooms.map((r) => [r.team, r.edge])).toEqual([
+      ["friendly", "south"],
+      ["opposing", "north"],
+    ]);
   });
 });

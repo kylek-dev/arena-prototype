@@ -41,6 +41,19 @@ SOURCES = (
      '198ab435c3461fb5cde57500fde627c6a300b3eaf25c5578f458ff57013e40ea'),
     ('Stylized_Metal_Pattern_001_ambientOcclusion.png', '1idZ9-rJOhEXIAF6PJyHRK4_1TyuMU5kr',
      '00617aae6d1bc0b72c1a97d2d1db528afe663d85a408d34a0de60dfb16dffb71'),
+    # Map ground options.
+    ('Stylized_Sand_002_basecolor.png', '17wH3hq4IOgy3VtlPY41gr_ABiaRcw64w',
+     '06a9a0458bb026e52dba31d79a601bfd8d7479b7cdc0b542b492aaac4d6440ae'),
+    ('Stylized_Sand_002_ambientOcclusion.png', '1Y3RsL3QWbCf6mNWz-r98VlGaX1NZ8mDy',
+     'c47baa68c495e04d539bc2df55e4c4e1384c4c0aa2d60cd1f233c05bbec28db3'),
+    ('Snow_005_basecolor.png', '18rntxyJB-drs_86QoYjBtb9-_xKodsXs',
+     'c8adeac641e3da4d5d8d1bd29f0372d2a4819e9d4ce9339a1288982a7f321111'),
+    ('Snow_005_ambientOcclusion.png', '1j-wGcOMIRz8vyFZ3XLrjSeb7KIQspl_p',
+     '013e606df9b980890cb494bface865d07b0eb9262116b4bd61c4c839517ac557'),
+    ('Stylized_Grass_003_basecolor.jpg', '1z-JaK_7yyLvU6JfafDOnVpb71kaCXjkx',
+     '3a6ad3ce105414d4de9cabaaaef92c038c6a9b48b51880fb6bcfaf54b5ff45e2'),
+    ('Stylized_Grass_003_ambientOcclusion.jpg', '1YQ_jzueiZeI-m56zytiuHVCuqbdOTZlw',
+     '1385ec1a09f403bed9e248883521f44597bf02a93f9e6a61e2135dc1078867d3'),
 )
 
 
