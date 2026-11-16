@@ -267,15 +267,22 @@ plus the 100 ms view delay: about 130 ms on localhost and about 250 ms at
   that arrived between ticks (the latest movement won), so jitter that
   delivered two inputs in one tick dropped a step. Each tick now applies
   one queued input per seat, oldest first, so input `n` is exactly one
-  tick of rules. A tick with nothing queued is idle. More than four
-  inputs waiting after a tick are folded into it
-  (`arena_inputs_folded_total`), so a burst after a stall cannot build up
-  delay.
-- **Pacing.** Each snapshot reports how many of the recipient's inputs
-  are still queued. `prediction::Pacer` averages that over about half a
-  second, and the client stretches or shrinks its fixed input interval by
-  up to 4% to keep one queued: enough to ride out a late arrival without
-  an idle tick, or an early one without a backlog. A client sends at most
+  tick of rules. A tick with nothing queued is idle
+  (`arena_inputs_starved_total`). Only a queue that stays above four
+  inputs for a whole second has its excess folded into a tick
+  (`arena_inputs_folded_total`). A clump drains one input per tick,
+  exactly as the client predicted. The per-seat queue holds 32 inputs.
+  `arena_input_arrivals_total` counts ticks by how many inputs a seat
+  received since the previous tick, which shows clumped delivery
+  directly.
+- **Pacing (an adaptive jitter buffer).** Each snapshot reports how many
+  of the recipient's inputs are still queued. `prediction::Pacer` tracks
+  the queue's lowest point over the last second, and the client stretches
+  or shrinks its fixed input interval by up to 4%. If the queue ran dry it
+  speeds up; if even the low point kept two or more it slows down. The
+  queue settles just deep enough to cover however clumpy delivery is.
+  Pacing on the average (the first version) read clumps as surplus and
+  slowed down, which deepened the gaps. A client sends at most
   two inputs per frame. The rest of a catch-up burst (a tab returning
   from the background) is neither sent nor predicted, so both sides agree.
 - **`TCP_NODELAY`.** The server disables Nagle's algorithm on accepted
@@ -305,11 +312,18 @@ plus the 100 ms view delay: about 130 ms on localhost and about 250 ms at
   times inputs by frames, so the queue drifted past the original limit of
   two, and tab switches added bursts. The bots send on timers out of phase
   with the server's ticks, so they never showed it. Pacing,
-  `TCP_NODELAY`, the higher fold limit and the frame cap address it. A
-  simulation against the real session (240 Hz frames on the tick
-  boundary, a 0.5% fast clock, a background-tab burst, 60 s) folded 8
-  inputs and corrected 8 times unpaced, and folded or corrected nothing
-  paced, holding the queue at 1.1. Browser retesting is pending.
+  `TCP_NODELAY`, the higher fold limit and the frame cap were the first
+  response. A second browser test still corrected steadily: the queue sat
+  at the fold limit with pacing at its maximum slowdown, and ping was
+  22 ms on "localhost". The browser runs on Windows and the server in
+  WSL2, whose localhost relay is suspected of forwarding in clumps (the
+  arrivals metric will confirm it on the next test). Folding only on a
+  lasting backlog and pacing by the low point address that. Simulated
+  against the real session for 60 s with a background-tab burst: paced
+  with smooth delivery, and paced through 50 ms relay clumps with a 0.5%
+  fast clock, both folded and corrected nothing (1 starved tick, average
+  queue 1.8 and 2.1). Unpaced with a 2% fast clock, it folded 34 inputs
+  and corrected 19 times. Browser retesting is pending.
 - **Measured** ([load baseline](../research/match-server-load.md#prediction)).
   The bots predict exactly as the browser does. 1v1 at 0, 50, 100 and
   200 ms with jitter had no corrections. 3v3 load with drop-outs had 0.1

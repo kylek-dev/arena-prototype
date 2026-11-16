@@ -104,7 +104,25 @@ server sets `TCP_NODELAY`:
 
 The simulation runs against the real session: 240 Hz frames placed on the
 tick boundary, a 0.5% fast client clock and a background-tab burst. The
-bots themselves do not pace yet. Browser retesting is pending.
+bots themselves do not pace yet.
+
+A second browser test still corrected steadily, with the queue pinned at
+four and pacing at its maximum slowdown. The likely cause is the WSL2
+localhost relay forwarding inputs in clumps; the new
+`arena_input_arrivals_total` metric will confirm it. The server now folds
+only after a full second above four (a clump drains one input per tick),
+and pacing steers by the queue's lowest point over a second instead of
+its average:
+
+| Simulated client, 60 s, background-tab burst | Folds | Corrections | Starved ticks | Average queue |
+| --- | --- | --- | --- | --- |
+| Paced, smooth delivery, 0.5% fast clock | 0 | 0 | 0 | 1.8 |
+| Paced, 50 ms relay clumps, 0.5% fast clock | 0 | 0 | 1 | 2.1 |
+| Unpaced, 50 ms clumps, 2% fast clock | 34 | 19 | 1 | 4.8 |
+
+Bots (unpaced, 100 ms with jitter, 3v3 × 50 with drop-outs) after the
+change: no folds or overflows, and 0.1 corrections per 1000 inputs.
+Browser retesting is pending.
 
 A run with jumps disabled ruled out jumping as the cause of the first
 problem. The remaining corrections match real disagreements: a fighter

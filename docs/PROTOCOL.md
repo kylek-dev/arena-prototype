@@ -38,13 +38,14 @@ yet.
 - Each tick applies **one** queued input per seat, oldest first, so input
   `n` is exactly one tick of rules and a client can predict its own
   movement by replaying its unacknowledged inputs. A tick with nothing
-  queued is idle for that seat. If more than four inputs are still waiting
-  after a tick (a burst after a stall), the excess is folded into that tick
-  with `InputFrame::merge_into`: the latest movement, facing and attack
-  target win, and a jump from any of them is kept. This keeps the delay
-  bounded. Each snapshot's `queued` tells the recipient how many of its
-  inputs are still waiting, and clients pace their input interval to keep
-  it near one (`prediction::Pacer`).
+  queued is idle for that seat. A clump of inputs simply drains one per
+  tick. Only if more than four inputs stay waiting for a whole second is
+  the excess folded into one tick with `InputFrame::merge_into` (the
+  latest movement, facing and attack target win, and a jump from any of
+  them is kept), so a client that sends too fast cannot build up delay.
+  Each snapshot's `queued` tells the recipient how many of its inputs are
+  still waiting. Clients pace their input interval to keep the queue's
+  lowest point over a second at one (`prediction::Pacer`).
 - Clients interpolate other fighters' snapshots behind the newest one
   received (about 100 ms). A client predicts its own fighter by replaying
   its unacknowledged inputs on the latest snapshot
@@ -82,7 +83,7 @@ These are message sizes, not network measurements.
 | Limit | Value | On violation |
 | --- | --- | --- |
 | Client frame size | 1 KiB | The WebSocket layer closes the connection without an `Error` |
-| Inputs queued per seat between ticks | 8 | Drop the oldest and count it |
+| Inputs queued per seat | 32 (about a second) | Drop the oldest and count it |
 | Messages (inputs and pings) per connection per fixed 1 s window | 2 × tick rate (60) | Close with `RateLimited` |
 | Outgoing frames queued per connection | 64 | Drop the frame and count it (snapshots carry full state) |
 | `Hello` deadline | 5 s | Close |
