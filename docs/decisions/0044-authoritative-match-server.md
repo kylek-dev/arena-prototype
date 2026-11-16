@@ -286,11 +286,20 @@ plus the 100 ms view delay: about 130 ms on localhost and about 250 ms at
   two inputs per frame. The rest of a catch-up burst (a tab returning
   from the background) is neither sent nor predicted, so both sides agree.
 - **Following the server's measured tick rate.** Each client measures
-  the server's ticks per second on its own clock
-  (`prediction::TickRate`, over the last five seconds of snapshots). It
-  sends inputs at that rate, adjusted by pacing, and advances its
+  the server's ticks per second on its own clock (`prediction::TickRate`).
+  It sends inputs at that rate, adjusted by pacing, and advances its
   interpolated view by it. A client never assumes the nominal 30 Hz, so
-  clock skew between client and server is absorbed.
+  clock skew between client and server is absorbed. Delivery delay must
+  not look like clock rate. After a background-tab stall, queued snapshots
+  trickle in late for seconds. A first-and-last-sample estimate read that
+  as a slow server: the overlay showed 10 ticks/s, 8 inputs/s sent, and
+  the player moved in slow motion for 5–10 s. The estimate now follows
+  the lower edge of the samples, as network time protocols do. It keeps
+  the fastest snapshot of each half second over 20 s and fits a line,
+  repeatedly discarding points over 20 ms above it. It holds its last
+  value across rewinds and stays within 15% of nominal. A test replaying
+  that stall misjudged the rate by up to 32 ticks/s with the old
+  estimator and under 0.5 with the new one.
 - **`TCP_NODELAY`.** The server disables Nagle's algorithm on accepted
   connections. Before, small snapshots and pongs waited for
   acknowledgements, and loopback ping p95 was 34.6 ms; it is now 2.5 ms.
