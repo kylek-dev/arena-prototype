@@ -1,0 +1,80 @@
+# Single-machine playtest deployment (ADR 0045): Caddy terminates TLS and
+# serves the browser client; one match server and one front door sit behind
+# it on a private network. From the repository root, after building dist/:
+#   docker compose -f deploy/compose.yaml --env-file deploy/.env up -d --build
+name: arena
+
+x-public: &public
+  ARENA_TICKET_KEY: ${ARENA_TICKET_KEY:?set ARENA_TICKET_KEY in deploy/.env}
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: arena-server:local
+    command:
+      - --bind
+      - 0.0.0.0:8080
+      # A round lasts at most 20 minutes, plus a 5 s linger: let every
+      # hosted match finish on SIGTERM ...
+      - --drain-seconds
+      - "1210"
+      - --allow-origin
+      - https://${ARENA_HOST:?set ARENA_HOST in deploy/.env}
+      - --trusted-proxy
+      - 172.30.10.2
+    environment: *public
+    # ... and allow a little longer than the drain before killing it.
+    stop_grace_period: 1215s
+    restart: unless-stopped
+    networks:
+      arena:
+        ipv4_address: 172.30.10.10
+
+  door:
+    image: arena-server:local
+    depends_on: [server]
+    entrypoint: [arena-door]
+    command:
+      - --bind
+      - 0.0.0.0:8090
+      - --match-server
+      - wss://${ARENA_HOST}/play
+      - --page
+      - https://${ARENA_HOST}/
+      - --trusted-proxy
+      - 172.30.10.2
+    environment: *public
+    restart: unless-stopped
+    networks:
+      arena:
+        ipv4_address: 172.30.10.11
+
+  caddy:
+    image: caddy:2.10.2
+    depends_on: [server, door]
+    ports:
+      - "${ARENA_HTTP_PORT:-80}:80"
+      - "${ARENA_HTTPS_PORT:-443}:${ARENA_HTTPS_PORT:-443}"
+    environment:
+      ARENA_HOST: ${ARENA_HOST}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../dist:/srv/arena:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+    networks:
+      arena:
+        ipv4_address: 172.30.10.2
+
+networks:
+  arena:
+    ipam:
+      config:
+        - subnet: 172.30.10.0/24
+
+volumes:
+  caddy-data:
+  caddy-config:

@@ -116,11 +116,13 @@ The authoritative match server ([ADR 0044](decisions/0044-authoritative-match-se
 
 ```sh
 cargo run -p arena-server -- --dev            # ws://127.0.0.1:8080/play
-curl -X POST 'http://127.0.0.1:8080/dev/match?team_size=1'   # match id and one hex ticket per seat
+curl -X POST 'http://127.0.0.1:8080/dev/match?team_size=1'   # match id and one hex ticket per seat (the match starts when the first one connects)
 curl http://127.0.0.1:8080/metrics            # Prometheus text counters
 ```
 
-`--dev` generates a random ticket key and enables `POST /dev/match`; it refuses non-loopback `--bind` addresses. Without `--dev`, set `ARENA_TICKET_KEY` to at least 32 bytes of hex shared with whatever issues tickets. `--debug-json` logs every message as JSON on stderr. With `--dev`, Ctrl+C stops at once (players receive `ServerShutdown`). Pass `--drain-seconds N` to drain instead: readiness (`/readyz`) fails, no new match starts, and running matches continue for up to N seconds (progress every 10 s). A second Ctrl+C or SIGTERM stops immediately. Without `--dev`, `--drain-seconds` is required; see ADR 0044 for choosing it. Server tests: `cargo test -p arena-server`.
+`--dev` generates a random ticket key and enables `POST /dev/match`; it refuses non-loopback `--bind` addresses. Without `--dev`, set `ARENA_TICKET_KEY` to at least 32 bytes of hex shared with whatever issues tickets. `--debug-json` logs every message as JSON on stderr. With `--dev`, Ctrl+C stops at once (players receive `ServerShutdown`). Pass `--drain-seconds N` to drain instead: readiness (`/readyz`) fails, no new match starts, and running matches continue for up to N seconds (progress every 10 s). A second Ctrl+C or SIGTERM stops immediately. Without `--dev`, `--drain-seconds` is required; see ADR 0044 for choosing it. Without `--dev`, `--allow-origin URL` (the game page's origin, repeatable) or `--any-origin` is also required. Behind a reverse proxy, `--trusted-proxy CIDR` makes the per-address connection limit (`--connections-per-address`, default 12, unlimited with `--dev`) count players rather than the proxy. Server tests: `cargo test -p arena-server`.
+
+To try the front door's lobby ([ADR 0045](decisions/0045-front-door-and-playtest-deployment.md)), run `./scripts/dev-door.sh` with the client served (`npm run serve`). It starts a development match server and `arena-door` sharing a fresh key. Then open http://127.0.0.1:8090/lobby/ and create a match. To deploy for remote players, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 To play a network match in the browser, start the server and the client, then create a match and open one printed link per seat, each in its own tab or browser:
 

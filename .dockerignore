@@ -1,0 +1,10 @@
+# Container builds (deploy/Dockerfile) need only the Rust workspace and the
+# data files the server compiles in. Everything else stays out of the context.
+*
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!crates/
+!assets/maps/
+!assets/props/catalog.json
+crates/**/target/

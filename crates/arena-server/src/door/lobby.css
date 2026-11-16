@@ -1,0 +1,144 @@
+/* Colors come only from the closed palette (palette.css, docs/palette.json). */
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  line-height: 1.5;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--pal-night-1);
+  color: var(--pal-night-12);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 48px 16px;
+}
+.panel {
+  width: 100%;
+  max-width: 640px;
+  background: var(--pal-night-2);
+  border: 1px solid var(--pal-night-7);
+  border-radius: 8px;
+  padding: 24px;
+}
+h1 {
+  margin: 0 0 8px;
+  font-size: 1.5rem;
+  color: var(--pal-gold-4);
+}
+h2 {
+  margin: 24px 0 8px;
+  font-size: 1.1rem;
+}
+.lead {
+  margin: 0 0 16px;
+  color: var(--pal-night-11);
+}
+fieldset {
+  border: 1px solid var(--pal-night-7);
+  border-radius: 6px;
+  margin: 0 0 16px;
+  padding: 8px 12px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+legend {
+  padding: 0 4px;
+  color: var(--pal-night-11);
+}
+label {
+  cursor: pointer;
+}
+button {
+  font: inherit;
+  cursor: pointer;
+  border-radius: 6px;
+  border: 1px solid var(--pal-night-8);
+  background: var(--pal-night-4);
+  color: var(--pal-night-12);
+  padding: 6px 12px;
+}
+button:hover {
+  background: var(--pal-night-5);
+}
+button:focus-visible,
+input:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--pal-gold-4);
+  outline-offset: 2px;
+}
+button.primary {
+  background: var(--pal-gold-3);
+  border-color: var(--pal-gold-4);
+  color: var(--pal-night-1);
+  font-weight: 600;
+}
+button.primary:hover {
+  background: var(--pal-gold-4);
+}
+button:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+.status {
+  min-height: 1.5em;
+  margin: 12px 0 0;
+}
+.status.error {
+  color: var(--pal-ember-4);
+}
+.warning {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-left: 3px solid var(--pal-gold-4);
+  background: var(--pal-night-3);
+}
+.seats {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+.seat {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+}
+.seat .name {
+  grid-column: 1 / -1;
+  font-weight: 600;
+}
+.seat .team-a {
+  color: var(--pal-sky-4);
+}
+.seat .team-b {
+  color: var(--pal-ember-4);
+}
+.seat input {
+  min-width: 0;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--pal-night-7);
+  background: var(--pal-night-3);
+  color: var(--pal-night-11);
+}
+.seat a {
+  color: var(--pal-gold-4);
+}
+@media (max-width: 480px) {
+  .seat {
+    grid-template-columns: 1fr auto;
+  }
+  .seat input {
+    grid-column: 1 / -1;
+  }
+}

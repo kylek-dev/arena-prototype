@@ -102,16 +102,34 @@ replayed outcome. `Welcome.map` identifies the layout.
 
 ## Join tickets
 
-A ticket is the postcard encoding of `{match_id, player, seat, expires}`
-(`expires` in Unix seconds) followed by a 32-byte HMAC-SHA256 tag over those
-bytes, under a key shared by whatever issues tickets and the match servers
-(`ARENA_TICKET_KEY`). The signature is checked in constant time before the
-claims are parsed. Development tickets are about 57 bytes and valid for two
-hours, which covers the match, so a client reconnects with the same ticket.
+A ticket is the postcard encoding of
+`{match_id, player, seat, team_size, expires}` (`expires` in Unix seconds)
+followed by a 32-byte HMAC-SHA256 tag over those bytes, under a key shared
+by whatever issues tickets and the match servers (`ARENA_TICKET_KEY`). The
+signature is checked in constant time before the claims are parsed. Tickets
+are about 58 bytes and valid for two hours, which covers the match, so a
+client reconnects with the same ticket. Browsers treat tickets as opaque
+bytes.
 
-The first milestone has no accounts: `POST /dev/match?team_size=1|2|3`
-creates a match and returns its id and one hex ticket per seat. It exists
-only with `--dev`, which also refuses to listen beyond loopback.
+**A match starts with its first ticket** ([ADR 0045](decisions/0045-front-door-and-playtest-deployment.md)).
+A match server that receives a valid ticket for a match it does not host
+starts it, sized by `team_size`, so whatever holds the key creates matches
+without calling the server. Claims for a team size outside 1–3 or a seat
+outside the match get `BadTicket` and start nothing. A match that has ended
+stays ended while its tickets are valid (`MatchOver`), as long as the
+process runs. A draining server answers the first ticket of a new match
+with `ServerShutdown`.
+
+There are no accounts. The front door (`arena-door`, `POST /api/matches`
+and the `/lobby/` page) issues one join link per seat, with the ticket in
+the URL fragment. With `--dev`, `POST /dev/match?team_size=1|2|3` on the
+match server returns the match id and one hex ticket per seat. It refuses
+to listen beyond loopback.
+
+**Before the handshake.** `/play` refuses a browser whose `Origin` is not
+allowed (`--allow-origin`) with HTTP 403, and a client address holding too
+many open connections (`--connections-per-address`) with 429. Both happen
+before the WebSocket upgrade, so no `Error` frame is sent.
 
 ## Match lifecycle
 

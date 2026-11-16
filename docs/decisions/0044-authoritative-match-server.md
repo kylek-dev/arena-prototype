@@ -269,7 +269,9 @@ practice for session-based games separates:
    refuses new matches and finishes current ones.
 3. **Signed, short-lived join tickets** (match, player, seat, expiry) issued
    by the front door. The client connects straight to the assigned match
-   server, which derives actor identity from the ticket alone.
+   server, which derives actor identity from the ticket alone. (Implemented
+   in [ADR 0045](0045-front-door-and-playtest-deployment.md): tickets also
+   carry the team size, and a match starts when its first ticket arrives.)
 4. **Regional deployments**, because latency, not CPU, is usually the
    binding constraint for players.
 

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Arena Prototype · New match</title>
+    <link rel="stylesheet" href="palette.css" />
+    <link rel="stylesheet" href="lobby.css" />
+    <script src="lobby.js" defer></script>
+  </head>
+  <body>
+    <main class="panel">
+      <h1>Start a match</h1>
+      <p class="lead">
+        Pick a size and create the match. You get one link per player: open
+        yours and send each other link to one player.
+      </p>
+      <form class="create" novalidate>
+        <fieldset>
+          <legend>Players per team</legend>
+          <label><input type="radio" name="team_size" value="1" checked /> 1v1</label>
+          <label><input type="radio" name="team_size" value="2" /> 2v2</label>
+          <label><input type="radio" name="team_size" value="3" /> 3v3</label>
+        </fieldset>
+        <button type="submit" class="primary">Create match</button>
+      </form>
+      <p class="status" role="status" aria-live="polite"></p>
+      <section class="result" hidden aria-labelledby="links-heading">
+        <h2 id="links-heading">Join links</h2>
+        <p class="warning">
+          Each link is one player's seat. Anyone who has it can take that
+          seat, so send each one privately, to one person. The match starts
+          when every player has joined; links stop working
+          <span class="expiry"></span>.
+        </p>
+        <ol class="seats"></ol>
+      </section>
+    </main>
+  </body>
+</html>
