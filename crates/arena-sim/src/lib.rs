@@ -193,4 +193,12 @@ mod tests {
 }
 
 pub mod arena;
+pub mod auras;
+pub mod auto_attacks;
+pub mod classes;
+pub mod effects;
+pub mod formulas;
 pub mod map;
+pub mod specs;
+pub mod spells;
+pub mod stat_templates;

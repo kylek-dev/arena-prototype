@@ -30,27 +30,16 @@ pub enum Resource {
 impl Class {
     pub fn resources(&self) -> Vec<Resource> {
         match self {
-
             Self::Necromancer => vec![Resource::Suffering],
 
-
-            Self::PlagueDoctor => vec![
-                Resource::Mana,
-                Resource::Toxicity,
-            ],
+            Self::PlagueDoctor => vec![Resource::Mana, Resource::Toxicity],
 
             Self::Gladiator => vec![Resource::Momentum],
 
+            Self::Nightblade => vec![Resource::Energy, Resource::Dread],
 
-            Self::Nightblade => vec![
-                Resource::Energy,
-                Resource::Dread,
-            ],
-
-       
             Self::Bloodbinder => vec![Resource::Blood],
 
-     
             Self::Wildkeeper => vec![Resource::LifeEssence],
         }
     }

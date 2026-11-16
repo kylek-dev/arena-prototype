@@ -1,4 +1,4 @@
-use crate::classes::{Classe, Role};
+use crate::classes::{Class, Role};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Specialisation {
@@ -29,33 +29,26 @@ pub enum Specialisation {
     NatureGuardian,
 }
 
-
 impl Specialisation {
-    pub fn classe(&self) -> Classe {
+    pub fn classe(&self) -> Class {
         match self {
-            Self::Summoner | Self::Lich => Classe::Necromancer,
+            Self::Summoner | Self::Lich => Class::Necromancer,
 
-            Self::Toxicologist
-            | Self::PlagueSurgeon
-            | Self::Pestilent => Classe::PlagueDoctor,
+            Self::Toxicologist | Self::PlagueSurgeon | Self::Pestilent => Class::PlagueDoctor,
 
-            Self::Berserker
-            | Self::Duelist
-            | Self::Champion => Classe::Gladiator,
+            Self::Berserker | Self::Duelist | Self::Champion => Class::Gladiator,
 
-            Self::Assassin | Self::DarkRanger => Classe::Nightblade,
+            Self::Assassin | Self::DarkRanger => Class::Nightblade,
 
-            Self::Hemomancer | Self::BloodHealer => Classe::Bloodbinder,
+            Self::Hemomancer | Self::BloodHealer => Class::Bloodbinder,
 
-            Self::Beastmaster | Self::NatureGuardian => Classe::Wildkeeper,
+            Self::Beastmaster | Self::NatureGuardian => Class::Wildkeeper,
         }
     }
 
     pub fn role(&self) -> Role {
         match self {
-            Self::PlagueSurgeon
-            | Self::BloodHealer
-            | Self::NatureGuardian => Role::Healer,
+            Self::PlagueSurgeon | Self::BloodHealer | Self::NatureGuardian => Role::Healer,
 
             _ => Role::DPS,
         }

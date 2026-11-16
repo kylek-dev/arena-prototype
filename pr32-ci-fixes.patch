@@ -1,0 +1,386 @@
+diff --git a/crates/arena-sim/src/auras.rs b/crates/arena-sim/src/auras.rs
+index 5eac969..6dd8851 100644
+--- a/crates/arena-sim/src/auras.rs
++++ b/crates/arena-sim/src/auras.rs
+@@ -210,4 +210,4 @@ impl AuraState {
+ 
+         spell_ids
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/crates/arena-sim/src/auto_attacks.rs b/crates/arena-sim/src/auto_attacks.rs
+index 18c93cd..730b80f 100644
+--- a/crates/arena-sim/src/auto_attacks.rs
++++ b/crates/arena-sim/src/auto_attacks.rs
+@@ -1,5 +1,6 @@
+ use crate::TICKS_PER_SECOND;
+-use crate::arena::{Combatant, line_of_sight};
++use crate::arena::Combatant;
++use crate::map::Layout;
+ 
+ pub const MELEE_RANGE_MM: i32 = 2_000;
+ pub const SWING_INTERVAL_TICKS: u64 = 2 * TICKS_PER_SECOND;
+@@ -15,12 +16,14 @@ impl AutoAttackState {
+     // Call once per simulation tick after processing abilities.
+     // Pass None when the fighter has no valid enemy selected.
+     // Pass true for an active cast or an ability used on this tick.
++    // Supply the arena's current layout for its line-of-sight rules.
+     pub fn try_swing(
+         &mut self,
+         tick: u64,
+         attacker: &Combatant,
+         selected_enemy: Option<&Combatant>,
+         is_casting: bool,
++        layout: &Layout,
+     ) -> Option<u16> {
+         if is_casting || attacker.health == 0 || tick < self.ready_at {
+             return None;
+@@ -37,7 +40,7 @@ impl AutoAttackState {
+             return None;
+         }
+ 
+-        if !line_of_sight(attacker.position, enemy.position) {
++        if !layout.line_of_sight(attacker.position, enemy.position) {
+             return None;
+         }
+ 
+@@ -46,4 +49,50 @@ impl AutoAttackState {
+ 
+         Some(SWING_DAMAGE)
+     }
+-}
+\ No newline at end of file
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::arena::Position;
++    use crate::map::Pillar;
++
++    fn fighter(x: i32) -> Combatant {
++        Combatant {
++            position: Position { x, z: 0 },
++            height: 0,
++            vertical_velocity: 0,
++            momentum: Position { x: 0, z: 0 },
++            health: 100,
++            ready_at: 0,
++        }
++    }
++
++    #[test]
++    fn swing_uses_the_active_map_and_blocked_attempts_keep_the_timer_ready() {
++        let mut layout = Layout {
++            half_x: 5_000,
++            half_z: 5_000,
++            pillars: vec![Pillar {
++                center: Position { x: 0, z: 0 },
++                half_x: 100,
++                half_z: 100,
++            }],
++            rooms: Vec::new(),
++        };
++        let attacker = fighter(-1_000);
++        let enemy = fighter(1_000);
++        let mut auto = AutoAttackState::default();
++
++        assert_eq!(
++            auto.try_swing(0, &attacker, Some(&enemy), false, &layout),
++            None
++        );
++
++        layout.pillars.clear();
++        assert_eq!(
++            auto.try_swing(0, &attacker, Some(&enemy), false, &layout),
++            Some(SWING_DAMAGE)
++        );
++    }
++}
+diff --git a/crates/arena-sim/src/classes.rs b/crates/arena-sim/src/classes.rs
+index e562870..e4e42ab 100644
+--- a/crates/arena-sim/src/classes.rs
++++ b/crates/arena-sim/src/classes.rs
+@@ -30,28 +30,17 @@ pub enum Resource {
+ impl Class {
+     pub fn resources(&self) -> Vec<Resource> {
+         match self {
+-
+             Self::Necromancer => vec![Resource::Suffering],
+ 
+-
+-            Self::PlagueDoctor => vec![
+-                Resource::Mana,
+-                Resource::Toxicity,
+-            ],
++            Self::PlagueDoctor => vec![Resource::Mana, Resource::Toxicity],
+ 
+             Self::Gladiator => vec![Resource::Momentum],
+ 
++            Self::Nightblade => vec![Resource::Energy, Resource::Dread],
+ 
+-            Self::Nightblade => vec![
+-                Resource::Energy,
+-                Resource::Dread,
+-            ],
+-
+-       
+             Self::Bloodbinder => vec![Resource::Blood],
+ 
+-     
+             Self::Wildkeeper => vec![Resource::LifeEssence],
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/crates/arena-sim/src/effects.rs b/crates/arena-sim/src/effects.rs
+index fcdc16a..c4bc133 100644
+--- a/crates/arena-sim/src/effects.rs
++++ b/crates/arena-sim/src/effects.rs
+@@ -1,6 +1,5 @@
+ use crate::spells::{Spell, SpellEffect};
+ 
+-
+ // Returns the amount of HP actually removed.
+ pub fn apply_damage(health: &mut u16, amount: u16) -> u16 {
+     if amount >= *health {
+@@ -10,7 +9,7 @@ pub fn apply_damage(health: &mut u16, amount: u16) -> u16 {
+     }
+ 
+     *health -= amount;
+-    return amount;
++    amount
+ }
+ 
+ // Returns the amount of HP actually restored.
+@@ -28,7 +27,7 @@ pub fn apply_heal(health: &mut u16, max_health: u16, amount: u16) -> u16 {
+     }
+ 
+     *health += amount;
+-    return amount;
++    amount
+ }
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+@@ -60,12 +59,25 @@ pub fn apply_spell_effects(
+     }
+ 
+     *health = updated_health;
+-    return Ok(());
++    Ok(())
++}
++
++pub fn gain_resource(current: &mut u16, maximum: u16, amount: u16) -> u16 {
++    let gained = amount.min(maximum.saturating_sub(*current));
++    *current += gained;
++    gained
+ }
+ 
++#[cfg(test)]
++mod tests {
++    use super::gain_resource;
+ 
+-pub fn gain_resource(
+-    current: &mut u16,
+-    maximum: u16,
+-    amount: u16,
+-) -> u16
+\ No newline at end of file
++    #[test]
++    fn resource_gains_stop_at_capacity_and_report_the_actual_gain() {
++        let mut current = 95;
++        assert_eq!(gain_resource(&mut current, 100, 20), 5);
++        assert_eq!(current, 100);
++        assert_eq!(gain_resource(&mut current, 100, u16::MAX), 0);
++        assert_eq!(current, 100);
++    }
++}
+diff --git a/crates/arena-sim/src/formulas.rs b/crates/arena-sim/src/formulas.rs
+index f394c14..74e9a46 100644
+--- a/crates/arena-sim/src/formulas.rs
++++ b/crates/arena-sim/src/formulas.rs
+@@ -54,4 +54,4 @@ pub fn damage_after_resilience(damage: u16, chance_roll: u8, reduction_roll: u8)
+     let prevented_damage = u32::from(damage) * u32::from(reduction) / 100;
+ 
+     damage - prevented_damage as u16
+-}
+\ No newline at end of file
++}
+diff --git a/crates/arena-sim/src/lib.rs b/crates/arena-sim/src/lib.rs
+index 3b31f12..3cbc5fd 100644
+--- a/crates/arena-sim/src/lib.rs
++++ b/crates/arena-sim/src/lib.rs
+@@ -2,7 +2,6 @@
+ //! No wall clock, random numbers, graphics, or I/O.
+ pub const TICKS_PER_SECOND: u64 = 30;
+ pub const COOLDOWN: u64 = TICKS_PER_SECOND;
+-  
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub struct Fighter {
+@@ -193,15 +192,13 @@ mod tests {
+     }
+ }
+ 
+-
+-
+-
+-
+ pub mod arena;
+-pub mod effects;  
++pub mod auras;
+ pub mod auto_attacks;
+ pub mod classes;
+-pub mod specs;
+-pub mod stat_templates;
++pub mod effects;
+ pub mod formulas;
+ pub mod map;
++pub mod specs;
++pub mod spells;
++pub mod stat_templates;
+diff --git a/crates/arena-sim/src/specs.rs b/crates/arena-sim/src/specs.rs
+index 479132c..191cd31 100644
+--- a/crates/arena-sim/src/specs.rs
++++ b/crates/arena-sim/src/specs.rs
+@@ -1,4 +1,4 @@
+-use crate::classes::{Classe, Role};
++use crate::classes::{Class, Role};
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+ pub enum Specialisation {
+@@ -29,35 +29,28 @@ pub enum Specialisation {
+     NatureGuardian,
+ }
+ 
+-
+ impl Specialisation {
+-    pub fn classe(&self) -> Classe {
++    pub fn classe(&self) -> Class {
+         match self {
+-            Self::Summoner | Self::Lich => Classe::Necromancer,
++            Self::Summoner | Self::Lich => Class::Necromancer,
+ 
+-            Self::Toxicologist
+-            | Self::PlagueSurgeon
+-            | Self::Pestilent => Classe::PlagueDoctor,
++            Self::Toxicologist | Self::PlagueSurgeon | Self::Pestilent => Class::PlagueDoctor,
+ 
+-            Self::Berserker
+-            | Self::Duelist
+-            | Self::Champion => Classe::Gladiator,
++            Self::Berserker | Self::Duelist | Self::Champion => Class::Gladiator,
+ 
+-            Self::Assassin | Self::DarkRanger => Classe::Nightblade,
++            Self::Assassin | Self::DarkRanger => Class::Nightblade,
+ 
+-            Self::Hemomancer | Self::BloodHealer => Classe::Bloodbinder,
++            Self::Hemomancer | Self::BloodHealer => Class::Bloodbinder,
+ 
+-            Self::Beastmaster | Self::NatureGuardian => Classe::Wildkeeper,
++            Self::Beastmaster | Self::NatureGuardian => Class::Wildkeeper,
+         }
+     }
+ 
+     pub fn role(&self) -> Role {
+         match self {
+-            Self::PlagueSurgeon
+-            | Self::BloodHealer
+-            | Self::NatureGuardian => Role::Healer,
++            Self::PlagueSurgeon | Self::BloodHealer | Self::NatureGuardian => Role::Healer,
+ 
+             _ => Role::DPS,
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/crates/arena-sim/src/spells.rs b/crates/arena-sim/src/spells.rs
+index 1223f65..072bfc2 100644
+--- a/crates/arena-sim/src/spells.rs
++++ b/crates/arena-sim/src/spells.rs
+@@ -88,6 +88,16 @@ pub enum SpellEffect {
+         categories: Vec<DamageCategory>,
+     },
+ 
++    IncreaseDamageDone {
++        percentage: u16,
++        duration_ticks: u32,
++    },
++
++    ReduceDamageTaken {
++        percentage: u8,
++        duration_ticks: u32,
++    },
++
+     Summon {
+         summon: SummonId,
+         count: u8,
+@@ -116,7 +126,6 @@ pub enum SpellEffect {
+     },
+ 
+     // Passive spell modifications.
+-
+     IncreaseSpellDamage {
+         spell: SpellId,
+         percentage: u16,
+@@ -225,13 +234,12 @@ impl Spell {
+         class: Class,
+         effects: Vec<SpellEffect>,
+     ) -> Self {
+-        let mut spell = Self::active(id, name, class);
+-
+-        spell.spell_type = SpellType::Passive;
+-        spell.target = SpellTarget::NoTarget;
+-        spell.gcd = GcdType::OffGcd;
+-        spell.effects = effects;
+-
+-        spell
++        Self {
++            spell_type: SpellType::Passive,
++            target: SpellTarget::NoTarget,
++            gcd: GcdType::OffGcd,
++            effects,
++            ..Self::active(id, name, class)
++        }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/crates/arena-sim/stat_templates.rs b/crates/arena-sim/src/stat_templates.rs
+similarity index 77%
+rename from crates/arena-sim/stat_templates.rs
+rename to crates/arena-sim/src/stat_templates.rs
+index 100a15d..b901d3f 100644
+--- a/crates/arena-sim/stat_templates.rs
++++ b/crates/arena-sim/src/stat_templates.rs
+@@ -1,8 +1,7 @@
++pub use crate::formulas::{RESILIENCE_PERCENTAGE, RESILIENCE_PROC_CHANCE, damage_after_resilience};
+ use crate::specs::Specialisation;
+ 
+-pub const RESILIENCE_PERCENTAGE: u8 = 30;
+ pub const SECONDARY_STAT_BUDGET: u8 = 100 - RESILIENCE_PERCENTAGE;
+-pub const RESILIENCE_PROC_CHANCE: u8 = 30;
+ 
+ // Every player of the same spec gets the same template.
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+@@ -68,16 +67,3 @@ impl Specialisation {
+         }
+     }
+ }
+-
+-// The match rolls 0 to 99 for the chance and 1 to 30 for the reduction.
+-// Call this before subtracting HP.
+-pub fn damage_after_resilience(damage: u16, chance_roll: u8, reduction_roll: u8) -> u16 {
+-    if chance_roll >= RESILIENCE_PROC_CHANCE {
+-        return damage;
+-    }
+-
+-    let reduction = reduction_roll.min(RESILIENCE_PERCENTAGE);
+-    let prevented_damage = u32::from(damage) * u32::from(reduction) / 100;
+-
+-    damage - prevented_damage as u16
+-}
+\ No newline at end of file

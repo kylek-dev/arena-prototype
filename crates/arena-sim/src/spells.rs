@@ -1,23 +1,7 @@
-
 use crate::classes::{Class, Resource};
+pub use crate::formulas::{BASE_GCD_MS, calculate_gcd_ticks};
 
-pub const TICKS_PER_SECOND: u32 = 30;
-pub const BASE_GCD_MS: u32 = 1150;
-
-// GCD is calculated separately from spell cooldowns.
-pub fn calculate_gcd_ticks(
-    haste_percentage: u32,
-    gcd_multiplier_percentage: u32,
-) -> u32 {
-    let haste_steps = haste_percentage / 5;
-    let reduction_ms = haste_steps.saturating_mul(50);
-
-    let gcd_ms = BASE_GCD_MS.saturating_sub(reduction_ms);
-    let gcd_ms = (gcd_ms as u64 * gcd_multiplier_percentage as u64 / 100) as u32;
-
-    // Round up to the next simulation tick.
-    ((gcd_ms as u64 * TICKS_PER_SECOND as u64 + 999) / 1000) as u32
-}
+pub const TICKS_PER_SECOND: u32 = crate::TICKS_PER_SECOND as u32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SpellId {
@@ -104,6 +88,16 @@ pub enum SpellEffect {
         categories: Vec<DamageCategory>,
     },
 
+    IncreaseDamageDone {
+        percentage: u16,
+        duration_ticks: u32,
+    },
+
+    ReduceDamageTaken {
+        percentage: u8,
+        duration_ticks: u32,
+    },
+
     Summon {
         summon: SummonId,
         count: u8,
@@ -132,7 +126,6 @@ pub enum SpellEffect {
     },
 
     // Passive spell modifications.
-
     IncreaseSpellDamage {
         spell: SpellId,
         percentage: u16,
@@ -209,11 +202,7 @@ pub struct Spell {
 }
 
 impl Spell {
-    pub fn active(
-        id: SpellId,
-        name: &'static str,
-        class: Class,
-    ) -> Self {
+    pub fn active(id: SpellId, name: &'static str, class: Class) -> Self {
         Self {
             id,
             name,
@@ -245,13 +234,12 @@ impl Spell {
         class: Class,
         effects: Vec<SpellEffect>,
     ) -> Self {
-        let mut spell = Self::active(id, name, class);
-
-        spell.spell_type = SpellType::Passive;
-        spell.target = SpellTarget::NoTarget;
-        spell.gcd = GcdType::OffGcd;
-        spell.effects = effects;
-
-        spell
+        Self {
+            spell_type: SpellType::Passive,
+            target: SpellTarget::NoTarget,
+            gcd: GcdType::OffGcd,
+            effects,
+            ..Self::active(id, name, class)
+        }
     }
 }
