@@ -19,6 +19,46 @@ use arena_sim::map::Layout;
 /// Unacknowledged inputs kept for replay (over 8 s at 30 Hz).
 const MAX_PENDING: usize = 256;
 
+/// Inputs a client aims to keep queued on the server: one rides out a
+/// late arrival without an idle tick, and an early one without a backlog.
+pub const QUEUE_TARGET: f64 = 1.0;
+/// Most a client stretches or shrinks its input interval to steer the queue.
+pub const MAX_PACE: f64 = 0.04;
+
+/// Steers how fast a client sends inputs so the server's queue for it stays
+/// near [`QUEUE_TARGET`]. Sending exactly at the server's rate lets the
+/// queue drift with timing jitter; when it grows past the server's limit
+/// inputs are folded together and a predicted step is lost, and when it
+/// empties ticks go idle.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Pacer {
+    average: Option<f64>,
+}
+impl Pacer {
+    /// Records the queue length a snapshot reported.
+    pub fn observe(&mut self, queued: u8) {
+        let sample = f64::from(queued);
+        // About half a second of snapshots at 30 Hz.
+        self.average = Some(
+            self.average
+                .map_or(sample, |avg| avg + (sample - avg) / 15.0),
+        );
+    }
+    pub fn average(&self) -> Option<f64> {
+        self.average
+    }
+    /// Multiplier for the input interval: above 1 sends slower (the queue
+    /// is long), below 1 faster (it keeps running dry).
+    pub fn factor(&self) -> f64 {
+        self.average.map_or(1.0, |avg| {
+            1.0 + MAX_PACE * (avg - QUEUE_TARGET).clamp(-1.0, 1.0)
+        })
+    }
+    pub fn reset(&mut self) {
+        self.average = None;
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Predictor {
     /// The server's latest state plus every unacknowledged input.

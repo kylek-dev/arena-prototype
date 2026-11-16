@@ -32,6 +32,12 @@ function LinkStatistics({ link }: { link: Link }) {
     ["Underruns", String(status?.underruns ?? 0)],
     ["Predicted ahead", `${status?.predictedTicks ?? 0} ticks`],
     [
+      "Server queue",
+      status?.queued == null
+        ? "—"
+        : `${status.queued.toFixed(1)} · pace ${(status.pace * 100).toFixed(1)}%`,
+    ],
+    [
       "Corrections",
       `${status?.corrections ?? 0}${
         status?.lastCorrectionMm ? ` · last ${status.lastCorrectionMm} mm` : ""

@@ -178,9 +178,10 @@ fn a_tick_without_input_is_idle_and_a_backlog_is_folded() {
     let start = session.arena().fighters()[0];
     session.tick();
     assert_eq!(session.arena().fighters()[0].position, start.position);
-    // A burst of six (a stalled tab catching up): the first applies, three
-    // fold into it, and two stay queued, one per following tick.
-    for seq in 1..=6 {
+    // A burst of eight (a stalled tab catching up): the first applies, the
+    // excess over the backlog limit folds into it, and the rest stay queued,
+    // one per following tick. Every snapshot says how many are waiting.
+    for seq in 1..=8 {
         session.receive(
             0,
             conn(0),
@@ -191,15 +192,23 @@ fn a_tick_without_input_is_idle_and_a_backlog_is_folded() {
         );
     }
     let out = session.tick();
-    assert_eq!(snapshot(&out, conn(0)).unwrap().ack, 4);
-    assert_eq!(Metrics::get(&session.metrics.inputs_folded), 3);
+    let folded = 8 - 1 - MAX_BACKLOG as u32;
+    let first = snapshot(&out, conn(0)).unwrap();
+    assert_eq!((first.ack, first.queued), (1 + folded, MAX_BACKLOG as u8));
+    assert_eq!(snapshot(&out, conn(1)).unwrap().queued, 0, "per seat");
+    assert_eq!(
+        Metrics::get(&session.metrics.inputs_folded),
+        u64::from(folded)
+    );
     assert!(
         session.arena().fighters()[0].height > 0,
         "a folded jump is kept"
     );
-    assert_eq!(snapshot(&session.tick(), conn(0)).unwrap().ack, 5);
-    assert_eq!(snapshot(&session.tick(), conn(0)).unwrap().ack, 6);
-    assert_eq!(snapshot(&session.tick(), conn(0)).unwrap().ack, 6);
+    for (ack, queued) in [(5, 3), (6, 2), (7, 1), (8, 0), (8, 0)] {
+        let out = session.tick();
+        let own = snapshot(&out, conn(0)).unwrap();
+        assert_eq!((own.ack, own.queued), (ack, queued));
+    }
 }
 
 #[test]
@@ -488,4 +497,119 @@ fn a_predicting_client_agrees_with_the_server_while_running_on_the_ground() {
     assert!(corrections > 0);
     let tick_of_motion = (arena_sim::arena::MOVE_PER_TICK + arena_sim::arena::JUMP_SPEED) as u64;
     assert!(worst > 0 && worst <= tick_of_motion, "{worst}");
+}
+
+/// Outcome of a simulated browser client against the real session.
+#[derive(Debug)]
+struct Simulated {
+    folded: u64,
+    overflowed: u64,
+    corrections: u64,
+    /// Average inputs queued for the client over the last 10 s.
+    late_queue: f64,
+}
+
+/// A browser-like client for 60 s: fixed 30 Hz inputs sent on 240 Hz
+/// frames with jitter, starting right on the server's tick boundaries, a
+/// clock `drift` fast, and a burst of seven catch-up inputs at 20 s (a tab
+/// back from the background). It predicts its own movement, and paces its
+/// input interval from the snapshots when `paced`.
+fn browser_like(paced: bool, drift: f64) -> Simulated {
+    use arena_protocol::prediction::{Pacer, Predictor};
+    let layout = arena_map::colosseum().layout;
+    // The production limits (an eight-input queue).
+    let mut session = Session::new(arena(1), 42, Limits::default(), Arc::default());
+    session.attach(0, conn(0));
+    session.attach(1, conn(1));
+    session.tick();
+    let mut predictor = Predictor::default();
+    let mut pacer = Pacer::default();
+    let mut rng = 0x2545_F491_4F6C_DD1D_u64;
+    let mut noise = move |scale: f64| {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        (rng % 10_000) as f64 / 10_000.0 * scale
+    };
+    let tick = 1.0 / 30.0;
+    let frame = 1.0 / 240.0;
+    let (mut accumulator, mut seq, mut frame_time) = (0.0, 0u32, 0.0);
+    let mut stalled = false;
+    let mut in_flight: std::collections::VecDeque<(f64, InputFrame)> = Default::default();
+    let mut queued = Vec::new();
+    for server_tick in 1..=1800u32 {
+        let tick_at = f64::from(server_tick) * tick;
+        // Client frames up to this server tick.
+        while frame_time < tick_at {
+            frame_time += (frame + noise(0.0005) - 0.00025) / (1.0 + drift);
+            accumulator += frame;
+            if server_tick == 600 && !stalled {
+                stalled = true;
+                accumulator += 7.0 * tick; // stalled, then catching up at once
+            }
+            let interval = tick * if paced { pacer.factor() } else { 1.0 };
+            let mut sent = 0;
+            while accumulator >= interval {
+                accumulator -= interval;
+                if sent == 2 {
+                    continue; // at most two a frame, like the client
+                }
+                sent += 1;
+                seq += 1;
+                let input = frame_input(seq);
+                let mut slot = ActorInput::default();
+                input.merge_into(&mut slot);
+                predictor.apply(seq, slot);
+                in_flight.push_back((frame_time + noise(0.002), input));
+            }
+        }
+        while in_flight.front().is_some_and(|(at, _)| *at <= tick_at) {
+            let (_, input) = in_flight.pop_front().unwrap();
+            session.receive(0, conn(0), input);
+        }
+        let out = session.tick();
+        let snapshot = snapshot(&out, conn(0)).unwrap();
+        pacer.observe(snapshot.queued);
+        if server_tick > 1500 {
+            queued.push(f64::from(snapshot.queued));
+        }
+        let fighters = snapshot
+            .fighters
+            .iter()
+            .map(FighterState::combatant)
+            .collect();
+        predictor.reconcile(&layout, snapshot.tick, fighters, None, 0, snapshot.ack);
+    }
+    Simulated {
+        folded: Metrics::get(&session.metrics.inputs_folded),
+        overflowed: Metrics::get(&session.metrics.inputs_overflow),
+        corrections: predictor.corrections(),
+        late_queue: queued.iter().sum::<f64>() / queued.len() as f64,
+    }
+}
+
+/// Running in a circle, so every step moves (and every lost step shows).
+fn frame_input(seq: u32) -> InputFrame {
+    let angle = f64::from(seq) * 0.05;
+    InputFrame {
+        seq,
+        movement: [(angle.cos() * 1000.0) as i16, (angle.sin() * 1000.0) as i16],
+        ..InputFrame::default()
+    }
+}
+
+#[test]
+fn paced_clients_keep_one_input_queued_through_jitter_drift_and_bursts() {
+    let paced = browser_like(true, 0.005);
+    let unpaced = browser_like(false, 0.005);
+    // Unpaced, a slightly fast clock fills the queue until inputs fold
+    // together, each costing a predicted step.
+    assert!(unpaced.folded > 0 && unpaced.corrections > 0, "{unpaced:?}");
+    // Paced, the queue settles near one input: nothing folds or overflows,
+    // and the prediction is never corrected.
+    assert_eq!(
+        (paced.folded, paced.overflowed, paced.corrections),
+        (0, 0, 0)
+    );
+    assert!((0.5..=1.6).contains(&paced.late_queue), "{paced:?}");
 }

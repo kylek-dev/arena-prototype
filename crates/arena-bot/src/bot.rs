@@ -15,7 +15,7 @@ use arena_sim::arena::{ATTACK_RANGE, ActorInput};
 use arena_sim::map::Layout;
 use futures_util::{SinkExt, StreamExt};
 use tokio::time::{Instant, MissedTickBehavior};
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::Shared;
@@ -144,7 +144,10 @@ async fn session(
     leave: Leave,
     rejoining: bool,
 ) -> End {
-    let Ok((socket, _)) = connect_async(format!("ws://{}/play", seat.server)).await else {
+    // Browsers disable Nagle's algorithm for WebSockets; so do the bots.
+    let Ok((socket, _)) =
+        connect_async_with_config(format!("ws://{}/play", seat.server), None, true).await
+    else {
         return End::Lost("connect failed");
     };
     let (mut sink, mut stream) = socket.split();
@@ -374,6 +377,7 @@ mod tests {
         Snapshot {
             tick: 1,
             ack: 0,
+            queued: 0,
             hash: 0,
             result: None,
             fighters,

@@ -425,3 +425,55 @@ fn nothing_is_predicted_while_waiting_and_a_new_socket_starts_over() {
         "a reconnect waits for the server again"
     );
 }
+
+#[test]
+fn a_catch_up_burst_sends_two_inputs_a_frame_and_predicts_only_those() {
+    let (mut session, _) = running_session();
+    let start = session.own().unwrap().current;
+    // A tab back from the background runs seven fixed ticks in one frame.
+    let sent = (0..7)
+        .filter_map(|_| session.input([0, -1000], 0, false, None, 5.0))
+        .count();
+    assert_eq!(sent, 2);
+    assert_eq!(session.stats.skipped_inputs, 5);
+    assert_eq!(session.stats.predicted_ticks, 2);
+    let step = arena_sim::arena::MOVE_PER_TICK as f32 / 1000.0;
+    assert!((session.own().unwrap().current.z - (start.z - 2.0 * step)).abs() < 1e-4);
+    // The next frame sends again.
+    assert!(session.input([0, -1000], 0, false, None, 5.01).is_some());
+}
+
+#[test]
+fn sending_is_paced_to_keep_one_input_queued_on_the_server() {
+    let (mut session, mut server) = running_session();
+    // The first snapshot shows an empty queue: send a little faster to
+    // build one input of cushion.
+    assert!(session.pace() < 1.0);
+    let snapshot_with = |server: &Arena, queued: u8| {
+        let mut snapshot = Snapshot::capture(server, 0, vec![], &[true, true]);
+        snapshot.queued = queued;
+        ServerMessage::Snapshot(snapshot).encode()
+    };
+    // A long queue slows sending (a longer interval) ...
+    for _ in 0..60 {
+        server.step(&[]);
+        session.receive(&feed(1, vec![snapshot_with(&server, 4)]), 0.0, &layout());
+    }
+    assert!(session.pace() > 1.03, "{}", session.pace());
+    assert!(session.pace() <= 1.0 + arena_protocol::prediction::MAX_PACE);
+    // ... an empty one speeds it up, and one queued input holds it steady.
+    for _ in 0..60 {
+        server.step(&[]);
+        session.receive(&feed(1, vec![snapshot_with(&server, 0)]), 0.0, &layout());
+    }
+    assert!(session.pace() < 0.97, "{}", session.pace());
+    for _ in 0..120 {
+        server.step(&[]);
+        session.receive(&feed(1, vec![snapshot_with(&server, 1)]), 0.0, &layout());
+    }
+    assert!((session.pace() - 1.0).abs() < 0.002, "{}", session.pace());
+    let status: serde_json::Value = serde_json::from_str(&session.status_json()).unwrap();
+    assert!((status["queued"].as_f64().unwrap() - 1.0).abs() < 0.1);
+    // Not running: plain rules tick.
+    assert_eq!(joined(0, 1).pace(), 1.0);
+}

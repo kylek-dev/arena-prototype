@@ -579,6 +579,11 @@ pub async fn start(config: Config) -> io::Result<Running> {
     }
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     let addr = listener.local_addr()?;
+    // Snapshots and pongs are small and frequent; Nagle's algorithm would
+    // hold them back waiting for acknowledgements (tens of milliseconds).
+    let listener = axum::serve::ListenerExt::tap_io(listener, |stream| {
+        let _ = stream.set_nodelay(true);
+    });
     let app = App::new(config);
     let mut stop = app.shutdown.subscribe();
     let server = axum::serve(listener, router(app.clone())).with_graceful_shutdown(async move {

@@ -23,7 +23,7 @@
 
 use std::collections::VecDeque;
 
-use arena_protocol::prediction::Predictor;
+use arena_protocol::prediction::{Pacer, Predictor};
 use arena_protocol::{
     ClientMessage, ErrorCode, FighterState, InputFrame, ServerMessage, WireEvent,
 };
@@ -43,6 +43,10 @@ const SNAP: f64 = 15.0;
 const CORRECTION_FADE: f64 = 0.08;
 /// Corrections larger than this (metres) snap instead of easing.
 const CORRECTION_SNAP: f32 = 2.0;
+/// Inputs sent in one rendered frame at most. After a stall (a tab back
+/// from the background) the fixed clock catches up with a burst; the rest
+/// of the burst is neither sent nor predicted, so both sides agree.
+const MAX_INPUTS_PER_FRAME: u32 = 2;
 
 /// What the browser runtime hands over each frame while a match is set up.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -114,6 +118,10 @@ pub struct Stats {
     pub corrections: u64,
     /// Size of the latest correction, in millimetres.
     pub last_correction_mm: Option<u64>,
+    /// This player's inputs waiting on the server, averaged.
+    pub queued: Option<f64>,
+    /// Catch-up inputs not sent after a stall.
+    pub skipped_inputs: u64,
 }
 
 /// The locally predicted fighter, for drawing between fixed ticks.
@@ -167,6 +175,9 @@ pub struct Session {
     pings: VecDeque<(u32, f64)>,
     last_ping: Option<f64>,
     predictor: Predictor,
+    pacer: Pacer,
+    /// The frame (its `now`) of the latest input, and inputs sent in it.
+    frame_inputs: (f64, u32),
     own: Option<Own>,
     /// The newest snapshot's state in server order, to reconcile with.
     newest_state: Option<(u64, Vec<Combatant>, Option<RoundResult>, u32)>,
@@ -227,6 +238,8 @@ impl Session {
             self.last_ping = None;
             // Old sequence numbers mean nothing to the new connection.
             self.predictor.reset();
+            self.pacer.reset();
+            self.frame_inputs = (f64::NAN, 0);
             self.own = None;
         }
         for frame in &feed.frames {
@@ -275,6 +288,10 @@ impl Session {
                     let result = snapshot.result.map(RoundResult::from);
                     self.newest_state =
                         Some((snapshot.tick, authoritative.clone(), result, snapshot.ack));
+                    if snapshot.tick > 0 {
+                        self.pacer.observe(snapshot.queued);
+                        self.stats.queued = self.pacer.average();
+                    }
                     if let Some(arena) =
                         Arena::restore(layout.clone(), snapshot.tick, authoritative.clone(), result)
                         && arena.state_hash() != snapshot.hash
@@ -406,6 +423,16 @@ impl Session {
         self.stats.predicted_ticks = self.predictor.pending();
     }
 
+    /// How much to stretch the fixed input interval so this player's queue
+    /// on the server stays near one input: above 1 sends slower.
+    pub fn pace(&self) -> f64 {
+        if self.phase == Phase::Playing {
+            self.pacer.factor()
+        } else {
+            1.0
+        }
+    }
+
     /// The predicted fighter, for drawing; `None` unless a round is running.
     pub fn own(&self) -> Option<Own> {
         self.own
@@ -451,6 +478,15 @@ impl Session {
     ) -> Option<Vec<u8>> {
         if !self.joined() {
             return None;
+        }
+        if self.frame_inputs.0 == now {
+            if self.frame_inputs.1 >= MAX_INPUTS_PER_FRAME {
+                self.stats.skipped_inputs += 1;
+                return None;
+            }
+            self.frame_inputs.1 += 1;
+        } else {
+            self.frame_inputs = (now, 1);
         }
         self.seq += 1;
         self.unacked.push_back((self.seq, now));
@@ -600,7 +636,7 @@ impl Session {
         };
         let number = |value: Option<f64>| value.map_or("null".into(), |v| format!("{v:.1}"));
         format!(
-            r#"{{"phase":"{phase}","error":{},"seat":{},"mapDiffers":{},"rttMs":{},"inputMs":{},"delayMs":{:.1},"snapshots":{},"underruns":{},"hashMismatches":{},"predictedTicks":{},"corrections":{},"lastCorrectionMm":{}}}"#,
+            r#"{{"phase":"{phase}","error":{},"seat":{},"mapDiffers":{},"rttMs":{},"inputMs":{},"delayMs":{:.1},"snapshots":{},"underruns":{},"hashMismatches":{},"predictedTicks":{},"corrections":{},"lastCorrectionMm":{},"queued":{},"pace":{:.3},"skippedInputs":{}}}"#,
             error.map_or("null".into(), |code| format!("\"{code:?}\"")),
             self.seat.map_or("null".into(), |seat| seat.to_string()),
             self.map_differs().unwrap_or(false),
@@ -615,6 +651,9 @@ impl Session {
             self.stats
                 .last_correction_mm
                 .map_or("null".into(), |mm| mm.to_string()),
+            number(self.stats.queued),
+            self.pace(),
+            self.stats.skipped_inputs,
         )
     }
 }

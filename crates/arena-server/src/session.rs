@@ -25,8 +25,9 @@ use crate::metrics::Metrics;
 pub type ConnId = u64;
 
 /// Inputs left waiting after a tick before the excess is folded together.
-/// Each waiting input is a tick of delay; two ride out ordinary jitter.
-pub const MAX_BACKLOG: usize = 2;
+/// Clients pace themselves to keep about one waiting (`Pacer`), so only a
+/// real burst (a tab returning from the background) reaches this.
+pub const MAX_BACKLOG: usize = 4;
 
 /// Session limits, in ticks where they are durations.
 #[derive(Clone, Copy, Debug)]
@@ -327,14 +328,11 @@ impl Session {
                     .filter_map(|event| WireEvent::for_recipient(event, index))
                     .map(|event| TickEvent { tick, event })
                     .collect();
+                let mut snapshot = Snapshot::capture(&self.arena, seat.ack, events, &connected);
+                snapshot.queued = u8::try_from(seat.pending.len()).unwrap_or(u8::MAX);
                 Some(Out::Send {
                     conn,
-                    message: ServerMessage::Snapshot(Snapshot::capture(
-                        &self.arena,
-                        seat.ack,
-                        events,
-                        &connected,
-                    )),
+                    message: ServerMessage::Snapshot(snapshot),
                 })
             })
             .collect()

@@ -107,6 +107,9 @@ pub struct Snapshot {
     pub tick: u64,
     /// The last input `seq` applied for the recipient.
     pub ack: u32,
+    /// The recipient's inputs still queued after this tick. Clients pace
+    /// their sending to keep it near one (`prediction::Pacer`).
+    pub queued: u8,
     /// `Arena::state_hash()` of this state.
     pub hash: u64,
     pub result: Option<WireResult>,
@@ -125,6 +128,7 @@ impl Snapshot {
         Self {
             tick: arena.tick(),
             ack,
+            queued: 0,
             hash: arena.state_hash(),
             result: arena.result().map(WireResult::from),
             fighters: arena
