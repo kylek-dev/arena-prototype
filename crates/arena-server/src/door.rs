@@ -7,7 +7,11 @@
 //! - `POST /api/matches` with `{"team_size": 1..=3}` returns the links.
 //!   Browsers must send an allowed `Origin`; each client address may create
 //!   a few matches at once and then one per interval.
-//! - `GET /lobby/` is a small page that calls it and lists the links.
+//! - `GET /api/queue` is the solo queues' WebSocket ([`queue`], ADR 0046):
+//!   the game queues for 1v1, solo 2v2 or solo 3v3 and receives its own
+//!   ticket directly when a match forms, with no link to pass around.
+//! - `GET /lobby/` is a small page that calls `/api/matches` and lists the
+//!   links.
 //! - `GET /healthz` and `GET /metrics` for operations.
 //!
 //! Tickets travel only in response bodies and in the links' fragments,
@@ -18,6 +22,9 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+
+mod queue;
+pub use queue::ToClient as QueueMessage;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{ConnectInfo, DefaultBodyLimit, State};
@@ -27,11 +34,11 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-use crate::ingress::{self, Cidr, Origins, RatePerAddress};
+use crate::ingress::{self, Cidr, OpenPerAddress, Origins, RatePerAddress};
 use crate::metrics::Metrics;
 use crate::ticket::{self, TicketKey};
 
@@ -52,6 +59,10 @@ pub struct DoorConfig {
     pub creation_burst: u32,
     /// ... and then one per this interval.
     pub creation_every: Duration,
+    /// How long a found player has to confirm before being dropped.
+    pub ready_timeout: Duration,
+    /// Open queue connections one client address may hold.
+    pub queue_per_address: u32,
 }
 impl DoorConfig {
     pub fn new(key: TicketKey, match_server: String, page: String) -> Self {
@@ -65,6 +76,8 @@ impl DoorConfig {
             ticket_ttl: Duration::from_secs(2 * 60 * 60),
             creation_burst: 5,
             creation_every: Duration::from_secs(30),
+            ready_timeout: Duration::from_secs(10),
+            queue_per_address: 12,
         }
     }
 }
@@ -74,12 +87,19 @@ struct DoorMetrics {
     issued: AtomicU64,
     refused_rate: AtomicU64,
     refused_origin: AtomicU64,
+    /// Players in a queue or ready check right now.
+    queued: AtomicU64,
+    queue_matches: AtomicU64,
 }
 
 struct Door {
     config: DoorConfig,
     creations: RatePerAddress,
     metrics: DoorMetrics,
+    queue: mpsc::Sender<queue::Command>,
+    queue_open: Arc<OpenPerAddress>,
+    next_conn: AtomicU64,
+    shutdown: watch::Sender<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -218,7 +238,17 @@ async fn create(
 
 async fn render_metrics(State(door): State<Arc<Door>>) -> String {
     let mut text = String::new();
+    let _ = writeln!(
+        text,
+        "# HELP arena_door_queued Players in a queue or ready check.\n# TYPE arena_door_queued gauge\narena_door_queued {}",
+        Metrics::get(&door.metrics.queued)
+    );
     for (name, help, counter) in [
+        (
+            "door_queue_matches_total",
+            "Matches formed from the queues.",
+            &door.metrics.queue_matches,
+        ),
         (
             "door_matches_issued_total",
             "Matches whose tickets were issued.",
@@ -278,18 +308,27 @@ fn page(content_type: &'static str, body: impl Into<axum::body::Body>) -> Respon
     response
 }
 
-pub fn router(config: DoorConfig) -> Router {
+/// The door's routes, with its matchmaker task started. Must be called
+/// inside the Tokio runtime.
+fn build(config: DoorConfig) -> (Router, Arc<Door>) {
+    let (commands, receiver) = mpsc::channel(1024);
     let door = Arc::new(Door {
         creations: RatePerAddress::new(config.creation_burst, config.creation_every),
+        queue_open: OpenPerAddress::new(config.queue_per_address),
         config,
         metrics: DoorMetrics::default(),
+        queue: commands,
+        next_conn: AtomicU64::new(1),
+        shutdown: watch::Sender::new(false),
     });
+    tokio::spawn(queue::run(door.clone(), receiver));
     let palette = palette_css();
-    Router::new()
+    let router = Router::new()
         .route(
             "/api/matches",
             post(create).layer(DefaultBodyLimit::max(1024)),
         )
+        .route("/api/queue", get(queue::upgrade))
         .route("/lobby", get(|| async { Redirect::permanent("/lobby/") }))
         .route(
             "/lobby/",
@@ -312,7 +351,8 @@ pub fn router(config: DoorConfig) -> Router {
         )
         .route("/healthz", get(|| async { "ok" }))
         .route("/metrics", get(render_metrics))
-        .with_state(door)
+        .with_state(door.clone());
+    (router, door)
 }
 
 /// A started front door.
@@ -331,8 +371,10 @@ impl DoorRunning {
 pub async fn start(config: DoorConfig) -> io::Result<DoorRunning> {
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     let addr = listener.local_addr()?;
-    let (stop, mut stopped) = watch::channel(false);
-    let service = router(config).into_make_service_with_connect_info::<SocketAddr>();
+    let (router, door) = build(config);
+    let stop = door.shutdown.clone();
+    let mut stopped = stop.subscribe();
+    let service = router.into_make_service_with_connect_info::<SocketAddr>();
     let server = axum::serve(listener, service).with_graceful_shutdown(async move {
         let _ = stopped.wait_for(|stop| *stop).await;
     });

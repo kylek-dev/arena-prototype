@@ -9,6 +9,7 @@
 
 pub mod door;
 pub mod ingress;
+pub mod matchmaker;
 pub mod metrics;
 pub mod session;
 pub mod ticket;

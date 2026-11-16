@@ -187,3 +187,239 @@ async fn links_from_the_front_door_start_and_join_a_match() {
     running.stop().await.unwrap();
     server.stop().await.unwrap();
 }
+
+mod queue {
+    use super::*;
+    use arena_server::door::QueueMessage;
+    use futures_util::stream::{SplitSink, SplitStream};
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+    type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+    struct Queuer {
+        sink: SplitSink<Socket, Message>,
+        stream: SplitStream<Socket>,
+    }
+    impl Queuer {
+        async fn open(addr: SocketAddr) -> Self {
+            let mut request = format!("ws://{addr}/api/queue")
+                .into_client_request()
+                .unwrap();
+            request
+                .headers_mut()
+                .insert("origin", "https://arena.example.com".parse().unwrap());
+            let (socket, _) = connect_async(request).await.unwrap();
+            let (sink, stream) = socket.split();
+            Self { sink, stream }
+        }
+        async fn say(&mut self, json: &str) {
+            self.sink.send(Message::text(json)).await.unwrap();
+        }
+        async fn join(addr: SocketAddr, mode: &str, guest: u128) -> Self {
+            let mut queuer = Self::open(addr).await;
+            queuer
+                .say(&format!(
+                    r#"{{"type":"join","mode":"{mode}","guest":"{guest:032x}"}}"#
+                ))
+                .await;
+            queuer
+        }
+        /// The next message, or `None` once the door closed the socket.
+        async fn next(&mut self) -> Option<QueueMessage> {
+            loop {
+                match tokio::time::timeout(WAIT, self.stream.next())
+                    .await
+                    .unwrap()
+                {
+                    Some(Ok(Message::Text(text))) => {
+                        return Some(serde_json::from_str(&text).unwrap());
+                    }
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return None,
+                    Some(Ok(_)) => {}
+                }
+            }
+        }
+        /// Skips status updates.
+        async fn next_event(&mut self) -> Option<QueueMessage> {
+            loop {
+                match self.next().await {
+                    Some(QueueMessage::Queued { .. }) => {}
+                    other => return other,
+                }
+            }
+        }
+    }
+
+    async fn door_and_server(ready: Duration) -> (door::DoorRunning, arena_server::Running) {
+        let key = TicketKey::random();
+        let mut server_config = Config::new(key.clone());
+        server_config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
+        server_config.tick = Duration::from_millis(5);
+        let server = start(server_config).await.unwrap();
+        let mut config = DoorConfig::new(key, format!("ws://{}/play", server.addr), PAGE.into());
+        config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
+        config.origins = Origins::Only(vec!["https://arena.example.com".into()]);
+        config.ready_timeout = ready;
+        (door::start(config).await.unwrap(), server)
+    }
+
+    #[tokio::test]
+    async fn four_solo_players_are_matched_and_each_joins_their_own_seat() {
+        let (door, server) = door_and_server(Duration::from_secs(5)).await;
+        let mut queuers = Vec::new();
+        for guest in 1..=3u128 {
+            let mut queuer = Queuer::join(door.addr, "solo-2v2", guest).await;
+            match queuer.next().await {
+                Some(QueueMessage::Queued { mode, waiting }) => {
+                    assert_eq!((mode.as_str(), waiting), ("solo-2v2", guest as usize));
+                }
+                other => panic!("expected queued, got {other:?}"),
+            }
+            queuers.push(queuer);
+        }
+        queuers.push(Queuer::join(door.addr, "solo-2v2", 4).await);
+        for queuer in &mut queuers {
+            assert_eq!(
+                queuer.next_event().await,
+                Some(QueueMessage::Found {
+                    mode: "solo-2v2".into()
+                })
+            );
+            queuer.say(r#"{"type":"ready"}"#).await;
+        }
+        let mut actors = Vec::new();
+        let mut seats = Vec::new();
+        for queuer in &mut queuers {
+            let Some(QueueMessage::Match {
+                mode,
+                server: play,
+                ticket,
+                ..
+            }) = queuer.next_event().await
+            else {
+                panic!("expected a match");
+            };
+            assert_eq!(mode, "solo-2v2");
+            assert_eq!(queuer.next().await, None, "the door closes after the seat");
+            let (mut socket, _) = connect_async(&play).await.unwrap();
+            let hello = ClientMessage::Hello {
+                protocol: PROTOCOL_VERSION,
+                ticket: from_hex(&ticket).unwrap(),
+            };
+            socket.send(Message::binary(hello.encode())).await.unwrap();
+            let frame = tokio::time::timeout(WAIT, socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            match ServerMessage::decode(&frame.into_data()).unwrap() {
+                ServerMessage::Welcome(welcome) => {
+                    assert_eq!(welcome.team_size, 2);
+                    actors.push(welcome.actor);
+                }
+                other => panic!("expected a welcome, got {other:?}"),
+            }
+            seats.push(socket);
+        }
+        actors.sort();
+        assert_eq!(actors, [0, 1, 2, 3], "four distinct seats in one match");
+        assert_eq!(server.active_matches(), 1);
+        let metrics = request(door.addr, "GET", "/metrics", "", "").await.body;
+        assert!(
+            metrics.contains("arena_door_queue_matches_total 1\n"),
+            "{metrics}"
+        );
+        door.stop().await.unwrap();
+        server.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn no_shows_are_dropped_and_the_others_go_back_to_the_front() {
+        let (door, server) = door_and_server(Duration::from_millis(300)).await;
+        let mut first = Queuer::join(door.addr, "1v1", 1).await;
+        first.next().await;
+        let mut absent = Queuer::join(door.addr, "1v1", 2).await;
+        assert!(matches!(
+            first.next_event().await,
+            Some(QueueMessage::Found { .. })
+        ));
+        assert!(matches!(
+            absent.next_event().await,
+            Some(QueueMessage::Found { .. })
+        ));
+        first.say(r#"{"type":"ready"}"#).await;
+        // The absent player never confirms.
+        match absent.next_event().await {
+            Some(QueueMessage::Error { code, .. }) => assert_eq!(code, "not_ready"),
+            other => panic!("expected not_ready, got {other:?}"),
+        }
+        assert_eq!(
+            first.next_event().await,
+            Some(QueueMessage::Requeued { mode: "1v1".into() })
+        );
+        // A newcomer is matched with the requeued player straight away.
+        let mut newcomer = Queuer::join(door.addr, "1v1", 3).await;
+        assert!(matches!(
+            first.next_event().await,
+            Some(QueueMessage::Found { .. })
+        ));
+        assert!(matches!(
+            newcomer.next_event().await,
+            Some(QueueMessage::Found { .. })
+        ));
+        door.stop().await.unwrap();
+        server.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_queue_refuses_strangers_bad_messages_and_double_entries() {
+        let (door, server) = door_and_server(Duration::from_secs(5)).await;
+        // Another website's page cannot queue its visitors.
+        let mut request = format!("ws://{}/api/queue", door.addr)
+            .into_client_request()
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("origin", "https://elsewhere.example".parse().unwrap());
+        match connect_async(request).await {
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                assert_eq!(response.status().as_u16(), 403)
+            }
+            other => panic!("expected 403, got {:?}", other.map(|(_, r)| r.status())),
+        }
+        for bad in [
+            r#"{"type":"ready"}"#,
+            r#"{"type":"join","mode":"2v2","guest":"00000000000000000000000000000001"}"#,
+            r#"{"type":"join","mode":"1v1","guest":"me"}"#,
+            "hello",
+        ] {
+            let mut queuer = Queuer::open(door.addr).await;
+            queuer.say(bad).await;
+            match queuer.next().await {
+                Some(QueueMessage::Error { code, .. }) => assert_eq!(code, "bad_request", "{bad}"),
+                other => panic!("{bad}: expected bad_request, got {other:?}"),
+            }
+        }
+        // Queueing again from another tab replaces the first entry.
+        let mut tab = Queuer::join(door.addr, "solo-3v3", 7).await;
+        tab.next().await;
+        let mut other_tab = Queuer::join(door.addr, "solo-3v3", 7).await;
+        match tab.next_event().await {
+            Some(QueueMessage::Error { code, .. }) => assert_eq!(code, "replaced"),
+            other => panic!("expected replaced, got {other:?}"),
+        }
+        match other_tab.next().await {
+            Some(QueueMessage::Queued { waiting, .. }) => assert_eq!(waiting, 1),
+            other => panic!("expected queued, got {other:?}"),
+        }
+        // Stopping the door tells queued players.
+        let stopping = tokio::spawn(door.stop());
+        match other_tab.next_event().await {
+            Some(QueueMessage::Error { code, .. }) => assert_eq!(code, "shutdown"),
+            other => panic!("expected shutdown, got {other:?}"),
+        }
+        stopping.await.unwrap().unwrap();
+        server.stop().await.unwrap();
+    }
+}
