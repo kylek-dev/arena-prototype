@@ -247,11 +247,13 @@ for a minute when a match was left open (user feedback).
   servers as allocated, and plain Kubernetes can use the cluster
   autoscaler's `safe-to-evict: false` annotation while matches run. Then
   only real failures interrupt matches.
-- **Open question (game design).** Drains can only be bounded if rounds
-  are: today a round ends only when a team is eliminated, so passive
-  players can hold a match open indefinitely. A round time limit
-  (anti-stall rule) belongs with the rules work. GAME.md already lists it
-  as open.
+- **Bounded rounds (user decision).** A round lasts at most 20 minutes;
+  one still running then ends in a draw (`MAX_ROUND_TICKS`,
+  `RULES_VERSION` 2). A match therefore ends at most 20 minutes after it
+  starts, plus the 5 s linger, or up to 60 s more while waiting for players.
+  A drain of `--drain-seconds 1210`, with a termination grace period a few
+  seconds longer, lets every match a server is hosting finish. Shorter
+  drains are a trade-off between match completion and deploy speed.
 
 ### Scaling topology (proposed; first measurements)
 

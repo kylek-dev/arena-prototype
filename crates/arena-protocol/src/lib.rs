@@ -19,7 +19,8 @@ use serde::{Deserialize, Serialize};
 /// always read the version of a client it no longer understands.
 pub const PROTOCOL_VERSION: u16 = 1;
 /// Bumped whenever a rules change could alter a replayed outcome.
-pub const RULES_VERSION: u32 = 1;
+/// 2: rounds end in a draw after twenty minutes (`MAX_ROUND_TICKS`).
+pub const RULES_VERSION: u32 = 2;
 /// Largest frame a client may send.
 pub const MAX_CLIENT_FRAME: usize = 1024;
 /// Largest frame the server sends; a full 3v3 snapshot is far smaller.

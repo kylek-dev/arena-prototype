@@ -96,7 +96,8 @@ These are message sizes, not network measurements.
 the golden-frame test fails until it is bumped deliberately. Until the first
 browser client ships, version 1 is a draft and may still change without a
 bump (the per-fighter `connected` flag was added this way).
-`RULES_VERSION` (currently 1) changes when a rules change could alter a
+`RULES_VERSION` (currently 2: rounds end in a draw after 20 minutes)
+changes when a rules change could alter a
 replayed outcome. `Welcome.map` identifies the layout.
 
 ## Join tickets

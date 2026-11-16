@@ -31,6 +31,10 @@ pub const ATTACK_RANGE: i32 = 6_000;
 pub const ATTACK_COOLDOWN: u64 = TICKS_PER_SECOND;
 pub const ATTACK_DAMAGE: u16 = 25;
 pub const MAX_HEALTH: u16 = 100;
+/// Longest a round may last: twenty minutes of ticks. A round still running
+/// at its last tick ends in a draw, so passive play cannot hold a match (and
+/// the server hosting it) open indefinitely.
+pub const MAX_ROUND_TICKS: u64 = 20 * 60 * TICKS_PER_SECOND;
 /// Movement axes are quantized to this magnitude on each axis.
 pub const AXIS_LIMIT: i16 = 1000;
 /// Binary angle of team 1's spawn heading: half a turn from team 0.
@@ -457,6 +461,8 @@ impl Arena {
                 .any(|(index, fighter)| index % 2 == team && fighter.health > 0)
         };
         self.result = match (standing(0), standing(1)) {
+            // Time is up after this tick: nobody won.
+            (true, true) if self.tick + 1 >= MAX_ROUND_TICKS => Some(RoundResult::Draw),
             (true, true) => None,
             (true, false) => Some(RoundResult::Won { team: 0 }),
             (false, true) => Some(RoundResult::Won { team: 1 }),
@@ -1456,6 +1462,33 @@ mod tests {
             seen.push(hash);
         }
     }
+    #[test]
+    fn a_round_still_running_after_twenty_minutes_is_a_draw() {
+        assert_eq!(MAX_ROUND_TICKS, 36_000);
+        let mut arena = close_quarters(1, 3_000);
+        arena.tick = MAX_ROUND_TICKS - 2;
+        assert_eq!(arena.step(&[]), vec![]);
+        assert_eq!(arena.result(), None);
+        // The last tick still resolves, then the round ends.
+        assert_eq!(
+            arena.step(&[forward()]),
+            vec![
+                ArenaEvent::Moved { actor: 0 },
+                ArenaEvent::Finished(RoundResult::Draw)
+            ]
+        );
+        assert_eq!(arena.result(), Some(RoundResult::Draw));
+        assert_eq!(arena.tick(), MAX_ROUND_TICKS);
+        // An elimination on that last tick still wins.
+        let mut arena = close_quarters(1, 3_000);
+        arena.tick = MAX_ROUND_TICKS - 1;
+        arena.fighters[1].health = ATTACK_DAMAGE;
+        assert_eq!(
+            arena.step(&[ATTACK]).last(),
+            Some(&ArenaEvent::Finished(RoundResult::Won { team: 0 }))
+        );
+    }
+
     #[test]
     fn restored_arenas_continue_exactly_like_the_original() {
         let mut original = close_quarters(2, 1_000);
