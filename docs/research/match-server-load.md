@@ -122,7 +122,22 @@ its average:
 
 Bots (unpaced, 100 ms with jitter, 3v3 × 50 with drop-outs) after the
 change: no folds or overflows, and 0.1 corrections per 1000 inputs.
-Browser retesting is pending.
+
+A third browser test, with per-seat server diagnostics, found the actual
+cause. The browser sent 29 inputs/s by its clock while the server
+received 31.4–31.6/s by its own, at 30 ticks/s, with the queue pinned at
+4–7. The server's WSL2 monotonic clock ran 9% slow against Windows
+(30.2 s for 32.9 s, with clock source `tsc` and the kernel logging
+"Adjusting tsc more than 11%"). Clients now follow the server's tick rate
+as measured on their own clock:
+
+| Simulated client, 60 s, background-tab burst | Folds | Corrections | Starved ticks | Average queue |
+| --- | --- | --- | --- | --- |
+| Paced, smooth delivery | 0 | 0 | 0 | 1.0 |
+| Paced, 50 ms clumps, client clock 9% fast | 0 | 0 | 0 | 2.0 |
+
+The earlier bot measurements are unaffected: bots run on the same
+(skewed) clock as the server. Browser retesting is pending.
 
 A run with jumps disabled ruled out jumping as the cause of the first
 problem. The remaining corrections match real disagreements: a fighter

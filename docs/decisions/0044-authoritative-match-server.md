@@ -285,6 +285,12 @@ plus the 100 ms view delay: about 130 ms on localhost and about 250 ms at
   slowed down, which deepened the gaps. A client sends at most
   two inputs per frame. The rest of a catch-up burst (a tab returning
   from the background) is neither sent nor predicted, so both sides agree.
+- **Following the server's measured tick rate.** Each client measures
+  the server's ticks per second on its own clock
+  (`prediction::TickRate`, over the last five seconds of snapshots). It
+  sends inputs at that rate, adjusted by pacing, and advances its
+  interpolated view by it. A client never assumes the nominal 30 Hz, so
+  clock skew between client and server is absorbed.
 - **`TCP_NODELAY`.** The server disables Nagle's algorithm on accepted
   connections. Before, small snapshots and pongs waited for
   acknowledgements, and loopback ping p95 was 34.6 ms; it is now 2.5 ms.
@@ -323,7 +329,21 @@ plus the 100 ms view delay: about 130 ms on localhost and about 250 ms at
   with smooth delivery, and paced through 50 ms relay clumps with a 0.5%
   fast clock, both folded and corrected nothing (1 starved tick, average
   queue 1.8 and 2.1). Unpaced with a 2% fast clock, it folded 34 inputs
-  and corrected 19 times. Browser retesting is pending.
+  and corrected 19 times.
+- **The actual cause: clock skew.** Per-seat diagnostics (a `--dev`
+  server line every 5 s, and the overlay's send rate) showed the browser
+  sending 29 inputs a second by its clock while the server received
+  31.4–31.6 a second by its own, at 30 ticks a second. The development
+  server runs in WSL2, whose monotonic clock was measured 9% slow against
+  Windows (30.2 s for 32.9 s; the kernel logged "Adjusting tsc more than
+  11%"). The server's 30 Hz was about 27.5 ticks per real second, and no
+  pacing within ±4% of a nominal 30 Hz could keep up. Following the
+  measured tick rate fixes it. A simulated client 9% fast against the
+  server, through 50 ms relay clumps, folded and corrected nothing and
+  never starved. Production hosts drift by parts per million, but a
+  skewed development VM also runs game time slow; switching WSL's clock
+  source (see `docs/DEVELOPMENT.md`) avoids that. Browser retesting is
+  pending.
 - **Measured** ([load baseline](../research/match-server-load.md#prediction)).
   The bots predict exactly as the browser does. 1v1 at 0, 50, 100 and
   200 ms with jitter had no corrections. 3v3 load with drop-outs had 0.1
