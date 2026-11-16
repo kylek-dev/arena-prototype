@@ -19,7 +19,7 @@ use crate::{Scenario, Shared, Totals, from_hex};
 pub struct QueueScenario {
     /// `host:port` of the front door.
     pub door: String,
-    /// `1v1`, `solo-2v2` or `solo-3v3`.
+    /// `1v1`, `2v2`, `3v3`, `solo-2v2` or `solo-3v3`. Bots queue alone.
     pub mode: String,
     pub bots: usize,
 }
@@ -36,6 +36,9 @@ enum FromDoor {
         seat: usize,
     },
     Error {
+        code: String,
+    },
+    Refused {
         code: String,
     },
     #[serde(other)]
@@ -65,14 +68,15 @@ async fn find_seat(queue: &QueueScenario, guest: u128) -> Result<Found, String> 
     let (mut socket, _) = connect_async(&url)
         .await
         .map_err(|error| format!("cannot reach {url}: {error}"))?;
-    let join = format!(
-        r#"{{"type":"join","mode":"{}","guest":"{guest:032x}"}}"#,
-        queue.mode
-    );
-    socket
-        .send(Message::text(join))
-        .await
-        .map_err(|error| error.to_string())?;
+    for message in [
+        format!(r#"{{"type":"hello","guest":"{guest:032x}"}}"#),
+        format!(r#"{{"type":"queue","mode":"{}"}}"#, queue.mode),
+    ] {
+        socket
+            .send(Message::text(message))
+            .await
+            .map_err(|error| error.to_string())?;
+    }
     while let Some(message) = socket.next().await {
         let Ok(Message::Text(text)) = message else {
             continue;
@@ -96,7 +100,9 @@ async fn find_seat(queue: &QueueScenario, guest: u128) -> Result<Found, String> 
                     ticket: from_hex(&ticket).ok_or("bad ticket hex")?,
                 });
             }
-            FromDoor::Error { code } => return Err(format!("the queue refused the bot: {code}")),
+            FromDoor::Error { code } | FromDoor::Refused { code } => {
+                return Err(format!("the queue refused the bot: {code}"));
+            }
             FromDoor::Other => {}
         }
     }

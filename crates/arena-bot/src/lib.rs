@@ -210,11 +210,11 @@ pub async fn run(mut scenario: Scenario) -> Result<Report, String> {
     if let Some(queue) = &scenario.queue {
         scenario.team_size = match queue.mode.as_str() {
             "1v1" => 1,
-            "solo-2v2" => 2,
-            "solo-3v3" => 3,
+            "2v2" | "solo-2v2" => 2,
+            "3v3" | "solo-3v3" => 3,
             other => {
                 return Err(format!(
-                    "unknown queue {other}: use 1v1, solo-2v2 or solo-3v3"
+                    "unknown queue {other}: use 1v1, 2v2, 3v3, solo-2v2 or solo-3v3"
                 ));
             }
         };

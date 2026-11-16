@@ -1,17 +1,25 @@
-//! `GET /api/queue`: the solo queues over a WebSocket (ADR 0046).
+//! `GET /api/queue`: parties and queues over a WebSocket (ADR 0046).
 //!
-//! The browser sends small JSON messages and receives the same:
+//! The browser sends small JSON messages and receives the same.
 //!
-//! - `{"type":"join","mode":"1v1"|"solo-2v2"|"solo-3v3","guest":"<32 hex>"}`
-//!   first, within 5 s; again later to switch modes.
+//! From the browser:
+//! - `{"type":"hello","guest":"<32 hex>"}` first, within 5 s.
+//! - `{"type":"create_party"}`, `{"type":"join_party","code":"K7P2QX"}`,
+//!   `{"type":"leave_party"}`.
+//! - `{"type":"queue","mode":"1v1"|"2v2"|"3v3"|"solo-2v2"|"solo-3v3"}`
+//!   (party leader only), `{"type":"cancel"}`.
 //! - `{"type":"ready"}` after `found`, which the game sends automatically.
-//! - `{"type":"leave"}`, or closing the socket, leaves the queue.
 //!
-//! The door answers `queued` (with how many wait in that mode) on joining
-//! and every 2 s, `found` when a ready check starts, `requeued` when it
-//! failed because of someone else, `match` with the player's own seat
-//! ticket, and `error` before closing. One task owns the
-//! [`Matchmaker`]; connections talk to it over channels.
+//! From the door:
+//! - `party` describes the player's party whenever it changes.
+//! - `queued` (with how many wait in that mode) while searching, every 2 s.
+//! - `found` when a ready check starts, `requeued` when it failed because of
+//!   someone else, and `stopped` when the party's search ended.
+//! - `refused` turns a request down; the connection stays open.
+//! - `match` carries the player's own seat ticket, and `error` comes before
+//!   the door closes the connection.
+//!
+//! One task owns the [`Matchmaker`]; connections talk to it over channels.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -30,32 +38,44 @@ use tokio::time::{Instant, MissedTickBehavior};
 use super::{Door, unix_now};
 use crate::RateWindow;
 use crate::ingress::{self, OpenSlot};
-use crate::matchmaker::{Closed, Guest, Matchmaker, Mode, Out, QueueConn};
+use crate::matchmaker::{CODE_LENGTH, Closed, Guest, Matchmaker, Mode, Out, PartyView, QueueConn};
 use crate::metrics::Metrics;
 use crate::ticket;
 
 /// Largest message a queue client may send.
 const MAX_MESSAGE: usize = 512;
-const JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 const MESSAGES_PER_SECOND: u32 = 10;
 const STATUS_EVERY: Duration = Duration::from_secs(2);
 const TICK_EVERY: Duration = Duration::from_millis(250);
 /// Messages buffered per connection; status updates are skipped when full.
-const OUTBOUND_QUEUE: usize = 16;
+const OUTBOUND_QUEUE: usize = 32;
 
+/// Empty structs rather than unit variants, so extra fields are refused.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum FromClient {
-    Join { mode: String, guest: String },
-    // Empty structs rather than unit variants, so extra fields are refused.
+    Hello { guest: String },
+    CreateParty {},
+    JoinParty { code: String },
+    LeaveParty {},
+    Queue { mode: String },
+    Cancel {},
     Ready {},
-    Leave {},
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToClient {
-    /// In the queue; `waiting` players (including this one) want `mode`.
+    /// The player's party: its invite code (none when on their own), size,
+    /// whether this player leads it, and the queue it is in.
+    Party {
+        code: Option<String>,
+        members: usize,
+        leader: bool,
+        queue: Option<String>,
+    },
+    /// Searching; `waiting` players (including this party) want `mode`.
     Queued {
         mode: String,
         waiting: usize,
@@ -67,6 +87,14 @@ pub enum ToClient {
     /// Someone else did not confirm; back at the front of the queue.
     Requeued {
         mode: String,
+    },
+    /// The party is no longer searching, and why.
+    Stopped {
+        reason: String,
+    },
+    /// A request was turned down; nothing changed.
+    Refused {
+        code: String,
     },
     /// This player's seat: join `server` with `ticket` (hex). The match id
     /// (hex) and seat are for display and bug reports; the ticket decides.
@@ -90,19 +118,43 @@ impl ToClient {
             message: message.into(),
         }
     }
+    fn party(view: PartyView) -> Self {
+        Self::Party {
+            code: view.code,
+            members: view.members,
+            leader: view.leader,
+            queue: view.queue.map(|mode| mode.id().into()),
+        }
+    }
 }
 
 pub(super) enum Command {
-    Join {
+    Hello {
         conn: QueueConn,
         guest: Guest,
-        mode: Mode,
         out: mpsc::Sender<ToClient>,
+    },
+    CreateParty {
+        conn: QueueConn,
+    },
+    JoinParty {
+        conn: QueueConn,
+        code: String,
+    },
+    LeaveParty {
+        conn: QueueConn,
+    },
+    Queue {
+        conn: QueueConn,
+        mode: Mode,
+    },
+    Cancel {
+        conn: QueueConn,
     },
     Ready {
         conn: QueueConn,
     },
-    Leave {
+    Gone {
         conn: QueueConn,
     },
 }
@@ -118,43 +170,55 @@ fn random_below(bound: usize) -> usize {
     (ticket::random_u64() % bound as u64) as usize
 }
 
+type Senders = HashMap<QueueConn, mpsc::Sender<ToClient>>;
+
+fn send(conns: &Senders, conn: QueueConn, message: ToClient) {
+    if let Some(sender) = conns.get(&conn) {
+        // A full outbox means a stalled client; it misses this message.
+        let _ = sender.try_send(message);
+    }
+}
+
 /// The task that owns the matchmaker. Ends when the door stops, telling
-/// every queued player.
+/// every connected player.
 pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) {
     let mut mm = Matchmaker::new(door.config.ready_timeout, random_below);
-    let mut conns: HashMap<QueueConn, (Mode, mpsc::Sender<ToClient>)> = HashMap::new();
+    let mut conns: Senders = HashMap::new();
     let mut tick = tokio::time::interval(TICK_EVERY);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut status_at = Instant::now() + STATUS_EVERY;
     let mut stop = door.shutdown.subscribe();
     loop {
         let now = Instant::now();
+        // Searches that started now get a status at once.
+        let mut announce_status = false;
         let out = tokio::select! {
             _ = stop.wait_for(|stop| *stop) => break,
             _ = tick.tick() => mm.tick(now),
             command = commands.recv() => match command {
                 None => break,
-                Some(Command::Join { conn, guest, mode, out }) => {
-                    conns.insert(conn, (mode, out));
-                    let actions = mm.join(conn, guest, mode, now);
-                    // Confirm the entry unless it went straight to a check.
-                    if !actions.iter().any(|action| matches!(action, Out::Found { conn: c, .. } if *c == conn)) {
-                        let waiting = mm.waiting()[mode as usize];
-                        if let Some((_, sender)) = conns.get(&conn) {
-                            let _ = sender.try_send(ToClient::Queued { mode: mode.id().into(), waiting });
-                        }
-                    }
-                    actions
+                Some(Command::Hello { conn, guest, out }) => {
+                    conns.insert(conn, out);
+                    mm.connect(conn, guest, now)
                 }
+                Some(Command::CreateParty { conn }) => mm.create_party(conn, now),
+                Some(Command::JoinParty { conn, code }) => mm.join_party(conn, &code, now),
+                Some(Command::LeaveParty { conn }) => mm.leave_party(conn, now),
+                Some(Command::Queue { conn, mode }) => {
+                    announce_status = true;
+                    mm.queue(conn, mode, now)
+                }
+                Some(Command::Cancel { conn }) => mm.cancel(conn),
                 Some(Command::Ready { conn }) => mm.ready(conn, now),
-                Some(Command::Leave { conn }) => {
+                Some(Command::Gone { conn }) => {
                     conns.remove(&conn);
-                    mm.leave(conn, now)
+                    mm.disconnect(conn, now)
                 }
             },
         };
         for action in out {
             match action {
+                Out::Party { conn, view } => send(&conns, conn, ToClient::party(view)),
                 Out::Found { conn, mode } => send(
                     &conns,
                     conn,
@@ -169,11 +233,25 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                         mode: mode.id().into(),
                     },
                 ),
+                Out::Stopped { conn, reason } => send(
+                    &conns,
+                    conn,
+                    ToClient::Stopped {
+                        reason: reason.code().into(),
+                    },
+                ),
+                Out::Refused { conn, reason } => send(
+                    &conns,
+                    conn,
+                    ToClient::Refused {
+                        code: reason.code().into(),
+                    },
+                ),
                 Out::Close { conn, reason } => {
                     let message = match reason {
                         Closed::Replaced => ToClient::error(
                             "replaced",
-                            "You joined the queue from another tab or window.",
+                            "You opened the game in another tab or window.",
                         ),
                         Closed::NotReady => ToClient::error(
                             "not_ready",
@@ -186,47 +264,35 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 Out::Start { mode, seats } => start_match(&door, &mut conns, mode, seats),
             }
         }
-        if now >= status_at {
-            status_at = now + STATUS_EVERY;
+        if announce_status || now >= status_at {
+            if now >= status_at {
+                status_at = now + STATUS_EVERY;
+            }
             let waiting = mm.waiting();
-            for (conn, mode) in mm.queued() {
-                if let Some((_, sender)) = conns.get(&conn) {
-                    // A full outbox only skips this update.
-                    let _ = sender.try_send(ToClient::Queued {
+            for (conn, mode) in mm.searching() {
+                send(
+                    &conns,
+                    conn,
+                    ToClient::Queued {
                         mode: mode.id().into(),
-                        waiting: waiting[mode as usize],
-                    });
-                }
+                        waiting: waiting[mode.index()],
+                    },
+                );
             }
         }
         door.metrics
             .queued
             .store(mm.waiting().iter().sum::<usize>() as u64, Ordering::Relaxed);
     }
-    for (_, (_, sender)) in conns {
+    for sender in conns.values() {
         let _ = sender.try_send(ToClient::error(
             "shutdown",
-            "The matchmaker is restarting. Queue again in a moment.",
+            "The matchmaker is restarting. Try again in a moment.",
         ));
     }
 }
 
-fn send(
-    conns: &HashMap<QueueConn, (Mode, mpsc::Sender<ToClient>)>,
-    conn: QueueConn,
-    message: ToClient,
-) {
-    if let Some((_, sender)) = conns.get(&conn) {
-        let _ = sender.try_send(message);
-    }
-}
-
-fn start_match(
-    door: &Door,
-    conns: &mut HashMap<QueueConn, (Mode, mpsc::Sender<ToClient>)>,
-    mode: Mode,
-    seats: Vec<QueueConn>,
-) {
+fn start_match(door: &Door, conns: &mut Senders, mode: Mode, seats: Vec<QueueConn>) {
     let expires = unix_now() + door.config.ticket_ttl.as_secs();
     let created = ticket::issue_match(&door.config.key, mode.team_size(), expires)
         .expect("queue modes have playable team sizes");
@@ -238,7 +304,7 @@ fn start_match(
         mode.id()
     );
     for (seat, (conn, ticket)) in seats.into_iter().zip(created.tickets).enumerate() {
-        if let Some((_, sender)) = conns.remove(&conn) {
+        if let Some(sender) = conns.remove(&conn) {
             let _ = sender.try_send(ToClient::Match {
                 mode: mode.id().into(),
                 match_id: format!("{:016x}", created.match_id),
@@ -288,17 +354,39 @@ async fn refuse(socket: &mut WebSocket, code: &str, message: &str) {
 fn decode(message: Message) -> Option<Result<FromClient, ()>> {
     match message {
         Message::Text(text) => Some(serde_json::from_str(&text).map_err(|_| ())),
-        Message::Binary(_) => Some(Err(())),
+        Message::Binary(_) | Message::Close(_) => Some(Err(())),
         Message::Ping(_) | Message::Pong(_) => None,
-        Message::Close(_) => Some(Err(())),
     }
+}
+
+/// A request after `hello`, or why the connection must close.
+fn command(conn: QueueConn, message: FromClient) -> Result<Command, &'static str> {
+    Ok(match message {
+        FromClient::Hello { .. } => return Err("Send hello only once."),
+        FromClient::CreateParty {} => Command::CreateParty { conn },
+        FromClient::JoinParty { code } if code.trim().len() == CODE_LENGTH => {
+            Command::JoinParty { conn, code }
+        }
+        // A wrong-length code cannot exist; refuse it like an unknown one.
+        FromClient::JoinParty { .. } => Command::JoinParty {
+            conn,
+            code: String::new(),
+        },
+        FromClient::LeaveParty {} => Command::LeaveParty { conn },
+        FromClient::Queue { mode } => Command::Queue {
+            conn,
+            mode: Mode::from_id(&mode).ok_or("Unknown queue.")?,
+        },
+        FromClient::Cancel {} => Command::Cancel { conn },
+        FromClient::Ready {} => Command::Ready { conn },
+    })
 }
 
 async fn connection(mut socket: WebSocket, door: Arc<Door>, _slot: OpenSlot) {
     let conn = door.next_conn.fetch_add(1, Ordering::Relaxed);
     let mut rate = RateWindow::new(MESSAGES_PER_SECOND, Instant::now());
     let mut stop = door.shutdown.subscribe();
-    let first = tokio::time::timeout(JOIN_TIMEOUT, async {
+    let first = tokio::time::timeout(HELLO_TIMEOUT, async {
         loop {
             match socket.recv().await {
                 Some(Ok(message)) => match decode(message) {
@@ -310,38 +398,29 @@ async fn connection(mut socket: WebSocket, door: Arc<Door>, _slot: OpenSlot) {
         }
     })
     .await;
-    let (mut mode, guest) = match first {
-        Err(_) => return refuse(&mut socket, "bad_request", "Send join within 5 s.").await,
+    let guest = match first {
+        Err(_) => return refuse(&mut socket, "bad_request", "Send hello within 5 s.").await,
         Ok(None) => return,
-        Ok(Some(Ok(FromClient::Join { mode, guest }))) => {
-            match (Mode::from_id(&mode), parse_guest(&guest)) {
-                (Some(mode), Some(guest)) => (mode, guest),
-                _ => {
-                    return refuse(&mut socket, "bad_request", "Unknown mode or guest id.").await;
-                }
-            }
-        }
-        Ok(Some(_)) => return refuse(&mut socket, "bad_request", "Send join first.").await,
+        Ok(Some(Ok(FromClient::Hello { guest }))) => match parse_guest(&guest) {
+            Some(guest) => guest,
+            None => return refuse(&mut socket, "bad_request", "Unreadable guest id.").await,
+        },
+        Ok(Some(_)) => return refuse(&mut socket, "bad_request", "Send hello first.").await,
     };
     let (sender, mut outbox) = mpsc::channel(OUTBOUND_QUEUE);
-    if door
-        .queue
-        .send(Command::Join {
-            conn,
-            guest,
-            mode,
-            out: sender.clone(),
-        })
-        .await
-        .is_err()
-    {
+    let hello = Command::Hello {
+        conn,
+        guest,
+        out: sender,
+    };
+    if door.queue.send(hello).await.is_err() {
         return refuse(&mut socket, "shutdown", "The matchmaker is not running.").await;
     }
     loop {
         tokio::select! {
             // Drop the borrow `wait_for` returns before awaiting the refusal.
             _ = async { let _ = stop.wait_for(|stop| *stop).await; } => {
-                refuse(&mut socket, "shutdown", "The matchmaker is restarting. Queue again in a moment.").await;
+                refuse(&mut socket, "shutdown", "The matchmaker is restarting. Try again in a moment.").await;
                 break;
             }
             incoming = socket.recv() => {
@@ -356,23 +435,10 @@ async fn connection(mut socket: WebSocket, door: Arc<Door>, _slot: OpenSlot) {
                     refuse(&mut socket, "rate_limited", "Too many messages.").await;
                     break;
                 }
-                let command = match message {
-                    Ok(FromClient::Ready {}) => Command::Ready { conn },
-                    Ok(FromClient::Leave {}) => break,
-                    Ok(FromClient::Join { mode: next, guest: again }) => {
-                        match (Mode::from_id(&next), parse_guest(&again)) {
-                            (Some(next), Some(again)) if again == guest => {
-                                mode = next;
-                                Command::Join { conn, guest, mode, out: sender.clone() }
-                            }
-                            _ => {
-                                refuse(&mut socket, "bad_request", "Unknown mode or a different guest id.").await;
-                                break;
-                            }
-                        }
-                    }
-                    Err(()) => {
-                        refuse(&mut socket, "bad_request", "Unreadable message.").await;
+                let command = match message.map_err(|()| "Unreadable message.").and_then(|m| command(conn, m)) {
+                    Ok(command) => command,
+                    Err(why) => {
+                        refuse(&mut socket, "bad_request", why).await;
                         break;
                     }
                 };
@@ -388,14 +454,13 @@ async fn connection(mut socket: WebSocket, door: Arc<Door>, _slot: OpenSlot) {
                 }
                 if last {
                     let _ = socket.send(Message::Close(None)).await;
-                    // The seat is handed out (or the entry is gone): nothing
-                    // for this connection to leave.
+                    // Seated, or already out of the matchmaker.
                     return;
                 }
             }
         }
     }
-    let _ = door.queue.send(Command::Leave { conn }).await;
+    let _ = door.queue.send(Command::Gone { conn }).await;
 }
 
 #[cfg(test)]
@@ -416,28 +481,39 @@ mod tests {
 
     #[test]
     fn client_messages_parse_strictly() {
-        let join: FromClient =
-            serde_json::from_str(r#"{"type":"join","mode":"1v1","guest":"ab"}"#).unwrap();
-        assert!(matches!(join, FromClient::Join { .. }));
+        let parse = |text: &str| serde_json::from_str::<FromClient>(text);
         assert!(matches!(
-            serde_json::from_str(r#"{"type":"ready"}"#).unwrap(),
-            FromClient::Ready {}
+            parse(r#"{"type":"hello","guest":"ab"}"#),
+            Ok(FromClient::Hello { .. })
+        ));
+        assert!(matches!(
+            parse(r#"{"type":"join_party","code":"K7P2QX"}"#),
+            Ok(FromClient::JoinParty { .. })
+        ));
+        assert!(matches!(
+            parse(r#"{"type":"ready"}"#),
+            Ok(FromClient::Ready {})
         ));
         for bad in [
             r#"{"type":"start"}"#,
             r#"{"type":"ready","seat":1}"#,
+            r#"{"type":"queue","mode":"1v1","party":2}"#,
             r#"{"mode":"1v1"}"#,
             "ready",
         ] {
-            assert!(serde_json::from_str::<FromClient>(bad).is_err(), "{bad}");
+            assert!(parse(bad).is_err(), "{bad}");
         }
+        assert!(command(1, parse(r#"{"type":"queue","mode":"4v4"}"#).unwrap()).is_err());
+        assert!(command(1, parse(r#"{"type":"hello","guest":"ab"}"#).unwrap()).is_err());
         assert_eq!(
-            serde_json::to_string(&ToClient::Queued {
-                mode: "solo-2v2".into(),
-                waiting: 3
-            })
+            serde_json::to_string(&ToClient::party(PartyView {
+                code: Some("K7P2QX".into()),
+                members: 2,
+                leader: true,
+                queue: Some(Mode::Team2v2),
+            }))
             .unwrap(),
-            r#"{"type":"queued","mode":"solo-2v2","waiting":3}"#
+            r#"{"type":"party","code":"K7P2QX","members":2,"leader":true,"queue":"2v2"}"#
         );
     }
 }
