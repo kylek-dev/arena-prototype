@@ -81,6 +81,8 @@ pub const NOMINAL_TICK_RATE: f64 = arena_sim::TICKS_PER_SECOND as f64;
 const RATE_BUCKET_TICKS: u64 = arena_sim::TICKS_PER_SECOND / 2;
 /// Buckets a tick-rate estimate looks back over: twenty server seconds.
 pub const RATE_WINDOW_BUCKETS: usize = 40;
+/// Snapshots one frame may receive and still count as timing evidence.
+pub const FRESH_PER_FRAME: usize = 2;
 /// Snapshots arriving more than this much later than the fastest ones are
 /// treated as delayed (a backlog), not as evidence about the clock.
 const LATE: f64 = 0.02;
@@ -115,6 +117,35 @@ pub struct TickRate {
     held: Option<f64>,
 }
 impl TickRate {
+    /// Records the snapshots one rendered frame received at local `now`.
+    ///
+    /// Several in one frame are a backlog (a page still loading, a tab back
+    /// from the background), not timing evidence: they say nothing about
+    /// when each was sent. Only a frame with at most [`FRESH_PER_FRAME`]
+    /// counts, through its newest snapshot. Without this, a page that
+    /// loaded behind a backlog fitted its first line through samples all
+    /// received at one instant, read an impossibly fast server, and flooded
+    /// it until inputs were folded.
+    pub fn observe_frame(&mut self, now: f64, ticks: impl IntoIterator<Item = u64>) {
+        let (count, newest) =
+            ticks
+                .into_iter()
+                .fold((0, None), |(count, newest): (usize, Option<u64>), tick| {
+                    (count + 1, Some(newest.map_or(tick, |n| n.max(tick))))
+                });
+        let Some(newest) = newest else {
+            return;
+        };
+        if count > FRESH_PER_FRAME {
+            if self.last_tick.is_some_and(|last| newest < last) {
+                self.buckets.clear();
+            }
+            self.last_tick = Some(newest);
+            return;
+        }
+        self.observe(now, newest);
+    }
+
     /// Records that a snapshot for server `tick` arrived at local `now`.
     pub fn observe(&mut self, now: f64, tick: u64) {
         // A new round or a reconnect rewinds the tick: start a new line,
@@ -155,10 +186,12 @@ impl TickRate {
             if points.len() < 3 {
                 return None;
             }
-            let span = points.last()?.0 - points.first()?.0;
+            let (first, last) = (*points.first()?, *points.last()?);
             // A first estimate after about a second keeps a skewed client
-            // from flooding the server while it waits for one.
-            if span < NOMINAL_TICK_RATE {
+            // from flooding the server while it waits for one; it must span
+            // a second of server ticks and of local time.
+            let local = |(tick, offset): (f64, f64)| offset + tick / NOMINAL_TICK_RATE;
+            if last.0 - first.0 < NOMINAL_TICK_RATE || local(last) - local(first) < 1.0 {
                 return None;
             }
             let (mx, my) = points
@@ -535,6 +568,36 @@ mod tick_rate_tests {
             worst = worst.max((rate.rate() - truth).abs());
         }
         assert!(worst < 0.3, "the estimate wandered by {worst}");
+    }
+
+    #[test]
+    fn a_backlog_received_in_one_frame_is_not_timing_evidence() {
+        let truth = NOMINAL_TICK_RATE / 1.09;
+        let local_per_tick = 1.09 / NOMINAL_TICK_RATE;
+        let mut rate = TickRate::default();
+        // A page that loaded three seconds into the match: its first frame
+        // receives 90 queued snapshots at once.
+        rate.observe_frame(3.0 * 1.09, 0..90);
+        assert_eq!(rate.measured(), None);
+        // Then one snapshot per frame or so: a first estimate after about a
+        // second, and it is right.
+        for tick in 90..150u64 {
+            rate.observe_frame(tick as f64 * local_per_tick, [tick]);
+        }
+        let first = rate.measured().expect("an estimate after two seconds");
+        assert!((first - truth).abs() < 0.3, "{first}");
+        // Two in a frame still count, through the newer.
+        rate.observe_frame(150.0 * local_per_tick + 0.034, [150, 151]);
+        assert!((rate.rate() - truth).abs() < 0.3);
+        // Fed one by one, the same backlog reads as an impossibly fast server.
+        let mut naive = TickRate::default();
+        for tick in 0..90 {
+            naive.observe(3.0 * 1.09, tick);
+        }
+        for tick in 90..150u64 {
+            naive.observe(tick as f64 * local_per_tick, tick);
+        }
+        assert!(naive.rate() > truth + 2.0, "{}", naive.rate());
     }
 
     #[test]

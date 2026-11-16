@@ -521,6 +521,13 @@ struct Simulated {
 /// back from the background). It predicts its own movement, and paces its
 /// input interval from the snapshots when `paced`.
 fn browser_like(paced: bool, drift: f64, clump: Option<f64>) -> Simulated {
+    browser_starting_after(0.0, paced, drift, clump)
+}
+
+/// As `browser_like`, but the client's engine only starts `late` seconds
+/// after the match does (the page is still loading), so the server first
+/// sees an empty queue and the client has no tick-rate measurement yet.
+fn browser_starting_after(late: f64, paced: bool, drift: f64, clump: Option<f64>) -> Simulated {
     use arena_protocol::prediction::{Pacer, Predictor, TickRate};
     let layout = arena_map::colosseum().layout;
     // The production limits (an eight-input queue).
@@ -536,6 +543,7 @@ fn browser_like(paced: bool, drift: f64, clump: Option<f64>) -> Simulated {
     // The client's own clock, which runs `drift` fast against the server's.
     let mut tick_rate = TickRate::default();
     let mut local_time = 0.0;
+    let mut backlog = Vec::new();
     let mut rng = 0x2545_F491_4F6C_DD1D_u64;
     let mut noise = move |scale: f64| {
         rng ^= rng << 13;
@@ -545,14 +553,16 @@ fn browser_like(paced: bool, drift: f64, clump: Option<f64>) -> Simulated {
     };
     let tick = 1.0 / 30.0;
     let frame = 1.0 / 240.0;
-    let (mut accumulator, mut seq, mut frame_time) = (0.0, 0u32, 0.0);
+    // The engine's clock starts when it does: no catch-up for the time
+    // before it loaded.
+    let (mut accumulator, mut seq, mut frame_time) = (0.0, 0u32, late);
     let mut stalled = false;
     let mut in_flight: std::collections::VecDeque<(f64, InputFrame)> = Default::default();
     let mut queued = Vec::new();
     for server_tick in 1..=1800u32 {
         let tick_at = f64::from(server_tick) * tick;
         // Client frames up to this server tick.
-        while frame_time < tick_at {
+        while frame_time < tick_at && tick_at >= late {
             frame_time += (frame + noise(0.0005) - 0.00025) / (1.0 + drift);
             accumulator += frame;
             local_time += frame;
@@ -596,8 +606,13 @@ fn browser_like(paced: bool, drift: f64, clump: Option<f64>) -> Simulated {
         }
         let out = session.tick();
         let snapshot = snapshot(&out, conn(0)).unwrap();
-        pacer.observe(snapshot.queued);
-        tick_rate.observe(local_time, snapshot.tick);
+        // Snapshots wait in the runtime's queue until the engine starts,
+        // then arrive together in its first frame.
+        backlog.push(snapshot.tick);
+        if tick_at >= late {
+            pacer.observe(snapshot.queued);
+            tick_rate.observe_frame(local_time, backlog.drain(..));
+        }
         if server_tick > 1500 {
             queued.push(f64::from(snapshot.queued));
         }
@@ -658,6 +673,21 @@ fn paced_clients_hold_a_small_cushion_through_jitter_clumps_drift_and_bursts() {
         "{skewed:?}"
     );
     assert!(skewed.late_queue <= 4.0, "{skewed:?}");
+    // The browser test's case: the engine starts three seconds after the
+    // match (still loading) and receives the queued snapshots in its first
+    // frame, with the server's clock 9% slow. The client has no
+    // rate measurement yet and the queue starts empty.
+    let late_start = browser_starting_after(3.0, true, 0.09, Some(0.05));
+    eprintln!("RESULT late start {late_start:?}");
+    assert_eq!(
+        (
+            late_start.folded,
+            late_start.overflowed,
+            late_start.corrections
+        ),
+        (0, 0, 0),
+        "{late_start:?}"
+    );
     // Unpaced, a clock 2% fast keeps the queue long until it folds, each
     // fold costing a predicted step.
     let unpaced = browser_like(false, 0.02, Some(0.05));

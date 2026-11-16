@@ -232,6 +232,8 @@ impl Session {
     /// rejected intents. `now` is in seconds.
     pub fn receive(&mut self, feed: &Feed, now: f64, layout: &Layout) -> Vec<Rejection> {
         let mut rejections = Vec::new();
+        // Running ticks this frame delivered, for the tick-rate estimate.
+        let mut frame_ticks = Vec::new();
         if feed.generation == 0 {
             return rejections;
         }
@@ -299,7 +301,7 @@ impl Session {
                     self.newest_state =
                         Some((snapshot.tick, authoritative.clone(), result, snapshot.ack));
                     if snapshot.tick > 0 {
-                        self.tick_rate.observe(now, snapshot.tick);
+                        frame_ticks.push(snapshot.tick);
                         self.pacer.observe(snapshot.queued);
                         self.stats.queued = self.pacer.average();
                         self.stats.queued_min = self.pacer.minimum();
@@ -371,6 +373,7 @@ impl Session {
                 ServerMessage::Error(code) => self.phase = Phase::Closed(code),
             }
         }
+        self.tick_rate.observe_frame(now, frame_ticks);
         self.reconcile(layout);
         rejections
     }
