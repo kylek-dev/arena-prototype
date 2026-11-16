@@ -688,10 +688,16 @@ fn network_receive(
 ) {
     let now = time.elapsed_secs_f64();
     net.now = now;
-    // In a match the input interval is paced to keep this player's queue on
-    // the server near one input; otherwise it is the plain rules tick.
-    let pace = net.session.as_ref().map_or(1.0, network::Session::pace);
-    let timestep = std::time::Duration::from_secs_f64(pace / TICKS_PER_SECOND as f64);
+    // In a match inputs follow the server's ticks as measured on this
+    // clock, paced to keep this player's queue on the server near one input;
+    // otherwise it is the plain rules tick.
+    let (pace, rate) = net
+        .session
+        .as_ref()
+        .map_or((1.0, TICKS_PER_SECOND as f64), |session| {
+            (session.pace(), session.tick_rate())
+        });
+    let timestep = std::time::Duration::from_secs_f64(pace / rate);
     if fixed.timestep() != timestep {
         fixed.set_timestep(timestep);
     }

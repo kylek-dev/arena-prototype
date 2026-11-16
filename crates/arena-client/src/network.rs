@@ -23,7 +23,7 @@
 
 use std::collections::VecDeque;
 
-use arena_protocol::prediction::{Pacer, Predictor};
+use arena_protocol::prediction::{Pacer, Predictor, TickRate};
 use arena_protocol::{
     ClientMessage, ErrorCode, FighterState, InputFrame, ServerMessage, WireEvent,
 };
@@ -34,7 +34,6 @@ use bevy::math::Vec3;
 /// Ticks the view trails the newest snapshot: 100 ms at 30 Hz, enough to
 /// ride out moderate jitter.
 pub const INTERPOLATION_DELAY: f64 = 3.0;
-const TICK_RATE: f64 = arena_sim::TICKS_PER_SECOND as f64;
 /// Snapshots kept for interpolation (a little over two seconds).
 const BUFFER: usize = 72;
 /// Beyond this many ticks of error the view clock snaps instead of easing.
@@ -181,6 +180,8 @@ pub struct Session {
     last_ping: Option<f64>,
     predictor: Predictor,
     pacer: Pacer,
+    /// The server's tick rate on this client's clock.
+    tick_rate: TickRate,
     /// The frame (its `now`) of the latest input, and inputs sent in it.
     frame_inputs: (f64, u32),
     /// When recent fixed steps ran and inputs were sent (the last second).
@@ -247,6 +248,7 @@ impl Session {
             // Old sequence numbers mean nothing to the new connection.
             self.predictor.reset();
             self.pacer.reset();
+            self.tick_rate.reset();
             self.frame_inputs = (f64::NAN, 0);
             self.own = None;
         }
@@ -297,6 +299,7 @@ impl Session {
                     self.newest_state =
                         Some((snapshot.tick, authoritative.clone(), result, snapshot.ack));
                     if snapshot.tick > 0 {
+                        self.tick_rate.observe(now, snapshot.tick);
                         self.pacer.observe(snapshot.queued);
                         self.stats.queued = self.pacer.average();
                         self.stats.queued_min = self.pacer.minimum();
@@ -430,6 +433,12 @@ impl Session {
         }
         self.stats.corrections = self.predictor.corrections();
         self.stats.predicted_ticks = self.predictor.pending();
+    }
+
+    /// Server ticks per second on this client's clock: the rate to send
+    /// inputs at (before pacing) and to advance the view by.
+    pub fn tick_rate(&self) -> f64 {
+        self.tick_rate.rate()
     }
 
     /// How much to stretch the fixed input interval so this player's queue
@@ -569,17 +578,18 @@ impl Session {
         if let Some(own) = self.own.as_mut() {
             own.offset *= (-dt / CORRECTION_FADE).exp() as f32;
         }
+        let rate = self.tick_rate.rate();
         let newest = self.snapshots.back()?;
         let oldest = self.snapshots.front()?.tick as f64;
         let newest_tick = newest.tick as f64;
         // Where the view should be: behind the server's estimated clock.
         let target =
-            (newest_tick + (now - self.newest_at) * TICK_RATE - INTERPOLATION_DELAY).max(oldest);
+            (newest_tick + (now - self.newest_at) * rate - INTERPOLATION_DELAY).max(oldest);
         let mut tick = match self.view_tick {
             Some(tick) if (target - tick).abs() < SNAP => {
                 // Run at real time, then ease a tenth of the remaining error
                 // per frame so jitter never makes the view jump.
-                let advanced = tick + dt * TICK_RATE;
+                let advanced = tick + dt * rate;
                 advanced + (target - advanced) * 0.1
             }
             _ => target,
@@ -589,8 +599,7 @@ impl Session {
             tick = newest_tick;
         }
         self.view_tick = Some(tick);
-        self.stats.delay_ms =
-            (newest_tick + (now - self.newest_at) * TICK_RATE - tick) / TICK_RATE * 1000.0;
+        self.stats.delay_ms = (newest_tick + (now - self.newest_at) * rate - tick) / rate * 1000.0;
 
         let after = self
             .snapshots
@@ -655,7 +664,7 @@ impl Session {
         };
         let number = |value: Option<f64>| value.map_or("null".into(), |v| format!("{v:.1}"));
         format!(
-            r#"{{"phase":"{phase}","error":{},"seat":{},"mapDiffers":{},"rttMs":{},"inputMs":{},"delayMs":{:.1},"snapshots":{},"underruns":{},"hashMismatches":{},"predictedTicks":{},"corrections":{},"lastCorrectionMm":{},"queued":{},"queuedMin":{},"pace":{:.3},"skippedInputs":{},"stepsPerSecond":{},"sentPerSecond":{}}}"#,
+            r#"{{"phase":"{phase}","error":{},"seat":{},"mapDiffers":{},"rttMs":{},"inputMs":{},"delayMs":{:.1},"snapshots":{},"underruns":{},"hashMismatches":{},"predictedTicks":{},"corrections":{},"lastCorrectionMm":{},"queued":{},"queuedMin":{},"pace":{:.3},"skippedInputs":{},"stepsPerSecond":{},"sentPerSecond":{},"tickRate":{}}}"#,
             error.map_or("null".into(), |code| format!("\"{code:?}\"")),
             self.seat.map_or("null".into(), |seat| seat.to_string()),
             self.map_differs().unwrap_or(false),
@@ -678,6 +687,7 @@ impl Session {
             self.stats.skipped_inputs,
             self.stats.steps_per_second,
             self.stats.sent_per_second,
+            number(self.tick_rate.measured()),
         )
     }
 }

@@ -45,6 +45,7 @@ const status = (patch: object) => ({
   skippedInputs: 0,
   stepsPerSecond: 29,
   sentPerSecond: 29,
+  tickRate: 27.5,
   ...patch,
 });
 

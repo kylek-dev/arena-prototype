@@ -113,6 +113,7 @@ function fakeLink() {
           skippedInputs: 0,
           stepsPerSecond: 30,
           sentPerSecond: 29,
+          tickRate: 27.52,
         }),
       ),
   };
@@ -281,6 +282,7 @@ it("shows network statistics in the diagnostics overlay during a match", () => {
   expect(stats.getByText("2 · last 240 mm")).toBeTruthy();
   expect(stats.getByText("1.2 · min 1 · pace 101.2%")).toBeTruthy();
   expect(stats.getByText("29/s · 30 steps/s")).toBeTruthy();
+  expect(stats.getByText("27.52/s")).toBeTruthy();
   fake.drop();
   expect(stats.getByText("reconnecting · attempt 1")).toBeTruthy();
 });

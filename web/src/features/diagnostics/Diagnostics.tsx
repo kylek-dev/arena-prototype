@@ -31,6 +31,7 @@ function LinkStatistics({ link }: { link: Link }) {
     ["Snapshots", String(status?.snapshots ?? 0)],
     ["Underruns", String(status?.underruns ?? 0)],
     ["Predicted ahead", `${status?.predictedTicks ?? 0} ticks`],
+    ["Server ticks", status?.tickRate == null ? "—" : `${status.tickRate.toFixed(2)}/s`],
     ["Sending", status ? `${status.sentPerSecond}/s · ${status.stepsPerSecond} steps/s` : "—"],
     [
       "Server queue",

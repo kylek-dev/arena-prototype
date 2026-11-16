@@ -39,6 +39,8 @@ export type NetworkStatus = {
   /** Fixed steps run and inputs sent in the last second (browser clock). */
   stepsPerSecond: number;
   sentPerSecond: number;
+  /** Server ticks per second measured on this browser's clock. */
+  tickRate: number | null;
 };
 
 export type LinkPhase = "idle" | "connecting" | "open" | "reconnecting" | "ended";
@@ -254,7 +256,8 @@ export function parseStatus(value: unknown): NetworkStatus | null {
     !(v.pace > 0.5 && v.pace < 1.5) ||
     !count(v.skippedInputs) ||
     !count(v.stepsPerSecond) ||
-    !count(v.sentPerSecond)
+    !count(v.sentPerSecond) ||
+    !optionalNumber(v.tickRate)
   )
     return null;
   return v;

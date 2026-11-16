@@ -75,6 +75,51 @@ impl Pacer {
     }
 }
 
+/// The server's nominal tick rate, used until a rate has been measured.
+pub const NOMINAL_TICK_RATE: f64 = arena_sim::TICKS_PER_SECOND as f64;
+/// Seconds of snapshots a tick-rate estimate looks back over.
+pub const RATE_WINDOW: f64 = 5.0;
+
+/// Measures how fast the server's ticks advance on the client's own clock.
+///
+/// A client must send one input per server tick, and its interpolated view
+/// must advance at the server's pace. Both are driven by the server's rate
+/// *as the client's clock sees it*: clocks drift, and a virtual machine's
+/// clock was once measured 9% slow, which made a client sending a nominal
+/// 30 inputs per second flood its server. The estimate is the ticks advanced
+/// over the last few seconds of snapshots divided by the local time taken.
+#[derive(Clone, Debug, Default)]
+pub struct TickRate {
+    samples: VecDeque<(f64, u64)>,
+}
+impl TickRate {
+    /// Records that a snapshot for server `tick` arrived at local `now`.
+    pub fn observe(&mut self, now: f64, tick: u64) {
+        // A new round or a reconnect can rewind the tick: start over.
+        if self.samples.back().is_some_and(|(_, last)| tick < *last) {
+            self.samples.clear();
+        }
+        self.samples.push_back((now, tick));
+        while self.samples.len() > 2 && now - self.samples[1].0 >= RATE_WINDOW {
+            self.samples.pop_front();
+        }
+    }
+    /// Server ticks per local second, once a second or more has been seen.
+    pub fn measured(&self) -> Option<f64> {
+        let (first_at, first) = *self.samples.front()?;
+        let (last_at, last) = *self.samples.back()?;
+        let span = last_at - first_at;
+        (span >= 1.0).then(|| ((last - first) as f64 / span).clamp(10.0, 60.0))
+    }
+    /// The measured rate, or the nominal one until there is a measurement.
+    pub fn rate(&self) -> f64 {
+        self.measured().unwrap_or(NOMINAL_TICK_RATE)
+    }
+    pub fn reset(&mut self) {
+        self.samples.clear();
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Predictor {
     /// The server's latest state plus every unacknowledged input.
@@ -346,5 +391,29 @@ mod pacing_tests {
         assert_eq!(pacer.factor(), 1.0 + MAX_PACE);
         pacer.reset();
         assert_eq!(pacer.minimum(), None);
+    }
+}
+
+#[cfg(test)]
+mod tick_rate_tests {
+    use super::*;
+
+    #[test]
+    fn the_server_rate_is_measured_on_the_local_clock() {
+        let mut rate = TickRate::default();
+        assert_eq!(rate.rate(), NOMINAL_TICK_RATE);
+        // A server whose clock runs 9% slow: its 30 ticks per its second
+        // arrive as about 27.5 per local second, with arrival jitter.
+        let local_per_tick = 1.0 / 30.0 * 1.09;
+        for tick in 0..300u64 {
+            let jitter = if tick % 3 == 0 { 0.004 } else { -0.002 };
+            rate.observe(tick as f64 * local_per_tick + jitter, tick);
+        }
+        let measured = rate.measured().unwrap();
+        assert!((measured - 30.0 / 1.09).abs() < 0.1, "{measured}");
+        // A rewound tick (new round) starts over at the nominal rate.
+        rate.observe(20.0, 3);
+        assert_eq!(rate.measured(), None);
+        assert_eq!(rate.rate(), NOMINAL_TICK_RATE);
     }
 }

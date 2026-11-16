@@ -521,7 +521,7 @@ struct Simulated {
 /// back from the background). It predicts its own movement, and paces its
 /// input interval from the snapshots when `paced`.
 fn browser_like(paced: bool, drift: f64, clump: Option<f64>) -> Simulated {
-    use arena_protocol::prediction::{Pacer, Predictor};
+    use arena_protocol::prediction::{Pacer, Predictor, TickRate};
     let layout = arena_map::colosseum().layout;
     // The production limits (an eight-input queue).
     let mut session = Session::new(arena(1), 42, Limits::default(), Arc::default());
@@ -533,6 +533,9 @@ fn browser_like(paced: bool, drift: f64, clump: Option<f64>) -> Simulated {
     session.detach(1, conn(1));
     let mut predictor = Predictor::default();
     let mut pacer = Pacer::default();
+    // The client's own clock, which runs `drift` fast against the server's.
+    let mut tick_rate = TickRate::default();
+    let mut local_time = 0.0;
     let mut rng = 0x2545_F491_4F6C_DD1D_u64;
     let mut noise = move |scale: f64| {
         rng ^= rng << 13;
@@ -552,11 +555,19 @@ fn browser_like(paced: bool, drift: f64, clump: Option<f64>) -> Simulated {
         while frame_time < tick_at {
             frame_time += (frame + noise(0.0005) - 0.00025) / (1.0 + drift);
             accumulator += frame;
+            local_time += frame;
             if server_tick == 600 && !stalled {
                 stalled = true;
                 accumulator += 7.0 * tick; // stalled, then catching up at once
             }
-            let interval = tick * if paced { pacer.factor() } else { 1.0 };
+            // Paced clients send at the server's rate as measured on their
+            // own clock, stretched to steer the queue; unpaced ones assume
+            // the nominal rate.
+            let interval = if paced {
+                pacer.factor() / tick_rate.rate()
+            } else {
+                tick
+            };
             let mut sent = 0;
             while accumulator >= interval {
                 accumulator -= interval;
@@ -586,6 +597,7 @@ fn browser_like(paced: bool, drift: f64, clump: Option<f64>) -> Simulated {
         let out = session.tick();
         let snapshot = snapshot(&out, conn(0)).unwrap();
         pacer.observe(snapshot.queued);
+        tick_rate.observe(local_time, snapshot.tick);
         if server_tick > 1500 {
             queued.push(f64::from(snapshot.queued));
         }
@@ -636,9 +648,21 @@ fn paced_clients_hold_a_small_cushion_through_jitter_clumps_drift_and_bursts() {
     );
     assert!(clumped.starved < 30, "{clumped:?}");
     assert!(clumped.late_queue <= 4.0, "{clumped:?}");
+    // A client clock 9% fast against the server's (a virtual machine's
+    // miscalibrated clock was measured this far off): far beyond what pacing
+    // alone can steer, but the client follows the measured tick rate.
+    let skewed = browser_like(true, 0.09, Some(0.05));
+    assert_eq!(
+        (skewed.folded, skewed.overflowed, skewed.corrections),
+        (0, 0, 0),
+        "{skewed:?}"
+    );
+    assert!(skewed.late_queue <= 4.0, "{skewed:?}");
     // Unpaced, a clock 2% fast keeps the queue long until it folds, each
     // fold costing a predicted step.
     let unpaced = browser_like(false, 0.02, Some(0.05));
     assert!(unpaced.folded > 0 && unpaced.corrections > 0, "{unpaced:?}");
-    eprintln!("RESULT smooth {smooth:?}\nRESULT clumped {clumped:?}\nRESULT unpaced {unpaced:?}");
+    eprintln!(
+        "RESULT smooth {smooth:?}\nRESULT clumped {clumped:?}\nRESULT skewed {skewed:?}\nRESULT unpaced {unpaced:?}"
+    );
 }
