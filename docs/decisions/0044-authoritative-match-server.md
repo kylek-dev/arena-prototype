@@ -198,10 +198,10 @@ also joins.
   than extrapolating (an "underrun"). Hits, jumps and the result show when
   the view reaches their tick. The player's own rejections show at once.
   Every snapshot is checked against its state hash.
-- **No prediction yet.** The player's own movement appears after a round
-  trip plus the view delay, as the roadmap asks (measure first). The
-  session reports smoothed ping, input-to-acknowledgement time, view delay,
-  underruns and hash mismatches.
+- **Own movement is predicted** (see below). Other fighters stay on the
+  delayed, interpolated view. The session reports smoothed ping,
+  input-to-acknowledgement time, view delay, underruns, hash mismatches,
+  inputs predicted ahead and corrections.
 - During a match the client plays on the server's map (the colosseum),
   ignores local reset and practice-size changes and defers map-editor
   edits. A different map digest is reported. When the runtime ends the
@@ -256,6 +256,46 @@ rather than the rules appears to dominate. So we build shared-nothing from
 the start but deploy one match process per region first, as ADR 0001
 proposed. Fleet tooling (Agones, Kubernetes or a hosted allocator) waits
 until measurements on the intended host and real networks justify it.
+
+### Client-side prediction of own movement (implemented)
+
+Without prediction, the player's own movement appeared after a round trip
+plus the 100 ms view delay: about 130 ms on localhost and about 250 ms at
+100 ms ping. Prediction removes that wait for the player's own fighter.
+
+- **One input per server tick.** The server previously merged every input
+  that arrived between ticks (the latest movement won), so jitter that
+  delivered two inputs in one tick dropped a step. Each tick now applies
+  one queued input per seat, oldest first, so input `n` is exactly one
+  tick of rules. A tick with nothing queued is idle. More than two inputs
+  waiting after a tick are folded into it (`arena_inputs_folded_total`),
+  so a burst after a stall cannot build up delay.
+- **`arena_protocol::prediction::Predictor`**, shared by the browser and
+  the bots. It applies each input to the shared rules as it is sent. On
+  each snapshot it rebuilds from the server's state and replays the inputs
+  not yet acknowledged. Attacks are never predicted, and other fighters
+  are left to the server, because bodies do not collide. Inputs are
+  recorded from the moment the player joins. While the match waits,
+  `acknowledge` drops the inputs the server discarded, so ones still in
+  flight when the match starts are replayed rather than causing a
+  correction.
+- **Presentation.** The player's fighter is drawn part-way through the
+  current fixed tick, like local practice. The HUD's range and sight
+  checks use the predicted position. A correction shifts the prediction
+  but not, at first, the drawn position: the difference fades over about
+  80 ms, and anything larger than 2 m snaps.
+- **Server fix found by measuring.** A reconnect kept the seat's old
+  acknowledgement, so a rejoined client discarded unapplied inputs and was
+  corrected on every snapshot. A new connection now starts with
+  acknowledgement 0.
+- **Measured** ([load baseline](../research/match-server-load.md#prediction)).
+  The bots predict exactly as the browser does. 1v1 at 0, 50, 100 and
+  200 ms with jitter had no corrections. 3v3 load with drop-outs had 0.1
+  per 1000 inputs at 100 ms and 0.3 at 200 ms. The remaining cases are
+  real disagreements: a player killed while still predicted to move (up to
+  latency ÷ 33 ms steps), and a late input mid-jump, where an idle tick
+  still advances the arc (at most one tick of motion). Human browser
+  review of how prediction feels is pending.
 
 ## Consequences
 

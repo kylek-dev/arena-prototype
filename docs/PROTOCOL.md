@@ -42,8 +42,10 @@ yet.
   with `InputFrame::merge_into`: the latest movement, facing and attack
   target win, and a jump from any of them is kept. This keeps the delay
   bounded.
-- Clients interpolate snapshots behind the newest one received (about
-  100 ms to start). There is no client prediction in the first milestone.
+- Clients interpolate other fighters' snapshots behind the newest one
+  received (about 100 ms). A client predicts its own fighter by replaying
+  its unacknowledged inputs on the latest snapshot
+  (`arena_protocol::prediction`).
 
 ## Client → server
 

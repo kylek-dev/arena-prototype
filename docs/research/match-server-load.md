@@ -57,6 +57,41 @@ expected, so this run shows where this machine saturates, not the server's
 own limit. An unpinned run on all 16 CPUs gave similar server CPU figures
 (0.29 at 300 bots, 1.67 at 1,002, 4.63 at 2,004).
 
+## Prediction
+
+Date: 2026-11-15, same machine, release builds, after the server switched
+to one input per tick (ADR 0044). The bots predict their own movement with
+the browser's `Predictor` and count corrections: reconciliations that
+moved the prediction.
+
+| Run | Predicted inputs | Corrections | Per 1000 | Size p50 / max |
+| --- | --- | --- | --- | --- |
+| 1v1, 0 ms, 20 s | 890 | 0 | 0.0 | — |
+| 1v1, 50 ms + up to 10 ms each way | 880 | 0 | 0.0 | — |
+| 1v1, 100 ms + up to 20 ms | 876 | 0 | 0.0 | — |
+| 1v1, 200 ms + up to 40 ms | 862 | 0 | 0.0 | — |
+| 50 × 1v1, 100 ms + 20, 30 s | 58,250 | 1 | 0.02 | 242 mm |
+| 50 × 3v3, 100 ms + 20, 30 s | 200,610 | 24 | 0.1 | 267 / 760 mm |
+| 50 × 3v3, 100 ms + 20, drop-outs every 5 s | 178,863 | 23 | 0.1 | 246 / 900 mm |
+| 50 × 3v3, 200 ms + 40, drop-outs every 5 s | 176,154 | 55 | 0.3 | 242 / 1,200 mm |
+
+Two bugs were found and fixed while measuring:
+
+- Inputs sent while a match was still waiting were not recorded, but the
+  server applied any that arrived after it started. This caused a
+  correction for each input in flight at every round start: 4–9 per 1v1
+  run.
+- A rejoin kept the seat's old acknowledgement. That caused 18.8
+  corrections per 1000 inputs in the drop-out run, down to 0.1 after the
+  fix.
+
+A run with jumps disabled ruled out jumping as the cause of the first
+problem. The remaining corrections match real disagreements: a fighter
+killed while its prediction still moves (up to latency ÷ 33 ms steps,
+hence the larger maxima at 200 ms), and a late input mid-jump, where an
+idle tick still advances the arc (at most a step plus a tick of rise or
+fall).
+
 ## Findings
 
 - **Consistency:** about 3.4 M cross-seat hash comparisons in the pinned
