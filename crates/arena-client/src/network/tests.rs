@@ -485,3 +485,52 @@ fn sending_is_paced_to_keep_one_input_queued_on_the_server() {
     // Not running: plain rules tick.
     assert_eq!(joined(0, 1).pace(), 1.0);
 }
+
+#[test]
+fn returning_from_a_background_tab_keeps_the_server_rate_and_full_speed() {
+    // A server 9% slow against this clock. The tab hides for ten seconds,
+    // then the queued snapshots trickle in over the next six.
+    let mut server = Arena::practice(arena_map::colosseum().layout, 1).unwrap();
+    server.step(&[]);
+    let mut session = joined(0, 1);
+    // Parsed once: this loop runs about ten thousand frames.
+    let layout = layout();
+    let local_per_tick = 1.09 / 30.0;
+    let truth = 30.0 / 1.09;
+    let mut pending: std::collections::VecDeque<(f64, Vec<u8>)> = Default::default();
+    for tick in 1..1200u64 {
+        server.step(&[]);
+        let sent = tick as f64 * local_per_tick;
+        let arrives = if (300..600).contains(&tick) {
+            sent + 10.0 - (tick - 300) as f64 / 30.0 + (tick - 300) as f64 * 0.02
+        } else if (600..800).contains(&tick) {
+            sent + 6.0 * (800 - tick) as f64 / 200.0
+        } else {
+            sent
+        };
+        pending.push_back((arrives, snapshot(&server, 0, vec![], &[true, true])));
+    }
+    let mut now = 0.0;
+    let mut worst: f64 = 0.0;
+    // Frames the runtime holds while the engine is paused, in order.
+    let mut held: Vec<Vec<u8>> = Vec::new();
+    let hidden = 300.0 * local_per_tick..300.0 * local_per_tick + 10.0;
+    while now < 1200.0 * local_per_tick {
+        now += 1.0 / 240.0;
+        while pending.front().is_some_and(|(at, _)| *at <= now) {
+            held.push(pending.pop_front().unwrap().1);
+        }
+        if hidden.contains(&now) {
+            continue;
+        }
+        session.receive(&feed(1, std::mem::take(&mut held)), now, &layout);
+        // After the first estimate (about a second of snapshots).
+        if now > 2.0 {
+            worst = worst.max((session.tick_rate() - truth).abs());
+        }
+    }
+    assert!(
+        worst < 0.5,
+        "the server rate was misjudged by {worst} ticks/s"
+    );
+}

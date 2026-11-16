@@ -77,46 +77,128 @@ impl Pacer {
 
 /// The server's nominal tick rate, used until a rate has been measured.
 pub const NOMINAL_TICK_RATE: f64 = arena_sim::TICKS_PER_SECOND as f64;
-/// Seconds of snapshots a tick-rate estimate looks back over.
-pub const RATE_WINDOW: f64 = 5.0;
+/// Ticks per bucket (half a server second): each keeps its fastest snapshot.
+const RATE_BUCKET_TICKS: u64 = arena_sim::TICKS_PER_SECOND / 2;
+/// Buckets a tick-rate estimate looks back over: twenty server seconds.
+pub const RATE_WINDOW_BUCKETS: usize = 40;
+/// Snapshots arriving more than this much later than the fastest ones are
+/// treated as delayed (a backlog), not as evidence about the clock.
+const LATE: f64 = 0.02;
+/// The estimate stays within this fraction of the nominal rate. Real clocks
+/// differ by parts per million; a misbehaving virtual machine was measured
+/// 9% off.
+pub const MAX_SKEW: f64 = 0.15;
 
 /// Measures how fast the server's ticks advance on the client's own clock.
 ///
 /// A client must send one input per server tick, and its interpolated view
 /// must advance at the server's pace. Both are driven by the server's rate
-/// *as the client's clock sees it*: clocks drift, and a virtual machine's
+/// as this client's clock sees it: clocks drift, and a virtual machine's
 /// clock was once measured 9% slow, which made a client sending a nominal
-/// 30 inputs per second flood its server. The estimate is the ticks advanced
-/// over the last few seconds of snapshots divided by the local time taken.
+/// 30 inputs per second flood its server.
+///
+/// Delivery delay must not be mistaken for clock rate. After a stall (a
+/// background tab) snapshots trickle in late for seconds, and ticks seem to
+/// advance slowly; an estimate from first and last samples once dropped to
+/// a third of the true rate, and the player moved in slow motion. Delay can
+/// only make a snapshot later, never earlier, so the clock is the *lower
+/// edge* of the samples. As network time protocols do, the estimate keeps
+/// the fastest-arriving snapshot of each half server second and fits a line
+/// through those, repeatedly discarding points well above the line.
 #[derive(Clone, Debug, Default)]
 pub struct TickRate {
-    samples: VecDeque<(f64, u64)>,
+    /// Per half server second (bucket of ticks): the tick and lowest offset seen,
+    /// where offset = local time − tick ÷ nominal rate.
+    buckets: VecDeque<(u64, u64, f64)>,
+    last_tick: Option<u64>,
+    /// The latest good estimate, kept across rewinds and short windows.
+    held: Option<f64>,
 }
 impl TickRate {
     /// Records that a snapshot for server `tick` arrived at local `now`.
     pub fn observe(&mut self, now: f64, tick: u64) {
-        // A new round or a reconnect can rewind the tick: start over.
-        if self.samples.back().is_some_and(|(_, last)| tick < *last) {
-            self.samples.clear();
+        // A new round or a reconnect rewinds the tick: start a new line,
+        // keeping the last estimate meanwhile.
+        if self.last_tick.is_some_and(|last| tick < last) {
+            self.buckets.clear();
         }
-        self.samples.push_back((now, tick));
-        while self.samples.len() > 2 && now - self.samples[1].0 >= RATE_WINDOW {
-            self.samples.pop_front();
+        self.last_tick = Some(tick);
+        let offset = now - tick as f64 / NOMINAL_TICK_RATE;
+        let bucket = tick / RATE_BUCKET_TICKS;
+        match self.buckets.back_mut() {
+            Some((at, best_tick, best)) if *at == bucket => {
+                if offset < *best {
+                    (*best_tick, *best) = (tick, offset);
+                }
+            }
+            _ => self.buckets.push_back((bucket, tick, offset)),
+        }
+        while self.buckets.len() > RATE_WINDOW_BUCKETS {
+            self.buckets.pop_front();
+        }
+        if let Some(rate) = self.fit() {
+            self.held = Some(rate);
         }
     }
-    /// Server ticks per local second, once a second or more has been seen.
+
+    /// Fits the lower edge of the bucket minima: least squares, then drop
+    /// points more than `LATE` above the line and refit, a few times.
+    fn fit(&self) -> Option<f64> {
+        let mut points: Vec<(f64, f64)> = self
+            .buckets
+            .iter()
+            .map(|(_, tick, offset)| (*tick as f64, *offset))
+            .collect();
+        let mut slope = 0.0;
+        for _ in 0..4 {
+            let n = points.len() as f64;
+            if points.len() < 3 {
+                return None;
+            }
+            let span = points.last()?.0 - points.first()?.0;
+            // A first estimate after about a second keeps a skewed client
+            // from flooding the server while it waits for one.
+            if span < NOMINAL_TICK_RATE {
+                return None;
+            }
+            let (mx, my) = points
+                .iter()
+                .fold((0.0, 0.0), |(x, y), (px, py)| (x + px / n, y + py / n));
+            let (sxy, sxx) = points.iter().fold((0.0, 0.0), |(sxy, sxx), (px, py)| {
+                (sxy + (px - mx) * (py - my), sxx + (px - mx) * (px - mx))
+            });
+            slope = sxy / sxx;
+            let intercept = my - slope * mx;
+            // The lowest residual marks the lower edge; keep points near it.
+            let lowest = points
+                .iter()
+                .map(|(x, y)| y - (intercept + slope * x))
+                .fold(f64::INFINITY, f64::min);
+            let before = points.len();
+            points.retain(|(x, y)| y - (intercept + slope * x) - lowest <= LATE);
+            if points.len() == before {
+                break;
+            }
+        }
+        // offset = n (1/R − 1/R₀) + c, so the slope gives R.
+        let rate = 1.0 / (slope + 1.0 / NOMINAL_TICK_RATE);
+        let (low, high) = (
+            NOMINAL_TICK_RATE * (1.0 - MAX_SKEW),
+            NOMINAL_TICK_RATE * (1.0 + MAX_SKEW),
+        );
+        rate.is_finite().then(|| rate.clamp(low, high))
+    }
+
+    /// Server ticks per local second, once a few seconds have been seen.
     pub fn measured(&self) -> Option<f64> {
-        let (first_at, first) = *self.samples.front()?;
-        let (last_at, last) = *self.samples.back()?;
-        let span = last_at - first_at;
-        (span >= 1.0).then(|| ((last - first) as f64 / span).clamp(10.0, 60.0))
+        self.held
     }
     /// The measured rate, or the nominal one until there is a measurement.
     pub fn rate(&self) -> f64 {
-        self.measured().unwrap_or(NOMINAL_TICK_RATE)
+        self.held.unwrap_or(NOMINAL_TICK_RATE)
     }
     pub fn reset(&mut self) {
-        self.samples.clear();
+        *self = Self::default();
     }
 }
 
@@ -398,21 +480,76 @@ mod pacing_tests {
 mod tick_rate_tests {
     use super::*;
 
+    /// Snapshot arrival times for a server whose clock runs `skew` slow
+    /// against ours: tick `n` reaches us at `n × local_per_tick + delay(n)`.
+    fn feed(
+        rate: &mut TickRate,
+        ticks: std::ops::Range<u64>,
+        skew: f64,
+        delay: impl Fn(u64) -> f64,
+    ) {
+        let local_per_tick = (1.0 + skew) / NOMINAL_TICK_RATE;
+        for tick in ticks {
+            let jitter = [0.004, 0.0, 0.009, 0.002][tick as usize % 4];
+            rate.observe(tick as f64 * local_per_tick + jitter + delay(tick), tick);
+        }
+    }
+
     #[test]
     fn the_server_rate_is_measured_on_the_local_clock() {
         let mut rate = TickRate::default();
         assert_eq!(rate.rate(), NOMINAL_TICK_RATE);
-        // A server whose clock runs 9% slow: its 30 ticks per its second
-        // arrive as about 27.5 per local second, with arrival jitter.
-        let local_per_tick = 1.0 / 30.0 * 1.09;
-        for tick in 0..300u64 {
-            let jitter = if tick % 3 == 0 { 0.004 } else { -0.002 };
-            rate.observe(tick as f64 * local_per_tick + jitter, tick);
+        // A server whose clock runs 9% slow (its 30 Hz arrives as about 27.5
+        // per local second), with arrival jitter.
+        feed(&mut rate, 0..90, 0.09, |_| 0.0);
+        let truth = NOMINAL_TICK_RATE / 1.09;
+        assert!((rate.rate() - truth).abs() < 0.1, "{}", rate.rate());
+        feed(&mut rate, 90..600, 0.09, |_| 0.0);
+        assert!((rate.rate() - truth).abs() < 0.02, "{}", rate.rate());
+    }
+
+    #[test]
+    fn a_backlog_after_a_background_tab_is_not_mistaken_for_a_slow_server() {
+        let mut rate = TickRate::default();
+        let truth = NOMINAL_TICK_RATE / 1.09;
+        feed(&mut rate, 0..300, 0.09, |_| 0.0);
+        // Hidden for ten seconds, then the backlog trickles in: snapshots
+        // from the hidden stretch arrive late, the delay shrinking as the
+        // stream catches up over the next six seconds.
+        let hidden = 300..600;
+        let catching_up = |tick: u64| {
+            if hidden.contains(&tick) {
+                // Delivered between 10 s and 16 s after the stall began.
+                10.0 - (tick - 300) as f64 / NOMINAL_TICK_RATE + (tick - 300) as f64 * 0.02
+            } else if tick < 800 {
+                // Still behind while the queue drains.
+                6.0 * (800 - tick) as f64 / 200.0
+            } else {
+                0.0
+            }
+        };
+        let local_per_tick = 1.09 / NOMINAL_TICK_RATE;
+        let mut worst: f64 = 0.0;
+        for tick in 300..1200u64 {
+            rate.observe(tick as f64 * local_per_tick + catching_up(tick), tick);
+            worst = worst.max((rate.rate() - truth).abs());
         }
-        let measured = rate.measured().unwrap();
-        assert!((measured - 30.0 / 1.09).abs() < 0.1, "{measured}");
-        // A rewound tick (new round) starts over at the nominal rate.
-        rate.observe(20.0, 3);
+        assert!(worst < 0.3, "the estimate wandered by {worst}");
+    }
+
+    #[test]
+    fn estimates_stay_near_nominal_survive_rewinds_and_reset() {
+        let mut rate = TickRate::default();
+        // An absurdly fast clock is clamped.
+        feed(&mut rate, 0..300, -0.5, |_| 0.0);
+        assert_eq!(rate.rate(), NOMINAL_TICK_RATE * (1.0 + MAX_SKEW));
+        // A rewind (new round) keeps the last estimate while relearning.
+        let mut rate = TickRate::default();
+        feed(&mut rate, 0..300, 0.09, |_| 0.0);
+        let before = rate.rate();
+        rate.observe(100.0, 3);
+        assert_eq!(rate.rate(), before);
+        rate.reset();
         assert_eq!(rate.measured(), None);
         assert_eq!(rate.rate(), NOMINAL_TICK_RATE);
     }
