@@ -37,8 +37,8 @@ export function GraphicsSettings() {
         </select>
       </label>
       <p>
-        Model detail affects procedural characters only, not imported models. Pillars remain square.
-        Rendering stays at native resolution; interface text is unaffected.
+        Model detail affects procedural characters only, not imported models. Pillar shapes are
+        unchanged. Rendering stays at native resolution; interface text is unaffected.
       </p>
       <Button onClick={() => updateGraphics(defaultGraphics)}>Reset graphics</Button>
       <label>

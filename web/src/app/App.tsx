@@ -13,10 +13,14 @@ import { QuickBinding } from "../features/keybindings/QuickBinding";
 import { BindingConflict } from "../features/keybindings/BindingsEditor";
 import { LayoutToolbar } from "../features/layout-editor/LayoutSettings";
 import { CombatErrors } from "../features/combat-errors/CombatErrors";
+import { MatchStatus } from "../features/match-status/MatchStatus";
 import { Loading } from "../features/loading/Loading";
 import { Diagnostics } from "../features/diagnostics/Diagnostics";
 import { LightingTweaks } from "../features/lighting-tweaks/LightingTweaks";
 import { MapEditor } from "../features/map-editor/MapEditor";
+import { Customizer } from "../features/customizer/Customizer";
+import { beforeMatch, customizerVisible } from "../state/appearance";
+import { StartScreen } from "../features/customizer/StartScreen";
 import { Modal } from "../ui/Dialog";
 import { draggingSpell, interaction, setPanel } from "../state/session";
 import { saveMessage, useConfigSelector } from "../state/config";
@@ -29,6 +33,8 @@ export function App() {
   const save = useStore(saveMessage, (s) => s);
   const pending = useStore(pendingBinding, (s) => s);
   const dragging = useStore(draggingSpell, (s) => s);
+  const customizing = useStore(customizerVisible, (s) => s);
+  const lobby = useStore(beforeMatch, (s) => s);
   const menuBindings = useConfigSelector((c) => c.bindings.menu);
   const menuKey = menuBindings?.find(Boolean);
   const title =
@@ -45,27 +51,35 @@ export function App() {
       panelBackground="solid"
     >
       <TooltipProvider disabled={dragging || mode.quick || mode.layout || !!mode.capture}>
-        <button id="menu-access" className="menu-access" onClick={() => setPanel("menu")}>
-          Open game menu
-        </button>
-        <span className="menu-hint">{menuKey ? label(menuKey) : "Shift+Tab"} · Menu</span>
         {save && (
           <p className="save-notice" role="alert">
             {save} Open Menu → Settings → Profiles to export or recover.
           </p>
         )}
-        <Nameplates />
-        <CombatText />
-        <Frames />
-        <UnitTooltip />
-        <ActionBars />
-        <SpellDragPreview />
-        <CombatErrors />
-        <QuickBinding />
-        <LayoutToolbar />
+        {/* The close-up hides the combat HUD so the character is unobstructed. */}
+        {!customizing && !lobby && (
+          <>
+            <button id="menu-access" className="menu-access" onClick={() => setPanel("menu")}>
+              Open game menu
+            </button>
+            <span className="menu-hint">{menuKey ? label(menuKey) : "Shift+Tab"} · Menu</span>
+            <Nameplates />
+            <CombatText />
+            <Frames />
+            <UnitTooltip />
+            <ActionBars />
+            <SpellDragPreview />
+            <CombatErrors />
+            <MatchStatus />
+            <QuickBinding />
+            <LayoutToolbar />
+          </>
+        )}
         <Diagnostics />
         <LightingTweaks />
         <MapEditor />
+        <StartScreen />
+        <Customizer />
         <Loading />
         {mode.panel && (
           <Modal

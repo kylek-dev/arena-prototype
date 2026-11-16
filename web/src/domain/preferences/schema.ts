@@ -108,6 +108,14 @@ export function validateConfig(value: unknown): Config {
     )
       rawBindings[action] = [null, null];
   }
+  // Autorun has two defaults; drop only the ones an existing profile already uses.
+  if (!("autorun" in rawBindings)) {
+    const taken = (d: Chord | null) =>
+      Object.values(rawBindings).some(
+        (pair) => Array.isArray(pair) && pair.some((c) => same(record(c) as Chord, d)),
+      );
+    rawBindings.autorun = bindings.autorun.map((d) => (taken(d) ? null : d));
+  }
   // Existing custom Space assignments take precedence over the new default.
   if (
     !("jump" in rawBindings) &&

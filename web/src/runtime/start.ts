@@ -3,7 +3,8 @@ import { loadEngine } from "../bridge/loader";
 import { readGraphics } from "../state/graphics";
 import { readWeapons } from "../state/weapons";
 import { readLighting } from "../state/lighting";
-import { loadMap, onMapStatus, readMap } from "../state/map-editor";
+import { loadStartupMap, onMapStatus, readMap } from "../state/map-editor";
+import { readAppearance, readPreview } from "../state/appearance";
 import { observeCastResult } from "./cast-feedback";
 import { engine, error, focus, nameplateScene } from "../state/session";
 import { reconcileFocus } from "../domain/units/selection";
@@ -13,6 +14,8 @@ import { interactUnit } from "./commands";
 import { installInput } from "./input-router";
 import { installSpellDragging } from "./spell-drag";
 import { debugEnabled, measureFrames, metrics, recordError, recordState } from "./diagnostics";
+import { browserLink, installJoinLinks, takeJoinFragment } from "./network";
+import { networkLink } from "../state/network";
 export function startRuntime(canvas: HTMLCanvasElement) {
   const pointer = installPointer(canvas, () => router.cancel());
   const router = installInput(canvas, pointer.end);
@@ -28,14 +31,25 @@ export function startRuntime(canvas: HTMLCanvasElement) {
   };
   window.addEventListener("error", (e) => fail(e.message));
   window.addEventListener("unhandledrejection", (e) => fail(String(e.reason?.message ?? e.reason)));
+  const link = browserLink();
+  networkLink.set(link);
+  // A join link wins; otherwise a reload rejoins this tab's match.
+  const joining = takeJoinFragment() ?? link.resumable();
+  if (joining) link.join(joining);
+  const stopJoinLinks = installJoinLinks(link);
   let lastDelivery = 0;
   window.arenaShell = {
+    readNetwork: link.read,
+    sendNetwork: link.send,
+    onNetwork: link.onStatus,
     readInput: router.sample,
     readHover: unitHover.read,
     readGraphics,
     readWeapons,
     readLighting,
     readMap,
+    readAppearance,
+    readPreview,
     onMapStatus,
     onFocusUnit: (tag) => interactUnit(tag, "focus"),
     onState(raw) {
@@ -75,13 +89,17 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     };
   const stopFrameTiming = measureFrames(() => (engine.get()?.frames ?? 0) > 30);
   // The arena starts from the map embedded at build time; the file (which the
-  // editor may have saved since) replaces it as soon as it arrives.
-  void loadMap();
+  // editor may have saved since, or the map last opened on this device)
+  // replaces it as soon as it arrives.
+  void loadStartupMap();
   loadEngine().catch((e) => {
     console.error(e);
     fail(String(e.message ?? e));
   });
   return () => {
+    stopJoinLinks();
+    link.dispose();
+    networkLink.set(null);
     stopFrameTiming();
     router.dispose();
     pointer.dispose();

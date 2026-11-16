@@ -1,21 +1,31 @@
-import { useEffect, useRef, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Button } from "@radix-ui/themes";
 import {
   addPillar,
+  addProp,
   addRoom,
-  DEFAULT_MAP_ID,
   duplicate,
+  GROUNDS,
+  mapIdFor,
+  newMap,
   nudge,
   removeSelected,
+  rotateProp,
   serializeMap,
   type ArenaMap,
+  type Ground,
   type Selection,
 } from "../../domain/map";
 import {
   commitMap,
+  createMap,
   currentRevision,
+  listMaps,
   loadMap,
+  loadPropCatalog,
   mapEditorVisible,
+  mapId,
+  mapList,
   mapHistory,
   mapLoad,
   mapNotice,
@@ -24,6 +34,7 @@ import {
   mapSelection,
   mapStatus,
   mapWritable,
+  propCatalog,
   redoMap,
   replaceMap,
   saveMap,
@@ -31,7 +42,7 @@ import {
 } from "../../state/map-editor";
 import { useStore } from "../../state/store";
 import { MovableWindow } from "../../ui/MovableWindow";
-import { MapInspector } from "./MapInspector";
+import { MapInspector, PropOptions } from "./MapInspector";
 import { MapPlan } from "./MapPlan";
 import "./map-editor.css";
 
@@ -47,11 +58,11 @@ function readText(file: Blob) {
   });
 }
 
-function download(map: ArenaMap) {
+function download(map: ArenaMap, id: string) {
   const url = URL.createObjectURL(new Blob([serializeMap(map)], { type: "application/json" }));
   const link = document.createElement("a");
   link.href = url;
-  link.download = `${DEFAULT_MAP_ID}.json`;
+  link.download = `${id}.json`;
   link.click();
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
@@ -111,8 +122,145 @@ function ItemList({ map, selection }: { map: ArenaMap; selection: Selection }) {
         {map.rooms.map((room, i) =>
           item(`Room ${i + 1} · ${room.team}`, { kind: "room", index: i }),
         )}
+        {map.props.map((prop, i) =>
+          item(`Prop ${i + 1} · ${prop.model.replaceAll("_", " ")}`, { kind: "prop", index: i }),
+        )}
       </ul>
     </nav>
+  );
+}
+
+/** Name, file id and ground for a new map; replaces the edited map once created. */
+function NewMapForm({ dirty, close }: { dirty: boolean; close: () => void }) {
+  const [name, setName] = useState("");
+  const [id, setId] = useState("");
+  const [ground, setGround] = useState<Ground>("stone");
+  const [error, setError] = useState<string | null>(null);
+  const fileId = id || mapIdFor(name || "New arena");
+  const create = () => {
+    const problem = createMap(fileId, newMap(name.trim() || "New arena", ground));
+    if (problem) setError(problem);
+    else close();
+  };
+  return (
+    <section className="map-new" aria-label="New map">
+      <label className="map-field map-field-wide">
+        <span>Name</span>
+        <input
+          value={name}
+          placeholder="New arena"
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && create()}
+        />
+      </label>
+      <label className="map-field map-field-wide">
+        <span>File id</span>
+        <input
+          value={id}
+          placeholder={fileId}
+          onChange={(e) => setId(e.target.value.toLowerCase())}
+        />
+      </label>
+      <label className="map-field map-field-wide">
+        <span>Ground</span>
+        <select value={ground} onChange={(e) => setGround(e.target.value as Ground)}>
+          {GROUNDS.map((g) => (
+            <option key={g.id} value={g.id}>
+              {g.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="map-hint">
+        Saves as assets/maps/{fileId}.json. Starts as an open floor with one room per team.
+        {dirty && " Unsaved changes to the current map will be lost."}
+      </p>
+      {error && (
+        <p className="map-notice error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="map-actions">
+        <Button size="1" onClick={create}>
+          Create map
+        </Button>
+        <Button size="1" variant="ghost" color="gray" onClick={close}>
+          Cancel
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+function OpenMap({ dirty }: { dirty: boolean }) {
+  const maps = useStore(mapList, (m) => m);
+  const id = useStore(mapId, (i) => i);
+  const [pending, setPending] = useState<string | null>(null);
+  const open = (next: string) => {
+    setPending(null);
+    void loadMap(next);
+  };
+  return (
+    <>
+      <select
+        aria-label="Open map"
+        value={id}
+        onChange={(e) => (dirty ? setPending(e.target.value) : open(e.target.value))}
+      >
+        {maps.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.name} ({m.id})
+          </option>
+        ))}
+      </select>
+      {pending && (
+        <span role="alert" className="map-notice error">
+          Discard unsaved changes?{" "}
+          <Button size="1" color="red" variant="soft" onClick={() => open(pending)}>
+            Open {pending}
+          </Button>{" "}
+          <Button size="1" variant="ghost" color="gray" onClick={() => setPending(null)}>
+            Keep editing
+          </Button>
+        </span>
+      )}
+    </>
+  );
+}
+
+function AddProp({ map }: { map: ArenaMap }) {
+  const catalog = useStore(propCatalog, (c) => c);
+  const [model, setModel] = useState("Barrel");
+  const chosen = catalog.some((c) => c.id === model) ? model : (catalog[0]?.id ?? "");
+  return (
+    <section className="map-inspector stack" aria-label="Add prop">
+      <h3>Props</h3>
+      <div className="map-props-add">
+        <select
+          aria-label="Prop model"
+          value={chosen}
+          disabled={!catalog.length}
+          onChange={(e) => setModel(e.target.value)}
+        >
+          <PropOptions catalog={catalog} />
+        </select>
+        <Button
+          size="1"
+          variant="surface"
+          disabled={!chosen}
+          onClick={() => {
+            const next = addProp(map, chosen);
+            commitMap(next);
+            mapSelection.set({ kind: "prop", index: next.props.length - 1 });
+          }}
+        >
+          Add prop
+        </Button>
+      </div>
+      {!catalog.length && (
+        <p className="map-hint">The prop list did not load; run scripts/prepare_props.py.</p>
+      )}
+    </section>
   );
 }
 
@@ -129,6 +277,14 @@ export function MapEditor() {
   const dirty = !!map && saved !== serializeMap(map);
   const status = useStore(mapStatus, (s) => s);
   const valid = status?.revision === currentRevision() && status.errors.length === 0;
+  const id = useStore(mapId, (i) => i);
+  const [creating, setCreating] = useState(false);
+
+  useEffect(() => {
+    if (!visible) return;
+    void loadPropCatalog();
+    void listMaps();
+  }, [visible]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -161,7 +317,14 @@ export function MapEditor() {
     } else if (mod && e.key.toLowerCase() === "y") {
       handled();
       redoMap();
-    } else if (mod && e.key.toLowerCase() === "d" && selection?.kind === "pillar") {
+    } else if (e.key.toLowerCase() === "r" && !mod && selection?.kind === "prop") {
+      handled();
+      commitMap(rotateProp(map, selection.index, e.shiftKey ? -15 : 15));
+    } else if (
+      mod &&
+      e.key.toLowerCase() === "d" &&
+      (selection?.kind === "pillar" || selection?.kind === "prop")
+    ) {
       handled();
       const next = duplicate(map, selection);
       commitMap(next.map);
@@ -197,6 +360,13 @@ export function MapEditor() {
           </div>
         ) : (
           <>
+            <div className="map-toolbar" role="toolbar" aria-label="Map files">
+              <OpenMap dirty={dirty} />
+              <Button size="1" variant="surface" onClick={() => setCreating(!creating)}>
+                New map…
+              </Button>
+            </div>
+            {creating && <NewMapForm dirty={dirty} close={() => setCreating(false)} />}
             <div className="map-toolbar" role="toolbar" aria-label="Map tools">
               <Button
                 size="1"
@@ -257,10 +427,10 @@ export function MapEditor() {
                   title={!valid ? "Fix the listed problems before saving." : undefined}
                   onClick={() => saveMap()}
                 >
-                  Save to assets/maps
+                  Save as {id}.json
                 </Button>
               )}
-              <Button size="1" variant="surface" color="gray" onClick={() => download(map)}>
+              <Button size="1" variant="surface" color="gray" onClick={() => download(map, id)}>
                 Download
               </Button>
               <Button size="1" variant="surface" color="gray" onClick={() => file.current?.click()}>
@@ -288,10 +458,10 @@ export function MapEditor() {
               <div className="map-canvas stack">
                 <MapPlan map={map} preview={preview} selection={selection} />
                 <p className="map-hint">
-                  Drag pillars, rooms and spawns; corner and back handles resize. Alt: 0.1 m snap.
-                  Arrows nudge (Shift ×4), Delete removes, Ctrl+Z / Ctrl+Shift+Z undo and redo.
-                  Edits go live in the arena; the round keeps going unless a unit ends up inside a
-                  wall.
+                  Drag pillars, rooms, spawns and props; corner and back handles resize. Alt: 0.1 m
+                  snap. R turns the selected prop. Arrows nudge (Shift ×4), Delete removes, Ctrl+Z /
+                  Ctrl+Shift+Z undo and redo. Edits go live in the arena; the round keeps going
+                  unless a unit ends up inside a wall.
                   {writable === false &&
                     " Saving needs the local dev server; use Download instead."}
                 </p>
@@ -299,6 +469,7 @@ export function MapEditor() {
               <div className="map-side stack">
                 <ItemList map={map} selection={selection} />
                 <MapInspector map={map} selection={selection} />
+                <AddProp map={map} />
               </div>
             </div>
           </>

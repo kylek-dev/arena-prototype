@@ -3,11 +3,13 @@
 
 import json
 import os
+import shutil
 from pathlib import Path
 import struct
 import sys
 
 sys.dont_write_bytecode = True
+import character_kits
 import quaternius_character
 
 
@@ -118,20 +120,28 @@ def prepare(characters=CHARACTERS, directory=DIRECTORY, enabled=None):
     legacy = enabled and (characters is not CHARACTERS or setting == '1')
     chosen = next((c for c in characters if c[1].is_file()), None) if legacy else None
     if quaternius:
-        chosen = (quaternius_character.IDENTIFIER, None, 'Quaternius female')
+        chosen = (character_kits.IDENTIFIER, None, 'Quaternius customizable')
     for identifier, _, _ in characters:
         if chosen is None or identifier != chosen[0]:
             (directory / model_path(identifier)).unlink(missing_ok=True)
-    if not quaternius:
-        (directory / model_path(quaternius_character.IDENTIFIER)).unlink(missing_ok=True)
-    if chosen:
+    # The single dressed female was replaced by customizable kits.
+    (directory / model_path(quaternius_character.IDENTIFIER)).unlink(missing_ok=True)
+    kits = []
+    if quaternius:
+        kits = character_kits.prepare(directory)
+        if not kits:
+            raise ValueError('Quaternius sources are installed but no kit could be built')
+    else:
+        shutil.rmtree(directory / character_kits.DIRECTORY, ignore_errors=True)
+    if chosen and not quaternius:
         identifier, source, name = chosen
-        (directory / model_path(identifier)).write_bytes(
-            quaternius_character.build(texture_processor=quaternius_character.runtime_png) if quaternius
-            else character_glb(source.read_bytes(), name))
+        (directory / model_path(identifier)).write_bytes(character_glb(source.read_bytes(), name))
     manifest = {'available': chosen is not None, 'model': chosen and chosen[0]}
+    if kits:
+        manifest['kits'] = kits
     (directory / 'character.json').write_text(json.dumps(manifest) + '\n')
-    print('Character asset:', f'{chosen[2]} rig and {10 if quaternius else 8} clips' if chosen
+    print('Character asset:', f'{len(kits)} Quaternius kits ({", ".join(k["id"] for k in kits)})'
+          if quaternius else f'{chosen[2]} rig and 8 clips' if chosen
           else 'procedural character (no character source installed)' if enabled
           else f'procedural character (rigged models disabled; unset {ENV})')
 

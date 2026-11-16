@@ -1,6 +1,7 @@
 //! Bevy presentation adapter for the shared arena rules. DOM integration is
 //! isolated in `platform`; rules remain usable in native headless tests.
 mod animation;
+mod appearance;
 mod camera;
 mod character;
 mod character_animation;
@@ -10,7 +11,12 @@ mod heraldry;
 mod hover;
 mod humanoid;
 mod lighting;
+mod lightning;
 mod nameplates;
+mod network;
+mod palette;
+mod prism;
+mod props;
 mod sky;
 mod startup;
 mod textures;
@@ -20,7 +26,7 @@ mod weapons;
 use arena_map::MapFile;
 use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::{
-    ATTACK_COOLDOWN, ATTACK_DAMAGE, ATTACK_RANGE, Arena, ArenaCommand, ArenaEvent, Combatant,
+    ATTACK_COOLDOWN, ATTACK_DAMAGE, ATTACK_RANGE, ActorInput, Arena, ArenaEvent, Axes, Combatant,
     Position,
 };
 use bevy::{asset::AssetMetaCheck, core_pipeline::tonemapping::Tonemapping, prelude::*};
@@ -37,9 +43,15 @@ struct Practice {
     attack: bool,
     jump: bool,
     feedback: &'static str,
-    flash: f32,
+    /// The Pulse lightning currently on screen, if any.
+    zap: Option<lightning::Zap>,
     frames: u32,
     combat_text: combat_text::CombatText,
+    /// In a network match: interpolated authoritative positions to draw,
+    /// replacing the local fixed-step interpolation.
+    remote: Option<Vec<Vec3>>,
+    /// In a network match: whether each local actor's player is attached.
+    connected: Option<Vec<bool>>,
 }
 impl Default for Practice {
     fn default() -> Self {
@@ -68,11 +80,22 @@ impl Practice {
             attack: false,
             jump: false,
             feedback: "Select the opponent to begin",
-            flash: 0.0,
+            zap: None,
             frames: 0,
             combat_text: default(),
+            remote: None,
+            connected: None,
         }
     }
+}
+
+/// The network match in progress, if the browser runtime has one.
+#[derive(Resource, Default)]
+struct Net {
+    session: Option<network::Session>,
+    /// Seconds since start, read once per frame for the fixed tick.
+    now: f64,
+    last_status: Option<(f64, String)>,
 }
 #[derive(Resource)]
 struct Orbit {
@@ -106,14 +129,12 @@ struct MapEdits {
 }
 #[derive(Component)]
 struct FighterVisual(usize);
-#[derive(Component)]
-struct AttackBeam;
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen::prelude::wasm_bindgen(start))]
 pub fn run() {
     App::new()
         .insert_resource(practice_window_settings(cfg!(target_arch = "wasm32")))
-        .insert_resource(ClearColor(Color::srgb(0.18, 0.21, 0.25)))
+        .insert_resource(ClearColor(palette::color(palette::NIGHT_6)))
         .insert_resource(GlobalAmbientLight {
             brightness: 500.0,
             ..default()
@@ -121,9 +142,13 @@ pub fn run() {
         .insert_resource(Time::<Fixed>::from_hz(TICKS_PER_SECOND as f64))
         .init_resource::<ActiveMap>()
         .init_resource::<MapEdits>()
+        .init_resource::<props::PropModels>()
         .init_resource::<Practice>()
+        .init_resource::<Net>()
         .init_resource::<Orbit>()
         .init_resource::<animation::Settings>()
+        .init_resource::<appearance::Desired>()
+        .init_resource::<appearance::Preview>()
         .add_plugins(
             DefaultPlugins
                 .set(AssetPlugin {
@@ -153,7 +178,13 @@ pub fn run() {
                 )
                     .chain(),
                 weapons::read_selection.pipe(weapons::apply),
-                (apply_map_edits, read_controls).chain(),
+                (
+                    appearance::read,
+                    network_receive,
+                    apply_map_edits,
+                    read_controls,
+                )
+                    .chain(),
             ),
         )
         .add_systems(FixedUpdate, simulate)
@@ -162,6 +193,8 @@ pub fn run() {
             (
                 rebuild_venue.run_if(resource_changed::<ActiveMap>),
                 character::check_loading,
+                appearance::switch_kit,
+                appearance::apply,
                 textures::attach_arena_textures,
                 sky::attach,
                 startup::update,
@@ -171,14 +204,21 @@ pub fn run() {
                 weapons::fit_to_body,
                 weapons::animate,
                 weapons::animate_staff,
+                lightning::tag_hands,
             )
                 .chain(),
         )
         .add_systems(
             PostUpdate,
-            publish
-                .after(bevy::transform::TransformSystems::Propagate)
-                .after(bevy::camera::CameraUpdateSystems),
+            (
+                publish
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .after(bevy::camera::CameraUpdateSystems),
+                // This frame's animated hand, before visibility is resolved.
+                lightning::draw
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
+            ),
         )
         .run();
 }
@@ -210,6 +250,11 @@ fn spawn_facings(fighters: &[Combatant]) -> Vec<f32> {
         })
         .collect()
 }
+/// Presentation yaw (radians about +Y, 0 facing −Z) to the rules' binary
+/// angle: 65536 units per turn, wrapping.
+fn binary_angle(yaw: f32) -> u16 {
+    ((yaw / std::f32::consts::TAU).rem_euclid(1.0) * 65536.0).round() as u32 as u16
+}
 fn world(position: Position) -> Vec3 {
     Vec3::new(position.x as f32 / 1000.0, 0.0, position.z as f32 / 1000.0)
 }
@@ -233,11 +278,23 @@ fn setup(
     mut images: ResMut<Assets<Image>>,
     practice: Res<Practice>,
 ) {
-    let character = character::CharacterModel::load(
-        platform::character_model().and_then(|id| character::Profile::from_id(&id)),
+    let model_id = platform::character_model();
+    // A kit-built player starts from the browser's saved appearance, so the
+    // first model loaded is already the right one.
+    let kit = (model_id.as_deref() == Some(appearance::KITS_MODEL))
+        .then(platform::read_appearance)
+        .flatten()
+        .and_then(|(_, json)| appearance::Spec::parse(&json));
+    let mut character = character::CharacterModel::load(
+        match &kit {
+            Some(spec) => Some(appearance::kit_profile(&spec.kit)),
+            None => model_id.and_then(|id| character::Profile::from_id(&id)),
+        },
         &asset_server,
         &mut graphs,
     );
+    character.kit = kit.is_some();
+    let kit_instance = kit.as_ref().map(|spec| spec.kit.path.clone());
     let player_scene = character.scene.clone();
     let player_transform = character
         .profile
@@ -253,14 +310,8 @@ fn setup(
     ));
     commands.insert_resource(venue_assets);
     commands.insert_resource(sky::Sky::load(&asset_server));
-    let teal = material(&mut materials, Color::srgb(0.15, 0.84, 0.75));
-    let orange = material(&mut materials, Color::srgb(1.0, 0.39, 0.19));
-    let gold = materials.add(StandardMaterial {
-        base_color: Color::srgb(1.0, 0.72, 0.32),
-        unlit: true,
-        ..default()
-    });
-    let cube = meshes.add(Cuboid::from_size(Vec3::ONE));
+    let teal = material(&mut materials, palette::color(palette::TEAL_4));
+    let orange = material(&mut materials, palette::color(palette::EMBER_4));
     let character_meshes = graphics::CharacterMeshes::new(&mut meshes);
     let painted = textures::PaintedTextures::new(&mut images);
     for index in 0..6 {
@@ -281,47 +332,46 @@ fn setup(
                 Visibility::default(),
             ))
             .with_children(|parent| {
-                parent
-                    .spawn((
-                        animation::Animator::new(index),
-                        Transform::default(),
-                        Visibility::default(),
-                    ))
-                    .with_children(|body| {
-                        if index == 0 && weapons::EQUIPPED {
-                            body.spawn((
-                                weapons::EquipmentCarrier,
-                                Transform::default(),
-                                Visibility::default(),
-                            ));
+                let mut body = parent.spawn((
+                    animation::Animator::new(index),
+                    Transform::default(),
+                    Visibility::default(),
+                ));
+                if index == 0 {
+                    body.insert(appearance::PlayerBody);
+                }
+                body.with_children(|body| {
+                    if index == 0 && weapons::EQUIPPED {
+                        body.spawn((
+                            weapons::EquipmentCarrier,
+                            Transform::default(),
+                            Visibility::default(),
+                        ));
+                    }
+                    humanoid.spawn(body, &character_meshes, index);
+                    if let Some(scene) = &player_scene
+                        && index == 0
+                    {
+                        let mut root = body.spawn((
+                            WorldAssetRoot(scene.clone()),
+                            player_transform,
+                            Visibility::Hidden,
+                        ));
+                        if let Some(path) = &kit_instance {
+                            root.insert(appearance::KitInstance::new(path));
                         }
-                        humanoid.spawn(body, &character_meshes, index);
-                        if let Some(scene) = &player_scene
-                            && index == 0
-                        {
-                            body.spawn((
-                                WorldAssetRoot(scene.clone()),
-                                player_transform,
-                                Visibility::Hidden,
-                            ))
-                            .observe(character::on_ready);
-                        }
-                    });
+                        root.observe(character::on_ready);
+                    }
+                });
             });
     }
     commands.insert_resource(character_meshes);
     commands.insert_resource(painted);
-    commands.spawn((
-        AttackBeam,
-        Mesh3d(cube),
-        MeshMaterial3d(gold),
-        Transform::default(),
-        Visibility::Hidden,
-    ));
+    lightning::spawn(&mut commands, &mut meshes, &mut materials);
     commands.spawn((
         lighting::ArenaLight::Key,
         DirectionalLight {
-            color: Color::srgb(1.0, 0.95, 0.88),
+            color: palette::color(palette::SAND_8),
             illuminance: 6500.0,
             shadow_maps_enabled: false,
             ..default()
@@ -332,7 +382,7 @@ fn setup(
         Name::new("Cool arena fill"),
         lighting::ArenaLight::Fill,
         DirectionalLight {
-            color: Color::srgb(0.88, 0.93, 1.0),
+            color: palette::color(palette::SKY_7),
             illuminance: 3200.0,
             shadow_maps_enabled: false,
             ..default()
@@ -359,7 +409,12 @@ fn apply_map_edits(
     mut map: ResMut<ActiveMap>,
     mut practice: ResMut<Practice>,
     mut orbit: ResMut<Orbit>,
+    net: Res<Net>,
 ) {
+    // A network match plays on the server's map; edits wait until it ends.
+    if net.session.is_some() {
+        return;
+    }
     let Some((revision, json)) = platform::read_map() else {
         return;
     };
@@ -391,10 +446,13 @@ fn map_status_json(revision: f64, errors: &[String]) -> String {
     )
 }
 /// Replaces the venue with one built from the active map.
+#[allow(clippy::too_many_arguments)]
 fn rebuild_venue(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     assets: Res<venue::VenueAssets>,
+    server: Res<AssetServer>,
+    mut prop_models: ResMut<props::PropModels>,
     map: Res<ActiveMap>,
     old: Query<Entity, With<venue::VenueEntity>>,
     mut orbit: ResMut<Orbit>,
@@ -403,6 +461,7 @@ fn rebuild_venue(
         commands.entity(entity).despawn();
     }
     venue::spawn(&mut commands, &mut meshes, &assets, &map.0);
+    props::spawn(&mut commands, &server, &mut prop_models, &map.0);
     // The previous eye may now be inside new geometry.
     orbit.eye = None;
 }
@@ -421,8 +480,25 @@ fn read_controls(
     map: Res<ActiveMap>,
     cameras: Query<(&Camera, &GlobalTransform)>,
     visuals: Query<(&FighterVisual, &GlobalTransform)>,
+    preview: Res<appearance::Preview>,
+    net: Res<Net>,
 ) {
-    let input = platform::read_input();
+    let mut input = platform::read_input();
+    // The server owns the round in a network match: no local reset or
+    // practice size change.
+    if net.session.is_some() {
+        input.reset = false;
+        input.team_size = None;
+    }
+    if preview.open {
+        // The character stands still for the close-up; only a reset or mode
+        // change from the menu still applies.
+        input = Input {
+            team_size: input.team_size,
+            reset: input.reset,
+            ..default()
+        };
+    }
     if input.reset || input.team_size.is_some() {
         let size = input
             .team_size
@@ -431,8 +507,8 @@ fn read_controls(
     }
     let blockers = hover::pillar_blockers(&map.0);
     orbit.yaw -= input.orbit_x * 0.005;
-    orbit.pitch = (orbit.pitch + input.orbit_y * 0.004).clamp(-1.2, 1.2);
-    orbit.distance = (orbit.distance + input.zoom * 0.01).clamp(6.0, 22.0);
+    orbit.pitch = camera::pitch(orbit.pitch, input.orbit_y * 0.004);
+    orbit.distance = camera::zoom(orbit.distance, input.zoom * 0.01);
     update_movement(&mut practice, &orbit, &input);
     update_selection(&mut practice, &input);
     let actor_count = practice.arena.fighters().len();
@@ -512,7 +588,30 @@ fn update_movement(practice: &mut Practice, orbit: &Orbit, input: &Input) {
     practice.movement = Vec2::new(movement.x, movement.z);
 }
 
-fn simulate(mut practice: ResMut<Practice>) {
+fn simulate(mut practice: ResMut<Practice>, mut net: ResMut<Net>) {
+    let now = net.now;
+    if let Some(session) = net.session.as_mut() {
+        // Only intent leaves the client; the server's snapshots come back
+        // through `network_receive`.
+        let jump = std::mem::take(&mut practice.jump);
+        let mut attack = None;
+        if std::mem::take(&mut practice.attack) {
+            attack = practice.selected;
+            if attack.is_none() {
+                practice.feedback = "Select a target first";
+            }
+        }
+        let movement = [
+            (practice.movement.x * 1000.0) as i16,
+            (practice.movement.y * 1000.0) as i16,
+        ];
+        if let Some(frame) =
+            session.input(movement, binary_angle(practice.facing), jump, attack, now)
+        {
+            platform::send_network(&frame);
+        }
+        return;
+    }
     practice.previous = practice
         .arena
         .fighters()
@@ -520,24 +619,25 @@ fn simulate(mut practice: ResMut<Practice>) {
         .copied()
         .map(fighter_world)
         .collect();
-    let mut commands = vec![ArenaCommand::Move {
-        actor: 0,
-        x: (practice.movement.x * 1000.0) as i16,
-        z: (practice.movement.y * 1000.0) as i16,
-    }];
-    if practice.jump {
-        practice.jump = false;
-        commands.push(ArenaCommand::Jump { actor: 0 });
-    }
-    if practice.attack {
-        practice.attack = false;
+    // Slot 0 is the local player's whole intent for this tick; the other
+    // practice actors stay idle.
+    let mut input = ActorInput {
+        movement: Some(Axes {
+            x: (practice.movement.x * 1000.0) as i16,
+            z: (practice.movement.y * 1000.0) as i16,
+        }),
+        facing: Some(binary_angle(practice.facing)),
+        jump: std::mem::take(&mut practice.jump),
+        attack: None,
+    };
+    if std::mem::take(&mut practice.attack) {
         if let Some(target) = practice.selected {
-            commands.push(ArenaCommand::Attack { actor: 0, target });
+            input.attack = Some(target);
         } else {
             practice.feedback = "Select a target first";
         }
     }
-    for event in practice.arena.step(&commands) {
+    for event in practice.arena.advance(&[input]) {
         match event {
             ArenaEvent::Hit {
                 actor,
@@ -548,56 +648,206 @@ fn simulate(mut practice: ResMut<Practice>) {
                     .combat_text
                     .record(actor, target, -i32::from(damage));
                 practice.feedback = "Pulse hit · 25 damage";
-                practice.flash = 0.18;
+                practice.zap = Some(lightning::Zap::new(actor, target, practice.arena.tick()));
             }
-            ArenaEvent::Won { .. } => practice.feedback = "Round complete · reset to play again",
+            ArenaEvent::Finished(_) => {
+                practice.feedback = "Round complete · reset to play again";
+            }
             // A second press in flight is harmless, not a spell-cast error.
-            ArenaEvent::Rejected(arena_sim::arena::Rejection::Airborne) => (),
-            ArenaEvent::Rejected(reason) => {
-                practice.feedback = match reason {
-                    arena_sim::arena::Rejection::OutOfRange => "Out of range · move closer",
-                    arena_sim::arena::Rejection::Cooldown => "Pulse is recharging",
-                    arena_sim::arena::Rejection::LineOfSight => "Line of sight blocked by pillar",
-                    arena_sim::arena::Rejection::MatchOver => {
-                        "Round complete · reset to play again"
-                    }
-                    _ => "Command rejected",
-                }
+            ArenaEvent::Rejected {
+                reason: arena_sim::arena::Rejection::Airborne,
+                ..
+            } => (),
+            ArenaEvent::Rejected { actor: 0, reason } => {
+                practice.feedback = rejection_feedback(reason);
             }
             _ => (),
         }
     }
 }
+fn rejection_feedback(reason: arena_sim::arena::Rejection) -> &'static str {
+    match reason {
+        arena_sim::arena::Rejection::OutOfRange => "Out of range · move closer",
+        arena_sim::arena::Rejection::Cooldown => "Pulse is recharging",
+        arena_sim::arena::Rejection::LineOfSight => "Line of sight blocked by pillar",
+        arena_sim::arena::Rejection::MatchOver => "Round complete · reset to play again",
+        _ => "Command rejected",
+    }
+}
+
+/// Exchanges frames with the browser's socket and shows the server's state.
+/// Without a match from the runtime this does nothing, and leaving one
+/// returns to a fresh local practice round.
+fn network_receive(
+    mut net: ResMut<Net>,
+    mut practice: ResMut<Practice>,
+    mut orbit: ResMut<Orbit>,
+    mut map: ResMut<ActiveMap>,
+    time: Res<Time<Real>>,
+    mut fixed: ResMut<Time<Fixed>>,
+) {
+    let now = time.elapsed_secs_f64();
+    net.now = now;
+    // In a match inputs follow the server's ticks as measured on this
+    // clock, paced to keep this player's queue on the server near one input;
+    // otherwise it is the plain rules tick.
+    let (pace, rate) = net
+        .session
+        .as_ref()
+        .map_or((1.0, TICKS_PER_SECOND as f64), |session| {
+            (session.pace(), session.tick_rate())
+        });
+    let timestep = std::time::Duration::from_secs_f64(pace / rate);
+    if fixed.timestep() != timestep {
+        fixed.set_timestep(timestep);
+    }
+    let Some(feed) = platform::read_network() else {
+        if net.session.take().is_some() {
+            net.last_status = None;
+            restart(&mut practice, &mut orbit, &map.0, 1);
+            practice.feedback = "Left the match · practice round";
+        }
+        return;
+    };
+    if net.session.is_none() {
+        // Matches play on the server's map; the colosseum is the only one.
+        let colosseum = arena_map::colosseum();
+        if map.0 != colosseum {
+            map.0 = colosseum;
+        }
+        practice.feedback = "Connecting to the match…";
+    }
+    let Net {
+        session,
+        last_status,
+        ..
+    } = &mut *net;
+    let session = session.get_or_insert_default();
+    let rejections = session.receive(&feed, now, &map.0.layout);
+    if let Some(frame) = session.ping(now) {
+        platform::send_network(&frame);
+    }
+    if session.map_differs() == Some(true) {
+        practice.feedback = "This build's map differs from the server's";
+    }
+    for reason in rejections {
+        // A second press in flight is harmless, not a spell-cast error.
+        if reason != arena_sim::arena::Rejection::Airborne {
+            practice.feedback = rejection_feedback(reason);
+        }
+    }
+    if let Some(mut view) = session.view(time.delta_secs_f64(), now) {
+        // The HUD's range and sight checks use where the player sees itself.
+        if let Some(predicted) = session.predicted() {
+            view.fighters[0] = predicted;
+        }
+        if practice.arena.tick() != view.tick
+            || practice.arena.fighters() != view.fighters.as_slice()
+            || practice.arena.result() != view.result
+        {
+            practice.arena =
+                Arena::restore(map.0.layout.clone(), view.tick, view.fighters, view.result)
+                    .expect("the session only keeps complete rosters");
+        }
+        let count = view.positions.len();
+        if practice.selected.is_some_and(|actor| actor >= count) {
+            practice.selected = None;
+        }
+        practice.facings.resize(count, 0.0);
+        // The player's own heading stays local for responsive turning.
+        practice.facings[1..].copy_from_slice(&view.facings[1..]);
+        practice.previous = view.positions.clone();
+        practice.remote = Some(view.positions);
+        practice.connected = Some(view.connected);
+        for shown in view.shown {
+            match shown {
+                network::Shown::Hit {
+                    actor,
+                    target,
+                    damage,
+                } => {
+                    practice
+                        .combat_text
+                        .record(actor, target, -i32::from(damage));
+                    if actor == 0 {
+                        practice.feedback = "Pulse hit · 25 damage";
+                    }
+                    practice.zap = Some(lightning::Zap::new(actor, target, practice.arena.tick()));
+                }
+                network::Shown::Finished { won } => {
+                    practice.feedback = match won {
+                        Some(true) => "Victory · the match closes shortly",
+                        Some(false) => "Defeat · the match closes shortly",
+                        None => "Draw · the match closes shortly",
+                    };
+                }
+                network::Shown::Jumped { .. } => {}
+            }
+        }
+    }
+    // Tell the runtime about phase changes at once, and stats 4 times a second.
+    let status = session.status_json();
+    let phase_changed = last_status
+        .as_ref()
+        .is_none_or(|(_, previous)| previous.split(',').next() != status.split(',').next());
+    if phase_changed || last_status.as_ref().is_some_and(|(at, _)| now - at >= 0.25) {
+        platform::network_status(&status);
+        *last_status = Some((now, status));
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn present(
     mut practice: ResMut<Practice>,
     mut orbit: ResMut<Orbit>,
     startup: Res<startup::State>,
+    preview: Res<appearance::Preview>,
     obstacles: Query<&camera::Obstacle>,
     fixed: Res<Time<Fixed>>,
     time: Res<Time>,
-    mut fighters: Query<
-        (&FighterVisual, &mut Transform, &mut Visibility),
-        (Without<Camera>, Without<AttackBeam>),
-    >,
-    mut cameras: Query<&mut Transform, (With<Camera>, Without<FighterVisual>, Without<AttackBeam>)>,
-    mut beam: Query<
-        (&mut Transform, &mut Visibility),
-        (With<AttackBeam>, Without<FighterVisual>, Without<Camera>),
-    >,
+    mut fighters: Query<(&FighterVisual, &mut Transform, &mut Visibility), Without<Camera>>,
+    mut cameras: Query<&mut Transform, (With<Camera>, Without<FighterVisual>)>,
+    net: Option<Res<Net>>,
 ) {
-    let positions: Vec<Vec3> = (0..practice.arena.fighters().len())
-        .map(|i| {
-            practice.previous[i].lerp(
-                fighter_world(practice.arena.fighters()[i]),
-                fixed.overstep_fraction(),
-            )
-        })
-        .collect();
+    let positions: Vec<Vec3> = match &practice.remote {
+        // In a network match the player's own fighter is predicted, drawn
+        // part-way through the current fixed tick like local practice.
+        Some(remote) => {
+            let mut positions = remote.clone();
+            let own = net
+                .as_ref()
+                .and_then(|net| net.session.as_ref())
+                .and_then(network::Session::own);
+            if let (Some(own), Some(first)) = (own, positions.first_mut()) {
+                *first = own.at(fixed.overstep_fraction());
+            }
+            positions
+        }
+        None => (0..practice.arena.fighters().len())
+            .map(|i| {
+                practice.previous[i].lerp(
+                    fighter_world(practice.arena.fighters()[i]),
+                    fixed.overstep_fraction(),
+                )
+            })
+            .collect(),
+    };
     practice.combat_text.advance(time.delta_secs());
     let mut hide_player = false;
-    if let Ok(mut camera) = cameras.single_mut() {
-        let focus = positions[0] + Vec3::Y;
+    if let Ok(mut camera) = cameras.single_mut()
+        && preview.open
+        && startup.sweep().is_none()
+    {
+        *camera = preview_camera(
+            positions[0],
+            practice.facing,
+            &preview,
+            &obstacles.iter().copied().collect::<Vec<_>>(),
+        );
+        // The ordinary boom snaps back from where it was when closed.
+        orbit.eye = None;
+    } else if let Ok(mut camera) = cameras.single_mut() {
+        let focus = positions[0] + Vec3::Y * camera::focus_height(orbit.distance);
         // Behind the loading overlay the camera sweeps around the player so
         // every direction is drawn (and its GPU work done) before play. The
         // eye snaps there and back rather than easing into the first view.
@@ -605,19 +855,29 @@ fn present(
         let direction = Quat::from_rotation_y(orbit.yaw + sweep.unwrap_or(0.0))
             * Vec3::new(0.0, orbit.pitch.sin(), orbit.pitch.cos());
         let obstacles: Vec<_> = obstacles.iter().copied().collect();
-        let eye = camera::resolve_eye(
-            focus,
-            direction,
-            orbit.distance,
-            orbit.eye.filter(|_| sweep.is_none()),
-            time.delta_secs(),
-            &obstacles,
-        );
+        // First person sits at the eyes and looks along the boom; there is no
+        // boom to collide, and a near-zero offset would give a noisy view.
+        let first_person = sweep.is_none() && camera::first_person(orbit.distance);
+        let eye = if first_person {
+            focus
+        } else {
+            camera::resolve_eye(
+                focus,
+                direction,
+                orbit.distance,
+                orbit.eye.filter(|_| sweep.is_none()),
+                time.delta_secs(),
+                &obstacles,
+            )
+        };
         orbit.eye = sweep.is_none().then_some(eye);
         // Never render the player's own model from inside it.
         hide_player = camera::hides_player(focus, eye);
         // Keep a valid view direction even if the focus is inside an obstacle.
-        let view = (focus - eye).try_normalize().unwrap_or(-direction);
+        let view = (focus - eye)
+            .try_normalize()
+            .filter(|_| !first_person)
+            .unwrap_or(-direction);
         *camera = Transform::from_translation(eye).looking_to(view, Vec3::Y);
     }
     for (fighter, mut transform, mut visibility) in &mut fighters {
@@ -636,21 +896,33 @@ fn present(
             practice.facings[fighter.0]
         });
     }
-    practice.flash = (practice.flash - time.delta_secs()).max(0.0);
-    if let Ok((mut transform, mut visibility)) = beam.single_mut() {
-        let from = positions[0] + Vec3::Y;
-        let to = positions[practice.selected.unwrap_or(1)] + Vec3::Y;
-        *transform = Transform::from_translation((from + to) * 0.5)
-            .looking_at(to, Vec3::Y)
-            .with_scale(Vec3::new(0.065, 0.065, from.distance(to)));
-        // Drawn once during warmup so the first Pulse does not compile it.
-        *visibility = if practice.flash > 0.0 || startup.sweep().is_some() {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
-    }
     practice.frames = practice.frames.saturating_add(1);
+}
+/// Close-up framing for the customization screen: in front of the player,
+/// turned by the preview yaw, with the character left of centre so the
+/// options panel on the right does not cover it.
+fn preview_camera(
+    feet: Vec3,
+    facing: f32,
+    preview: &appearance::Preview,
+    obstacles: &[camera::Obstacle],
+) -> Transform {
+    let (height, distance) = preview.framing();
+    let focus = feet + Vec3::Y * height;
+    let forward = Quat::from_rotation_y(facing) * Vec3::NEG_Z;
+    let direction = (Quat::from_rotation_y(preview.yaw) * forward + Vec3::Y * 0.08).normalize();
+    // Walls still shorten the boom (a starting room is small), but never
+    // below arm's length of the face.
+    let eye = camera::resolve_eye(focus, direction, distance, None, 0.0, obstacles);
+    let eye = if eye.distance(focus) < 0.6 {
+        focus + direction * 0.6
+    } else {
+        eye
+    };
+    let view = (focus - eye).normalize();
+    let right = view.cross(Vec3::Y).normalize_or_zero();
+    let aim = focus + right * eye.distance(focus) * 0.22;
+    Transform::from_translation(eye).looking_at(aim, Vec3::Y)
 }
 fn publish(
     practice: Res<Practice>,
@@ -740,11 +1012,19 @@ fn publish(
         .iter()
         .enumerate()
         .map(|(actor, fighter)| {
+            // Network matches say whether each player is attached.
+            let connected = practice
+                .connected
+                .as_ref()
+                .and_then(|connected| connected.get(actor))
+                .map(|connected| format!(r#","connected":{connected}"#))
+                .unwrap_or_default();
             format!(
-                r#"{{"actor":{},"tag":"{}","health":{}}}"#,
+                r#"{{"actor":{},"tag":"{}","health":{}{}}}"#,
                 actor,
                 unit_tag(actor),
-                fighter.health
+                fighter.health,
+                connected
             )
         })
         .collect::<Vec<_>>()
@@ -780,7 +1060,7 @@ fn publish(
         cooldown,
         attack_status,
         practice.feedback,
-        practice.arena.winner().is_some(),
+        practice.arena.result().is_some(),
         orbit.yaw,
         orbit.pitch,
         orbit.distance,
@@ -830,9 +1110,10 @@ struct Input {
 mod platform {
     use super::Input;
     use bevy::prelude::Vec2;
+    use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen(
-        inline_js = "export function arena_character() { const id = globalThis.arenaShell.characterModel; return typeof id === 'string' ? id : undefined; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(tag) { globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); } export function arena_map() { return globalThis.arenaShell.readMap?.() ?? []; } export function arena_map_status(json) { globalThis.arenaShell.onMapStatus?.(JSON.parse(json)); }"
+        inline_js = "export function arena_character() { const id = globalThis.arenaShell.characterModel; return typeof id === 'string' ? id : undefined; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(tag) { globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); } export function arena_map() { return globalThis.arenaShell.readMap?.() ?? []; } export function arena_map_status(json) { globalThis.arenaShell.onMapStatus?.(JSON.parse(json)); } export function arena_appearance() { return globalThis.arenaShell.readAppearance?.() ?? []; } export function arena_preview() { return globalThis.arenaShell.readPreview?.() ?? []; } export function arena_network() { return globalThis.arenaShell.readNetwork?.() ?? []; } export function arena_network_send(frame) { globalThis.arenaShell.sendNetwork?.(frame.slice()); } export function arena_network_status(json) { globalThis.arenaShell.onNetwork?.(JSON.parse(json)); }"
     )]
     extern "C" {
         fn arena_character() -> Option<String>;
@@ -845,6 +1126,46 @@ mod platform {
         fn arena_focus(tag: &str);
         fn arena_map() -> js_sys::Array;
         fn arena_map_status(json: &str);
+        fn arena_appearance() -> js_sys::Array;
+        fn arena_preview() -> js_sys::Array;
+        fn arena_network() -> js_sys::Array;
+        fn arena_network_send(frame: &[u8]);
+        fn arena_network_status(json: &str);
+    }
+    /// The runtime's match feed as `[generation, ...frames]`; `None` when
+    /// there is no match (older shells send nothing).
+    pub fn read_network() -> Option<super::network::Feed> {
+        let values = arena_network();
+        let generation = values
+            .get(0)
+            .as_f64()
+            .filter(|g| g.is_finite() && *g >= 0.0 && *g <= f64::from(u32::MAX))?
+            as u32;
+        let frames = (1..values.length())
+            .filter_map(|i| values.get(i).dyn_into::<js_sys::Uint8Array>().ok())
+            .map(|frame| frame.to_vec())
+            .collect();
+        Some(super::network::Feed { generation, frames })
+    }
+    pub fn send_network(frame: &[u8]) {
+        arena_network_send(frame);
+    }
+    pub fn network_status(json: &str) {
+        arena_network_status(json);
+    }
+    /// The player's appearance spec as `[revision, json]`; older shells send none.
+    pub fn read_appearance() -> Option<(f64, String)> {
+        let values = arena_appearance();
+        let revision = values.get(0).as_f64().filter(|r| r.is_finite())?;
+        Some((revision, values.get(1).as_string()?))
+    }
+    pub fn read_preview() -> super::appearance::Preview {
+        let values = arena_preview();
+        super::appearance::Preview::from_values(
+            values.get(0).as_f64(),
+            values.get(1).as_f64(),
+            values.get(2).as_f64(),
+        )
     }
     /// The editor's current map as `[revision, json]`; older shells send none.
     pub fn read_map() -> Option<(f64, String)> {
@@ -938,6 +1259,7 @@ fn focus_cursor(x: f32, y: f32) -> Option<Vec2> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arena_sim::arena::ArenaCommand;
 
     #[test]
     fn browser_hud_focus_does_not_enable_event_driven_low_power_updates() {
@@ -960,6 +1282,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<Practice>()
             .init_resource::<Orbit>()
+            .init_resource::<appearance::Preview>()
             .init_resource::<Time>()
             .init_resource::<Time<Fixed>>()
             .init_resource::<startup::State>()
@@ -1032,9 +1355,138 @@ mod tests {
     }
 
     #[test]
+    fn network_matches_show_the_servers_state_from_this_seat_and_send_only_intent() {
+        use arena_protocol::{ClientMessage, ServerMessage, Snapshot, Welcome};
+        let mut app = App::new();
+        app.init_resource::<Practice>()
+            .init_resource::<Net>()
+            .init_resource::<Orbit>()
+            .init_resource::<ActiveMap>()
+            .insert_resource(Time::<Real>::default())
+            .insert_resource(Time::<Fixed>::from_hz(TICKS_PER_SECOND as f64))
+            .add_systems(PreUpdate, network_receive)
+            .add_systems(FixedUpdate, simulate);
+        let sent = || std::mem::take(&mut *platform::SENT.lock().unwrap());
+        sent();
+        let feed = |frames| {
+            *platform::NETWORK.lock().unwrap() = Some(network::Feed {
+                generation: 1,
+                frames,
+            });
+        };
+        // The runtime greets the server itself; the engine sends nothing
+        // until it is welcomed.
+        feed(vec![]);
+        app.world_mut().run_schedule(PreUpdate);
+        assert!(sent().is_empty());
+        // The server's 1v1, seen from seat 1, while seat 0 walks.
+        let mut server = Arena::practice(arena_map::colosseum().layout, 1).unwrap();
+        let mut frames = vec![
+            ServerMessage::Welcome(Welcome {
+                protocol: arena_protocol::PROTOCOL_VERSION,
+                actor: 1,
+                team_size: 1,
+                tick: 0,
+                tick_rate: 30,
+                rules: arena_protocol::RULES_VERSION,
+                map: network::fnv1a(arena_map::COLOSSEUM_JSON.as_bytes()),
+            })
+            .encode(),
+        ];
+        let mut history = Vec::new();
+        for _ in 0..6 {
+            server.step(&[ArenaCommand::Move {
+                actor: 0,
+                x: 0,
+                z: -1000,
+            }]);
+            history.push(server.clone());
+            frames.push(
+                ServerMessage::Snapshot(Snapshot::capture(&server, 0, vec![], &[false, true]))
+                    .encode(),
+            );
+        }
+        feed(frames);
+        app.world_mut().run_schedule(PreUpdate);
+        {
+            let practice = app.world().resource::<Practice>();
+            // The view trails the newest tick (6) by three ticks.
+            let shown = &history[2];
+            assert_eq!(practice.arena.tick(), 3);
+            assert_eq!(
+                practice.arena.fighters()[0],
+                shown.fighters()[1],
+                "local 0 is seat 1"
+            );
+            assert_eq!(practice.arena.fighters()[1], shown.fighters()[0]);
+            assert_eq!(practice.connected, Some(vec![true, false]));
+            assert_eq!(
+                practice.remote.as_ref().unwrap()[1],
+                fighter_world(shown.fighters()[0])
+            );
+        }
+        // Attacking the selected enemy sends intent naming server actor 0
+        // and never advances the rules locally.
+        {
+            let mut practice = app.world_mut().resource_mut::<Practice>();
+            practice.selected = Some(1);
+            practice.attack = true;
+        }
+        app.world_mut().run_schedule(FixedUpdate);
+        let inputs: Vec<_> = sent()
+            .iter()
+            .filter_map(|frame| match ClientMessage::decode(frame) {
+                Ok(ClientMessage::Input(input)) => Some(input),
+                _ => None,
+            })
+            .collect();
+        let [input] = inputs[..] else {
+            panic!("expected one input, got {inputs:?}");
+        };
+        assert_eq!((input.seq, input.attack), (1, Some(0)));
+        assert_eq!(app.world().resource::<Practice>().arena.tick(), 3);
+        assert!(platform::NETWORK_STATUS.lock().unwrap().is_some());
+        // When the runtime ends the match, a fresh local practice round starts.
+        *platform::NETWORK.lock().unwrap() = None;
+        app.world_mut().run_schedule(PreUpdate);
+        let practice = app.world().resource::<Practice>();
+        assert!(app.world().resource::<Net>().session.is_none());
+        assert_eq!(
+            (practice.arena.tick(), practice.remote.is_none()),
+            (0, true)
+        );
+    }
+
+    #[test]
+    fn simulate_sends_the_player_heading_as_authoritative_facing() {
+        use std::f32::consts::{FRAC_PI_2, PI, TAU};
+        assert_eq!(binary_angle(0.0), 0);
+        assert_eq!(binary_angle(FRAC_PI_2), 0x4000);
+        assert_eq!(binary_angle(PI), 0x8000);
+        assert_eq!(binary_angle(-FRAC_PI_2), 0xC000);
+        assert_eq!(binary_angle(TAU), 0);
+        assert_eq!(
+            binary_angle(-0.000_001),
+            0,
+            "rounding wraps, never saturates"
+        );
+        let mut app = App::new();
+        app.init_resource::<Practice>()
+            .init_resource::<Net>()
+            .add_systems(FixedUpdate, simulate);
+        app.world_mut().resource_mut::<Practice>().facing = -FRAC_PI_2;
+        app.world_mut().run_schedule(FixedUpdate);
+        let practice = app.world().resource::<Practice>();
+        assert_eq!(practice.arena.fighters()[0].facing, 0xC000);
+        // Opponents keep their rule-owned spawn heading.
+        assert_eq!(practice.arena.fighters()[1].facing, 0x8000);
+    }
+
+    #[test]
     fn combat_numbers_come_from_successful_hits_not_attempts_and_reset_clears_them() {
         let mut app = App::new();
         app.init_resource::<Practice>()
+            .init_resource::<Net>()
             .add_systems(FixedUpdate, simulate);
         {
             let mut practice = app.world_mut().resource_mut::<Practice>();
@@ -1133,6 +1585,39 @@ mod tests {
     }
 
     #[test]
+    fn preview_camera_faces_the_character_and_zooms_to_the_face() {
+        let feet = Vec3::new(2.0, 0.0, -3.0);
+        let mut preview = appearance::Preview::from_values(Some(1.0), Some(0.0), Some(0.0));
+        let body = preview_camera(feet, 0.0, &preview, &[]);
+        // Facing 0 looks down -Z, so the front view sits on -Z of the player.
+        assert!(body.translation.z < feet.z - 3.0);
+        assert!(body.forward().z > 0.9);
+        preview.shown_zoom = 1.0;
+        let face = preview_camera(feet, 0.0, &preview, &[]);
+        assert!(face.translation.distance(feet) < body.translation.distance(feet));
+        assert!(face.translation.y > body.translation.y);
+        // Turning the preview walks the eye around the player.
+        preview.yaw = std::f32::consts::PI;
+        let back = preview_camera(feet, 0.0, &preview, &[]);
+        assert!(back.translation.z > feet.z);
+        // A wall right in front still leaves an arm's length to the face.
+        let (_, wall) = camera::solid_wall(
+            Transform::from_translation(feet + Vec3::new(0.0, 1.0, -0.8))
+                .with_scale(Vec3::new(4.0, 4.0, 0.2)),
+        );
+        preview.yaw = 0.0;
+        let close = preview_camera(feet, 0.0, &preview, &[wall]);
+        assert!(
+            (close
+                .translation
+                .distance(feet + Vec3::Y * preview.framing().0)
+                - 0.6)
+                .abs()
+                < 1e-3
+        );
+    }
+
+    #[test]
     fn presentation_retracts_and_recovers_without_changing_requested_zoom() {
         let mut app = App::new();
         app.init_resource::<Practice>()
@@ -1143,6 +1628,7 @@ mod tests {
             .init_resource::<Time>()
             .init_resource::<Time<Fixed>>()
             .init_resource::<startup::State>()
+            .init_resource::<appearance::Preview>()
             .add_systems(Update, present);
         let focus = app.world().resource::<Practice>().previous[0] + Vec3::Y;
         let camera = app
@@ -1190,6 +1676,44 @@ mod tests {
     }
 
     #[test]
+    fn first_person_sits_at_eye_level_hides_the_player_and_looks_along_the_boom() {
+        let mut app = App::new();
+        app.init_resource::<Practice>()
+            .insert_resource(Orbit {
+                pitch: -0.4,
+                distance: camera::zoom(6.0, -10.0),
+                ..default()
+            })
+            .init_resource::<Time>()
+            .init_resource::<Time<Fixed>>()
+            .init_resource::<startup::State>()
+            .init_resource::<appearance::Preview>()
+            .add_systems(Update, present);
+        let feet = app.world().resource::<Practice>().previous[0];
+        let camera = app
+            .world_mut()
+            .spawn((Camera::default(), Transform::default()))
+            .id();
+        let player = app
+            .world_mut()
+            .spawn((
+                FighterVisual(0),
+                Transform::default(),
+                Visibility::Inherited,
+            ))
+            .id();
+        app.world_mut().run_schedule(Update);
+        let eye = *app.world().get::<Transform>(camera).unwrap();
+        assert!((eye.translation - (feet + Vec3::Y * camera::focus_height(0.0))).length() < 1e-5);
+        let direction = Vec3::new(0.0, (-0.4f32).sin(), (-0.4f32).cos());
+        assert!(eye.forward().dot(-direction) > 0.9999);
+        assert_eq!(
+            app.world().get::<Visibility>(player),
+            Some(&Visibility::Hidden)
+        );
+    }
+
+    #[test]
     fn editor_maps_rebuild_the_venue_keep_or_restart_rounds_and_report_problems() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
@@ -1198,8 +1722,12 @@ mod tests {
             .init_asset::<Image>()
             .init_resource::<ActiveMap>()
             .init_resource::<MapEdits>()
+            .init_resource::<props::PropModels>()
+            .init_asset::<WorldAsset>()
             .init_resource::<Practice>()
+            .init_resource::<Net>()
             .init_resource::<Orbit>()
+            .init_resource::<appearance::Preview>()
             .add_systems(
                 Update,
                 (
@@ -1235,6 +1763,12 @@ mod tests {
         let mut value: serde_json::Value = serde_json::from_str(arena_map::COLOSSEUM_JSON).unwrap();
         value["pillars"].as_array_mut().unwrap().pop();
         value["floor"]["width"] = 120.into();
+        value["ground"] = "sand".into();
+        value["props"] = serde_json::json!([
+            { "model": "Barrel", "x": 3, "z": 4 },
+            { "model": "Barrel", "x": -3, "z": 4, "rotation": 45 },
+            { "model": "Bench", "x": 0, "z": -6 }
+        ]);
         app.world_mut()
             .resource_mut::<Practice>()
             .arena
@@ -1259,6 +1793,12 @@ mod tests {
         let player = practice.arena.fighters()[0].position;
         assert_ne!(player, practice.arena.layout().spawns(0)[0]);
         assert_ne!(count(&mut app), initial);
+        let mut props = app
+            .world_mut()
+            .query_filtered::<&Name, (With<venue::VenueEntity>, With<WorldAssetRoot>)>();
+        assert_eq!(props.iter(app.world()).count(), 3);
+        // Two barrels share one loaded model.
+        assert_eq!(app.world().resource::<props::PropModels>().len(), 2);
         // Sliding the player's starting room away leaves them inside the
         // stands, so the round restarts at the map's spawns.
         assert!(
@@ -1314,6 +1854,7 @@ mod tests {
     fn queued_jump_drains_once_and_presentation_uses_rule_height() {
         let mut app = App::new();
         app.init_resource::<Practice>()
+            .init_resource::<Net>()
             .add_systems(FixedUpdate, simulate);
         {
             let mut practice = app.world_mut().resource_mut::<Practice>();
@@ -1358,7 +1899,10 @@ mod tests {
                 actor: 0,
                 target: 0
             }])[0],
-            ArenaEvent::Rejected(arena_sim::arena::Rejection::InvalidTarget)
+            ArenaEvent::Rejected {
+                actor: 0,
+                reason: arena_sim::arena::Rejection::InvalidTarget
+            }
         ));
         assert_eq!(practice.arena.fighters(), before);
         update_selection(
@@ -1506,11 +2050,41 @@ mod platform {
     pub fn character_model() -> Option<String> {
         None
     }
+    pub fn read_appearance() -> Option<(f64, String)> {
+        None
+    }
+    pub fn read_preview() -> super::appearance::Preview {
+        PREVIEW.lock().unwrap().unwrap_or_default()
+    }
+    pub static PREVIEW: std::sync::Mutex<Option<super::appearance::Preview>> =
+        std::sync::Mutex::new(None);
     pub fn read_input() -> super::Input {
         super::Input::default()
     }
     pub fn publish(_: &str) {}
     pub fn focus_unit(_: usize) {}
+    /// Tests stand in for the browser's socket through these: the feed's
+    /// frames are consumed when read.
+    pub static NETWORK: std::sync::Mutex<Option<super::network::Feed>> =
+        std::sync::Mutex::new(None);
+    pub static SENT: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
+    pub static NETWORK_STATUS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    pub fn read_network() -> Option<super::network::Feed> {
+        NETWORK
+            .lock()
+            .unwrap()
+            .as_mut()
+            .map(|feed| super::network::Feed {
+                generation: feed.generation,
+                frames: std::mem::take(&mut feed.frames),
+            })
+    }
+    pub fn send_network(frame: &[u8]) {
+        SENT.lock().unwrap().push(frame.to_vec());
+    }
+    pub fn network_status(json: &str) {
+        *NETWORK_STATUS.lock().unwrap() = Some(json.to_owned());
+    }
     pub fn read_map() -> Option<(f64, String)> {
         MAP.lock().unwrap().clone()
     }

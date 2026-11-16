@@ -36,7 +36,7 @@
   font-variant-numeric: tabular-nums;
 }
 .engine-frame-rate strong {
-  color: #79cbd2;
+  color: var(--pal-teal-5);
 }
 .diagnostics button {
   font: inherit;
@@ -57,6 +57,12 @@
   margin: 0;
   font-variant-numeric: tabular-nums;
 }
+/* Network values ("reconnecting · attempt 3") are wider than frame times. */
+.network-statistics {
+  grid-template-columns: repeat(2, 1fr);
+  padding-top: 8px;
+  border-top: 1px solid var(--gray-6);
+}
 .frame-spikes {
   font-size: 11px;
 }
@@ -73,9 +79,9 @@
 }
 .frame-graph polyline {
   fill: none;
-  stroke: #b6ad8b;
+  stroke: var(--pal-sand-5);
   stroke-width: 1;
 }
 .frame-graph .engine-frame-line {
-  stroke: #79cbd2;
+  stroke: var(--pal-teal-5);
 }

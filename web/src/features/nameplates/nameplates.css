@@ -11,16 +11,16 @@ button.nameplate {
   width: 92px;
   height: 12px;
   padding: 0;
-  border: 1px solid #17191d;
+  border: 1px solid var(--pal-night-2);
   border-radius: 2px;
-  background: #25272bdd;
-  box-shadow: 0 1px 3px #0009;
+  background: color-mix(in srgb, var(--pal-night-4) 87%, transparent);
+  box-shadow: 0 1px 3px color-mix(in srgb, var(--pal-night-1) 60%, transparent);
   overflow: visible;
   touch-action: none;
 }
 
 button.nameplate[aria-pressed="true"] {
-  border-color: #b6ad8b;
+  border-color: var(--pal-sand-5);
 }
 
 .nameplate-name {
@@ -29,13 +29,13 @@ button.nameplate[aria-pressed="true"] {
   bottom: calc(100% + 3px);
   max-width: 100%;
   overflow: hidden;
-  color: #f2f2f3;
+  color: var(--pal-night-12);
   font-size: 10px;
   font-weight: 400;
   line-height: 1.2;
   text-align: left;
   text-overflow: ellipsis;
-  text-shadow: 0 1px 2px #000;
+  text-shadow: 0 1px 2px var(--pal-night-1);
   white-space: nowrap;
   pointer-events: none;
 }
@@ -43,10 +43,15 @@ button.nameplate[aria-pressed="true"] {
 .nameplate-fill {
   display: block;
   height: 100%;
-  background: #cb5057;
+  background: var(--pal-ember-3);
   pointer-events: none;
 }
 
+.nameplate.disconnected {
+  filter: grayscale(1);
+  opacity: 0.6;
+}
+
 .nameplate.friendly .nameplate-fill {
-  background: #41ac72;
+  background: var(--pal-leaf-4);
 }

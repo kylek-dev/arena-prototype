@@ -63,23 +63,64 @@
   vector-effect: non-scaling-stroke;
 }
 .plan-building {
-  fill: #1d1a17;
+  fill: var(--pal-sand-1);
 }
 .plan-stands {
-  fill: #3a332b;
+  fill: var(--pal-sand-2);
 }
 .plan-pit-wall {
-  fill: #5a4f43;
+  fill: var(--pal-sand-3);
 }
 .plan-floor {
-  fill: #8b7a62;
+  fill: var(--pal-sand-4);
+}
+.plan-floor.ground-sand {
+  fill: var(--pal-sand-5);
+}
+.plan-floor.ground-snow {
+  fill: var(--pal-stone-6);
+}
+.plan-floor.ground-grass {
+  fill: var(--pal-leaf-3);
+}
+.plan-prop rect:first-child {
+  fill: color-mix(in srgb, var(--pal-wood-5) 55%, transparent);
+  stroke: var(--pal-wood-1);
+  stroke-width: 1;
+  cursor: grab;
+}
+.plan-prop {
+  cursor: grab;
+}
+.plan-prop-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+.plan-prop-dot {
+  fill: var(--pal-wood-5);
+  stroke: var(--pal-wood-1);
+  stroke-width: 1;
+  pointer-events: none;
+}
+.map-plan .plan-prop.selected .plan-prop-dot {
+  fill: var(--pal-gold-5);
+}
+.map-plan .plan-prop.selected .plan-prop-hit {
+  fill: color-mix(in srgb, var(--pal-gold-5) 18%, transparent);
+  stroke: var(--pal-gold-5);
+  stroke-width: 1.5;
+}
+.plan-prop-front {
+  stroke: var(--pal-wood-1);
+  stroke-width: 2;
+  pointer-events: none;
 }
 .plan-grid {
-  stroke: rgba(255, 255, 255, 0.12);
+  stroke: color-mix(in srgb, var(--pal-night-12) 12%, transparent);
   stroke-width: 1;
 }
 .plan-axis {
-  stroke: rgba(255, 255, 255, 0.28);
+  stroke: color-mix(in srgb, var(--pal-night-12) 28%, transparent);
   stroke-width: 1;
 }
 .plan-room rect:first-child {
@@ -87,43 +128,44 @@
   cursor: grab;
 }
 .plan-room.team-friendly rect:first-child {
-  fill: rgba(70, 130, 220, 0.45);
-  stroke: #6fa4f0;
+  fill: color-mix(in srgb, var(--pal-sky-4) 45%, transparent);
+  stroke: var(--pal-sky-5);
 }
 .plan-room.team-opposing rect:first-child {
-  fill: rgba(220, 80, 70, 0.45);
-  stroke: #f08070;
+  fill: color-mix(in srgb, var(--pal-ember-4) 45%, transparent);
+  stroke: var(--pal-ember-5);
 }
-.plan-pillar rect:first-child {
-  fill: #cfc4b0;
-  stroke: #2a241e;
+.plan-pillar polygon {
+  fill: var(--pal-stone-6);
+  stroke: var(--pal-sand-1);
   stroke-width: 1.5;
   cursor: grab;
 }
 .plan-spawn {
-  stroke: #111;
+  stroke: var(--pal-night-1);
   stroke-width: 1;
   cursor: grab;
 }
 .plan-spawn.team-friendly {
-  fill: #9cc3ff;
+  fill: var(--pal-sky-6);
 }
 .plan-spawn.team-opposing {
-  fill: #ffaa9c;
+  fill: var(--pal-ember-6);
 }
 .map-plan .selected rect:first-child,
+.map-plan .selected polygon,
 .map-plan circle.selected {
-  stroke: #ffd65c;
+  stroke: var(--pal-gold-5);
   stroke-width: 3;
 }
 .plan-handle {
-  fill: #ffd65c;
-  stroke: #111;
+  fill: var(--pal-gold-5);
+  stroke: var(--pal-night-1);
   stroke-width: 1;
   cursor: nwse-resize;
 }
 .plan-compass text {
-  fill: rgba(255, 255, 255, 0.7);
+  fill: color-mix(in srgb, var(--pal-night-12) 70%, transparent);
   font-weight: 700;
 }
 .map-hint {
@@ -179,4 +221,23 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+.map-new {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--gray-6);
+  border-radius: 6px;
+}
+.map-new .map-actions {
+  justify-content: flex-start;
+}
+.map-props-add {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.map-props-add select {
+  flex: 1;
+  min-width: 0;
 }

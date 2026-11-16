@@ -20,6 +20,23 @@ See [reuse instructions, hash, provenance and validation](animations/README.md).
 AI assistance does not establish exclusive rights. Human browser review is
 pending despite numerical checks and Blender pose inspection.
 
+## Quaternius character customization kits (2026-11-14)
+
+At the user's request for a customization screen with "all the options
+available" in the packs, `scripts/character_kits.py` builds one kit GLB per
+body from the CC0 base characters, rigged hairstyles/brows/beard, Ranger and
+Peasant outfits (both bodies) and their alternate colour textures, plus UAL1
+clips; see [ADR 0040](../docs/decisions/0040-character-customization-kits.md).
+Git now tracks the 39 additional CC0 source files these read (listed in
+`.gitignore`). Eye colours other than brown are recoloured offline from the CC0
+brown eye by the repository's `arena-textures iris` tool (our derivative of a
+CC0 texture; no new art source). Elf/orc kits and the elf/orc eyes are built
+only from a locally installed QAL races pack, are never committed and are
+labelled QAL in the GLB and manifest. Anthropic Claude Opus 5.5 (Claude Code)
+wrote the adapter, runtime and UI; geometry, textures and animation remain
+Quaternius's work under their original licences. Human rendered review is
+pending.
+
 ## Quaternius library and default female (2026-11-14)
 
 The user supplied Quaternius base characters, animation libraries 1/2, fantasy

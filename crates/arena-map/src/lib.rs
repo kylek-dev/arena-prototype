@@ -8,7 +8,7 @@
 //! character heights tall.
 
 use arena_sim::arena::Position;
-use arena_sim::map::{Block, Edge, Layout, Room, Spawn};
+use arena_sim::map::{Edge, Layout, Pillar, Room, Spawn};
 use serde::{Deserialize, Serialize};
 
 /// The file format this crate reads and writes.
@@ -25,6 +25,72 @@ const BANNER_SPACE: f32 = 12.0;
 
 /// The default arena, embedded so the rules, server and tests always have a map.
 pub const COLOSSEUM_JSON: &str = include_str!("../../../assets/maps/colosseum.json");
+/// Placeable props (`scripts/prepare_props.py` writes it from the CC0
+/// Quaternius Fantasy Props MegaKit). Maps may only name ids listed here.
+pub const PROP_CATALOG_JSON: &str = include_str!("../../../assets/props/catalog.json");
+/// Most props one map may place.
+pub const MAX_PROPS: usize = 1000;
+
+/// What the arena floor is surfaced with. Presentation only: every ground
+/// plays the same.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Ground {
+    #[default]
+    Stone,
+    Sand,
+    Snow,
+    Grass,
+}
+impl Ground {
+    pub const ALL: [Ground; 4] = [Ground::Stone, Ground::Sand, Ground::Snow, Ground::Grass];
+}
+
+/// A decorative model placed on the map. Presentation only: the rules never
+/// read props, so units walk and see through them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Prop {
+    /// Catalog id, such as `Barrel`.
+    pub model: String,
+    pub x: f32,
+    pub z: f32,
+    /// Height of the model's origin above the floor (metres).
+    #[serde(default)]
+    pub y: f32,
+    /// Turn about the vertical axis in degrees, counter-clockwise seen from above.
+    #[serde(default)]
+    pub rotation: f32,
+    #[serde(default = "unit_scale")]
+    pub scale: f32,
+}
+fn unit_scale() -> f32 {
+    1.0
+}
+
+/// One placeable model and its rest bounds (metres, model space).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct PropInfo {
+    pub id: String,
+    pub label: String,
+    pub category: String,
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+}
+#[derive(Deserialize)]
+struct CatalogJson {
+    props: Vec<PropInfo>,
+}
+
+/// Every placeable prop, parsed once from the embedded catalog.
+pub fn prop_catalog() -> &'static [PropInfo] {
+    static CATALOG: std::sync::OnceLock<Vec<PropInfo>> = std::sync::OnceLock::new();
+    CATALOG.get_or_init(|| {
+        serde_json::from_str::<CatalogJson>(PROP_CATALOG_JSON)
+            .expect("the embedded prop catalog is valid")
+            .props
+    })
+}
 
 /// Venue settings (metres) that shape the stands and building around the floor.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -71,6 +137,8 @@ pub struct MapFile {
     pub layout: Layout,
     pub rooms: Vec<RoomLook>,
     pub venue: Venue,
+    pub ground: Ground,
+    pub props: Vec<Prop>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -82,6 +150,10 @@ struct FileJson {
     pillars: Vec<PillarJson>,
     rooms: Vec<RoomJson>,
     venue: Venue,
+    #[serde(default)]
+    ground: Ground,
+    #[serde(default)]
+    props: Vec<Prop>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -161,7 +233,7 @@ pub fn parse(json: &str) -> Result<MapFile, Vec<String>> {
         pillars: file
             .pillars
             .iter()
-            .map(|p| Block {
+            .map(|p| Pillar {
                 center: Position {
                     x: mm(p.x, "Pillar x", &mut errors),
                     z: mm(p.z, "Pillar z", &mut errors),
@@ -212,9 +284,12 @@ pub fn parse(json: &str) -> Result<MapFile, Vec<String>> {
             })
             .collect(),
         venue: file.venue,
+        ground: file.ground,
+        props: file.props,
     };
     let mut errors = map.layout.validate().err().unwrap_or_default();
     errors.extend(map.check_venue());
+    errors.extend(map.check_props());
     if map.name.trim().is_empty() {
         errors.push("The map needs a name.".into());
     }
@@ -291,6 +366,54 @@ impl MapFile {
         errors
     }
 
+    fn check_props(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        if self.props.len() > MAX_PROPS {
+            errors.push(format!(
+                "A map can place at most {MAX_PROPS} props (has {}).",
+                self.props.len()
+            ));
+        }
+        // Props may stand anywhere inside the building, stands included.
+        let reach = self.venue.footprint();
+        let half_x = metres(self.layout.half_x) as f32 + reach;
+        let half_z = metres(self.layout.half_z) as f32 + reach;
+        let catalog = prop_catalog();
+        for (i, prop) in self.props.iter().enumerate() {
+            let n = i + 1;
+            let what = format!("Prop {n} ({})", prop.model);
+            if !catalog.iter().any(|info| info.id == prop.model) {
+                errors.push(format!(
+                    "Prop {n} uses an unknown model \"{}\".",
+                    prop.model
+                ));
+            }
+            let numbers = [prop.x, prop.z, prop.y, prop.rotation, prop.scale];
+            if numbers.iter().any(|v| !v.is_finite()) {
+                errors.push(format!(
+                    "{what} has a position, turn or scale that is not a number."
+                ));
+                continue;
+            }
+            if prop.x.abs() > half_x || prop.z.abs() > half_z {
+                errors.push(format!("{what} is outside the building."));
+            }
+            if !(-2.0..=60.0).contains(&prop.y) {
+                errors.push(format!(
+                    "{what}'s height must be −2–60 m (is {} m).",
+                    prop.y
+                ));
+            }
+            if !(0.1..=10.0).contains(&prop.scale) {
+                errors.push(format!(
+                    "{what}'s scale must be 0.1–10 (is {}).",
+                    prop.scale
+                ));
+            }
+        }
+        errors
+    }
+
     /// Serializes back to the file format (metres), for round trips and tools.
     pub fn to_json(&self) -> String {
         let file = FileJson {
@@ -343,6 +466,8 @@ impl MapFile {
                 })
                 .collect(),
             venue: self.venue,
+            ground: self.ground,
+            props: self.props.clone(),
         };
         serde_json::to_string_pretty(&file).expect("map files always serialize")
     }
@@ -389,6 +514,55 @@ mod tests {
             }
         }
         assert!(checked >= 1);
+    }
+
+    #[test]
+    fn grounds_and_props_load_validate_and_round_trip() {
+        let map = colosseum();
+        assert_eq!(map.ground, Ground::Stone);
+        let decorated = edited(|v| {
+            v["ground"] = "snow".into();
+            v["props"] = serde_json::json!([
+                { "model": "Barrel", "x": 3, "z": -4 },
+                { "model": "Bench", "x": 0, "z": 50, "y": 7.85, "rotation": 90, "scale": 1.5 }
+            ]);
+        })
+        .unwrap();
+        assert_eq!(decorated.ground, Ground::Snow);
+        assert_eq!(decorated.props[0].scale, 1.0);
+        assert_eq!(decorated.props[1].rotation, 90.0);
+        assert_eq!(parse(&decorated.to_json()), Ok(decorated.clone()));
+        // Props are decoration: the rules' layout is unchanged.
+        assert_eq!(decorated.layout, map.layout);
+
+        let bad = edited(|v| {
+            v["props"] = serde_json::json!([
+                { "model": "Spaceship", "x": 0, "z": 0 },
+                { "model": "Barrel", "x": 500, "z": 0 },
+                { "model": "Barrel", "x": 0, "z": 0, "scale": 0 }
+            ]);
+        })
+        .unwrap_err()
+        .join(" ");
+        assert!(bad.contains("unknown model \"Spaceship\""), "{bad}");
+        assert!(
+            bad.contains("Prop 2 (Barrel) is outside the building"),
+            "{bad}"
+        );
+        assert!(bad.contains("Prop 3 (Barrel)'s scale"), "{bad}");
+        let ground = edited(|v| v["ground"] = "lava".into()).unwrap_err();
+        assert!(ground[0].contains("malformed"), "{ground:?}");
+    }
+
+    #[test]
+    fn the_prop_catalog_lists_the_megakit_with_real_bounds() {
+        let catalog = prop_catalog();
+        assert!(catalog.len() >= 90);
+        let barrel = catalog.iter().find(|p| p.id == "Barrel").unwrap();
+        assert!((0.8..1.0).contains(&(barrel.max[1] - barrel.min[1])));
+        for info in catalog {
+            assert!((0..3).all(|a| info.max[a] >= info.min[a]), "{info:?}");
+        }
     }
 
     #[test]

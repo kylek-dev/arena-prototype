@@ -26,6 +26,9 @@ Run `./scripts/check.sh` for Rust changes. Add behavioral tests for game rules, 
 ## Repository map
 
 - crates/arena-sim: pure fixed-tick rules and tests
+- crates/arena-protocol: versioned match wire messages (no I/O)
+- crates/arena-server: authoritative match server (Axum/Tokio WebSockets)
+- crates/arena-bot: bot players and load tester for the match server
 - crates/arena-headless: executable scenario runner
 - crates/arena-client: Bevy rendering and narrow browser bridge
 - web: HTML/CSS HUD and browser input

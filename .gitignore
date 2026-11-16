@@ -50,5 +50,28 @@
 !/assets/quaternius/outfits/Exports/glTF (Godot-Unreal)/Outfits/T_Regular_Female_Normal.png
 !/assets/quaternius/outfits/Exports/glTF (Godot-Unreal)/Outfits/T_Regular_Female_Dark_BaseColor.png
 !/assets/quaternius/outfits/Exports/glTF (Godot-Unreal)/Outfits/T_Regular_Female_Roughness.png
+# Customizable kits (scripts/character_kits.py, ADR 0040): male base, every
+# rigged hairstyle/brow/beard, peasant and male outfits and texture variants.
+!/assets/quaternius/base/Base Characters/Godot - UE/Superhero_Male_FullBody.gltf
+!/assets/quaternius/base/Base Characters/Godot - UE/Superhero_Male_FullBody.bin
+!/assets/quaternius/base/Base Characters/Godot - UE/T_Hair_1_*.png
+!/assets/quaternius/base/Base Characters/Godot - UE/T_Superhero_Male_*.png
+!/assets/quaternius/base/Base Characters/Textures/T_Superhero_Female_Light_BaseColor.png
+!/assets/quaternius/base/Base Characters/Textures/T_Superhero_Male_Ligh.png
+!/assets/quaternius/base/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/*.gltf
+!/assets/quaternius/base/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/*.bin
+!/assets/quaternius/base/Hairstyles/Rigged to Head Bone/glTF (Godot -Unreal)/T_Hair_1_*.png
+!/assets/quaternius/outfits/Exports/glTF (Godot-Unreal)/Outfits/*.gltf
+!/assets/quaternius/outfits/Exports/glTF (Godot-Unreal)/Outfits/*.bin
+!/assets/quaternius/outfits/Exports/glTF (Godot-Unreal)/Outfits/T_Peasant_*.png
+!/assets/quaternius/outfits/Exports/glTF (Godot-Unreal)/Outfits/T_Regular_Male_*.png
+!/assets/quaternius/outfits/Textures/Peasant/T_Peasant_2_BaseColor.png
+!/assets/quaternius/outfits/Textures/Ranger/T_Ranger_3_BaseColor.png
+# Map props (scripts/prepare_props.py): every glTF prop of the CC0 Fantasy
+# Props MegaKit with its BIN and shared trim-sheet textures.
+!/assets/quaternius/props/License_Standard.txt
+!/assets/quaternius/props/Exports/glTF/*.gltf
+!/assets/quaternius/props/Exports/glTF/*.bin
+!/assets/quaternius/props/Exports/glTF/*.png
 # QAL permits game use, not standalone redistribution of the raw race pack.
 /assets/quaternius/races/
