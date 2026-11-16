@@ -11,8 +11,9 @@
 //!
 //! When a queue can fill both teams, the parties chosen are asked to confirm
 //! they are still there (a ready check, answered automatically by the game).
-//! If everyone confirms in time, the match starts. Otherwise players who did
-//! not confirm are dropped, parties that lost a member stop searching, and
+//! If everyone confirms in time, the match starts, and the parties stay
+//! together to queue again afterwards. Otherwise players who did not
+//! confirm are dropped, parties that lost a member stop searching, and
 //! complete parties return to the front of the queue in their order.
 //!
 //! A clock-free state machine like [`crate::session::Session`]: the caller
@@ -181,8 +182,8 @@ pub enum Out {
         reason: Refused,
     },
     /// Everyone confirmed: issue a ticket per seat. `seats[i]` takes seat
-    /// `i` (even seats are one team, odd seats the other). Those players
-    /// leave the matchmaker.
+    /// `i` (even seats are one team, odd seats the other). The players stay
+    /// connected and in their parties, no longer searching.
     Start {
         mode: Mode,
         seats: Vec<QueueConn>,
@@ -615,20 +616,16 @@ impl Matchmaker {
         let seats = (0..forming.mode.players())
             .map(|seat| teams[seat % 2][seat / 2])
             .collect();
-        for party in &forming.parties {
-            let party = self.parties.remove(party).expect("exists");
-            if let Some(code) = party.code {
-                self.codes.remove(&code);
-            }
-            for member in party.members {
-                self.of.remove(&member.conn);
-                self.guests.remove(&member.guest);
-            }
-        }
         let mut out = vec![Out::Start {
             mode: forming.mode,
             seats,
         }];
+        // Parties stay together after the match starts, ready to queue
+        // again when it is over.
+        for id in &forming.parties {
+            self.parties.get_mut(id).expect("exists").state = State::Idle;
+            self.announce(*id, &mut out);
+        }
         out.extend(self.form(forming.mode, now));
         out
     }
@@ -908,7 +905,9 @@ mod tests {
         let mut sorted = seats.clone();
         sorted.sort();
         assert_eq!(sorted, [1, 2, 3, 4]);
-        assert!((1..=4).all(|conn| !mm.contains(conn)));
+        // Still connected, no longer searching.
+        assert!((1..=4).all(|conn| mm.contains(conn)));
+        assert_eq!(mm.waiting(), [0; 5]);
         mm.check();
     }
 
@@ -1129,9 +1128,9 @@ mod tests {
     }
 
     #[test]
-    fn no_player_is_ever_in_two_matches_and_the_books_balance() {
-        // Random requests in a fixed pseudo-random order. Forty players
-        // reconnect under a fresh connection id after each match.
+    fn random_requests_keep_the_books_balanced() {
+        // Random requests from forty players in a fixed pseudo-random order;
+        // every index is checked after each step.
         let start = Instant::now();
         let mut mm = mm();
         let mut state = 0x2545_F491_4F6C_DD1Du64;
@@ -1141,22 +1140,14 @@ mod tests {
             state ^= state << 17;
             state % bound
         };
-        let mut ids: Vec<QueueConn> = (1..=40).collect();
-        let mut fresh = 1000;
-        let mut started = HashSet::new();
         let mut codes: Vec<String> = Vec::new();
         let mut now = start;
         let mut matches = 0;
         for _ in 0..30_000u64 {
             now += Duration::from_millis(next(300));
-            let slot = next(40) as usize;
-            if started.contains(&ids[slot]) {
-                fresh += 1;
-                ids[slot] = fresh;
-            }
-            let conn = ids[slot];
+            let conn = next(40) + 1;
             if !mm.contains(conn) {
-                mm.connect(conn, slot as Guest, now);
+                mm.connect(conn, Guest::from(conn), now);
             }
             let mode = Mode::ALL[next(5) as usize];
             let out = match next(12) {
@@ -1182,9 +1173,12 @@ mod tests {
             for (mode, seats) in starts(&out) {
                 matches += 1;
                 assert_eq!(seats.len(), mode.players());
-                for conn in seats {
-                    assert!(started.insert(conn), "{conn} started twice");
-                    assert!(!mm.contains(conn));
+                let distinct: HashSet<_> = seats.iter().collect();
+                assert_eq!(distinct.len(), seats.len(), "one seat per player");
+                // Started players are connected and no longer searching.
+                for conn in &seats {
+                    assert!(mm.contains(*conn));
+                    assert!(mm.searching().all(|(searching, _)| searching != *conn));
                 }
             }
             mm.check();

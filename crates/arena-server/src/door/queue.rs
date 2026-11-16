@@ -16,8 +16,9 @@
 //! - `found` when a ready check starts, `requeued` when it failed because of
 //!   someone else, and `stopped` when the party's search ended.
 //! - `refused` turns a request down; the connection stays open.
-//! - `match` carries the player's own seat ticket, and `error` comes before
-//!   the door closes the connection.
+//! - `match` carries the player's own seat ticket. The connection stays
+//!   open, so the party is still together when the match is over.
+//! - `error` comes before the door closes the connection.
 //!
 //! One task owns the [`Matchmaker`]; connections talk to it over channels.
 
@@ -261,7 +262,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     send(&conns, conn, message);
                     conns.remove(&conn);
                 }
-                Out::Start { mode, seats } => start_match(&door, &mut conns, mode, seats),
+                Out::Start { mode, seats } => start_match(&door, &conns, mode, seats),
             }
         }
         if announce_status || now >= status_at {
@@ -292,7 +293,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
     }
 }
 
-fn start_match(door: &Door, conns: &mut Senders, mode: Mode, seats: Vec<QueueConn>) {
+fn start_match(door: &Door, conns: &Senders, mode: Mode, seats: Vec<QueueConn>) {
     let expires = unix_now() + door.config.ticket_ttl.as_secs();
     let created = ticket::issue_match(&door.config.key, mode.team_size(), expires)
         .expect("queue modes have playable team sizes");
@@ -304,7 +305,7 @@ fn start_match(door: &Door, conns: &mut Senders, mode: Mode, seats: Vec<QueueCon
         mode.id()
     );
     for (seat, (conn, ticket)) in seats.into_iter().zip(created.tickets).enumerate() {
-        if let Some(sender) = conns.remove(&conn) {
+        if let Some(sender) = conns.get(&conn) {
             let _ = sender.try_send(ToClient::Match {
                 mode: mode.id().into(),
                 match_id: format!("{:016x}", created.match_id),
@@ -448,13 +449,15 @@ async fn connection(mut socket: WebSocket, door: Arc<Door>, _slot: OpenSlot) {
             }
             outgoing = outbox.recv() => {
                 let Some(message) = outgoing else { break };
-                let last = matches!(message, ToClient::Match { .. } | ToClient::Error { .. });
+                // The connection stays open after a match is found, so the
+                // party can queue again when the match is over.
+                let last = matches!(message, ToClient::Error { .. });
                 if !say(&mut socket, &message).await {
                     break;
                 }
                 if last {
                     let _ = socket.send(Message::Close(None)).await;
-                    // Seated, or already out of the matchmaker.
+                    // Already out of the matchmaker.
                     return;
                 }
             }

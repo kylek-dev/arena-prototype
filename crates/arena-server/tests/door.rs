@@ -358,7 +358,15 @@ mod queue {
         let mut sockets = Vec::new();
         for player in &mut players {
             let (seat, play, ticket) = player.seat().await;
-            assert_eq!(player.next().await, None, "the door closes after the seat");
+            // Still connected and on their own, ready to queue again.
+            assert!(matches!(
+                player.next().await,
+                Some(QueueMessage::Party {
+                    members: 1,
+                    queue: None,
+                    ..
+                })
+            ));
             let (socket, actor) = join_match(&play, &ticket).await;
             assert_eq!(usize::from(actor), seat);
             actors.push(actor);
