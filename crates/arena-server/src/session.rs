@@ -152,8 +152,11 @@ impl Session {
         }
         slot.joined = true;
         slot.absent_since = None;
-        // A new connection starts its own sequence.
+        // A new connection starts its own sequence, and nothing of it has
+        // been applied yet: an old connection's acknowledgement would make
+        // a predicting client discard inputs the server has not applied.
         slot.last_seq = None;
+        slot.ack = 0;
         slot.pending.clear();
         let ack = slot.ack;
         out.push(Out::Send {

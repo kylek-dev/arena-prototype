@@ -244,6 +244,7 @@ fn stale_foreign_and_overflowing_inputs_are_dropped() {
 fn a_reconnect_replaces_the_old_connection_and_restarts_its_sequence() {
     let mut session = running(arena(1));
     session.receive(0, conn(0), frame(50));
+    assert_eq!(snapshot(&session.tick(), conn(0)).unwrap().ack, 50);
     let out = session.attach(0, 200);
     assert_eq!(
         out[0],
@@ -259,6 +260,9 @@ fn a_reconnect_replaces_the_old_connection_and_restarts_its_sequence() {
             message: ServerMessage::Welcome(_)
         }
     ));
+    // The old connection's input 50 was applied, but nothing of the new
+    // one has been: its welcome snapshot acknowledges nothing.
+    assert_eq!(snapshot(&out, 200).unwrap().ack, 0);
     session.receive(0, 200, frame(1));
     session.receive(0, conn(0), frame(51));
     // The old connection's late detach does not unseat the new one.
