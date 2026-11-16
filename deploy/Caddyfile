@@ -1,0 +1,36 @@
+# TLS reverse proxy for remote playtests (ADR 0045). One origin serves the
+# browser client, the front door (/lobby/, /api/) and match connections
+# (/play). Caddy obtains and renews the certificate for ARENA_HOST itself.
+# The match server's /metrics and /readyz are not exposed.
+{$ARENA_HOST} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	@door path /api/* /lobby /lobby/*
+	handle @door {
+		reverse_proxy door:8090
+	}
+
+	handle /play {
+		reverse_proxy server:8080 {
+			# Close match connections no sooner than a round can last.
+			stream_close_delay 21m
+		}
+	}
+
+	handle {
+		root * /srv/arena
+		file_server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

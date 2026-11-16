@@ -1,8 +1,17 @@
-//! `arena-server [--bind ADDR] [--dev] [--debug-json] [--drain-seconds N]`
+//! `arena-server [--bind ADDR] [--dev] [--debug-json] [--drain-seconds N]
+//!  [--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]...
+//!  [--connections-per-address N]`
 //!
 //! The signing key comes from `ARENA_TICKET_KEY` (hex, at least 32 bytes),
-//! shared with whatever issues tickets. With `--dev` and no key, a random
-//! key is generated and `POST /dev/match` issues tickets itself.
+//! shared with whatever issues tickets (the front door, `arena-door`). With
+//! `--dev` and no key, a random key is generated and `POST /dev/match`
+//! issues tickets itself.
+//!
+//! Browsers may connect only from the pages given with `--allow-origin`
+//! (the game page's origin, such as `https://arena.example.com`). Without
+//! `--dev` one of `--allow-origin` or `--any-origin` is required. Behind a
+//! reverse proxy, `--trusted-proxy` names the proxy's addresses so the
+//! per-address connection limit counts players, not the proxy.
 //!
 //! On SIGTERM or Ctrl+C the server drains: readiness fails and no new match
 //! starts, while running matches continue for up to `--drain-seconds`; then
@@ -16,10 +25,12 @@ use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use arena_server::ingress::{Cidr, Origins};
 use arena_server::ticket::TicketKey;
 use arena_server::{Config, start};
 
-const USAGE: &str = "usage: arena-server [--bind ADDR] [--dev] [--debug-json] [--drain-seconds N]";
+const USAGE: &str = "usage: arena-server [--bind ADDR] [--dev] [--debug-json] [--drain-seconds N] \
+[--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]... [--connections-per-address N]";
 /// How often a drain reports the matches it is waiting for.
 const DRAIN_REPORT: Duration = Duration::from_secs(10);
 
@@ -48,11 +59,31 @@ fn drain_for(seconds: Option<u64>, dev: bool) -> Result<Duration, String> {
     }
 }
 
+/// Which pages may connect. Production must choose: a missing choice would
+/// silently let any website use the server through its visitors.
+fn origins_for(allowed: Vec<String>, any: bool, dev: bool) -> Result<Origins, String> {
+    match (allowed.is_empty(), any) {
+        (false, true) => Err("--allow-origin and --any-origin exclude each other".into()),
+        (false, false) => Ok(Origins::Only(allowed)),
+        (true, true) => Ok(Origins::Any),
+        (true, false) if dev => Ok(Origins::Any),
+        (true, false) => Err(
+            "--allow-origin is required without --dev: give the game page's origin, such as \
+             https://arena.example.com (repeat for more), or --any-origin to allow every page"
+                .into(),
+        ),
+    }
+}
+
 async fn run() -> Result<(), String> {
     let mut bind: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 8080));
     let mut dev = false;
     let mut debug_json = false;
     let mut drain_seconds = None;
+    let mut allowed = Vec::new();
+    let mut any_origin = false;
+    let mut trusted_proxies = Vec::new();
+    let mut connections_per_address = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -72,6 +103,26 @@ async fn run() -> Result<(), String> {
                         .map_err(|_| format!("invalid --drain-seconds {value}"))?,
                 );
             }
+            "--allow-origin" => {
+                let value = args.next().ok_or(USAGE)?;
+                allowed.push(Origins::parse_origin(&value).ok_or(format!(
+                    "invalid --allow-origin {value}: expected an origin such as https://arena.example.com"
+                ))?);
+            }
+            "--any-origin" => any_origin = true,
+            "--trusted-proxy" => {
+                let value = args.next().ok_or(USAGE)?;
+                trusted_proxies
+                    .push(Cidr::parse(&value).ok_or(format!("invalid --trusted-proxy {value}"))?);
+            }
+            "--connections-per-address" => {
+                let value = args.next().ok_or(USAGE)?;
+                connections_per_address = Some(
+                    value
+                        .parse()
+                        .map_err(|_| format!("invalid --connections-per-address {value}"))?,
+                );
+            }
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
@@ -80,6 +131,7 @@ async fn run() -> Result<(), String> {
         }
     }
     let drain = drain_for(drain_seconds, dev)?;
+    let origins = origins_for(allowed, any_origin, dev)?;
     let key = match std::env::var("ARENA_TICKET_KEY") {
         Ok(hex) => TicketKey::from_hex(&hex)
             .ok_or("ARENA_TICKET_KEY must be hex encoding at least 32 bytes")?,
@@ -90,6 +142,14 @@ async fn run() -> Result<(), String> {
     config.bind = bind;
     config.dev = dev;
     config.debug_json = debug_json;
+    config.origins = origins;
+    config.trusted_proxies = trusted_proxies;
+    if let Some(limit) = connections_per_address {
+        config.connections_per_address = limit;
+    } else if dev {
+        // Local bots open thousands of connections from one address.
+        config.connections_per_address = 0;
+    }
     let running = start(config).await.map_err(|error| error.to_string())?;
     eprintln!("arena-server: listening on ws://{}/play", running.addr);
     if dev {
@@ -161,5 +221,16 @@ mod tests {
             refused.contains("terminationGracePeriodSeconds"),
             "{refused}"
         );
+    }
+
+    #[test]
+    fn production_must_choose_which_pages_may_connect() {
+        let page = || vec!["https://arena.example.com".to_owned()];
+        assert_eq!(origins_for(Vec::new(), false, true), Ok(Origins::Any));
+        assert_eq!(origins_for(Vec::new(), true, false), Ok(Origins::Any));
+        assert_eq!(origins_for(page(), false, false), Ok(Origins::Only(page())));
+        assert!(origins_for(page(), true, false).is_err());
+        let refused = origins_for(Vec::new(), false, false).unwrap_err();
+        assert!(refused.contains("--allow-origin"), "{refused}");
     }
 }
