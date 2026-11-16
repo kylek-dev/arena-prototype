@@ -92,6 +92,19 @@ struct Seat {
     over_backlog_since: Option<u64>,
     /// Inputs that arrived since the previous tick, for the jitter metric.
     arrived: u32,
+    window: SeatWindow,
+}
+
+/// One seat's input flow since the last report (development diagnostics).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SeatWindow {
+    pub ticks: u32,
+    pub received: u32,
+    pub applied: u32,
+    pub folded: u32,
+    pub starved: u32,
+    pub queue_min: Option<usize>,
+    pub queue_max: usize,
 }
 
 pub struct Session {
@@ -125,6 +138,16 @@ impl Session {
     }
     pub fn arena(&self) -> &Arena {
         &self.arena
+    }
+    /// Each connected seat's input flow since the previous call, which
+    /// starts a new window.
+    pub fn take_windows(&mut self) -> Vec<(usize, SeatWindow)> {
+        self.seats
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, seat)| seat.conn.is_some())
+            .map(|(index, seat)| (index, std::mem::take(&mut seat.window)))
+            .collect()
     }
     pub fn is_ended(&self) -> bool {
         self.phase == Phase::Ended
@@ -231,6 +254,7 @@ impl Session {
         }
         slot.last_seq = Some(frame.seq);
         slot.arrived += 1;
+        slot.window.received += 1;
         slot.pending.push_back(frame);
         Metrics::add(&self.metrics.inputs, 1);
         if slot.pending.len() > self.limits.queue {
@@ -270,8 +294,10 @@ impl Session {
                         if let Some(frame) = seat.pending.pop_front() {
                             frame.merge_into(&mut slot);
                             seat.ack = frame.seq;
+                            seat.window.applied += 1;
                         } else if seat.conn.is_some() {
                             Metrics::add(&metrics.inputs_starved, 1);
+                            seat.window.starved += 1;
                         }
                         // A queue that stays long only adds delay: after a
                         // second above the backlog, fold the excess into this
@@ -284,6 +310,7 @@ impl Session {
                                     frame.merge_into(&mut slot);
                                     seat.ack = frame.seq;
                                     Metrics::add(&metrics.inputs_folded, 1);
+                                    seat.window.folded += 1;
                                 }
                                 seat.over_backlog_since = None;
                             }
@@ -292,6 +319,12 @@ impl Session {
                         }
                         if seat.conn.is_some() {
                             metrics.record_arrivals(seat.arrived);
+                            let window = &mut seat.window;
+                            window.ticks += 1;
+                            let queued = seat.pending.len();
+                            window.queue_min =
+                                Some(window.queue_min.map_or(queued, |m| m.min(queued)));
+                            window.queue_max = window.queue_max.max(queued);
                         }
                         seat.arrived = 0;
                         slot

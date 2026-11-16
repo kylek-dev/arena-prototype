@@ -43,6 +43,8 @@ const status = (patch: object) => ({
   queuedMin: 1,
   pace: 1.004,
   skippedInputs: 0,
+  stepsPerSecond: 29,
+  sentPerSecond: 29,
   ...patch,
 });
 

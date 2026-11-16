@@ -124,6 +124,9 @@ pub struct Stats {
     pub queued_min: Option<u8>,
     /// Catch-up inputs not sent after a stall.
     pub skipped_inputs: u64,
+    /// Fixed steps and inputs sent in the last second, on the browser's clock.
+    pub steps_per_second: usize,
+    pub sent_per_second: usize,
 }
 
 /// The locally predicted fighter, for drawing between fixed ticks.
@@ -180,6 +183,9 @@ pub struct Session {
     pacer: Pacer,
     /// The frame (its `now`) of the latest input, and inputs sent in it.
     frame_inputs: (f64, u32),
+    /// When recent fixed steps ran and inputs were sent (the last second).
+    steps: VecDeque<f64>,
+    sends: VecDeque<f64>,
     own: Option<Own>,
     /// The newest snapshot's state in server order, to reconcile with.
     newest_state: Option<(u64, Vec<Combatant>, Option<RoundResult>, u32)>,
@@ -482,6 +488,11 @@ impl Session {
         if !self.joined() {
             return None;
         }
+        self.steps.push_back(now);
+        while self.steps.front().is_some_and(|at| now - at >= 1.0) {
+            self.steps.pop_front();
+        }
+        self.stats.steps_per_second = self.steps.len();
         if self.frame_inputs.0 == now {
             if self.frame_inputs.1 >= MAX_INPUTS_PER_FRAME {
                 self.stats.skipped_inputs += 1;
@@ -492,6 +503,11 @@ impl Session {
             self.frame_inputs = (now, 1);
         }
         self.seq += 1;
+        self.sends.push_back(now);
+        while self.sends.front().is_some_and(|at| now - at >= 1.0) {
+            self.sends.pop_front();
+        }
+        self.stats.sent_per_second = self.sends.len();
         self.unacked.push_back((self.seq, now));
         // A stalled server must not grow this without bound.
         if self.unacked.len() > 256 {
@@ -639,7 +655,7 @@ impl Session {
         };
         let number = |value: Option<f64>| value.map_or("null".into(), |v| format!("{v:.1}"));
         format!(
-            r#"{{"phase":"{phase}","error":{},"seat":{},"mapDiffers":{},"rttMs":{},"inputMs":{},"delayMs":{:.1},"snapshots":{},"underruns":{},"hashMismatches":{},"predictedTicks":{},"corrections":{},"lastCorrectionMm":{},"queued":{},"queuedMin":{},"pace":{:.3},"skippedInputs":{}}}"#,
+            r#"{{"phase":"{phase}","error":{},"seat":{},"mapDiffers":{},"rttMs":{},"inputMs":{},"delayMs":{:.1},"snapshots":{},"underruns":{},"hashMismatches":{},"predictedTicks":{},"corrections":{},"lastCorrectionMm":{},"queued":{},"queuedMin":{},"pace":{:.3},"skippedInputs":{},"stepsPerSecond":{},"sentPerSecond":{}}}"#,
             error.map_or("null".into(), |code| format!("\"{code:?}\"")),
             self.seat.map_or("null".into(), |seat| seat.to_string()),
             self.map_differs().unwrap_or(false),
@@ -660,6 +676,8 @@ impl Session {
                 .map_or("null".into(), |min| min.to_string()),
             self.pace(),
             self.stats.skipped_inputs,
+            self.stats.steps_per_second,
+            self.stats.sent_per_second,
         )
     }
 }

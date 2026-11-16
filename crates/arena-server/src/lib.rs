@@ -213,6 +213,10 @@ async fn run_match(
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut shutdown = app.shutdown.subscribe();
     let interval_us = app.config.tick.as_micros() as u64;
+    // Development only: one line per seat every five seconds with the input
+    // flow measured on the server's clock, to diagnose pacing.
+    let mut report_at = Instant::now() + Duration::from_secs(5);
+    let mut report_from = Instant::now();
     loop {
         let mut ticked = None;
         let out = tokio::select! {
@@ -248,6 +252,24 @@ async fn run_match(
         if let Some(started) = ticked {
             app.metrics
                 .record_tick(started.elapsed().as_micros() as u64, interval_us);
+            if app.config.dev && started >= report_at {
+                let seconds = started.duration_since(report_from).as_secs_f64();
+                for (seat, window) in session.take_windows() {
+                    let rate = |count: u32| f64::from(count) / seconds;
+                    eprintln!(
+                        "match {id:016x}: seat {seat} over {seconds:.1} s: {:.2} ticks/s, {:.2} inputs/s received, {:.2}/s applied, {} folded, {} starved, queue {}..{}",
+                        rate(window.ticks),
+                        rate(window.received),
+                        rate(window.applied),
+                        window.folded,
+                        window.starved,
+                        window.queue_min.unwrap_or(0),
+                        window.queue_max
+                    );
+                }
+                report_from = started;
+                report_at = started + Duration::from_secs(5);
+            }
         }
         if session.is_ended() {
             break;

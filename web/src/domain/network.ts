@@ -36,6 +36,9 @@ export type NetworkStatus = {
   pace: number;
   /** Catch-up inputs not sent after a stall. */
   skippedInputs: number;
+  /** Fixed steps run and inputs sent in the last second (browser clock). */
+  stepsPerSecond: number;
+  sentPerSecond: number;
 };
 
 export type LinkPhase = "idle" | "connecting" | "open" | "reconnecting" | "ended";
@@ -249,7 +252,9 @@ export function parseStatus(value: unknown): NetworkStatus | null {
     !(v.queuedMin === null || count(v.queuedMin)) ||
     typeof v.pace !== "number" ||
     !(v.pace > 0.5 && v.pace < 1.5) ||
-    !count(v.skippedInputs)
+    !count(v.skippedInputs) ||
+    !count(v.stepsPerSecond) ||
+    !count(v.sentPerSecond)
   )
     return null;
   return v;

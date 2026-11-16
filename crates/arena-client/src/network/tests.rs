@@ -436,6 +436,13 @@ fn a_catch_up_burst_sends_two_inputs_a_frame_and_predicts_only_those() {
         .count();
     assert_eq!(sent, 2);
     assert_eq!(session.stats.skipped_inputs, 5);
+    assert_eq!(
+        (
+            session.stats.steps_per_second,
+            session.stats.sent_per_second
+        ),
+        (7, 2)
+    );
     assert_eq!(session.stats.predicted_ticks, 2);
     let step = arena_sim::arena::MOVE_PER_TICK as f32 / 1000.0;
     assert!((session.own().unwrap().current.z - (start.z - 2.0 * step)).abs() < 1e-4);

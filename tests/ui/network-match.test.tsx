@@ -111,6 +111,8 @@ function fakeLink() {
           queuedMin: 1,
           pace: 1.012,
           skippedInputs: 0,
+          stepsPerSecond: 30,
+          sentPerSecond: 29,
         }),
       ),
   };
@@ -278,6 +280,7 @@ it("shows network statistics in the diagnostics overlay during a match", () => {
   expect(stats.getByText("4 ticks")).toBeTruthy();
   expect(stats.getByText("2 · last 240 mm")).toBeTruthy();
   expect(stats.getByText("1.2 · min 1 · pace 101.2%")).toBeTruthy();
+  expect(stats.getByText("29/s · 30 steps/s")).toBeTruthy();
   fake.drop();
   expect(stats.getByText("reconnecting · attempt 1")).toBeTruthy();
 });
