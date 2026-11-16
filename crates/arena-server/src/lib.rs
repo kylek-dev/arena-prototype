@@ -616,15 +616,40 @@ pub async fn start(config: Config) -> io::Result<Running> {
 }
 
 impl Running {
+    /// Starts draining: readiness fails and no new match starts, while the
+    /// matches already running continue (and their players may rejoin).
+    pub fn begin_drain(&self) {
+        self.app.draining.store(true, Ordering::Relaxed);
+    }
+
+    /// Matches still running.
+    pub fn active_matches(&self) -> u64 {
+        Metrics::get(&self.app.metrics.matches_active)
+    }
+
+    /// Waits until every match has ended or `limit` has passed; `true` if
+    /// they all ended.
+    pub async fn drained(&self, limit: Duration) -> bool {
+        let deadline = Instant::now() + limit;
+        while self.active_matches() > 0 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        self.active_matches() == 0
+    }
+
     /// Refuses new matches, lets current ones finish for up to `drain`, then
     /// closes the rest with `ServerShutdown` and stops listening.
     pub async fn shut_down(self, drain: Duration) -> io::Result<()> {
-        self.app.draining.store(true, Ordering::Relaxed);
+        self.begin_drain();
+        self.drained(drain).await;
+        self.stop().await
+    }
+
+    /// Closes every remaining match with `ServerShutdown` and stops
+    /// listening, without waiting for matches to end.
+    pub async fn stop(self) -> io::Result<()> {
+        self.begin_drain();
         let metrics = &self.app.metrics;
-        let deadline = Instant::now() + drain;
-        while Metrics::get(&metrics.matches_active) > 0 && Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
         self.app.shutdown.send_replace(true);
         // Give connections a moment to deliver their final message.
         let deadline = Instant::now() + Duration::from_secs(2);

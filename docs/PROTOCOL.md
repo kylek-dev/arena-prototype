@@ -136,8 +136,10 @@ only with `--dev`, which also refuses to listen beyond loopback.
   bursting missed ticks, so the rules never run faster than real time;
   `arena_tick_overruns_total` counts it.
 - **Shutdown:** SIGTERM or Ctrl+C makes `/readyz` fail and refuses new
-  matches, lets running ones finish for up to `--drain-seconds`, then closes
-  them with `ServerShutdown`.
+  matches. Running ones continue (players may rejoin) for up to
+  `--drain-seconds`, then are closed with `ServerShutdown`. A second
+  signal closes them at once. `--dev` defaults to no drain; without
+  `--dev` the drain must be given.
 
 Clients must show a disconnected fighter as disconnected (greyed unit
 frame and nameplate labelled "Disconnected") and should rejoin by
