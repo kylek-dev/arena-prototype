@@ -267,9 +267,20 @@ plus the 100 ms view delay: about 130 ms on localhost and about 250 ms at
   that arrived between ticks (the latest movement won), so jitter that
   delivered two inputs in one tick dropped a step. Each tick now applies
   one queued input per seat, oldest first, so input `n` is exactly one
-  tick of rules. A tick with nothing queued is idle. More than two inputs
-  waiting after a tick are folded into it (`arena_inputs_folded_total`),
-  so a burst after a stall cannot build up delay.
+  tick of rules. A tick with nothing queued is idle. More than four
+  inputs waiting after a tick are folded into it
+  (`arena_inputs_folded_total`), so a burst after a stall cannot build up
+  delay.
+- **Pacing.** Each snapshot reports how many of the recipient's inputs
+  are still queued. `prediction::Pacer` averages that over about half a
+  second, and the client stretches or shrinks its fixed input interval by
+  up to 4% to keep one queued: enough to ride out a late arrival without
+  an idle tick, or an early one without a backlog. A client sends at most
+  two inputs per frame. The rest of a catch-up burst (a tab returning
+  from the background) is neither sent nor predicted, so both sides agree.
+- **`TCP_NODELAY`.** The server disables Nagle's algorithm on accepted
+  connections. Before, small snapshots and pongs waited for
+  acknowledgements, and loopback ping p95 was 34.6 ms; it is now 2.5 ms.
 - **`arena_protocol::prediction::Predictor`**, shared by the browser and
   the bots. It applies each input to the shared rules as it is sent. On
   each snapshot it rebuilds from the server's state and replays the inputs
@@ -288,6 +299,17 @@ plus the 100 ms view delay: about 130 ms on localhost and about 250 ms at
   acknowledgement, so a rejoined client discarded unapplied inputs and was
   corrected on every snapshot. A new connection now starts with
   acknowledgement 0.
+- **Found in the browser.** The first browser test corrected about once a
+  second while moving (242 mm each), with 107 ms input acknowledgement and
+  30 ms ping on localhost. The server had folded 1,129 inputs. The browser
+  times inputs by frames, so the queue drifted past the original limit of
+  two, and tab switches added bursts. The bots send on timers out of phase
+  with the server's ticks, so they never showed it. Pacing,
+  `TCP_NODELAY`, the higher fold limit and the frame cap address it. A
+  simulation against the real session (240 Hz frames on the tick
+  boundary, a 0.5% fast clock, a background-tab burst, 60 s) folded 8
+  inputs and corrected 8 times unpaced, and folded or corrected nothing
+  paced, holding the queue at 1.1. Browser retesting is pending.
 - **Measured** ([load baseline](../research/match-server-load.md#prediction)).
   The bots predict exactly as the browser does. 1v1 at 0, 50, 100 and
   200 ms with jitter had no corrections. 3v3 load with drop-outs had 0.1

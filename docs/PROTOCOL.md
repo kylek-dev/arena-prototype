@@ -20,7 +20,8 @@ yet.
 ## Transport
 
 - Secure WebSocket (`wss://`; `ws://` on loopback in development) at
-  `/play`. One connection per player per match.
+  `/play`. One connection per player per match. The server disables
+  Nagle's algorithm (`TCP_NODELAY`) so small frames are not held back.
 - **Binary frames only**, each one message, encoded with `postcard`
   (`serde`). Text frames close the connection.
 - The browser's TypeScript runtime owns the socket. It sends the `Hello`
@@ -37,11 +38,13 @@ yet.
 - Each tick applies **one** queued input per seat, oldest first, so input
   `n` is exactly one tick of rules and a client can predict its own
   movement by replaying its unacknowledged inputs. A tick with nothing
-  queued is idle for that seat. If more than two inputs are still waiting
+  queued is idle for that seat. If more than four inputs are still waiting
   after a tick (a burst after a stall), the excess is folded into that tick
   with `InputFrame::merge_into`: the latest movement, facing and attack
   target win, and a jump from any of them is kept. This keeps the delay
-  bounded.
+  bounded. Each snapshot's `queued` tells the recipient how many of its
+  inputs are still waiting, and clients pace their input interval to keep
+  it near one (`prediction::Pacer`).
 - Clients interpolate other fighters' snapshots behind the newest one
   received (about 100 ms). A client predicts its own fighter by replaying
   its unacknowledged inputs on the latest snapshot
@@ -60,7 +63,7 @@ yet.
 | Message | Fields | Notes |
 | --- | --- | --- |
 | `Welcome` | `protocol`, `actor: u8`, `team_size: u8`, `tick: u64`, `tick_rate: u8`, `rules: u32`, `map: u64` | `rules` is the rules version and `map` a digest of the layout, so replays and mismatches are explainable. |
-| `Snapshot` | `tick: u64`, `ack: u32`, `hash: u64`, `result`, `fighters` (≤ 6), `events` (≤ 256) | `ack` is the last input `seq` applied. `hash` is `Arena::state_hash()`. `fighters` carries each fighter's full rule state in actor order (position, height, vertical velocity, momentum, health, `ready_at`, facing), so a client can rebuild the arena and check `hash`, plus `connected`: whether that fighter's player is attached (not part of the rules or `hash`). `events` are tick-tagged events since the previous snapshot: `Jumped`, `Hit`, `Finished`, and `Rejected` only for the actor it names. `Moved` is not sent because positions show it. |
+| `Snapshot` | `tick: u64`, `ack: u32`, `hash: u64`, `result`, `fighters` (≤ 6), `events` (≤ 256) | `ack` is the last input `seq` applied, and `queued` how many of the recipient's inputs are still waiting. `hash` is `Arena::state_hash()`. `fighters` carries each fighter's full rule state in actor order (position, height, vertical velocity, momentum, health, `ready_at`, facing), so a client can rebuild the arena and check `hash`, plus `connected`: whether that fighter's player is attached (not part of the rules or `hash`). `events` are tick-tagged events since the previous snapshot: `Jumped`, `Hit`, `Finished`, and `Rejected` only for the actor it names. `Moved` is not sent because positions show it. |
 | `Pong` | `nonce: u32` | |
 | `Error` | `code` | Sent before the server closes: `VersionMismatch`, `BadTicket`, `MatchFull`, `MatchOver`, `RateLimited`, `Malformed`, `HelloTimeout`, `ServerShutdown`, `Replaced` (a newer connection with the same ticket took the seat). |
 

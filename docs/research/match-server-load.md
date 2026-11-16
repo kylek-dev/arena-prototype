@@ -85,6 +85,27 @@ Two bugs were found and fixed while measuring:
   corrections per 1000 inputs in the drop-out run, down to 0.1 after the
   fix.
 
+A first browser test then showed what the bots could not: about one
+242 mm correction per second while moving, and 107 ms input
+acknowledgement and 30 ms ping on localhost. The server had folded 1,129
+inputs. The browser sends inputs on frame boundaries, so the per-seat
+queue drifted past the fold limit (then two), and tab switches added
+catch-up bursts. The bots' timers ran out of phase with the server's
+ticks, so they were never affected. Snapshots now report each player's
+queue, and clients pace their input interval to keep one queued. The
+fold limit is four, catch-up is capped at two inputs per frame, and the
+server sets `TCP_NODELAY`:
+
+| Check | Before | After |
+| --- | --- | --- |
+| Loopback ping p95 (bots) | 34.6 ms | 2.5 ms |
+| Simulated browser client, 60 s: folds / corrections | 8 / 8 (unpaced) | 0 / 0 (paced, queue 1.1) |
+| 3v3 × 50, 100 ms, drop-outs: corrections per 1000 | 0.1 | 0.2 (no folds or overflows) |
+
+The simulation runs against the real session: 240 Hz frames placed on the
+tick boundary, a 0.5% fast client clock and a background-tab burst. The
+bots themselves do not pace yet. Browser retesting is pending.
+
 A run with jumps disabled ruled out jumping as the cause of the first
 problem. The remaining corrections match real disagreements: a fighter
 killed while its prediction still moves (up to latency ÷ 33 ms steps,
