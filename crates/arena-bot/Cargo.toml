@@ -9,6 +9,7 @@ description = "Bot players and load tester for the match server, with simulated 
 [dependencies]
 arena-protocol = { path = "../arena-protocol" }
 arena-sim = { path = "../arena-sim" }
+arena-map = { path = "../arena-map" }
 tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util"] }
 tokio-tungstenite = "=0.29.0"
 futures-util = "=0.3.34"

@@ -57,6 +57,8 @@ async fn bots_play_consistently_through_simulated_latency() {
         report.input_latency
     );
     assert!(report.snapshots > 0 && report.inputs > 0);
+    // Bots predict their own movement like the browser does.
+    assert!(report.predicted_inputs > 0);
     let server = report.server_metrics.as_ref().unwrap();
     assert!(server.ticks_total > 0);
     assert_eq!(server.frames_dropped_total, 0);

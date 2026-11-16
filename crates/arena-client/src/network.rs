@@ -14,29 +14,38 @@
 //! `k`th friendly seat and local `2k + 1` the `k`th enemy seat. Targets and
 //! events are translated at this boundary only.
 //!
-//! The client never decides outcomes. It renders the authoritative state a
-//! few ticks behind the newest snapshot, interpolating between snapshots,
-//! and only sends intent. There is no prediction yet (the roadmap asks for
-//! measurements first), so the player's own movement shows after a round
-//! trip plus the interpolation delay.
+//! The client never decides outcomes. It renders other fighters' authoritative
+//! state a few ticks behind the newest snapshot, interpolating between
+//! snapshots, and only sends intent. Its own fighter is predicted
+//! (`arena_protocol::prediction`): each input moves it at once, and each
+//! snapshot reconciles the guess with the server's state, easing any
+//! correction out over a few frames instead of snapping.
 
 use std::collections::VecDeque;
 
+use arena_protocol::prediction::{Pacer, Predictor, TickRate};
 use arena_protocol::{
     ClientMessage, ErrorCode, FighterState, InputFrame, ServerMessage, WireEvent,
 };
-use arena_sim::arena::{Arena, Combatant, Rejection, RoundResult};
+use arena_sim::arena::{ActorInput, Arena, Axes, Combatant, Rejection, RoundResult};
 use arena_sim::map::Layout;
 use bevy::math::Vec3;
 
 /// Ticks the view trails the newest snapshot: 100 ms at 30 Hz, enough to
 /// ride out moderate jitter.
 pub const INTERPOLATION_DELAY: f64 = 3.0;
-const TICK_RATE: f64 = arena_sim::TICKS_PER_SECOND as f64;
 /// Snapshots kept for interpolation (a little over two seconds).
 const BUFFER: usize = 72;
 /// Beyond this many ticks of error the view clock snaps instead of easing.
 const SNAP: f64 = 15.0;
+/// Seconds over which a prediction correction fades (time constant).
+const CORRECTION_FADE: f64 = 0.08;
+/// Corrections larger than this (metres) snap instead of easing.
+const CORRECTION_SNAP: f32 = 2.0;
+/// Inputs sent in one rendered frame at most. After a stall (a tab back
+/// from the background) the fixed clock catches up with a burst; the rest
+/// of the burst is neither sent nor predicted, so both sides agree.
+const MAX_INPUTS_PER_FRAME: u32 = 2;
 
 /// What the browser runtime hands over each frame while a match is set up.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -102,6 +111,37 @@ pub struct Stats {
     pub underruns: u64,
     /// Snapshots whose state did not hash to the server's value.
     pub hash_mismatches: u64,
+    /// Inputs applied to the prediction but not yet acknowledged.
+    pub predicted_ticks: usize,
+    /// Reconciliations that moved the predicted fighter.
+    pub corrections: u64,
+    /// Size of the latest correction, in millimetres.
+    pub last_correction_mm: Option<u64>,
+    /// This player's inputs waiting on the server, averaged.
+    pub queued: Option<f64>,
+    /// The lowest that queue was over the last second (pacing steers this).
+    pub queued_min: Option<u8>,
+    /// Catch-up inputs not sent after a stall.
+    pub skipped_inputs: u64,
+    /// Fixed steps and inputs sent in the last second, on the browser's clock.
+    pub steps_per_second: usize,
+    pub sent_per_second: usize,
+}
+
+/// The locally predicted fighter, for drawing between fixed ticks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Own {
+    /// Predicted world positions before and after the latest input.
+    pub previous: Vec3,
+    pub current: Vec3,
+    /// Remaining visual correction, added to the drawn position; it fades.
+    pub offset: Vec3,
+}
+impl Own {
+    /// Where to draw the fighter, `fraction` of the way through a tick.
+    pub fn at(&self, fraction: f32) -> Vec3 {
+        self.previous.lerp(self.current, fraction) + self.offset
+    }
 }
 
 /// The authoritative state to show this frame, in local indices.
@@ -138,6 +178,18 @@ pub struct Session {
     nonce: u32,
     pings: VecDeque<(u32, f64)>,
     last_ping: Option<f64>,
+    predictor: Predictor,
+    pacer: Pacer,
+    /// The server's tick rate on this client's clock.
+    tick_rate: TickRate,
+    /// The frame (its `now`) of the latest input, and inputs sent in it.
+    frame_inputs: (f64, u32),
+    /// When recent fixed steps ran and inputs were sent (the last second).
+    steps: VecDeque<f64>,
+    sends: VecDeque<f64>,
+    own: Option<Own>,
+    /// The newest snapshot's state in server order, to reconcile with.
+    newest_state: Option<(u64, Vec<Combatant>, Option<RoundResult>, u32)>,
     pub stats: Stats,
 }
 
@@ -180,6 +232,8 @@ impl Session {
     /// rejected intents. `now` is in seconds.
     pub fn receive(&mut self, feed: &Feed, now: f64, layout: &Layout) -> Vec<Rejection> {
         let mut rejections = Vec::new();
+        // Running ticks this frame delivered, for the tick-rate estimate.
+        let mut frame_ticks = Vec::new();
         if feed.generation == 0 {
             return rejections;
         }
@@ -193,6 +247,12 @@ impl Session {
             self.unacked.clear();
             self.pings.clear();
             self.last_ping = None;
+            // Old sequence numbers mean nothing to the new connection.
+            self.predictor.reset();
+            self.pacer.reset();
+            self.tick_rate.reset();
+            self.frame_inputs = (f64::NAN, 0);
+            self.own = None;
         }
         for frame in &feed.frames {
             let Ok(message) = ServerMessage::decode(frame) else {
@@ -238,6 +298,14 @@ impl Session {
                         .map(FighterState::combatant)
                         .collect();
                     let result = snapshot.result.map(RoundResult::from);
+                    self.newest_state =
+                        Some((snapshot.tick, authoritative.clone(), result, snapshot.ack));
+                    if snapshot.tick > 0 {
+                        frame_ticks.push(snapshot.tick);
+                        self.pacer.observe(snapshot.queued);
+                        self.stats.queued = self.pacer.average();
+                        self.stats.queued_min = self.pacer.minimum();
+                    }
                     if let Some(arena) =
                         Arena::restore(layout.clone(), snapshot.tick, authoritative.clone(), result)
                         && arena.state_hash() != snapshot.hash
@@ -305,7 +373,94 @@ impl Session {
                 ServerMessage::Error(code) => self.phase = Phase::Closed(code),
             }
         }
+        self.tick_rate.observe_frame(now, frame_ticks);
+        self.reconcile(layout);
         rejections
+    }
+
+    /// Rebuilds the prediction from the newest snapshot. A correction moves
+    /// the drawn position by nothing at first: the offset absorbs it and
+    /// fades in `view`.
+    fn reconcile(&mut self, layout: &Layout) {
+        let seat = match (self.phase, self.seat) {
+            (Phase::Playing, Some(seat)) => seat,
+            (Phase::Waiting, Some(_)) => {
+                // Inputs the server discarded while waiting are dropped;
+                // ones still in flight may land after the start and act.
+                if let Some((_, _, _, ack)) = self.newest_state.take() {
+                    self.predictor.acknowledge(ack);
+                }
+                self.own = None;
+                self.stats.predicted_ticks = self.predictor.pending();
+                return;
+            }
+            _ => {
+                // A finished round no longer moves: show the server's state.
+                self.predictor.reset();
+                self.own = None;
+                return;
+            }
+        };
+        let Some((tick, fighters, result, ack)) = self.newest_state.take() else {
+            return;
+        };
+        let before = self.predictor.predicted();
+        let moved = self
+            .predictor
+            .reconcile(layout, tick, fighters, result, seat, ack);
+        let Some(after) = self.predictor.predicted() else {
+            self.own = None;
+            return;
+        };
+        let after = place(&after);
+        match (&mut self.own, before) {
+            (Some(own), Some(before)) => {
+                let shift = after - place(&before);
+                own.previous += shift;
+                own.current = after;
+                own.offset -= shift;
+                if own.offset.length() > CORRECTION_SNAP {
+                    own.offset = Vec3::ZERO;
+                }
+            }
+            (own, _) => {
+                *own = Some(Own {
+                    previous: after,
+                    current: after,
+                    offset: Vec3::ZERO,
+                });
+            }
+        }
+        if let Some(moved) = moved.filter(|moved| *moved > 0) {
+            self.stats.last_correction_mm = Some(moved);
+        }
+        self.stats.corrections = self.predictor.corrections();
+        self.stats.predicted_ticks = self.predictor.pending();
+    }
+
+    /// Server ticks per second on this client's clock: the rate to send
+    /// inputs at (before pacing) and to advance the view by.
+    pub fn tick_rate(&self) -> f64 {
+        self.tick_rate.rate()
+    }
+
+    /// How much to stretch the fixed input interval so this player's queue
+    /// on the server stays near one input: above 1 sends slower.
+    pub fn pace(&self) -> f64 {
+        if self.phase == Phase::Playing {
+            self.pacer.factor()
+        } else {
+            1.0
+        }
+    }
+
+    /// The predicted fighter, for drawing; `None` unless a round is running.
+    pub fn own(&self) -> Option<Own> {
+        self.own
+    }
+    /// The predicted fighter's rules state, for the HUD's own checks.
+    pub fn predicted(&self) -> Option<Combatant> {
+        self.own.and(self.predictor.predicted())
     }
 
     fn local_event(&self, event: WireEvent, my_team: usize) -> Option<Shown> {
@@ -345,11 +500,52 @@ impl Session {
         if !self.joined() {
             return None;
         }
+        self.steps.push_back(now);
+        while self.steps.front().is_some_and(|at| now - at >= 1.0) {
+            self.steps.pop_front();
+        }
+        self.stats.steps_per_second = self.steps.len();
+        if self.frame_inputs.0 == now {
+            if self.frame_inputs.1 >= MAX_INPUTS_PER_FRAME {
+                self.stats.skipped_inputs += 1;
+                return None;
+            }
+            self.frame_inputs.1 += 1;
+        } else {
+            self.frame_inputs = (now, 1);
+        }
         self.seq += 1;
+        self.sends.push_back(now);
+        while self.sends.front().is_some_and(|at| now - at >= 1.0) {
+            self.sends.pop_front();
+        }
+        self.stats.sent_per_second = self.sends.len();
         self.unacked.push_back((self.seq, now));
         // A stalled server must not grow this without bound.
         if self.unacked.len() > 256 {
             self.unacked.pop_front();
+        }
+        {
+            // Move at once; the server's snapshots will confirm or correct.
+            // Inputs sent while waiting are recorded too: the match may start
+            // before they arrive, and then the server applies them.
+            let predicted = self.predictor.apply(
+                self.seq,
+                ActorInput {
+                    movement: Some(Axes {
+                        x: movement[0],
+                        z: movement[1],
+                    }),
+                    facing: Some(facing),
+                    jump,
+                    attack: None,
+                },
+            );
+            if let (Some(predicted), Some(own)) = (predicted, self.own.as_mut()) {
+                own.previous = own.current;
+                own.current = place(&predicted);
+            }
+            self.stats.predicted_ticks = self.predictor.pending();
         }
         let attack = attack
             .and_then(|local| self.order.get(local))
@@ -382,17 +578,21 @@ impl Session {
 
     /// Advances the view clock by `dt` seconds and returns what to show.
     pub fn view(&mut self, dt: f64, now: f64) -> Option<View> {
+        if let Some(own) = self.own.as_mut() {
+            own.offset *= (-dt / CORRECTION_FADE).exp() as f32;
+        }
+        let rate = self.tick_rate.rate();
         let newest = self.snapshots.back()?;
         let oldest = self.snapshots.front()?.tick as f64;
         let newest_tick = newest.tick as f64;
         // Where the view should be: behind the server's estimated clock.
         let target =
-            (newest_tick + (now - self.newest_at) * TICK_RATE - INTERPOLATION_DELAY).max(oldest);
+            (newest_tick + (now - self.newest_at) * rate - INTERPOLATION_DELAY).max(oldest);
         let mut tick = match self.view_tick {
             Some(tick) if (target - tick).abs() < SNAP => {
                 // Run at real time, then ease a tenth of the remaining error
                 // per frame so jitter never makes the view jump.
-                let advanced = tick + dt * TICK_RATE;
+                let advanced = tick + dt * rate;
                 advanced + (target - advanced) * 0.1
             }
             _ => target,
@@ -402,8 +602,7 @@ impl Session {
             tick = newest_tick;
         }
         self.view_tick = Some(tick);
-        self.stats.delay_ms =
-            (newest_tick + (now - self.newest_at) * TICK_RATE - tick) / TICK_RATE * 1000.0;
+        self.stats.delay_ms = (newest_tick + (now - self.newest_at) * rate - tick) / rate * 1000.0;
 
         let after = self
             .snapshots
@@ -468,7 +667,7 @@ impl Session {
         };
         let number = |value: Option<f64>| value.map_or("null".into(), |v| format!("{v:.1}"));
         format!(
-            r#"{{"phase":"{phase}","error":{},"seat":{},"mapDiffers":{},"rttMs":{},"inputMs":{},"delayMs":{:.1},"snapshots":{},"underruns":{},"hashMismatches":{}}}"#,
+            r#"{{"phase":"{phase}","error":{},"seat":{},"mapDiffers":{},"rttMs":{},"inputMs":{},"delayMs":{:.1},"snapshots":{},"underruns":{},"hashMismatches":{},"predictedTicks":{},"corrections":{},"lastCorrectionMm":{},"queued":{},"queuedMin":{},"pace":{:.3},"skippedInputs":{},"stepsPerSecond":{},"sentPerSecond":{},"tickRate":{}}}"#,
             error.map_or("null".into(), |code| format!("\"{code:?}\"")),
             self.seat.map_or("null".into(), |seat| seat.to_string()),
             self.map_differs().unwrap_or(false),
@@ -478,6 +677,20 @@ impl Session {
             self.stats.snapshots,
             self.stats.underruns,
             self.stats.hash_mismatches,
+            self.stats.predicted_ticks,
+            self.stats.corrections,
+            self.stats
+                .last_correction_mm
+                .map_or("null".into(), |mm| mm.to_string()),
+            number(self.stats.queued),
+            self.stats
+                .queued_min
+                .map_or("null".into(), |min| min.to_string()),
+            self.pace(),
+            self.stats.skipped_inputs,
+            self.stats.steps_per_second,
+            self.stats.sent_per_second,
+            number(self.tick_rate.measured()),
         )
     }
 }

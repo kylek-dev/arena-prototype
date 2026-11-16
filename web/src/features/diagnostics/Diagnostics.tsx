@@ -30,6 +30,21 @@ function LinkStatistics({ link }: { link: Link }) {
     ["View delay", milliseconds(status?.delayMs ?? null)],
     ["Snapshots", String(status?.snapshots ?? 0)],
     ["Underruns", String(status?.underruns ?? 0)],
+    ["Predicted ahead", `${status?.predictedTicks ?? 0} ticks`],
+    ["Server ticks", status?.tickRate == null ? "—" : `${status.tickRate.toFixed(2)}/s`],
+    ["Sending", status ? `${status.sentPerSecond}/s · ${status.stepsPerSecond} steps/s` : "—"],
+    [
+      "Server queue",
+      status?.queued == null
+        ? "—"
+        : `${status.queued.toFixed(1)} · min ${status.queuedMin ?? "—"} · pace ${(status.pace * 100).toFixed(1)}%`,
+    ],
+    [
+      "Corrections",
+      `${status?.corrections ?? 0}${
+        status?.lastCorrectionMm ? ` · last ${status.lastCorrectionMm} mm` : ""
+      }`,
+    ],
     ["Hash mismatches", String(status?.hashMismatches ?? 0)],
   ];
   return (

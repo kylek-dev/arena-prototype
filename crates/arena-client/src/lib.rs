@@ -684,9 +684,23 @@ fn network_receive(
     mut orbit: ResMut<Orbit>,
     mut map: ResMut<ActiveMap>,
     time: Res<Time<Real>>,
+    mut fixed: ResMut<Time<Fixed>>,
 ) {
     let now = time.elapsed_secs_f64();
     net.now = now;
+    // In a match inputs follow the server's ticks as measured on this
+    // clock, paced to keep this player's queue on the server near one input;
+    // otherwise it is the plain rules tick.
+    let (pace, rate) = net
+        .session
+        .as_ref()
+        .map_or((1.0, TICKS_PER_SECOND as f64), |session| {
+            (session.pace(), session.tick_rate())
+        });
+    let timestep = std::time::Duration::from_secs_f64(pace / rate);
+    if fixed.timestep() != timestep {
+        fixed.set_timestep(timestep);
+    }
     let Some(feed) = platform::read_network() else {
         if net.session.take().is_some() {
             net.last_status = None;
@@ -722,7 +736,11 @@ fn network_receive(
             practice.feedback = rejection_feedback(reason);
         }
     }
-    if let Some(view) = session.view(time.delta_secs_f64(), now) {
+    if let Some(mut view) = session.view(time.delta_secs_f64(), now) {
+        // The HUD's range and sight checks use where the player sees itself.
+        if let Some(predicted) = session.predicted() {
+            view.fighters[0] = predicted;
+        }
         if practice.arena.tick() != view.tick
             || practice.arena.fighters() != view.fighters.as_slice()
             || practice.arena.result() != view.result
@@ -789,9 +807,22 @@ fn present(
     time: Res<Time>,
     mut fighters: Query<(&FighterVisual, &mut Transform, &mut Visibility), Without<Camera>>,
     mut cameras: Query<&mut Transform, (With<Camera>, Without<FighterVisual>)>,
+    net: Option<Res<Net>>,
 ) {
     let positions: Vec<Vec3> = match &practice.remote {
-        Some(remote) => remote.clone(),
+        // In a network match the player's own fighter is predicted, drawn
+        // part-way through the current fixed tick like local practice.
+        Some(remote) => {
+            let mut positions = remote.clone();
+            let own = net
+                .as_ref()
+                .and_then(|net| net.session.as_ref())
+                .and_then(network::Session::own);
+            if let (Some(own), Some(first)) = (own, positions.first_mut()) {
+                *first = own.at(fixed.overstep_fraction());
+            }
+            positions
+        }
         None => (0..practice.arena.fighters().len())
             .map(|i| {
                 practice.previous[i].lerp(
@@ -1332,6 +1363,7 @@ mod tests {
             .init_resource::<Orbit>()
             .init_resource::<ActiveMap>()
             .insert_resource(Time::<Real>::default())
+            .insert_resource(Time::<Fixed>::from_hz(TICKS_PER_SECOND as f64))
             .add_systems(PreUpdate, network_receive)
             .add_systems(FixedUpdate, simulate);
         let sent = || std::mem::take(&mut *platform::SENT.lock().unwrap());

@@ -198,10 +198,10 @@ also joins.
   than extrapolating (an "underrun"). Hits, jumps and the result show when
   the view reaches their tick. The player's own rejections show at once.
   Every snapshot is checked against its state hash.
-- **No prediction yet.** The player's own movement appears after a round
-  trip plus the view delay, as the roadmap asks (measure first). The
-  session reports smoothed ping, input-to-acknowledgement time, view delay,
-  underruns and hash mismatches.
+- **Own movement is predicted** (see below). Other fighters stay on the
+  delayed, interpolated view. The session reports smoothed ping,
+  input-to-acknowledgement time, view delay, underruns, hash mismatches,
+  inputs predicted ahead and corrections.
 - During a match the client plays on the server's map (the colosseum),
   ignores local reset and practice-size changes and defers map-editor
   edits. A different map digest is reported. When the runtime ends the
@@ -256,6 +256,125 @@ rather than the rules appears to dominate. So we build shared-nothing from
 the start but deploy one match process per region first, as ADR 0001
 proposed. Fleet tooling (Agones, Kubernetes or a hosted allocator) waits
 until measurements on the intended host and real networks justify it.
+
+### Client-side prediction of own movement (implemented)
+
+Without prediction, the player's own movement appeared after a round trip
+plus the 100 ms view delay: about 130 ms on localhost and about 250 ms at
+100 ms ping. Prediction removes that wait for the player's own fighter.
+
+- **One input per server tick.** The server previously merged every input
+  that arrived between ticks (the latest movement won), so jitter that
+  delivered two inputs in one tick dropped a step. Each tick now applies
+  one queued input per seat, oldest first, so input `n` is exactly one
+  tick of rules. A tick with nothing queued is idle
+  (`arena_inputs_starved_total`). Only a queue that stays above four
+  inputs for a whole second has its excess folded into a tick
+  (`arena_inputs_folded_total`). A clump drains one input per tick,
+  exactly as the client predicted. The per-seat queue holds 32 inputs.
+  `arena_input_arrivals_total` counts ticks by how many inputs a seat
+  received since the previous tick, which shows clumped delivery
+  directly.
+- **Pacing (an adaptive jitter buffer).** Each snapshot reports how many
+  of the recipient's inputs are still queued. `prediction::Pacer` tracks
+  the queue's lowest point over the last second, and the client stretches
+  or shrinks its fixed input interval by up to 4%. If the queue ran dry it
+  speeds up; if even the low point kept two or more it slows down. The
+  queue settles just deep enough to cover however clumpy delivery is.
+  Pacing on the average (the first version) read clumps as surplus and
+  slowed down, which deepened the gaps. A client sends at most
+  two inputs per frame. The rest of a catch-up burst (a tab returning
+  from the background) is neither sent nor predicted, so both sides agree.
+- **Following the server's measured tick rate.** Each client measures
+  the server's ticks per second on its own clock (`prediction::TickRate`).
+  It sends inputs at that rate, adjusted by pacing, and advances its
+  interpolated view by it. A client never assumes the nominal 30 Hz, so
+  clock skew between client and server is absorbed. Delivery delay must
+  not look like clock rate. After a background-tab stall, queued snapshots
+  trickle in late for seconds. A first-and-last-sample estimate read that
+  as a slow server: the overlay showed 10 ticks/s, 8 inputs/s sent, and
+  the player moved in slow motion for 5–10 s. The estimate now follows
+  the lower edge of the samples, as network time protocols do. It keeps
+  the fastest snapshot of each half second over 20 s and fits a line,
+  repeatedly discarding points over 20 ms above it. It holds its last
+  value across rewinds and stays within 15% of nominal. A test replaying
+  that stall misjudged the rate by up to 32 ticks/s with the old
+  estimator and under 0.5 with the new one. Snapshots one rendered frame receives
+  together are a backlog, not timing evidence: a frame with more than two
+  is ignored, otherwise its newest counts, and an estimate needs a second
+  of local time. Without this, a page that loaded behind a backlog started
+  with an estimate 15% high and folded about 27 inputs (about 7
+  corrections) in its first seconds.
+- **`TCP_NODELAY`.** The server disables Nagle's algorithm on accepted
+  connections. Before, small snapshots and pongs waited for
+  acknowledgements, and loopback ping p95 was 34.6 ms; it is now 2.5 ms.
+- **`arena_protocol::prediction::Predictor`**, shared by the browser and
+  the bots. It applies each input to the shared rules as it is sent. On
+  each snapshot it rebuilds from the server's state and replays the inputs
+  not yet acknowledged. Attacks are never predicted, and other fighters
+  are left to the server, because bodies do not collide. Inputs are
+  recorded from the moment the player joins. While the match waits,
+  `acknowledge` drops the inputs the server discarded, so ones still in
+  flight when the match starts are replayed rather than causing a
+  correction.
+- **Presentation.** The player's fighter is drawn part-way through the
+  current fixed tick, like local practice. The HUD's range and sight
+  checks use the predicted position. A correction shifts the prediction
+  but not, at first, the drawn position: the difference fades over about
+  80 ms, and anything larger than 2 m snaps.
+- **Server fix found by measuring.** A reconnect kept the seat's old
+  acknowledgement, so a rejoined client discarded unapplied inputs and was
+  corrected on every snapshot. A new connection now starts with
+  acknowledgement 0.
+- **Found in the browser.** The first browser test corrected about once a
+  second while moving (242 mm each), with 107 ms input acknowledgement and
+  30 ms ping on localhost. The server had folded 1,129 inputs. The browser
+  times inputs by frames, so the queue drifted past the original limit of
+  two, and tab switches added bursts. The bots send on timers out of phase
+  with the server's ticks, so they never showed it. Pacing,
+  `TCP_NODELAY`, the higher fold limit and the frame cap were the first
+  response. A second browser test still corrected steadily: the queue sat
+  at the fold limit with pacing at its maximum slowdown, and ping was
+  22 ms on "localhost". The browser runs on Windows and the server in
+  WSL2, whose localhost relay is suspected of forwarding in clumps (the
+  arrivals metric will confirm it on the next test). Folding only on a
+  lasting backlog and pacing by the low point address that. Simulated
+  against the real session for 60 s with a background-tab burst: paced
+  with smooth delivery, and paced through 50 ms relay clumps with a 0.5%
+  fast clock, both folded and corrected nothing (1 starved tick, average
+  queue 1.8 and 2.1). Unpaced with a 2% fast clock, it folded 34 inputs
+  and corrected 19 times.
+- **The actual cause: clock skew.** Per-seat diagnostics (a `--dev`
+  server line every 5 s, and the overlay's send rate) showed the browser
+  sending 29 inputs a second by its clock while the server received
+  31.4–31.6 a second by its own, at 30 ticks a second. The development
+  server runs in WSL2, whose monotonic clock was measured 9% slow against
+  Windows (30.2 s for 32.9 s; the kernel logged "Adjusting tsc more than
+  11%"). The server's 30 Hz was about 27.5 ticks per real second, and no
+  pacing within ±4% of a nominal 30 Hz could keep up. Following the
+  measured tick rate fixes it. A simulated client 9% fast against the
+  server, through 50 ms relay clumps, folded and corrected nothing and
+  never starved. Production hosts drift by parts per million, but a
+  skewed development VM also runs game time slow; switching WSL's clock
+  source (see `docs/DEVELOPMENT.md`) avoids that.
+- **Browser result (2026-11-15, user-reported).** Two tabs in one window
+  against the WSL2 dev server, after this change. The overlay showed the
+  server at 27.50 ticks/s on the browser's clock, 28 inputs/s sent, queue
+  1.0 with low point 1, pace 100%, input-to-acknowledgement 74.8 ms and 0
+  corrections. The server's per-seat lines showed inputs received equal
+  to applied at 30.00/s, with no folds, no starved ticks and a queue of
+  1..1 once the rate estimate settled. Folds happened only in the first
+  ten seconds, while tabs were switched and the rate was still being
+  measured. The user judged it good. This is a user test, not an
+  exhaustive review; the full match UI checklist remains open.
+- **Measured** ([load baseline](../research/match-server-load.md#prediction)).
+  The bots predict exactly as the browser does. 1v1 at 0, 50, 100 and
+  200 ms with jitter had no corrections. 3v3 load with drop-outs had 0.1
+  per 1000 inputs at 100 ms and 0.3 at 200 ms. The remaining cases are
+  real disagreements: a player killed while still predicted to move (up to
+  latency ÷ 33 ms steps), and a late input mid-jump, where an idle tick
+  still advances the arc (at most one tick of motion). Human browser
+  review of how prediction feels is pending.
 
 ## Consequences
 

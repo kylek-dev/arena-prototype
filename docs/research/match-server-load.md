@@ -57,6 +57,101 @@ expected, so this run shows where this machine saturates, not the server's
 own limit. An unpinned run on all 16 CPUs gave similar server CPU figures
 (0.29 at 300 bots, 1.67 at 1,002, 4.63 at 2,004).
 
+## Prediction
+
+Date: 2026-11-15, same machine, release builds, after the server switched
+to one input per tick (ADR 0044). The bots predict their own movement with
+the browser's `Predictor` and count corrections: reconciliations that
+moved the prediction.
+
+| Run | Predicted inputs | Corrections | Per 1000 | Size p50 / max |
+| --- | --- | --- | --- | --- |
+| 1v1, 0 ms, 20 s | 890 | 0 | 0.0 | — |
+| 1v1, 50 ms + up to 10 ms each way | 880 | 0 | 0.0 | — |
+| 1v1, 100 ms + up to 20 ms | 876 | 0 | 0.0 | — |
+| 1v1, 200 ms + up to 40 ms | 862 | 0 | 0.0 | — |
+| 50 × 1v1, 100 ms + 20, 30 s | 58,250 | 1 | 0.02 | 242 mm |
+| 50 × 3v3, 100 ms + 20, 30 s | 200,610 | 24 | 0.1 | 267 / 760 mm |
+| 50 × 3v3, 100 ms + 20, drop-outs every 5 s | 178,863 | 23 | 0.1 | 246 / 900 mm |
+| 50 × 3v3, 200 ms + 40, drop-outs every 5 s | 176,154 | 55 | 0.3 | 242 / 1,200 mm |
+
+Two bugs were found and fixed while measuring:
+
+- Inputs sent while a match was still waiting were not recorded, but the
+  server applied any that arrived after it started. This caused a
+  correction for each input in flight at every round start: 4–9 per 1v1
+  run.
+- A rejoin kept the seat's old acknowledgement. That caused 18.8
+  corrections per 1000 inputs in the drop-out run, down to 0.1 after the
+  fix.
+
+A first browser test then showed what the bots could not: about one
+242 mm correction per second while moving, and 107 ms input
+acknowledgement and 30 ms ping on localhost. The server had folded 1,129
+inputs. The browser sends inputs on frame boundaries, so the per-seat
+queue drifted past the fold limit (then two), and tab switches added
+catch-up bursts. The bots' timers ran out of phase with the server's
+ticks, so they were never affected. Snapshots now report each player's
+queue, and clients pace their input interval to keep one queued. The
+fold limit is four, catch-up is capped at two inputs per frame, and the
+server sets `TCP_NODELAY`:
+
+| Check | Before | After |
+| --- | --- | --- |
+| Loopback ping p95 (bots) | 34.6 ms | 2.5 ms |
+| Simulated browser client, 60 s: folds / corrections | 8 / 8 (unpaced) | 0 / 0 (paced, queue 1.1) |
+| 3v3 × 50, 100 ms, drop-outs: corrections per 1000 | 0.1 | 0.2 (no folds or overflows) |
+
+The simulation runs against the real session: 240 Hz frames placed on the
+tick boundary, a 0.5% fast client clock and a background-tab burst. The
+bots themselves do not pace yet.
+
+A second browser test still corrected steadily, with the queue pinned at
+four and pacing at its maximum slowdown. The likely cause is the WSL2
+localhost relay forwarding inputs in clumps; the new
+`arena_input_arrivals_total` metric will confirm it. The server now folds
+only after a full second above four (a clump drains one input per tick),
+and pacing steers by the queue's lowest point over a second instead of
+its average:
+
+| Simulated client, 60 s, background-tab burst | Folds | Corrections | Starved ticks | Average queue |
+| --- | --- | --- | --- | --- |
+| Paced, smooth delivery, 0.5% fast clock | 0 | 0 | 0 | 1.8 |
+| Paced, 50 ms relay clumps, 0.5% fast clock | 0 | 0 | 1 | 2.1 |
+| Unpaced, 50 ms clumps, 2% fast clock | 34 | 19 | 1 | 4.8 |
+
+Bots (unpaced, 100 ms with jitter, 3v3 × 50 with drop-outs) after the
+change: no folds or overflows, and 0.1 corrections per 1000 inputs.
+
+A third browser test, with per-seat server diagnostics, found the actual
+cause. The browser sent 29 inputs/s by its clock while the server
+received 31.4–31.6/s by its own, at 30 ticks/s, with the queue pinned at
+4–7. The server's WSL2 monotonic clock ran 9% slow against Windows
+(30.2 s for 32.9 s, with clock source `tsc` and the kernel logging
+"Adjusting tsc more than 11%"). Clients now follow the server's tick rate
+as measured on their own clock:
+
+| Simulated client, 60 s, background-tab burst | Folds | Corrections | Starved ticks | Average queue |
+| --- | --- | --- | --- | --- |
+| Paced, smooth delivery | 0 | 0 | 0 | 1.0 |
+| Paced, 50 ms clumps, client clock 9% fast | 0 | 0 | 0 | 2.0 |
+
+The earlier bot measurements are unaffected: bots run on the same
+(skewed) clock as the server.
+
+Browser retest after the change (user-reported, same WSL2 setup): server
+ticks 27.50/s on the browser's clock, 28 inputs/s sent, queue 1..1, pace
+100%, input-to-acknowledgement 74.8 ms and 0 corrections. The server
+received and applied 30.00 inputs/s per its clock, with no folds or
+starved ticks once the rate estimate settled.
+
+A run with jumps disabled ruled out jumping as the cause of the first
+problem. The remaining corrections match real disagreements: a fighter
+killed while its prediction still moves (up to latency ÷ 33 ms steps,
+hence the larger maxima at 200 ms), and a late input mid-jump, where an
+idle tick still advances the arc (at most a step plus a tick of rise or
+fall).
+
 ## Findings
 
 - **Consistency:** about 3.4 M cross-seat hash comparisons in the pinned

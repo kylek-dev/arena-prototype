@@ -390,7 +390,12 @@ async fn a_reconnect_takes_over_the_seat() {
         ErrorCode::Replaced,
         "the replaced socket is told why, so it does not take the seat back"
     );
-    let start = new.snapshot_until(|_| true).await.fighters[0];
+    // Inputs before the match runs are acknowledged without acting, so
+    // wait for it to run.
+    let start = new
+        .snapshot_until(|snapshot| snapshot.tick > 0)
+        .await
+        .fighters[0];
     // The new connection's sequence starts again at 1.
     new.input(forward()).await;
     let moved = new.snapshot_until(|snapshot| snapshot.ack == 1).await;

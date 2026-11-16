@@ -117,6 +117,12 @@ pub struct Report {
     pub rejoins_succeeded: u64,
     pub rejoins_too_late: u64,
     pub snapshots_showing_disconnected: u64,
+    /// Inputs the bots predicted, as a browser client does.
+    pub predicted_inputs: u64,
+    /// Reconciliations that moved a prediction.
+    pub corrections: u64,
+    /// Correction sizes in millimetres: [p50, p99, max].
+    pub correction_mm: [u32; 3],
     pub server_metrics: Option<ServerMetrics>,
     /// Server CPU time divided by wall time: cores in use on average.
     pub server_cpu_cores: Option<f64>,
@@ -137,6 +143,9 @@ struct Totals {
     rejoins_succeeded: u64,
     rejoins_too_late: u64,
     saw_disconnected: u64,
+    predicted_inputs: u64,
+    corrections: u64,
+    correction_mm: Vec<u32>,
     rounds_started: u64,
     rounds_finished: u64,
 }
@@ -159,6 +168,9 @@ impl Totals {
         self.rejoins_succeeded += seat.rejoins_succeeded;
         self.rejoins_too_late += seat.rejoins_too_late;
         self.saw_disconnected += seat.saw_disconnected;
+        self.predicted_inputs += seat.predicted_inputs;
+        self.corrections += seat.corrections;
+        self.correction_mm.extend(seat.correction_mm);
     }
     fn merge(&mut self, other: Totals) {
         self.rtt.extend(other.rtt);
@@ -178,6 +190,9 @@ impl Totals {
         self.rejoins_succeeded += other.rejoins_succeeded;
         self.rejoins_too_late += other.rejoins_too_late;
         self.saw_disconnected += other.saw_disconnected;
+        self.predicted_inputs += other.predicted_inputs;
+        self.corrections += other.corrections;
+        self.correction_mm.extend(other.correction_mm);
         self.rounds_started += other.rounds_started;
         self.rounds_finished += other.rounds_finished;
     }
@@ -188,6 +203,7 @@ pub async fn run(scenario: Scenario) -> Result<Report, String> {
         return Err("need at least one match and a team size of 1, 2 or 3".into());
     }
     let shared = std::sync::Arc::new(Shared::default());
+    let layout = std::sync::Arc::new(arena_map::colosseum().layout);
     let started = Instant::now();
     let deadline = started + scenario.duration;
     let cpu_start = scenario.server_pid.and_then(cpu_seconds);
@@ -198,6 +214,7 @@ pub async fn run(scenario: Scenario) -> Result<Report, String> {
                 group as u64,
                 deadline,
                 shared.clone(),
+                layout.clone(),
             ))
         })
         .collect();
@@ -243,6 +260,9 @@ pub async fn run(scenario: Scenario) -> Result<Report, String> {
         rejoins_succeeded: totals.rejoins_succeeded,
         rejoins_too_late: totals.rejoins_too_late,
         snapshots_showing_disconnected: totals.saw_disconnected,
+        predicted_inputs: totals.predicted_inputs,
+        corrections: totals.corrections,
+        correction_mm: percentiles(totals.correction_mm),
         server_metrics,
         server_cpu_cores,
     })
@@ -254,6 +274,7 @@ async fn run_group(
     group: u64,
     deadline: Instant,
     shared: std::sync::Arc<Shared>,
+    layout: std::sync::Arc<arena_sim::map::Layout>,
 ) -> Result<Totals, String> {
     let mut totals = Totals::default();
     let mut rng = Rng::new(scenario.seed ^ group.wrapping_mul(0xA24B_AED4_963E_E407));
@@ -280,6 +301,7 @@ async fn run_group(
                     seed: rng.next_u64(),
                     reconnect_every: scenario.reconnect_every,
                     away: scenario.away,
+                    layout: layout.clone(),
                     shared: shared.clone(),
                 };
                 tokio::spawn(bot::play(seat, deadline))
@@ -325,6 +347,19 @@ pub async fn http(server: &str, method: &str, path: &str) -> Result<(u16, String
         .map_or("", |(_, body)| body)
         .to_owned();
     Ok((status, body))
+}
+
+/// Nearest-rank p50, p99 and maximum; zeros when empty.
+fn percentiles(mut values: Vec<u32>) -> [u32; 3] {
+    if values.is_empty() {
+        return [0; 3];
+    }
+    values.sort_unstable();
+    let at = |fraction: f64| {
+        let rank = ((fraction * values.len() as f64).ceil() as usize).clamp(1, values.len());
+        values[rank - 1]
+    };
+    [at(0.5), at(0.99), at(1.0)]
 }
 
 fn parse_metrics(text: &str) -> ServerMetrics {
@@ -409,6 +444,17 @@ impl fmt::Display for Report {
             self.rejoins_attempted,
             self.rejoins_too_late,
             self.snapshots_showing_disconnected
+        )?;
+        let per_thousand = if self.predicted_inputs == 0 {
+            0.0
+        } else {
+            self.corrections as f64 * 1000.0 / self.predicted_inputs as f64
+        };
+        let [p50, p99, max] = self.correction_mm;
+        writeln!(
+            f,
+            "prediction     {} corrections over {} predicted inputs ({per_thousand:.1} per 1000), size p50 {p50} mm  p99 {p99} mm  max {max} mm",
+            self.corrections, self.predicted_inputs
         )?;
         if let Some(server) = &self.server_metrics {
             writeln!(

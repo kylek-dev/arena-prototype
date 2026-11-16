@@ -20,7 +20,8 @@ yet.
 ## Transport
 
 - Secure WebSocket (`wss://`; `ws://` on loopback in development) at
-  `/play`. One connection per player per match.
+  `/play`. One connection per player per match. The server disables
+  Nagle's algorithm (`TCP_NODELAY`) so small frames are not held back.
 - **Binary frames only**, each one message, encoded with `postcard`
   (`serde`). Text frames close the connection.
 - The browser's TypeScript runtime owns the socket. It sends the `Hello`
@@ -34,12 +35,21 @@ yet.
 
 - The server ticks at 30 Hz (`TICKS_PER_SECOND`). Tick numbers are `u64` and
   start at 0 for each match.
-- Inputs that arrive between ticks are merged into the actor's slot for the
-  next tick: the latest movement and facing win, `jump` is set if any input
-  set it, and the latest `attack` target wins. This keeps the rules' one
-  command of each kind per tick.
-- Clients interpolate snapshots behind the newest one received (about
-  100 ms to start). There is no client prediction in the first milestone.
+- Each tick applies **one** queued input per seat, oldest first, so input
+  `n` is exactly one tick of rules and a client can predict its own
+  movement by replaying its unacknowledged inputs. A tick with nothing
+  queued is idle for that seat. A clump of inputs simply drains one per
+  tick. Only if more than four inputs stay waiting for a whole second is
+  the excess folded into one tick with `InputFrame::merge_into` (the
+  latest movement, facing and attack target win, and a jump from any of
+  them is kept), so a client that sends too fast cannot build up delay.
+  Each snapshot's `queued` tells the recipient how many of its inputs are
+  still waiting. Clients pace their input interval to keep the queue's
+  lowest point over a second at one (`prediction::Pacer`).
+- Clients interpolate other fighters' snapshots behind the newest one
+  received (about 100 ms). A client predicts its own fighter by replaying
+  its unacknowledged inputs on the latest snapshot
+  (`arena_protocol::prediction`).
 
 ## Client → server
 
@@ -54,7 +64,7 @@ yet.
 | Message | Fields | Notes |
 | --- | --- | --- |
 | `Welcome` | `protocol`, `actor: u8`, `team_size: u8`, `tick: u64`, `tick_rate: u8`, `rules: u32`, `map: u64` | `rules` is the rules version and `map` a digest of the layout, so replays and mismatches are explainable. |
-| `Snapshot` | `tick: u64`, `ack: u32`, `hash: u64`, `result`, `fighters` (≤ 6), `events` (≤ 256) | `ack` is the last input `seq` applied. `hash` is `Arena::state_hash()`. `fighters` carries each fighter's full rule state in actor order (position, height, vertical velocity, momentum, health, `ready_at`, facing), so a client can rebuild the arena and check `hash`, plus `connected`: whether that fighter's player is attached (not part of the rules or `hash`). `events` are tick-tagged events since the previous snapshot: `Jumped`, `Hit`, `Finished`, and `Rejected` only for the actor it names. `Moved` is not sent because positions show it. |
+| `Snapshot` | `tick: u64`, `ack: u32`, `hash: u64`, `result`, `fighters` (≤ 6), `events` (≤ 256) | `ack` is the last input `seq` applied, and `queued` how many of the recipient's inputs are still waiting. `hash` is `Arena::state_hash()`. `fighters` carries each fighter's full rule state in actor order (position, height, vertical velocity, momentum, health, `ready_at`, facing), so a client can rebuild the arena and check `hash`, plus `connected`: whether that fighter's player is attached (not part of the rules or `hash`). `events` are tick-tagged events since the previous snapshot: `Jumped`, `Hit`, `Finished`, and `Rejected` only for the actor it names. `Moved` is not sent because positions show it. |
 | `Pong` | `nonce: u32` | |
 | `Error` | `code` | Sent before the server closes: `VersionMismatch`, `BadTicket`, `MatchFull`, `MatchOver`, `RateLimited`, `Malformed`, `HelloTimeout`, `ServerShutdown`, `Replaced` (a newer connection with the same ticket took the seat). |
 
@@ -73,7 +83,7 @@ These are message sizes, not network measurements.
 | Limit | Value | On violation |
 | --- | --- | --- |
 | Client frame size | 1 KiB | The WebSocket layer closes the connection without an `Error` |
-| Inputs queued per seat between ticks | 8 | Drop the oldest and count it |
+| Inputs queued per seat | 32 (about a second) | Drop the oldest and count it |
 | Messages (inputs and pings) per connection per fixed 1 s window | 2 × tick rate (60) | Close with `RateLimited` |
 | Outgoing frames queued per connection | 64 | Drop the frame and count it (snapshots carry full state) |
 | `Hello` deadline | 5 s | Close |
