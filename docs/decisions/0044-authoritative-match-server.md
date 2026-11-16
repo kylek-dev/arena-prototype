@@ -299,7 +299,12 @@ plus the 100 ms view delay: about 130 ms on localhost and about 250 ms at
   repeatedly discarding points over 20 ms above it. It holds its last
   value across rewinds and stays within 15% of nominal. A test replaying
   that stall misjudged the rate by up to 32 ticks/s with the old
-  estimator and under 0.5 with the new one.
+  estimator and under 0.5 with the new one. Snapshots one rendered frame receives
+  together are a backlog, not timing evidence: a frame with more than two
+  is ignored, otherwise its newest counts, and an estimate needs a second
+  of local time. Without this, a page that loaded behind a backlog started
+  with an estimate 15% high and folded about 27 inputs (about 7
+  corrections) in its first seconds.
 - **`TCP_NODELAY`.** The server disables Nagle's algorithm on accepted
   connections. Before, small snapshots and pongs waited for
   acknowledgements, and loopback ping p95 was 34.6 ms; it is now 2.5 ms.
