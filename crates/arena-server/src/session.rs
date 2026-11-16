@@ -24,10 +24,14 @@ use crate::metrics::Metrics;
 
 pub type ConnId = u64;
 
-/// Inputs left waiting after a tick before the excess is folded together.
-/// Clients pace themselves to keep about one waiting (`Pacer`), so only a
-/// real burst (a tab returning from the background) reaches this.
+/// Inputs that may stay waiting for a whole second before the excess is
+/// folded together. A clump (network jitter, a tab back from the
+/// background) above it is simply consumed one per tick, exactly as the
+/// client predicted; only a client that keeps sending faster than the
+/// server ticks is folded. Paced clients (`Pacer`) never are.
 pub const MAX_BACKLOG: usize = 4;
+/// Ticks a queue must stay above [`MAX_BACKLOG`] before folding: one second.
+pub const FOLD_AFTER: u64 = TICKS_PER_SECOND;
 
 /// Session limits, in ticks where they are durations.
 #[derive(Clone, Copy, Debug)]
@@ -44,7 +48,8 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            queue: 8,
+            // About a second of inputs: room for clumps without dropping.
+            queue: 32,
             start_timeout: 60 * TICKS_PER_SECOND,
             grace: 30 * TICKS_PER_SECOND,
             linger: 5 * TICKS_PER_SECOND,
@@ -83,6 +88,10 @@ struct Seat {
     ack: u32,
     pending: VecDeque<InputFrame>,
     absent_since: Option<u64>,
+    /// When the queue last went above `MAX_BACKLOG`, while it stays there.
+    over_backlog_since: Option<u64>,
+    /// Inputs that arrived since the previous tick, for the jitter metric.
+    arrived: u32,
 }
 
 pub struct Session {
@@ -221,6 +230,7 @@ impl Session {
             return;
         }
         slot.last_seq = Some(frame.seq);
+        slot.arrived += 1;
         slot.pending.push_back(frame);
         Metrics::add(&self.metrics.inputs, 1);
         if slot.pending.len() > self.limits.queue {
@@ -248,6 +258,7 @@ impl Session {
             }
             Phase::Running => {
                 let metrics = &self.metrics;
+                let clock = self.clock;
                 let inputs: Vec<ActorInput> = self
                     .seats
                     .iter_mut()
@@ -259,16 +270,30 @@ impl Session {
                         if let Some(frame) = seat.pending.pop_front() {
                             frame.merge_into(&mut slot);
                             seat.ack = frame.seq;
+                        } else if seat.conn.is_some() {
+                            Metrics::add(&metrics.inputs_starved, 1);
                         }
-                        // A backlog (a burst after a stall) would add a tick
-                        // of delay per queued input; fold the excess into
-                        // this tick instead.
-                        while seat.pending.len() > MAX_BACKLOG {
-                            let frame = seat.pending.pop_front().expect("over the backlog");
-                            frame.merge_into(&mut slot);
-                            seat.ack = frame.seq;
-                            Metrics::add(&metrics.inputs_folded, 1);
+                        // A queue that stays long only adds delay: after a
+                        // second above the backlog, fold the excess into this
+                        // tick. Shorter clumps drain on their own.
+                        if seat.pending.len() > MAX_BACKLOG {
+                            let since = *seat.over_backlog_since.get_or_insert(clock);
+                            if clock - since >= FOLD_AFTER {
+                                while seat.pending.len() > MAX_BACKLOG {
+                                    let frame = seat.pending.pop_front().expect("over the backlog");
+                                    frame.merge_into(&mut slot);
+                                    seat.ack = frame.seq;
+                                    Metrics::add(&metrics.inputs_folded, 1);
+                                }
+                                seat.over_backlog_since = None;
+                            }
+                        } else {
+                            seat.over_backlog_since = None;
                         }
+                        if seat.conn.is_some() {
+                            metrics.record_arrivals(seat.arrived);
+                        }
+                        seat.arrived = 0;
                         slot
                     })
                     .collect();

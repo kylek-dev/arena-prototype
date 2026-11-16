@@ -28,8 +28,10 @@ export type NetworkStatus = {
   /** Times reconciling with the server moved the predicted fighter. */
   corrections: number;
   lastCorrectionMm: number | null;
-  /** This player's inputs waiting on the server, averaged (target: 1). */
+  /** This player's inputs waiting on the server, averaged. */
   queued: number | null;
+  /** The lowest that queue was over the last second (pacing keeps it at 1). */
+  queuedMin: number | null;
   /** Input interval multiplier steering that queue (1 = the rules tick). */
   pace: number;
   /** Catch-up inputs not sent after a stall. */
@@ -244,6 +246,7 @@ export function parseStatus(value: unknown): NetworkStatus | null {
     !count(v.corrections) ||
     !(v.lastCorrectionMm === null || count(v.lastCorrectionMm)) ||
     !optionalNumber(v.queued) ||
+    !(v.queuedMin === null || count(v.queuedMin)) ||
     typeof v.pace !== "number" ||
     !(v.pace > 0.5 && v.pace < 1.5) ||
     !count(v.skippedInputs)

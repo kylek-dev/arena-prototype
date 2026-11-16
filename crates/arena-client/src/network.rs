@@ -120,6 +120,8 @@ pub struct Stats {
     pub last_correction_mm: Option<u64>,
     /// This player's inputs waiting on the server, averaged.
     pub queued: Option<f64>,
+    /// The lowest that queue was over the last second (pacing steers this).
+    pub queued_min: Option<u8>,
     /// Catch-up inputs not sent after a stall.
     pub skipped_inputs: u64,
 }
@@ -291,6 +293,7 @@ impl Session {
                     if snapshot.tick > 0 {
                         self.pacer.observe(snapshot.queued);
                         self.stats.queued = self.pacer.average();
+                        self.stats.queued_min = self.pacer.minimum();
                     }
                     if let Some(arena) =
                         Arena::restore(layout.clone(), snapshot.tick, authoritative.clone(), result)
@@ -636,7 +639,7 @@ impl Session {
         };
         let number = |value: Option<f64>| value.map_or("null".into(), |v| format!("{v:.1}"));
         format!(
-            r#"{{"phase":"{phase}","error":{},"seat":{},"mapDiffers":{},"rttMs":{},"inputMs":{},"delayMs":{:.1},"snapshots":{},"underruns":{},"hashMismatches":{},"predictedTicks":{},"corrections":{},"lastCorrectionMm":{},"queued":{},"pace":{:.3},"skippedInputs":{}}}"#,
+            r#"{{"phase":"{phase}","error":{},"seat":{},"mapDiffers":{},"rttMs":{},"inputMs":{},"delayMs":{:.1},"snapshots":{},"underruns":{},"hashMismatches":{},"predictedTicks":{},"corrections":{},"lastCorrectionMm":{},"queued":{},"queuedMin":{},"pace":{:.3},"skippedInputs":{}}}"#,
             error.map_or("null".into(), |code| format!("\"{code:?}\"")),
             self.seat.map_or("null".into(), |seat| seat.to_string()),
             self.map_differs().unwrap_or(false),
@@ -652,6 +655,9 @@ impl Session {
                 .last_correction_mm
                 .map_or("null".into(), |mm| mm.to_string()),
             number(self.stats.queued),
+            self.stats
+                .queued_min
+                .map_or("null".into(), |min| min.to_string()),
             self.pace(),
             self.stats.skipped_inputs,
         )

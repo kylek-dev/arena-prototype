@@ -35,7 +35,7 @@ function LinkStatistics({ link }: { link: Link }) {
       "Server queue",
       status?.queued == null
         ? "—"
-        : `${status.queued.toFixed(1)} · pace ${(status.pace * 100).toFixed(1)}%`,
+        : `${status.queued.toFixed(1)} · min ${status.queuedMin ?? "—"} · pace ${(status.pace * 100).toFixed(1)}%`,
     ],
     [
       "Corrections",

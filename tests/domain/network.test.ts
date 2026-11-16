@@ -40,6 +40,7 @@ const status = (patch: object) => ({
   corrections: 0,
   lastCorrectionMm: null,
   queued: 1.1,
+  queuedMin: 1,
   pace: 1.004,
   skippedInputs: 0,
   ...patch,
@@ -179,6 +180,7 @@ describe("network match identity", () => {
       status({ lastCorrectionMm: -1 }),
       status({ pace: 3 }),
       status({ queued: "one" }),
+      status({ queuedMin: 0.5 }),
       status({ skippedInputs: -2 }),
     ])
       expect(parseStatus(bad)).toBeNull();

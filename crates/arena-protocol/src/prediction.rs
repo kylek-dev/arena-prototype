@@ -19,43 +19,59 @@ use arena_sim::map::Layout;
 /// Unacknowledged inputs kept for replay (over 8 s at 30 Hz).
 const MAX_PENDING: usize = 256;
 
-/// Inputs a client aims to keep queued on the server: one rides out a
-/// late arrival without an idle tick, and an early one without a backlog.
-pub const QUEUE_TARGET: f64 = 1.0;
+/// Inputs a client aims to keep queued on the server at the *lowest* point
+/// of the last second: one input of cushion left even just before a late
+/// batch arrives.
+pub const QUEUE_TARGET: u8 = 1;
 /// Most a client stretches or shrinks its input interval to steer the queue.
 pub const MAX_PACE: f64 = 0.04;
+/// Snapshots the pacer looks back over: one second at 30 Hz.
+pub const PACE_WINDOW: usize = 30;
 
-/// Steers how fast a client sends inputs so the server's queue for it stays
-/// near [`QUEUE_TARGET`]. Sending exactly at the server's rate lets the
-/// queue drift with timing jitter; when it grows past the server's limit
-/// inputs are folded together and a predicted step is lost, and when it
-/// empties ticks go idle.
-#[derive(Clone, Copy, Debug, Default)]
+/// Steers how fast a client sends inputs so the server always has one of
+/// its inputs in hand. Real connections (and some local relays) deliver
+/// inputs in clumps, so the queue swings; what matters is its lowest point.
+/// If that reaches zero the server idles a tick waiting, so the client
+/// sends a little faster and the queue grows until it covers the clumping;
+/// if even the lowest point holds more than [`QUEUE_TARGET`], the extra is
+/// only delay, so it sends a little slower. This makes the server's queue
+/// an adaptive jitter buffer. The server folds inputs together only when
+/// its queue stays long for a whole second, which a paced client avoids.
+#[derive(Clone, Debug, Default)]
 pub struct Pacer {
+    recent: VecDeque<u8>,
     average: Option<f64>,
 }
 impl Pacer {
     /// Records the queue length a snapshot reported.
     pub fn observe(&mut self, queued: u8) {
+        self.recent.push_back(queued);
+        if self.recent.len() > PACE_WINDOW {
+            self.recent.pop_front();
+        }
         let sample = f64::from(queued);
-        // About half a second of snapshots at 30 Hz.
         self.average = Some(
             self.average
-                .map_or(sample, |avg| avg + (sample - avg) / 15.0),
+                .map_or(sample, |avg| avg + (sample - avg) / PACE_WINDOW as f64),
         );
     }
+    /// The average queue, for diagnostics.
     pub fn average(&self) -> Option<f64> {
         self.average
     }
-    /// Multiplier for the input interval: above 1 sends slower (the queue
-    /// is long), below 1 faster (it keeps running dry).
+    /// The lowest queue over the last second.
+    pub fn minimum(&self) -> Option<u8> {
+        self.recent.iter().copied().min()
+    }
+    /// Multiplier for the input interval: above 1 sends slower (a cushion
+    /// to spare), below 1 faster (the queue ran dry).
     pub fn factor(&self) -> f64 {
-        self.average.map_or(1.0, |avg| {
-            1.0 + MAX_PACE * (avg - QUEUE_TARGET).clamp(-1.0, 1.0)
+        self.minimum().map_or(1.0, |min| {
+            1.0 + MAX_PACE * (f64::from(min) - f64::from(QUEUE_TARGET)).clamp(-1.0, 1.0)
         })
     }
     pub fn reset(&mut self) {
-        self.average = None;
+        *self = Self::default();
     }
 }
 
@@ -299,5 +315,36 @@ mod tests {
             None
         );
         assert_eq!(lost.predicted(), None);
+    }
+}
+
+#[cfg(test)]
+mod pacing_tests {
+    use super::*;
+
+    #[test]
+    fn pacing_follows_the_lowest_queue_of_the_last_second() {
+        let mut pacer = Pacer::default();
+        assert_eq!(pacer.factor(), 1.0);
+        // Clumped arrivals: the queue swings 0..4. It ran dry, so speed up,
+        // even though the average looks generous.
+        for queued in [3, 2, 1, 0, 4, 3, 2, 1, 0, 4] {
+            pacer.observe(queued);
+        }
+        assert!(pacer.average().unwrap() > 1.0);
+        assert_eq!(pacer.minimum(), Some(0));
+        assert_eq!(pacer.factor(), 1.0 - MAX_PACE);
+        // A swing of 1..5 keeps one in hand: steady.
+        for queued in (0..PACE_WINDOW).map(|i| 1 + (i % 5) as u8) {
+            pacer.observe(queued);
+        }
+        assert_eq!(pacer.factor(), 1.0);
+        // Never below 3: two to spare, so slow down.
+        for _ in 0..PACE_WINDOW {
+            pacer.observe(3);
+        }
+        assert_eq!(pacer.factor(), 1.0 + MAX_PACE);
+        pacer.reset();
+        assert_eq!(pacer.minimum(), None);
     }
 }

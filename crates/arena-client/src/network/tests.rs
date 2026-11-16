@@ -474,6 +474,7 @@ fn sending_is_paced_to_keep_one_input_queued_on_the_server() {
     assert!((session.pace() - 1.0).abs() < 0.002, "{}", session.pace());
     let status: serde_json::Value = serde_json::from_str(&session.status_json()).unwrap();
     assert!((status["queued"].as_f64().unwrap() - 1.0).abs() < 0.1);
+    assert_eq!(status["queuedMin"], 1);
     // Not running: plain rules tick.
     assert_eq!(joined(0, 1).pace(), 1.0);
 }

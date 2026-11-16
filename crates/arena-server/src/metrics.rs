@@ -32,10 +32,16 @@ pub struct Metrics {
     pub inputs_overflow: AtomicU64,
     /// Inputs folded into an earlier one to drain a backlog.
     pub inputs_folded: AtomicU64,
+    /// Ticks where a connected seat had no input ready (it stood idle).
+    pub inputs_starved: AtomicU64,
     /// Outgoing frames dropped because a client's send queue was full.
     pub frames_dropped: AtomicU64,
     pub bytes_out: AtomicU64,
     errors: [AtomicU64; CODES.len()],
+    /// Ticks by how many inputs a connected seat received since the last
+    /// one: 0, 1, 2, 3 and 4 or more. Steady clients are almost all 1;
+    /// clumped delivery (jitter) shows as 0s and 2+s.
+    arrivals: [AtomicU64; 5],
 }
 
 impl Metrics {
@@ -57,6 +63,12 @@ impl Metrics {
             .iter()
             .position(|known| *known == code)
             .map_or(0, |index| Self::get(&self.errors[index]))
+    }
+    pub fn record_arrivals(&self, inputs: u32) {
+        Self::add(&self.arrivals[(inputs as usize).min(4)], 1);
+    }
+    pub fn arrivals(&self) -> [u64; 5] {
+        std::array::from_fn(|index| Self::get(&self.arrivals[index]))
     }
     pub fn record_tick(&self, micros: u64, interval_micros: u64) {
         self.tick_max_us.fetch_max(micros, Ordering::Relaxed);
@@ -134,6 +146,12 @@ impl Metrics {
             get(&self.inputs_folded),
         );
         line(
+            "inputs_starved_total",
+            "counter",
+            "Ticks where a connected seat had no input ready.",
+            get(&self.inputs_starved),
+        );
+        line(
             "frames_dropped_total",
             "counter",
             "Outgoing frames dropped for slow clients.",
@@ -145,6 +163,18 @@ impl Metrics {
             "Encoded message bytes queued to clients.",
             get(&self.bytes_out),
         );
+        let _ = writeln!(
+            text,
+            "# HELP arena_input_arrivals_total Ticks by inputs a connected seat received since the last tick."
+        );
+        let _ = writeln!(text, "# TYPE arena_input_arrivals_total counter");
+        for (count, counter) in ["0", "1", "2", "3", "4+"].iter().zip(&self.arrivals) {
+            let _ = writeln!(
+                text,
+                "arena_input_arrivals_total{{per_tick=\"{count}\"}} {}",
+                get(counter)
+            );
+        }
         let _ = writeln!(
             text,
             "# HELP arena_errors_total Error messages sent before closing, by code."

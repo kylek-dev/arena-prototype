@@ -169,46 +169,51 @@ fn inputs_apply_one_per_tick_in_order_and_only_to_their_seat() {
 }
 
 #[test]
-fn a_tick_without_input_is_idle_and_a_backlog_is_folded() {
-    let mut session = Session::new(arena(1), 42, Limits { queue: 8, ..LIMITS }, Arc::default());
+fn clumps_drain_one_per_tick_and_only_a_lasting_backlog_is_folded() {
+    let mut session = Session::new(arena(1), 42, Limits::default(), Arc::default());
     session.attach(0, conn(0));
     session.attach(1, conn(1));
     session.tick();
-    // Nothing arrived: the fighter stands still.
+    // Nothing arrived: the fighter stands still, and the tick counts as starved.
     let start = session.arena().fighters()[0];
     session.tick();
     assert_eq!(session.arena().fighters()[0].position, start.position);
-    // A burst of eight (a stalled tab catching up): the first applies, the
-    // excess over the backlog limit folds into it, and the rest stay queued,
-    // one per following tick. Every snapshot says how many are waiting.
-    for seq in 1..=8 {
-        session.receive(
-            0,
-            conn(0),
-            InputFrame {
-                jump: seq == 3,
-                ..frame(seq)
-            },
-        );
+    assert_eq!(Metrics::get(&session.metrics.inputs_starved), 2);
+    // A clump of ten (jitter, or a tab catching up) is applied one per
+    // tick, in order, with nothing folded; each snapshot says what waits.
+    for seq in 1..=10 {
+        session.receive(0, conn(0), frame(seq));
     }
-    let out = session.tick();
-    let folded = 8 - 1 - MAX_BACKLOG as u32;
-    let first = snapshot(&out, conn(0)).unwrap();
-    assert_eq!((first.ack, first.queued), (1 + folded, MAX_BACKLOG as u8));
-    assert_eq!(snapshot(&out, conn(1)).unwrap().queued, 0, "per seat");
-    assert_eq!(
-        Metrics::get(&session.metrics.inputs_folded),
-        u64::from(folded)
-    );
-    assert!(
-        session.arena().fighters()[0].height > 0,
-        "a folded jump is kept"
-    );
-    for (ack, queued) in [(5, 3), (6, 2), (7, 1), (8, 0), (8, 0)] {
+    for ack in 1..=10u32 {
         let out = session.tick();
         let own = snapshot(&out, conn(0)).unwrap();
-        assert_eq!((own.ack, own.queued), (ack, queued));
+        assert_eq!((own.ack, own.queued), (ack, 10 - ack as u8));
+        assert_eq!(snapshot(&out, conn(1)).unwrap().queued, 0, "per seat");
     }
+    assert_eq!(Metrics::get(&session.metrics.inputs_folded), 0);
+    // A client sending two per tick keeps the queue long; after a second
+    // above the backlog the excess folds (a jump among them is kept).
+    let mut seq = 10;
+    for _ in 0..FOLD_AFTER + 2 * MAX_BACKLOG as u64 {
+        for _ in 0..2 {
+            seq += 1;
+            session.receive(
+                0,
+                conn(0),
+                InputFrame {
+                    jump: seq == 30,
+                    ..frame(seq)
+                },
+            );
+        }
+        session.tick();
+    }
+    assert!(Metrics::get(&session.metrics.inputs_folded) > 0);
+    let queued = snapshot(&session.tick(), conn(0)).unwrap().queued;
+    assert!(usize::from(queued) <= MAX_BACKLOG + 2, "{queued}");
+    // The jitter metric saw the empty ticks, the clump and the doubles.
+    let [zeros, _, twos, _, four_or_more] = session.metrics.arrivals();
+    assert!(zeros > 0 && twos > 0 && four_or_more == 1);
 }
 
 #[test]
@@ -504,6 +509,7 @@ fn a_predicting_client_agrees_with_the_server_while_running_on_the_ground() {
 struct Simulated {
     folded: u64,
     overflowed: u64,
+    starved: u64,
     corrections: u64,
     /// Average inputs queued for the client over the last 10 s.
     late_queue: f64,
@@ -514,7 +520,7 @@ struct Simulated {
 /// clock `drift` fast, and a burst of seven catch-up inputs at 20 s (a tab
 /// back from the background). It predicts its own movement, and paces its
 /// input interval from the snapshots when `paced`.
-fn browser_like(paced: bool, drift: f64) -> Simulated {
+fn browser_like(paced: bool, drift: f64, clump: Option<f64>) -> Simulated {
     use arena_protocol::prediction::{Pacer, Predictor};
     let layout = arena_map::colosseum().layout;
     // The production limits (an eight-input queue).
@@ -522,6 +528,9 @@ fn browser_like(paced: bool, drift: f64) -> Simulated {
     session.attach(0, conn(0));
     session.attach(1, conn(1));
     session.tick();
+    // Only this client's seat is measured; the opponent steps away (the
+    // match runs on while anyone is connected).
+    session.detach(1, conn(1));
     let mut predictor = Predictor::default();
     let mut pacer = Pacer::default();
     let mut rng = 0x2545_F491_4F6C_DD1D_u64;
@@ -560,7 +569,14 @@ fn browser_like(paced: bool, drift: f64) -> Simulated {
                 let mut slot = ActorInput::default();
                 input.merge_into(&mut slot);
                 predictor.apply(seq, slot);
-                in_flight.push_back((frame_time + noise(0.002), input));
+                // A relay that forwards in clumps holds each input until
+                // its next flush; order is kept.
+                let mut arrives = frame_time + noise(0.002);
+                if let Some(period) = clump {
+                    arrives = ((arrives / period).floor() + 1.0) * period;
+                }
+                let arrives = arrives.max(in_flight.back().map_or(0.0, |(at, _)| *at));
+                in_flight.push_back((arrives, input));
             }
         }
         while in_flight.front().is_some_and(|(at, _)| *at <= tick_at) {
@@ -583,6 +599,8 @@ fn browser_like(paced: bool, drift: f64) -> Simulated {
     Simulated {
         folded: Metrics::get(&session.metrics.inputs_folded),
         overflowed: Metrics::get(&session.metrics.inputs_overflow),
+        // The first tick, before any input could arrive, does not count.
+        starved: Metrics::get(&session.metrics.inputs_starved).saturating_sub(1),
         corrections: predictor.corrections(),
         late_queue: queued.iter().sum::<f64>() / queued.len() as f64,
     }
@@ -599,17 +617,28 @@ fn frame_input(seq: u32) -> InputFrame {
 }
 
 #[test]
-fn paced_clients_keep_one_input_queued_through_jitter_drift_and_bursts() {
-    let paced = browser_like(true, 0.005);
-    let unpaced = browser_like(false, 0.005);
-    // Unpaced, a slightly fast clock fills the queue until inputs fold
-    // together, each costing a predicted step.
-    assert!(unpaced.folded > 0 && unpaced.corrections > 0, "{unpaced:?}");
-    // Paced, the queue settles near one input: nothing folds or overflows,
-    // and the prediction is never corrected.
+fn paced_clients_hold_a_small_cushion_through_jitter_clumps_drift_and_bursts() {
+    // Smooth delivery with a slightly fast clock and a background-tab burst.
+    let smooth = browser_like(true, 0.005, None);
     assert_eq!(
-        (paced.folded, paced.overflowed, paced.corrections),
-        (0, 0, 0)
+        (smooth.folded, smooth.overflowed, smooth.corrections),
+        (0, 0, 0),
+        "{smooth:?}"
     );
-    assert!((0.5..=1.6).contains(&paced.late_queue), "{paced:?}");
+    assert!(smooth.late_queue <= 2.5, "{smooth:?}");
+    // A relay that forwards in 50 ms clumps: the queue grows into a jitter
+    // buffer just deep enough that the server rarely waits.
+    let clumped = browser_like(true, 0.005, Some(0.05));
+    assert_eq!(
+        (clumped.folded, clumped.overflowed, clumped.corrections),
+        (0, 0, 0),
+        "{clumped:?}"
+    );
+    assert!(clumped.starved < 30, "{clumped:?}");
+    assert!(clumped.late_queue <= 4.0, "{clumped:?}");
+    // Unpaced, a clock 2% fast keeps the queue long until it folds, each
+    // fold costing a predicted step.
+    let unpaced = browser_like(false, 0.02, Some(0.05));
+    assert!(unpaced.folded > 0 && unpaced.corrections > 0, "{unpaced:?}");
+    eprintln!("RESULT smooth {smooth:?}\nRESULT clumped {clumped:?}\nRESULT unpaced {unpaced:?}");
 }
