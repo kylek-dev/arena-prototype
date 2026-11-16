@@ -298,6 +298,7 @@ name = "arena-server"
 version = "0.1.0"
 dependencies = [
  "arena-map",
+ "arena-palette",
  "arena-protocol",
  "arena-sim",
  "axum",

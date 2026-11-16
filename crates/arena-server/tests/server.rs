@@ -270,6 +270,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 match_id: created.match_id,
                 player: 1,
                 seat: 0,
+                team_size: 1,
                 expires: 1,
             }))),
             ErrorCode::BadTicket,
@@ -279,20 +280,22 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
             Message::binary(hello(signed(Claims {
                 match_id: created.match_id,
                 player: 1,
-                seat: 9,
+                seat: 2,
+                team_size: 1,
                 expires: far_future,
             }))),
             ErrorCode::BadTicket,
         ),
         (
-            "match that does not exist",
+            "team size the rules cannot run",
             Message::binary(hello(signed(Claims {
                 match_id: created.match_id ^ 1,
                 player: 1,
                 seat: 0,
+                team_size: 4,
                 expires: far_future,
             }))),
-            ErrorCode::MatchOver,
+            ErrorCode::BadTicket,
         ),
         (
             "another ticket key",
@@ -300,6 +303,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 match_id: created.match_id,
                 player: 1,
                 seat: 0,
+                team_size: 1,
                 expires: far_future,
             }))),
             ErrorCode::BadTicket,
@@ -350,9 +354,14 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
     assert_eq!(joined.error().await, ErrorCode::Malformed);
 
     let metrics = running.app.metrics();
-    assert_eq!(metrics.errors(ErrorCode::BadTicket), 4);
+    assert_eq!(metrics.errors(ErrorCode::BadTicket), 5);
     assert_eq!(metrics.errors(ErrorCode::Malformed), 4);
     assert_eq!(metrics.errors(ErrorCode::HelloTimeout), 1);
+    // Refused tickets never start a match; only the valid one did.
+    assert_eq!(
+        arena_server::metrics::Metrics::get(&metrics.matches_created),
+        1
+    );
     running.shut_down(Duration::ZERO).await.unwrap();
 }
 
@@ -410,7 +419,11 @@ async fn operations_endpoints_and_development_guards() {
     assert_eq!(http(addr, "GET", "/healthz").await, (200, "ok".into()));
     assert_eq!(http(addr, "GET", "/readyz").await, (200, "ready".into()));
     assert_eq!(http(addr, "POST", "/dev/match?team_size=7").await.0, 400);
-    new_match(addr, 3).await;
+    let created = new_match(addr, 3).await;
+    // Issuing tickets starts nothing; the first player to connect does.
+    let (_, metrics) = http(addr, "GET", "/metrics").await;
+    assert!(metrics.contains("arena_matches_active 0\n"), "{metrics}");
+    let (_first, _) = Client::join(addr, &created.tickets[4]).await;
     let (status, metrics) = http(addr, "GET", "/metrics").await;
     assert_eq!(status, 200);
     assert!(
@@ -522,4 +535,120 @@ async fn draining_keeps_running_matches_until_stopped() {
     running.stop().await.unwrap();
     assert_eq!(back.error().await, ErrorCode::ServerShutdown);
     assert!(stopped.elapsed() < Duration::from_secs(3));
+}
+
+#[tokio::test]
+async fn a_match_starts_with_its_first_ticket_and_stays_over_once_ended() {
+    let mut short = config(true);
+    // An unfilled match ends after 3 rule ticks.
+    short.limits.start_timeout = 3;
+    let running = start(short).await.unwrap();
+    let addr = running.addr;
+    let created = new_match(addr, 1).await;
+    assert_eq!(running.active_matches(), 0);
+    let (mut lonely, welcome) = Client::join(addr, &created.tickets[1]).await;
+    assert_eq!((welcome.actor, welcome.team_size), (1, 1));
+    assert_eq!(running.active_matches(), 1);
+    // Nobody else came: the match ends ...
+    assert_eq!(lonely.error().await, ErrorCode::MatchOver);
+    assert!(running.drained(WAIT).await);
+    // ... and its tickets cannot start it again.
+    let mut late = Client::open(addr).await;
+    late.hello(from_hex(&created.tickets[0]).unwrap()).await;
+    assert_eq!(late.error().await, ErrorCode::MatchOver);
+    assert_eq!(running.active_matches(), 0);
+    running.shut_down(Duration::ZERO).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_draining_server_starts_no_match_but_keeps_hosting_its_own() {
+    let running = server().await;
+    let addr = running.addr;
+    let hosted = new_match(addr, 1).await;
+    let waiting = new_match(addr, 1).await;
+    let (_first, _) = Client::join(addr, &hosted.tickets[0]).await;
+    running.begin_drain();
+    // A player of a match this server never started is told to retry
+    // (`ServerShutdown`), not that the match is over.
+    let mut newcomer = Client::open(addr).await;
+    newcomer.hello(from_hex(&waiting.tickets[0]).unwrap()).await;
+    assert_eq!(newcomer.error().await, ErrorCode::ServerShutdown);
+    let (_second, welcome) = Client::join(addr, &hosted.tickets[1]).await;
+    assert_eq!(welcome.actor, 1);
+    assert_eq!(running.active_matches(), 1);
+    running.stop().await.unwrap();
+}
+
+/// The handshake status of a WebSocket upgrade with extra headers.
+async fn upgrade_status(addr: SocketAddr, headers: &[(&str, &str)]) -> u16 {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = format!("ws://{addr}/play").into_client_request().unwrap();
+    for (name, value) in headers {
+        request.headers_mut().insert(
+            tokio_tungstenite::tungstenite::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            value.parse().unwrap(),
+        );
+    }
+    match connect_async(request).await {
+        Ok((_, response)) => response.status().as_u16(),
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => response.status().as_u16(),
+        Err(error) => panic!("{error}"),
+    }
+}
+
+#[tokio::test]
+async fn only_allowed_pages_connect_and_each_address_holds_a_few_connections() {
+    let mut guarded = config(false);
+    guarded.origins =
+        arena_server::ingress::Origins::Only(vec!["https://arena.example.com".into()]);
+    guarded.connections_per_address = 2;
+    // Connections from loopback are a proxy forwarding for players.
+    guarded.trusted_proxies = vec![arena_server::ingress::Cidr::parse("127.0.0.1").unwrap()];
+    let running = start(guarded).await.unwrap();
+    let addr = running.addr;
+    let page = ("origin", "https://arena.example.com");
+    assert_eq!(upgrade_status(addr, &[page]).await, 101);
+    assert_eq!(
+        upgrade_status(addr, &[("origin", "https://elsewhere.example")]).await,
+        403
+    );
+    assert_eq!(upgrade_status(addr, &[]).await, 101, "not a browser");
+    // Each forwarded address may hold two open connections.
+    let open = |client: &'static str| async move {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = format!("ws://{addr}/play").into_client_request().unwrap();
+        request
+            .headers_mut()
+            .insert("x-forwarded-for", client.parse().unwrap());
+        connect_async(request).await
+    };
+    let first = open("198.51.100.1").await.unwrap();
+    let _second = open("198.51.100.1").await.unwrap();
+    match open("198.51.100.1").await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status().as_u16(), 429)
+        }
+        other => panic!(
+            "expected 429, got {:?}",
+            other.map(|(_, response)| response.status())
+        ),
+    }
+    assert!(open("198.51.100.2").await.is_ok(), "another player");
+    // Closing one frees its place once the server sees it go.
+    drop(first);
+    let mut reopened = None;
+    for _ in 0..100 {
+        if let Ok(socket) = open("198.51.100.1").await {
+            reopened = Some(socket);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(reopened.is_some());
+    let (_, metrics) = http(addr, "GET", "/metrics").await;
+    assert!(
+        metrics.contains("arena_connections_refused_origin_total 1\n"),
+        "{metrics}"
+    );
+    running.shut_down(Duration::ZERO).await.unwrap();
 }

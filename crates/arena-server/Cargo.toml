@@ -10,6 +10,7 @@ description = "Authoritative match server: runs the shared rules per match at a 
 arena-sim = { path = "../arena-sim" }
 arena-map = { path = "../arena-map" }
 arena-protocol = { path = "../arena-protocol" }
+arena-palette = { path = "../arena-palette" }
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "ws", "query", "json"] }
 tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
 serde = { version = "=1.0.229", features = ["derive"] }

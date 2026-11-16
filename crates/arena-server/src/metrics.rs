@@ -37,6 +37,10 @@ pub struct Metrics {
     /// Outgoing frames dropped because a client's send queue was full.
     pub frames_dropped: AtomicU64,
     pub bytes_out: AtomicU64,
+    /// Connections refused before upgrading for their page origin.
+    pub refused_origin: AtomicU64,
+    /// Connections refused for the per-address connection limit.
+    pub refused_address: AtomicU64,
     errors: [AtomicU64; CODES.len()],
     /// Ticks by how many inputs a connected seat received since the last
     /// one: 0, 1, 2, 3 and 4 or more. Steady clients are almost all 1;
@@ -102,6 +106,18 @@ impl Metrics {
             "gauge",
             "Open WebSocket connections.",
             get(&self.connections_open),
+        );
+        line(
+            "connections_refused_origin_total",
+            "counter",
+            "Connections refused because their page origin is not allowed.",
+            get(&self.refused_origin),
+        );
+        line(
+            "connections_refused_address_total",
+            "counter",
+            "Connections refused because their address holds too many.",
+            get(&self.refused_address),
         );
         line(
             "ticks_total",

@@ -4,15 +4,18 @@
 //! it at a fixed interval; matches share nothing, so a process scales with
 //! its cores and a fleet scales by adding processes. Connections verify a
 //! signed join ticket, then only forward intent; the session decides every
-//! outcome with the shared rules.
+//! outcome with the shared rules. A match starts when the first ticket for
+//! it arrives (see [`ticket`]); the front door ([`door`]) only signs them.
 
+pub mod door;
+pub mod ingress;
 pub mod metrics;
 pub mod session;
 pub mod ticket;
 
 use std::collections::HashMap;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -25,18 +28,21 @@ use arena_sim::arena::Arena;
 use arena_sim::map::Layout;
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::extract::{ConnectInfo, Query, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
 
+use ingress::{Cidr, OpenPerAddress, OpenSlot, Origins};
 use metrics::Metrics;
 use session::{ConnId, Limits, Out, Session};
 use ticket::{Claims, TicketKey};
+
+pub use ticket::NewMatch;
 
 pub struct Config {
     pub bind: SocketAddr,
@@ -51,6 +57,12 @@ pub struct Config {
     pub ticket_ttl: Duration,
     /// Messages (inputs and pings) one connection may send per second.
     pub messages_per_second: u32,
+    /// Pages whose browsers may connect to `/play`.
+    pub origins: Origins,
+    /// Reverse proxies whose `X-Forwarded-For` names the client.
+    pub trusted_proxies: Vec<Cidr>,
+    /// Open connections one client address may hold; 0 is unlimited.
+    pub connections_per_address: u32,
     pub limits: Limits,
     pub key: TicketKey,
 }
@@ -64,6 +76,10 @@ impl Config {
             hello_timeout: Duration::from_secs(5),
             ticket_ttl: Duration::from_secs(2 * 60 * 60),
             messages_per_second: 2 * TICKS_PER_SECOND as u32,
+            origins: Origins::Any,
+            trusted_proxies: Vec::new(),
+            // A household of six players, each with a spare tab.
+            connections_per_address: 12,
             limits: Limits::default(),
             key,
         }
@@ -97,25 +113,25 @@ const OUTBOUND_QUEUE: usize = 64;
 /// Commands buffered per match; readers wait when it is full.
 const COMMAND_QUEUE: usize = 1024;
 
+/// The matches this process hosts, and those it hosted whose tickets are
+/// still valid: a rejoin with one must not start the match again.
+#[derive(Default)]
+struct Registry {
+    live: HashMap<u64, mpsc::Sender<Command>>,
+    /// Ended match identifiers and when their tickets expire.
+    ended: HashMap<u64, u64>,
+}
+
 pub struct App {
     config: Config,
     metrics: Arc<Metrics>,
-    matches: Mutex<HashMap<u64, mpsc::Sender<Command>>>,
+    matches: Mutex<Registry>,
+    open: Arc<OpenPerAddress>,
     next_conn: AtomicU64,
     draining: AtomicBool,
     shutdown: watch::Sender<bool>,
     layout: Layout,
     map: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct NewMatch {
-    pub match_id: u64,
-    pub team_size: usize,
-    /// Hex-encoded join tickets, one per seat in actor order.
-    pub tickets: Vec<String>,
-    /// Unix seconds after which the tickets are refused.
-    pub expires: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -128,6 +144,7 @@ impl App {
     fn new(config: Config) -> Arc<Self> {
         let map = arena_map::colosseum();
         Arc::new(Self {
+            open: OpenPerAddress::new(config.connections_per_address),
             config,
             metrics: Arc::default(),
             matches: Mutex::default(),
@@ -148,61 +165,71 @@ impl App {
         self.draining.load(Ordering::Relaxed)
     }
 
-    /// Starts a match on the default map and issues a ticket per seat.
-    /// Must be called inside the Tokio runtime.
-    pub fn create_match(self: &Arc<Self>, team_size: usize) -> Result<NewMatch, CreateError> {
+    /// Issues a ticket per seat for a new match on this server, which
+    /// starts when the first ticket connects (development and tests; in
+    /// production the front door issues tickets).
+    pub fn issue_match(&self, team_size: usize) -> Result<NewMatch, CreateError> {
         if self.is_draining() {
             return Err(CreateError::Draining);
         }
-        let arena =
-            Arena::practice(self.layout.clone(), team_size).ok_or(CreateError::InvalidTeamSize)?;
-        let seats = arena.fighters().len();
-        let (sender, receiver) = mpsc::channel(COMMAND_QUEUE);
-        let match_id = {
-            let mut matches = self.matches.lock().expect("match registry lock");
-            let mut id = random_u64();
-            while matches.contains_key(&id) {
-                id = random_u64();
-            }
-            matches.insert(id, sender);
-            id
-        };
-        Metrics::add(&self.metrics.matches_created, 1);
-        eprintln!("match {match_id:016x}: created for {team_size}v{team_size}");
-        Metrics::add(&self.metrics.matches_active, 1);
-        let session = Session::new(arena, self.map, self.config.limits, self.metrics.clone());
-        tokio::spawn(run_match(self.clone(), match_id, session, receiver));
         let expires = unix_now() + self.config.ticket_ttl.as_secs();
-        let tickets = (0..seats)
-            .map(|seat| {
-                ticket::to_hex(&self.config.key.issue(&Claims {
-                    match_id,
-                    player: random_u64(),
-                    seat: seat as u8,
-                    expires,
-                }))
-            })
-            .collect();
-        Ok(NewMatch {
-            match_id,
-            team_size,
-            tickets,
-            expires,
-        })
+        ticket::issue_match(&self.config.key, team_size, expires)
+            .ok_or(CreateError::InvalidTeamSize)
     }
 
-    fn match_sender(&self, id: u64) -> Option<mpsc::Sender<Command>> {
-        self.matches
-            .lock()
-            .expect("match registry lock")
-            .get(&id)
-            .cloned()
+    /// The match a verified ticket names, starting it if this is the first
+    /// ticket to arrive. Must be called inside the Tokio runtime.
+    fn match_for(self: &Arc<Self>, claims: &Claims) -> Result<mpsc::Sender<Command>, ErrorCode> {
+        if !claims.is_playable() {
+            return Err(ErrorCode::BadTicket);
+        }
+        let mut matches = self.matches.lock().expect("match registry lock");
+        if let Some(sender) = matches.live.get(&claims.match_id) {
+            return Ok(sender.clone());
+        }
+        if matches.ended.contains_key(&claims.match_id) {
+            return Err(ErrorCode::MatchOver);
+        }
+        // A draining server starts nothing new. The player keeps retrying
+        // and joins once a replacement server is up.
+        if self.is_draining() {
+            return Err(ErrorCode::ServerShutdown);
+        }
+        let team_size = usize::from(claims.team_size);
+        let arena = Arena::practice(self.layout.clone(), team_size).ok_or(ErrorCode::BadTicket)?;
+        let (sender, receiver) = mpsc::channel(COMMAND_QUEUE);
+        matches.live.insert(claims.match_id, sender.clone());
+        drop(matches);
+        let id = claims.match_id;
+        Metrics::add(&self.metrics.matches_created, 1);
+        Metrics::add(&self.metrics.matches_active, 1);
+        eprintln!("match {id:016x}: started for {team_size}v{team_size} by its first player");
+        let session = Session::new(arena, self.map, self.config.limits, self.metrics.clone());
+        tokio::spawn(run_match(
+            self.clone(),
+            id,
+            claims.expires,
+            session,
+            receiver,
+        ));
+        Ok(sender)
+    }
+
+    fn end_match(&self, id: u64, expires: u64) {
+        let now = unix_now();
+        let mut matches = self.matches.lock().expect("match registry lock");
+        matches.live.remove(&id);
+        matches.ended.retain(|_, expires| *expires > now);
+        if expires > now {
+            matches.ended.insert(id, expires);
+        }
     }
 }
 
 async fn run_match(
     app: Arc<App>,
     id: u64,
+    expires: u64,
     mut session: Session,
     mut commands: mpsc::Receiver<Command>,
 ) {
@@ -275,7 +302,7 @@ async fn run_match(
             break;
         }
     }
-    app.matches.lock().expect("match registry lock").remove(&id);
+    app.end_match(id, expires);
     Metrics::sub(&app.metrics.matches_active, 1);
     match session.arena().result() {
         Some(result) => eprintln!("match {id:016x}: ended ({result:?})"),
@@ -377,7 +404,7 @@ struct DevMatchQuery {
 }
 
 async fn dev_match(State(app): State<Arc<App>>, Query(query): Query<DevMatchQuery>) -> Response {
-    match app.create_match(query.team_size.unwrap_or(1)) {
+    match app.issue_match(query.team_size.unwrap_or(1)) {
         Ok(created) => axum::Json(created).into_response(),
         Err(CreateError::Draining) => (StatusCode::SERVICE_UNAVAILABLE, "draining").into_response(),
         Err(CreateError::InvalidTeamSize) => {
@@ -386,10 +413,28 @@ async fn dev_match(State(app): State<Arc<App>>, Query(query): Query<DevMatchQuer
     }
 }
 
-async fn play(ws: WebSocketUpgrade, State(app): State<Arc<App>>) -> Response {
+async fn play(
+    ws: WebSocketUpgrade,
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if !app.config.origins.allows(&headers) {
+        Metrics::add(&app.metrics.refused_origin, 1);
+        return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
+    }
+    let address: IpAddr = ingress::client_address(peer, &headers, &app.config.trusted_proxies);
+    let Some(slot) = app.open.open(address) else {
+        Metrics::add(&app.metrics.refused_address, 1);
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many connections from this address",
+        )
+            .into_response();
+    };
     ws.max_message_size(arena_protocol::MAX_CLIENT_FRAME)
         .max_frame_size(arena_protocol::MAX_CLIENT_FRAME)
-        .on_upgrade(move |socket| connection(socket, app))
+        .on_upgrade(move |socket| connection(socket, app, slot))
 }
 
 /// Fixed one-second message budget for a connection.
@@ -461,7 +506,7 @@ async fn forward(socket: &mut WebSocket, app: &App, outgoing: Outbound) -> bool 
     }
 }
 
-async fn connection(mut socket: WebSocket, app: Arc<App>) {
+async fn connection(mut socket: WebSocket, app: Arc<App>, _slot: OpenSlot) {
     Metrics::add(&app.metrics.connections_open, 1);
     let _open = OpenConnection(&app.metrics);
     let conn = app.next_conn.fetch_add(1, Ordering::Relaxed);
@@ -497,9 +542,9 @@ async fn connection(mut socket: WebSocket, app: Arc<App>) {
             claims.match_id, claims.seat
         );
     }
-    // A validly signed ticket for a match that is gone: it has ended.
-    let Some(commands) = app.match_sender(claims.match_id) else {
-        return reject(&mut socket, &app, ErrorCode::MatchOver).await;
+    let commands = match app.match_for(&claims) {
+        Ok(commands) => commands,
+        Err(code) => return reject(&mut socket, &app, code).await,
     };
     let seat = usize::from(claims.seat);
     let (out_sender, mut outbound) = mpsc::channel(OUTBOUND_QUEUE);
@@ -608,7 +653,8 @@ pub async fn start(config: Config) -> io::Result<Running> {
     });
     let app = App::new(config);
     let mut stop = app.shutdown.subscribe();
-    let server = axum::serve(listener, router(app.clone())).with_graceful_shutdown(async move {
+    let service = router(app.clone()).into_make_service_with_connect_info::<SocketAddr>();
+    let server = axum::serve(listener, service).with_graceful_shutdown(async move {
         let _ = stop.wait_for(|stop| *stop).await;
     });
     let task = tokio::spawn(async move { server.await });
@@ -667,10 +713,6 @@ fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
-}
-
-fn random_u64() -> u64 {
-    getrandom::u64().expect("the operating system provides randomness")
 }
 
 /// 64-bit FNV-1a, used to identify the map a match runs on.
