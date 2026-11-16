@@ -66,7 +66,7 @@ function QueueStatus({ queue }: { queue: Queue }) {
           Cancel
         </Button>
       ) : (
-        state.phase === "ended" && (
+        state.connection === "ended" && (
           <Button size="1" variant="soft" color="gray" onClick={() => queue.dismiss()}>
             Dismiss
           </Button>
@@ -82,7 +82,7 @@ function QueueStatus({ queue }: { queue: Queue }) {
 export function MatchStatus() {
   const link = useStore(networkLink, (l) => l);
   const queue = useStore(matchQueue, (q) => q);
-  const searching = useStore(queue?.state ?? IDLE, (s) => s.phase !== "idle");
+  const searching = useStore(queue?.state ?? IDLE, (s) => queueMessage(s, 0) !== null);
   if (queue && searching) return <QueueStatus queue={queue} />;
   return link ? <LinkStatus link={link} /> : null;
 }

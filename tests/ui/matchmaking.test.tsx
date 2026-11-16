@@ -3,7 +3,7 @@ import { afterEach, expect, it } from "vitest";
 import type { MatchTicket } from "../../web/src/domain/network";
 import { MatchStatus } from "../../web/src/features/match-status/MatchStatus";
 import { GameMenu } from "../../web/src/features/menu/GameMenu";
-import { createQueue, type Queue } from "../../web/src/runtime/matchmaking";
+import { createQueue, installPartyLinks, type Queue } from "../../web/src/runtime/matchmaking";
 import { matchQueue } from "../../web/src/state/network";
 
 type Fake = {
@@ -20,13 +20,14 @@ type Fake = {
 
 const MATCH = {
   type: "match",
-  mode: "solo-2v2",
+  mode: "2v2",
   match_id: "00ff00ff00ff00ff",
   seat: 2,
   server: "ws://127.0.0.1:8080/play",
   ticket: "ab01",
   expires: 2_000_000_000,
 };
+const ALONE = { type: "party", code: null, members: 1, leader: true, queue: null };
 
 /** A real queue over fake sockets, clock and storage. */
 function fakeQueue(stored: string | null = null) {
@@ -71,6 +72,7 @@ function fakeQueue(stored: string | null = null) {
     joined,
     values,
     latest,
+    sent: () => latest().sent.map((text) => JSON.parse(text)),
     tick: (ms: number) => {
       now += ms;
     },
@@ -92,76 +94,101 @@ afterEach(() => {
 it("queues, confirms the ready check by itself and joins the seat it is given", () => {
   const fake = fakeQueue();
   const { queue } = fake;
-  queue.join("solo-2v2");
-  expect(queue.state.get()).toMatchObject({ phase: "connecting", mode: "solo-2v2" });
+  queue.queue("2v2");
+  expect(queue.state.get()).toMatchObject({ connection: "connecting", mode: "2v2" });
   fake.open();
-  expect(JSON.parse(fake.latest().sent[0])).toEqual({
-    type: "join",
-    mode: "solo-2v2",
-    guest: "07".repeat(16),
-  });
-  fake.say({ type: "queued", mode: "solo-2v2", waiting: 3 });
+  // Hello first, then the request made while connecting.
+  expect(fake.sent()).toEqual([
+    { type: "hello", guest: "07".repeat(16) },
+    { type: "queue", mode: "2v2" },
+  ]);
+  fake.say({ ...ALONE, queue: "2v2" });
+  fake.say({ type: "queued", mode: "2v2", waiting: 3 });
   expect(queue.state.get()).toMatchObject({ phase: "queued", waiting: 3, since: 1000 });
   fake.tick(5000);
-  fake.say({ type: "queued", mode: "solo-2v2", waiting: 2 });
+  fake.say({ type: "queued", mode: "2v2", waiting: 2 });
   expect(queue.state.get().since).toBe(1000);
-  fake.say({ type: "found", mode: "solo-2v2" });
+  fake.say({ type: "found", mode: "2v2" });
   expect(queue.state.get().phase).toBe("found");
-  expect(JSON.parse(fake.latest().sent[1])).toEqual({ type: "ready" });
+  expect(fake.sent().at(-1)).toEqual({ type: "ready" });
   // Someone else did not confirm: searching again, still timed from the start.
-  fake.say({ type: "requeued", mode: "solo-2v2" });
+  fake.say({ type: "requeued", mode: "2v2" });
   expect(queue.state.get()).toMatchObject({ phase: "queued", since: 1000 });
   fake.say(MATCH);
   expect(fake.joined).toEqual([
     { server: "ws://127.0.0.1:8080/play", ticket: "ab01", expires: 2_000_000_000 },
   ]);
-  expect(queue.state.get().phase).toBe("idle");
-  expect(fake.latest().closed).toBe(true);
+  // Still connected afterwards, so a party stays together.
+  fake.say(ALONE);
+  expect(queue.state.get()).toMatchObject({ connection: "online", phase: "idle" });
+  expect(fake.latest().closed).toBe(false);
+});
+
+it("forms and joins parties, and tells the player what the door refused", () => {
+  const fake = fakeQueue();
+  const { queue } = fake;
+  queue.createParty();
+  fake.open();
+  expect(fake.sent().at(-1)).toEqual({ type: "create_party" });
+  fake.say({ type: "party", code: "K7P2QX", members: 1, leader: true, queue: null });
+  expect(queue.state.get().party).toEqual({ code: "K7P2QX", members: 1, leader: true });
+  // Joining another party reuses the connection.
+  expect(queue.joinParty(" m9q3rt ")).toBe(true);
+  expect(fake.sent().at(-1)).toEqual({ type: "join_party", code: "M9Q3RT" });
+  expect(fake.sockets).toHaveLength(1);
+  fake.say({ type: "refused", code: "party_full" });
+  expect(queue.state.get().notice).toBe("party_full");
+  // A code that cannot exist is refused without asking the door.
+  expect(queue.joinParty("hello!")).toBe(false);
+  expect(queue.state.get().notice).toBe("no_such_party");
+  // The leader's search is everyone's; a member leaving stops it.
+  fake.say({ type: "party", code: "K7P2QX", members: 2, leader: false, queue: "3v3" });
+  expect(queue.state.get()).toMatchObject({ phase: "queued", mode: "3v3" });
+  fake.say({ type: "stopped", reason: "member_left" });
+  expect(queue.state.get()).toMatchObject({ phase: "idle", notice: "member_left" });
+  queue.leaveParty();
+  expect(fake.sent().at(-1)).toEqual({ type: "leave_party" });
 });
 
 it("keeps one guest id per browser", () => {
-  const first = fakeQueue();
-  expect(first.values.get("arena.guest")).toBe("07".repeat(16));
-  const again = fakeQueue("ab".repeat(16));
-  expect(again.queue.guest).toBe("ab".repeat(16));
-  const corrupt = fakeQueue("not a guest id");
-  expect(corrupt.queue.guest).toBe("07".repeat(16));
+  expect(fakeQueue().values.get("arena.guest")).toBe("07".repeat(16));
+  expect(fakeQueue("ab".repeat(16)).queue.guest).toBe("ab".repeat(16));
+  expect(fakeQueue("not a guest id").queue.guest).toBe("07".repeat(16));
 });
 
-it("cancels, switches modes, and ends with a reason", () => {
+it("cancels, and ends with a reason when the door goes away", () => {
   const fake = fakeQueue();
   const { queue } = fake;
-  queue.join("1v1");
+  queue.queue("1v1");
   fake.open();
   fake.say({ type: "queued", mode: "1v1", waiting: 1 });
-  // Switching modes reuses the connection.
-  queue.join("solo-3v3");
-  expect(fake.sockets).toHaveLength(1);
-  expect(JSON.parse(fake.latest().sent[1])).toMatchObject({ type: "join", mode: "solo-3v3" });
   queue.cancel();
-  expect(JSON.parse(fake.latest().sent[2])).toEqual({ type: "leave" });
+  expect(fake.sent().at(-1)).toEqual({ type: "cancel" });
+  fake.say({ type: "stopped", reason: "cancelled" });
   expect(queue.state.get().phase).toBe("idle");
 
-  queue.join("1v1");
-  fake.open();
   fake.say({ type: "error", code: "replaced" });
-  expect(queue.state.get()).toMatchObject({ phase: "ended", ended: "replaced" });
+  expect(queue.state.get()).toMatchObject({ connection: "ended", ended: "replaced" });
   queue.dismiss();
-  expect(queue.state.get().phase).toBe("idle");
+  expect(queue.state.get().connection).toBe("offline");
 
-  // A door that never answers, and one that goes away mid-search.
-  queue.join("1v1");
+  queue.queue("1v1");
   fake.drop();
-  expect(queue.state.get()).toMatchObject({ phase: "ended", ended: "unreachable" });
-  queue.join("1v1");
+  expect(queue.state.get()).toMatchObject({ connection: "ended", ended: "unreachable" });
+  queue.queue("1v1");
   fake.open();
   fake.drop();
-  expect(queue.state.get()).toMatchObject({ phase: "ended", ended: "lost" });
-  // Messages that are not understood change nothing.
-  queue.join("1v1");
+  expect(queue.state.get()).toMatchObject({ connection: "ended", ended: "lost" });
+});
+
+it("joins the party in an invite link and removes it from the address bar", () => {
+  const fake = fakeQueue();
+  window.history.replaceState(null, "", "/#party=k7p2qx");
+  const stop = installPartyLinks(fake.queue);
+  expect(window.location.hash).toBe("");
   fake.open();
-  act(() => fake.latest().onmessage?.({ data: "{}" }));
-  expect(queue.state.get().phase).toBe("connecting");
+  expect(fake.sent().at(-1)).toEqual({ type: "join_party", code: "K7P2QX" });
+  stop();
 });
 
 function withQueue() {
@@ -170,7 +197,7 @@ function withQueue() {
   return fake;
 }
 
-it("the game menu queues for a mode and the banner offers Cancel", () => {
+it("the game menu forms a party and queues, and the banner offers Cancel", () => {
   const fake = withQueue();
   render(
     <>
@@ -178,25 +205,41 @@ it("the game menu queues for a mode and the banner offers Cancel", () => {
       <MatchStatus />
     </>,
   );
-  expect(screen.getByRole("group", { name: "Play online" })).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Solo 3v3" }));
-  expect(fake.queue.state.get()).toMatchObject({ phase: "connecting", mode: "solo-3v3" });
+  expect(screen.getByRole("region", { name: "Play online" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Invite friends" }));
   fake.open();
-  fake.say({ type: "queued", mode: "solo-3v3", waiting: 4 });
+  fake.say({ type: "party", code: "K7P2QX", members: 2, leader: true, queue: null });
+  expect(screen.getByText("K7P2QX")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Copy invite link" })).toBeTruthy();
+  // A party of two cannot enter solo queues.
+  expect(screen.getByRole("button", { name: "Solo 2v2" }).hasAttribute("disabled")).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "2v2" }));
+  expect(fake.sent().at(-1)).toEqual({ type: "queue", mode: "2v2" });
+  fake.say({ type: "party", code: "K7P2QX", members: 2, leader: true, queue: "2v2" });
+  fake.say({ type: "queued", mode: "2v2", waiting: 4 });
   expect(screen.getByRole("status").textContent).toContain(
-    "Searching for a Solo 3v3 match · 0:00 · 4 players queued",
+    "Searching for a 2v2 match · 0:00 · 4 players queued",
   );
-  expect(screen.getByRole("button", { name: "Cancel search" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-  expect(fake.queue.state.get().phase).toBe("idle");
-  expect(screen.queryByRole("status")).toBeNull();
-  expect(screen.getByRole("button", { name: "1v1" })).toBeTruthy();
+  expect(fake.sent().at(-1)).toEqual({ type: "cancel" });
 });
 
-it("the banner explains why a search ended and can be dismissed", () => {
+it("a party member waits for the leader to choose the queue", () => {
+  const fake = withQueue();
+  render(<GameMenu />);
+  act(() => fake.queue.joinParty("K7P2QX"));
+  fake.open();
+  fake.say({ type: "party", code: "K7P2QX", members: 2, leader: false, queue: null });
+  expect(screen.getByText("The party leader chooses the queue.")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "2v2" })).toBeNull();
+  fake.say({ type: "refused", code: "no_such_party" });
+  expect(screen.getByText(/No party has that code/)).toBeTruthy();
+});
+
+it("the banner explains why online play stopped and can be dismissed", () => {
   const fake = withQueue();
   render(<MatchStatus />);
-  act(() => fake.queue.join("1v1"));
+  act(() => fake.queue.queue("1v1"));
   fake.drop();
   expect(screen.getByRole("status").textContent).toContain("Could not reach the matchmaker");
   fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));

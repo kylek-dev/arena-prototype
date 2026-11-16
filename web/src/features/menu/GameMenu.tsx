@@ -7,58 +7,12 @@ import { debugEnabled, diagnosticsVisible } from "../../runtime/diagnostics";
 import { lightingVisible } from "../../state/lighting";
 import { mapEditorVisible } from "../../state/map-editor";
 import { characterKits, customizerVisible } from "../../state/appearance";
-import { matchQueue, networkLink } from "../../state/network";
+import { networkLink } from "../../state/network";
 import { createStore } from "../../state/store";
 import type { LinkState } from "../../domain/network";
-import { IDLE_QUEUE, QUEUE_MODES, modeLabel } from "../../domain/matchmaking";
+import { PlayOnline } from "../play-online/PlayOnline";
 
 const NO_LINK = createStore<LinkState>({ phase: "idle", attempt: 0, ended: null, status: null });
-const NO_QUEUE = createStore(IDLE_QUEUE);
-
-/** Queue for an online match; while searching, which queue and Cancel. */
-function PlayOnline() {
-  const queue = useStore(matchQueue, (q) => q);
-  const search = useStore(queue?.state ?? NO_QUEUE, (s) => s);
-  if (!queue) return null;
-  const searching = search.phase === "connecting" || search.phase === "queued";
-  return (
-    <div className="stack" role="group" aria-labelledby="play-online-heading">
-      <Text id="play-online-heading" size="2" weight="medium">
-        Play online
-      </Text>
-      {searching && search.mode ? (
-        <>
-          <Text size="1" color="gray">
-            Searching for a {modeLabel(search.mode)} match. You can keep practicing; the match
-            starts when everyone is found.
-          </Text>
-          <Button variant="soft" color="gray" onClick={() => queue.cancel()}>
-            Cancel search
-          </Button>
-        </>
-      ) : search.phase === "found" ? (
-        <Text size="1" color="gray">
-          Match found · getting ready…
-        </Text>
-      ) : (
-        <div className="queue-modes">
-          {QUEUE_MODES.map((mode) => (
-            <Button
-              key={mode.id}
-              variant="surface"
-              onClick={() => {
-                setPanel(null);
-                queue.join(mode.id);
-              }}
-            >
-              {mode.label}
-            </Button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 export function GameMenu() {
   const size = useStore(engine, (s) => s?.teamSize ?? 1);
@@ -99,7 +53,7 @@ export function GameMenu() {
           Rejoin last match
         </Button>
       )}
-      {!inMatch && <PlayOnline />}
+      {!inMatch && <PlayOnline onQueue={() => setPanel(null)} />}
       {!inMatch && (
         <>
           <label className="stack">

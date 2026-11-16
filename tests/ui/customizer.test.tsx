@@ -49,7 +49,10 @@ it("the start screen offers entering directly, without forcing customization", (
   // The character is framed and play waits while the screen is up.
   expect(readPreview()[0]).toBe(1);
   expect(blocksGameplay()).toBe(true);
-  fireEvent.click(screen.getByRole("button", { name: "Enter the arena" }));
+  // Keybinds and spells can be set up from here too.
+  expect(screen.getByRole("button", { name: "Keybinds" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Spells" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Practice" }));
   expect(beforeMatch.get()).toBe(false);
   expect(blocksGameplay()).toBe(false);
   expect(readPreview()[0]).toBe(0);
