@@ -1,8 +1,7 @@
+pub use crate::formulas::{RESILIENCE_PERCENTAGE, RESILIENCE_PROC_CHANCE, damage_after_resilience};
 use crate::specs::Specialisation;
 
-pub const RESILIENCE_PERCENTAGE: u8 = 30;
 pub const SECONDARY_STAT_BUDGET: u8 = 100 - RESILIENCE_PERCENTAGE;
-pub const RESILIENCE_PROC_CHANCE: u8 = 30;
 
 // Every player of the same spec gets the same template.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,17 +66,4 @@ impl Specialisation {
             Self::NatureGuardian => STARTER_TEMPLATE,
         }
     }
-}
-
-// The match rolls 0 to 99 for the chance and 1 to 30 for the reduction.
-// Call this before subtracting HP.
-pub fn damage_after_resilience(damage: u16, chance_roll: u8, reduction_roll: u8) -> u16 {
-    if chance_roll >= RESILIENCE_PROC_CHANCE {
-        return damage;
-    }
-
-    let reduction = reduction_roll.min(RESILIENCE_PERCENTAGE);
-    let prevented_damage = u32::from(damage) * u32::from(reduction) / 100;
-
-    damage - prevented_damage as u16
 }

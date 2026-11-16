@@ -88,6 +88,16 @@ pub enum SpellEffect {
         categories: Vec<DamageCategory>,
     },
 
+    IncreaseDamageDone {
+        percentage: u16,
+        duration_ticks: u32,
+    },
+
+    ReduceDamageTaken {
+        percentage: u8,
+        duration_ticks: u32,
+    },
+
     Summon {
         summon: SummonId,
         count: u8,
@@ -116,7 +126,6 @@ pub enum SpellEffect {
     },
 
     // Passive spell modifications.
-
     IncreaseSpellDamage {
         spell: SpellId,
         percentage: u16,
@@ -225,13 +234,12 @@ impl Spell {
         class: Class,
         effects: Vec<SpellEffect>,
     ) -> Self {
-        let mut spell = Self::active(id, name, class);
-
-        spell.spell_type = SpellType::Passive;
-        spell.target = SpellTarget::NoTarget;
-        spell.gcd = GcdType::OffGcd;
-        spell.effects = effects;
-
-        spell
+        Self {
+            spell_type: SpellType::Passive,
+            target: SpellTarget::NoTarget,
+            gcd: GcdType::OffGcd,
+            effects,
+            ..Self::active(id, name, class)
+        }
     }
 }
