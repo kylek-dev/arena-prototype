@@ -342,8 +342,17 @@ plus the 100 ms view delay: about 130 ms on localhost and about 250 ms at
   server, through 50 ms relay clumps, folded and corrected nothing and
   never starved. Production hosts drift by parts per million, but a
   skewed development VM also runs game time slow; switching WSL's clock
-  source (see `docs/DEVELOPMENT.md`) avoids that. Browser retesting is
-  pending.
+  source (see `docs/DEVELOPMENT.md`) avoids that.
+- **Browser result (2026-11-15, user-reported).** Two tabs in one window
+  against the WSL2 dev server, after this change. The overlay showed the
+  server at 27.50 ticks/s on the browser's clock, 28 inputs/s sent, queue
+  1.0 with low point 1, pace 100%, input-to-acknowledgement 74.8 ms and 0
+  corrections. The server's per-seat lines showed inputs received equal
+  to applied at 30.00/s, with no folds, no starved ticks and a queue of
+  1..1 once the rate estimate settled. Folds happened only in the first
+  ten seconds, while tabs were switched and the rate was still being
+  measured. The user judged it good. This is a user test, not an
+  exhaustive review; the full match UI checklist remains open.
 - **Measured** ([load baseline](../research/match-server-load.md#prediction)).
   The bots predict exactly as the browser does. 1v1 at 0, 50, 100 and
   200 ms with jitter had no corrections. 3v3 load with drop-outs had 0.1

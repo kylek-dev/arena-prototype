@@ -137,7 +137,13 @@ as measured on their own clock:
 | Paced, 50 ms clumps, client clock 9% fast | 0 | 0 | 0 | 2.0 |
 
 The earlier bot measurements are unaffected: bots run on the same
-(skewed) clock as the server. Browser retesting is pending.
+(skewed) clock as the server.
+
+Browser retest after the change (user-reported, same WSL2 setup): server
+ticks 27.50/s on the browser's clock, 28 inputs/s sent, queue 1..1, pace
+100%, input-to-acknowledgement 74.8 ms and 0 corrections. The server
+received and applied 30.00 inputs/s per its clock, with no folds or
+starved ticks once the rate estimate settled.
 
 A run with jumps disabled ruled out jumping as the cause of the first
 problem. The remaining corrections match real disagreements: a fighter
