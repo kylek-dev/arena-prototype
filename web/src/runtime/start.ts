@@ -15,7 +15,8 @@ import { installInput } from "./input-router";
 import { installSpellDragging } from "./spell-drag";
 import { debugEnabled, measureFrames, metrics, recordError, recordState } from "./diagnostics";
 import { browserLink, installJoinLinks, takeJoinFragment } from "./network";
-import { networkLink } from "../state/network";
+import { browserQueue } from "./matchmaking";
+import { matchQueue, networkLink } from "../state/network";
 export function startRuntime(canvas: HTMLCanvasElement) {
   const pointer = installPointer(canvas, () => router.cancel());
   const router = installInput(canvas, pointer.end);
@@ -33,6 +34,9 @@ export function startRuntime(canvas: HTMLCanvasElement) {
   window.addEventListener("unhandledrejection", (e) => fail(String(e.reason?.message ?? e.reason)));
   const link = browserLink();
   networkLink.set(link);
+  // A seat found by the queue is joined like any other.
+  const queue = browserQueue((ticket) => link.join(ticket));
+  matchQueue.set(queue);
   // A join link wins; otherwise a reload rejoins this tab's match.
   const joining = takeJoinFragment() ?? link.resumable();
   if (joining) link.join(joining);
@@ -98,6 +102,8 @@ export function startRuntime(canvas: HTMLCanvasElement) {
   });
   return () => {
     stopJoinLinks();
+    queue.dispose();
+    matchQueue.set(null);
     link.dispose();
     networkLink.set(null);
     stopFrameTiming();

@@ -1,9 +1,15 @@
 import { Button } from "@radix-ui/themes";
+import { useEffect, useState } from "react";
+import { queueMessage } from "../../domain/matchmaking";
 import { matchMessage } from "../../domain/network";
+import type { Queue } from "../../runtime/matchmaking";
 import type { Link } from "../../runtime/network";
-import { networkLink } from "../../state/network";
+import { matchQueue, networkLink } from "../../state/network";
 import { engine } from "../../state/session";
-import { useStore } from "../../state/store";
+import { createStore, useStore } from "../../state/store";
+import { IDLE_QUEUE } from "../../domain/matchmaking";
+
+const IDLE = createStore(IDLE_QUEUE);
 
 function LinkStatus({ link }: { link: Link }) {
   const state = useStore(link.state, (s) => s);
@@ -35,8 +41,48 @@ function LinkStatus({ link }: { link: Link }) {
   );
 }
 
-/** Network match banner: connecting, waiting, reconnecting, ended, rejoin. */
+/** `clock()`, refreshed every second while `ticking`. */
+function useClock(ticking: boolean, clock: () => number) {
+  const [now, setNow] = useState(clock);
+  useEffect(() => {
+    if (!ticking) return;
+    setNow(clock());
+    const id = window.setInterval(() => setNow(clock()), 1000);
+    return () => window.clearInterval(id);
+  }, [ticking, clock]);
+  return now;
+}
+
+function QueueStatus({ queue }: { queue: Queue }) {
+  const state = useStore(queue.state, (s) => s);
+  const now = useClock(state.phase === "queued", queue.now);
+  const message = queueMessage(state, now);
+  if (!message) return null;
+  return (
+    <div className={`match-status ${message.tone}`} role="status" aria-live="polite">
+      <span>{message.text}</span>
+      {message.cancel ? (
+        <Button size="1" variant="soft" color="gray" onClick={() => queue.cancel()}>
+          Cancel
+        </Button>
+      ) : (
+        state.phase === "ended" && (
+          <Button size="1" variant="soft" color="gray" onClick={() => queue.dismiss()}>
+            Dismiss
+          </Button>
+        )
+      )}
+    </div>
+  );
+}
+
+/** Network match banner: queue search, connecting, waiting, reconnecting,
+ * ended, rejoin. A search shows instead of the match banner, since a found
+ * match ends the search and searching is offered only outside a match. */
 export function MatchStatus() {
   const link = useStore(networkLink, (l) => l);
+  const queue = useStore(matchQueue, (q) => q);
+  const searching = useStore(queue?.state ?? IDLE, (s) => s.phase !== "idle");
+  if (queue && searching) return <QueueStatus queue={queue} />;
   return link ? <LinkStatus link={link} /> : null;
 }

@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Starts a development match server and front door sharing a fresh signing
-# key, for trying the lobby locally (ADR 0045). Serve the client separately
-# (`npm run serve`), then open http://127.0.0.1:8090/lobby/ and create a match.
+# key (ADR 0045, 0046). Serve the client separately (`npm run serve`, which
+# forwards /api to the door), then open http://localhost:8000 and use
+# Menu → Play online to queue. To fill a queue with bots:
+#   cargo run -p arena-bot -- --queue solo-2v2 --door 127.0.0.1:8090 --bots 3 --seconds 900
+# The link-based lobby is at http://127.0.0.1:8090/lobby/.
 # Ctrl+C stops both. Development only: plain ws:// and http://, loopback.
 #
 # Usage: scripts/dev-door.sh [page URL]   (default http://localhost:8000/)

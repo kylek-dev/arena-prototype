@@ -196,3 +196,9 @@ legend {
   padding: 12px;
   border-radius: var(--radius-3);
 }
+/* Play online: the three solo queues side by side. */
+.queue-modes {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
