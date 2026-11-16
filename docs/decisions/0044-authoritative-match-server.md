@@ -224,6 +224,37 @@ mismatch or failed rejoin. Results are in
 server bug: a connection could close without delivering `MatchOver` when
 the match ended while an input was in flight. It is fixed.
 
+### Shutdown and draining (implemented; deployment guidance proposed)
+
+A match lives in one server process and does not migrate. A process that
+is removed while hosting matches ends them: its players see a disconnect,
+and a rejoin is answered with `MatchOver`. A fixed drain time (the first
+version waited 60 s) is therefore the wrong tool. Matches have no time
+limit, so no drain can promise they finish. Locally, Ctrl+C simply hung
+for a minute when a match was left open (user feedback).
+
+- **On SIGTERM or Ctrl+C** the server stops taking new matches
+  (`/readyz` fails) and lets running ones continue, with rejoins still
+  allowed, for `--drain-seconds`. It then closes what is left with
+  `ServerShutdown`. Progress is printed every 10 s, and a second signal
+  closes everything at once. With `--dev` the drain defaults to zero, so
+  Ctrl+C exits immediately. Without `--dev` it must be given.
+- **Deployment guidance (proposed; there is no deployment yet).** Set
+  `--drain-seconds` to the termination grace period the platform allows
+  (Kubernetes' `terminationGracePeriodSeconds`). The more important rule
+  is not to remove a process that hosts matches. Scale-downs and rolling
+  updates should only take empty instances: Agones marks hosting game
+  servers as allocated, and plain Kubernetes can use the cluster
+  autoscaler's `safe-to-evict: false` annotation while matches run. Then
+  only real failures interrupt matches.
+- **Bounded rounds (user decision).** A round lasts at most 20 minutes;
+  one still running then ends in a draw (`MAX_ROUND_TICKS`,
+  `RULES_VERSION` 2). A match therefore ends at most 20 minutes after it
+  starts, plus the 5 s linger, or up to 60 s more while waiting for players.
+  A drain of `--drain-seconds 1210`, with a termination grace period a few
+  seconds longer, lets every match a server is hosting finish. Shorter
+  drains are a trade-off between match completion and deploy speed.
+
 ### Scaling topology (proposed; first measurements)
 
 Arena matches are small (2–6 players), self-contained and short-lived, which

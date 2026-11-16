@@ -28,5 +28,35 @@
     "key": "github-metadata",
     "title": "Complete GitHub Projects and wiki synchronization",
     "body_file": "planning/issues/github-metadata.md"
+  },
+  {
+    "key": "remote-playtests",
+    "title": "Deploy the match server for remote playtests",
+    "body_file": "planning/issues/remote-playtests.md"
+  },
+  {
+    "key": "server-casting-resources",
+    "title": "Make cast times, cooldowns, resources and interrupts server-authoritative",
+    "body_file": "planning/issues/server-casting-resources.md"
+  },
+  {
+    "key": "networked-appearance",
+    "title": "Show every player's chosen look in matches",
+    "body_file": "planning/issues/networked-appearance.md"
+  },
+  {
+    "key": "round-clock",
+    "title": "Show the round clock and settle the time-limit result",
+    "body_file": "planning/issues/round-clock.md"
+  },
+  {
+    "key": "netcode-hardening",
+    "title": "Measure and harden netcode on real networks",
+    "body_file": "planning/issues/netcode-hardening.md"
+  },
+  {
+    "key": "network-ui-review",
+    "title": "Review the network match experience across browsers",
+    "body_file": "planning/issues/network-ui-review.md"
   }
 ]

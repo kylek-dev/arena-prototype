@@ -120,7 +120,7 @@ curl -X POST 'http://127.0.0.1:8080/dev/match?team_size=1'   # match id and one 
 curl http://127.0.0.1:8080/metrics            # Prometheus text counters
 ```
 
-`--dev` generates a random ticket key and enables `POST /dev/match`; it refuses non-loopback `--bind` addresses. Without `--dev`, set `ARENA_TICKET_KEY` to at least 32 bytes of hex shared with whatever issues tickets. `--debug-json` logs every message as JSON on stderr. Ctrl+C or SIGTERM drains: readiness (`/readyz`) fails, new matches are refused, running matches get up to `--drain-seconds` (default 60) before players receive `ServerShutdown`. The browser cannot connect yet. Server tests: `cargo test -p arena-server`.
+`--dev` generates a random ticket key and enables `POST /dev/match`; it refuses non-loopback `--bind` addresses. Without `--dev`, set `ARENA_TICKET_KEY` to at least 32 bytes of hex shared with whatever issues tickets. `--debug-json` logs every message as JSON on stderr. With `--dev`, Ctrl+C stops at once (players receive `ServerShutdown`). Pass `--drain-seconds N` to drain instead: readiness (`/readyz`) fails, no new match starts, and running matches continue for up to N seconds (progress every 10 s). A second Ctrl+C or SIGTERM stops immediately. Without `--dev`, `--drain-seconds` is required; see ADR 0044 for choosing it. Server tests: `cargo test -p arena-server`.
 
 To play a network match in the browser, start the server and the client, then create a match and open one printed link per seat, each in its own tab or browser:
 

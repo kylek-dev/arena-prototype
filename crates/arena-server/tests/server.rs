@@ -493,3 +493,33 @@ async fn a_dropped_player_shows_as_disconnected_stands_idle_and_can_rejoin() {
     assert!(moved.fighters[0].z < walked.fighters[0].z);
     running.shut_down(Duration::ZERO).await.unwrap();
 }
+
+#[tokio::test]
+async fn draining_keeps_running_matches_until_stopped() {
+    let running = server().await;
+    let addr = running.addr;
+    let created = new_match(addr, 1).await;
+    let (mut first, _) = Client::join(addr, &created.tickets[0]).await;
+    let (_second, _) = Client::join(addr, &created.tickets[1]).await;
+    running.begin_drain();
+    assert_eq!(running.active_matches(), 1);
+    // No new matches and not ready, but the running match plays on ...
+    assert_eq!(http(addr, "GET", "/readyz").await.0, 503);
+    assert_eq!(http(addr, "POST", "/dev/match").await.0, 503);
+    let before = first
+        .snapshot_until(|snapshot| snapshot.tick > 0)
+        .await
+        .tick;
+    first
+        .snapshot_until(|snapshot| snapshot.tick > before + 30)
+        .await;
+    // ... and its players may still rejoin.
+    let (mut back, welcome) = Client::join(addr, &created.tickets[0]).await;
+    assert_eq!(welcome.actor, 0);
+    assert!(!running.drained(Duration::from_millis(100)).await);
+    // Stopping closes it at once, without waiting for the match to end.
+    let stopped = tokio::time::Instant::now();
+    running.stop().await.unwrap();
+    assert_eq!(back.error().await, ErrorCode::ServerShutdown);
+    assert!(stopped.elapsed() < Duration::from_secs(3));
+}

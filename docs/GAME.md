@@ -12,6 +12,8 @@ Start with a 1v1 technical duel, then a 2v2 human playtest with two contrasting 
 
 No gear advantage in the first playtests. Use equalized loadouts and fast rematches. Separate mechanical skill from unlock progression. Explore match duration, resource pressure, and anti-stall rules using data rather than cloning another game's numbers.
 
+**Decided (2026-11-15):** a round lasts at most 20 minutes (`MAX_ROUND_TICKS`); a round still running then ends in a draw. This bounds stalled play and how long a server must keep a match. Shorter limits or tie-breaks (for example remaining health) remain open to tuning from playtests.
+
 ## Questions to answer through play
 
 1. How much of the fun comes from targeting versus aiming? Start with targeted attacks plus line-of-sight and range checks; compare a limited directional ability later.
