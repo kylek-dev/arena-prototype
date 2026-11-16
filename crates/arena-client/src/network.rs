@@ -350,12 +350,24 @@ impl Session {
     /// the drawn position by nothing at first: the offset absorbs it and
     /// fades in `view`.
     fn reconcile(&mut self, layout: &Layout) {
-        let (Phase::Playing, Some(seat)) = (self.phase, self.seat) else {
-            // Waiting inputs are acknowledged without acting, and a finished
-            // round no longer moves: show the server's state as it is.
-            self.predictor.reset();
-            self.own = None;
-            return;
+        let seat = match (self.phase, self.seat) {
+            (Phase::Playing, Some(seat)) => seat,
+            (Phase::Waiting, Some(_)) => {
+                // Inputs the server discarded while waiting are dropped;
+                // ones still in flight may land after the start and act.
+                if let Some((_, _, _, ack)) = self.newest_state.take() {
+                    self.predictor.acknowledge(ack);
+                }
+                self.own = None;
+                self.stats.predicted_ticks = self.predictor.pending();
+                return;
+            }
+            _ => {
+                // A finished round no longer moves: show the server's state.
+                self.predictor.reset();
+                self.own = None;
+                return;
+            }
         };
         let Some((tick, fighters, result, ack)) = self.newest_state.take() else {
             return;
@@ -446,8 +458,10 @@ impl Session {
         if self.unacked.len() > 256 {
             self.unacked.pop_front();
         }
-        if self.phase == Phase::Playing {
+        {
             // Move at once; the server's snapshots will confirm or correct.
+            // Inputs sent while waiting are recorded too: the match may start
+            // before they arrive, and then the server applies them.
             let predicted = self.predictor.apply(
                 self.seq,
                 ActorInput {

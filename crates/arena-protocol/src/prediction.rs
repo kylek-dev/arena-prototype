@@ -47,6 +47,17 @@ impl Predictor {
         *self = Self::default();
     }
 
+    /// While the match waits for players: forget inputs the server has
+    /// acknowledged (it discards them) and predict nothing yet. Inputs still
+    /// in flight stay queued, because the server may start the match before
+    /// they arrive and then apply them; the first reconcile replays them.
+    pub fn acknowledge(&mut self, ack: u32) {
+        while self.pending.front().is_some_and(|(seq, _)| *seq <= ack) {
+            self.pending.pop_front();
+        }
+        self.arena = None;
+    }
+
     /// Applies this player's input `seq` for the next tick, as the server
     /// will. Returns the new predicted state, or `None` before the first
     /// reconcile.
@@ -195,6 +206,31 @@ mod tests {
         assert_eq!(moved, arena_sim::arena::MOVE_PER_TICK as u64);
         assert_eq!(predictor.corrections(), 1);
         assert_eq!(predictor.predicted(), Some(server.fighters()[0]));
+    }
+
+    #[test]
+    fn inputs_in_flight_when_the_match_starts_are_predicted() {
+        let mut server = Arena::practice(layout(), 1).unwrap();
+        let mut predictor = Predictor::default();
+        // Waiting: inputs 1-3 are sent; the server discards 1 and 2 (acked)
+        // and then starts, applying 3, which was still in flight.
+        for seq in 1..=3 {
+            predictor.apply(seq, walk(seq).1);
+        }
+        predictor.acknowledge(2);
+        assert_eq!(
+            predictor.predicted(),
+            None,
+            "nothing predicted while waiting"
+        );
+        assert_eq!(predictor.pending(), 1);
+        predictor.reconcile(&layout(), 0, server.fighters().to_vec(), None, 0, 2);
+        let predicted = predictor.predicted().unwrap();
+        server_tick(&mut server, Some(walk(3).1));
+        let moved = predictor.reconcile(&layout(), 1, server.fighters().to_vec(), None, 0, 3);
+        assert_eq!(moved, Some(0));
+        assert_eq!(predictor.predicted(), Some(predicted));
+        assert_eq!(predictor.corrections(), 0);
     }
 
     #[test]

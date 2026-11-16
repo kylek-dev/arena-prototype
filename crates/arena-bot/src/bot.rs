@@ -7,10 +7,12 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
+use arena_protocol::prediction::Predictor;
 use arena_protocol::{
-    ClientMessage, ErrorCode, InputFrame, PROTOCOL_VERSION, ServerMessage, Snapshot,
+    ClientMessage, ErrorCode, FighterState, InputFrame, PROTOCOL_VERSION, ServerMessage, Snapshot,
 };
-use arena_sim::arena::ATTACK_RANGE;
+use arena_sim::arena::{ATTACK_RANGE, ActorInput};
+use arena_sim::map::Layout;
 use futures_util::{SinkExt, StreamExt};
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_tungstenite::connect_async;
@@ -32,6 +34,8 @@ pub struct Seat {
     pub reconnect_every: Option<Duration>,
     /// How long a dropped seat stays away before rejoining.
     pub away: Duration,
+    /// The match's map, for predicting this seat's own movement.
+    pub layout: Arc<Layout>,
     pub shared: Arc<Shared>,
 }
 
@@ -55,6 +59,11 @@ pub struct SeatStats {
     pub rejoins_too_late: u64,
     /// Snapshots that showed some other fighter as disconnected.
     pub saw_disconnected: u64,
+    /// Inputs applied to the predicted fighter, as a browser client does.
+    pub predicted_inputs: u64,
+    /// Reconciliations that moved the prediction, and by how much (mm).
+    pub corrections: u64,
+    pub correction_mm: Vec<u32>,
     pub round_finished: bool,
 }
 
@@ -172,6 +181,9 @@ async fn session(
     let mut pings: HashMap<u32, Instant> = HashMap::new();
     let mut nonce = 0u32;
     let mut welcomed = false;
+    // Predicts this seat's movement exactly as the browser client does, to
+    // measure how often the server corrects it.
+    let mut predictor = Predictor::default();
     // Once the socket refuses writes, stop sending and let the incoming side
     // deliver what the server said last (usually an `Error`), which the
     // simulated delay may still be holding.
@@ -216,6 +228,28 @@ async fn session(
                         if snapshot.tick > 0 {
                             seat.shared.check_hash(seat.match_id, snapshot.tick, snapshot.hash);
                         }
+                        if snapshot.result.is_some() {
+                            predictor.reset();
+                        } else if snapshot.tick == 0 {
+                            // Waiting: discarded inputs are acknowledged;
+                            // ones in flight may act once the match starts.
+                            predictor.acknowledge(snapshot.ack);
+                        } else {
+                            let fighters =
+                                snapshot.fighters.iter().map(FighterState::combatant).collect();
+                            if let Some(moved) = predictor.reconcile(
+                                &seat.layout,
+                                snapshot.tick,
+                                fighters,
+                                None,
+                                seat.actor,
+                                snapshot.ack,
+                            ) && moved > 0
+                            {
+                                stats.corrections += 1;
+                                stats.correction_mm.push(u32::try_from(moved).unwrap_or(u32::MAX));
+                            }
+                        }
                         if snapshot
                             .fighters
                             .iter()
@@ -243,6 +277,13 @@ async fn session(
                     continue;
                 }
                 stats.inputs += 1;
+                // Recorded from the start, as the browser client does.
+                let mut slot = ActorInput::default();
+                frame.merge_into(&mut slot);
+                predictor.apply(seq, slot);
+                if snapshot.tick > 0 && snapshot.result.is_none() {
+                    stats.predicted_inputs += 1;
+                }
                 unacked.push_back((seq, Instant::now()));
                 // A stalled server must not grow this without bound.
                 if unacked.len() > 1024 {

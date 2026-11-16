@@ -234,6 +234,7 @@ dependencies = [
 name = "arena-bot"
 version = "0.1.0"
 dependencies = [
+ "arena-map",
  "arena-protocol",
  "arena-server",
  "arena-sim",

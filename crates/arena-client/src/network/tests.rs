@@ -392,8 +392,29 @@ fn nothing_is_predicted_while_waiting_and_a_new_socket_starts_over() {
     );
     assert_eq!(session.phase, Phase::Waiting);
     session.input([0, -1000], 0, false, None, 0.0).unwrap();
-    assert_eq!(session.own(), None);
-    assert_eq!(session.stats.predicted_ticks, 0);
+    assert_eq!(session.own(), None, "nothing is drawn ahead while waiting");
+    assert_eq!(session.stats.predicted_ticks, 1, "but the input is kept");
+    // The match starts with that input still in flight; the server applies
+    // it on its first tick and the prediction agrees.
+    let mut server = server;
+    let mut slot = ActorInput::default();
+    InputFrame {
+        seq: 1,
+        movement: [0, -1000],
+        facing: 0,
+        jump: false,
+        attack: None,
+    }
+    .merge_into(&mut slot);
+    server.advance(&[slot]);
+    session.receive(
+        &feed(1, vec![snapshot(&server, 1, vec![], &[true, true])]),
+        0.1,
+        &layout(),
+    );
+    assert_eq!(session.phase, Phase::Playing);
+    assert_eq!(session.stats.corrections, 0);
+    assert_eq!(session.predicted(), Some(server.fighters()[0]));
     let (mut session, _) = running_session();
     session.input([0, -1000], 0, false, None, 0.0).unwrap();
     assert!(session.own().is_some());
