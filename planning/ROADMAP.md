@@ -22,20 +22,20 @@ In recommended order (2026-11-15):
 | Order | Item | Stage | Definition |
 | --- | --- | --- | --- |
 | 1 | Deploy the match server for remote playtests (tooling done; a public host and playtest remain) | 2 | [remote-playtests](issues/remote-playtests.md) |
-| 2 | Queue for 1v1, solo 2v2 and solo 3v3 from inside the game | 4 | [matchmaking-queues](issues/matchmaking-queues.md) |
+| done | Queue for 1v1, 2v2, 3v3, solo 2v2 and solo 3v3 from inside the game (browser review pending) | 4 | [matchmaking-queues](issues/matchmaking-queues.md) |
+| done | Queue premade parties in 2v2 and 3v3 (pulled forward by the user; browser review pending) | 4 | [party-queues](issues/party-queues.md) |
+| 2 | Show every player's chosen look in matches (moved up by the user) | 4 | [networked-appearance](issues/networked-appearance.md) |
 | 3 | Show the round clock and settle the time-limit result | 3 | [round-clock](issues/round-clock.md) |
 | 4 | Host private custom matches with invites, teams and rematch | 4 | [custom-matches](issues/custom-matches.md) |
-| 5 | Queue premade 2v2 and 3v3 parties | 4 | [party-queues](issues/party-queues.md) |
-| 6 | Make cast times, cooldowns, resources and interrupts server-authoritative | 3 | [server-casting-resources](issues/server-casting-resources.md) |
-| 7 | Spectate matches | 4 | [spectating](issues/spectating.md) |
-| 8 | Show every player's chosen look in matches | 4–5 | [networked-appearance](issues/networked-appearance.md) |
+| 5 | Make cast times, cooldowns, resources and interrupts server-authoritative | 3 | [server-casting-resources](issues/server-casting-resources.md) |
+| 6 | Spectate matches | 4 | [spectating](issues/spectating.md) |
 | ongoing | Review the network match experience across browsers (manual, by the user) | 2 | [network-ui-review](issues/network-ui-review.md) |
 | ongoing | Measure and harden netcode on real networks | ongoing | [netcode-hardening](issues/netcode-hardening.md) |
 
 Why this order:
-- **Queues first.** They replace copying join links and are what makes repeated playtests practical.
+- **Queues first.** They replace copying join links and are what makes repeated playtests practical. Parties followed at once (user request, 2026-11-16).
+- **Looks next.** The user wants players to set up their character before queueing and others to see it.
 - **The round clock right after.** It is small, and players who meet through a queue should see the time limit coming.
-- **Custom matches before party queues.** Party queues reuse their invites and lobby state.
+- **Custom matches after parties.** They can reuse the party invites and lobby state.
 - **Server-authoritative casting before spectating.** Spectator views then show cast bars and resources from the start instead of adding them twice.
-- **Appearance last.** It mostly affects how matches look, not whether they can be played.
 - **Note on stages.** This pulls part of Stage 4 (lobby and queueing) ahead of the Stage 3 combat slice because remote playtests need it. The stages still describe the exit evidence for each milestone.

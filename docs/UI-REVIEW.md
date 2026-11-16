@@ -31,3 +31,12 @@ Browser/version, device/OS/GPU, viewport, individual scenario logs and console r
 2026-11-08: the user then requested right-click focus on character models and explicitly approved the completed change (“approved”). The human UI approval gate for model focus, including shared model-click picking, is complete. This is user-reported approval, not an agent-run browser test; no additional browser/device or console details were supplied. See [ADR 0023](decisions/0023-world-model-focus.md). This approval does not authorize publication or merge.
 
 2026-11-15: **pending human review.** The network match UI ([ADR 0044](decisions/0044-authoritative-match-server.md), Phase 5): playing a match from development join links, the match banner (connecting, waiting for players, reconnecting, match over, rejoin), greyed "Disconnected" unit frames and nameplates, "Opponent N" names, the menu's Leave match / Rejoin last match controls with practice-only controls hidden during a match, and the network rows in the diagnostics overlay. Automated DOM tests, frontend checks, WASM Clippy and the complete web build passed locally; no browser was launched and no rendered or networked pass is claimed.
+
+2026-11-16: **pending human review.** The home screen and Play online panel ([ADR 0046](decisions/0046-queues-parties-and-home-screen.md)):
+
+- **Home screen.** Customize character, Keybinds, Spells, Practice and Play online.
+- **Parties.** Invite friends (Copy invite link), join with a code, leave a party, and members waiting for the leader.
+- **Queues.** The five queue buttons, with the ones a party cannot use disabled and their reasons, and the search banner with time, players queued and Cancel.
+- **Messages.** Refusals and ended searches explained in words, and entering the arena by itself when a match is found from the home screen.
+
+Automated DOM tests and frontend checks passed locally. No browser was launched, and no rendered or networked pass is claimed.
