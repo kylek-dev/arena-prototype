@@ -55,7 +55,7 @@ impl AutoAttackState {
 mod tests {
     use super::*;
     use crate::arena::Position;
-    use crate::map::Block;
+    use crate::map::Pillar;
 
     fn fighter(x: i32) -> Combatant {
         Combatant {
@@ -65,6 +65,7 @@ mod tests {
             momentum: Position { x: 0, z: 0 },
             health: 100,
             ready_at: 0,
+            facing: 0,
         }
     }
 
@@ -73,13 +74,14 @@ mod tests {
         let mut layout = Layout {
             half_x: 5_000,
             half_z: 5_000,
-            pillars: vec![Block {
+            pillars: vec![Pillar {
                 center: Position { x: 0, z: 0 },
                 half_x: 100,
                 half_z: 100,
             }],
             rooms: Vec::new(),
         };
+
         let attacker = fighter(-1_000);
         let enemy = fighter(1_000);
         let mut auto = AutoAttackState::default();
@@ -90,6 +92,7 @@ mod tests {
         );
 
         layout.pillars.clear();
+
         assert_eq!(
             auto.try_swing(0, &attacker, Some(&enemy), false, &layout),
             Some(SWING_DAMAGE)
