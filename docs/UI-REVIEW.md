@@ -40,3 +40,5 @@ Browser/version, device/OS/GPU, viewport, individual scenario logs and console r
 - **Messages.** Refusals and ended searches explained in words, and entering the arena by itself when a match is found from the home screen.
 
 Automated DOM tests and frontend checks passed locally. No browser was launched, and no rendered or networked pass is claimed.
+
+2026-11-16: the user tried the queue flow locally and reported "this worked". Browser, OS, and which modes and party flows were exercised were not stated, so this does not cover a cross-browser review or every control listed above (issue `network-ui-review`).
