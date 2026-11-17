@@ -280,15 +280,37 @@ mod queue {
         }
         /// Confirms the ready check the door starts.
         async fn confirm(&mut self) {
-            assert!(matches!(
-                self.next_event().await,
-                Some(QueueMessage::Found { .. })
-            ));
-            self.say(r#"{"type":"ready"}"#).await;
+            self.offered().await;
+            self.say(r#"{"type":"accept"}"#).await;
         }
-        /// The seat given once everyone confirmed.
-        async fn seat(&mut self) -> (usize, String, String) {
+        /// Waits for a match to be offered; returns how many must accept.
+        async fn offered(&mut self) -> usize {
             match self.next_event().await {
+                Some(QueueMessage::ReadyCheck {
+                    accepted: 0,
+                    total,
+                    you: false,
+                    remaining_ms,
+                    ..
+                }) => {
+                    assert!(remaining_ms > 0);
+                    total
+                }
+                other => panic!("expected a ready check, got {other:?}"),
+            }
+        }
+        /// The next message that is not a ready check's progress.
+        async fn after_check(&mut self) -> Option<QueueMessage> {
+            loop {
+                match self.next_event().await {
+                    Some(QueueMessage::ReadyCheck { .. }) => {}
+                    other => return other,
+                }
+            }
+        }
+        /// The seat given once everyone accepted.
+        async fn seat(&mut self) -> (usize, String, String) {
+            match self.after_check().await {
                 Some(QueueMessage::Match {
                     seat,
                     server,
@@ -337,11 +359,19 @@ mod queue {
         let (door, server) = door_and_server(Duration::from_secs(5)).await;
         let mut players = Vec::new();
         for guest in 1..=3u128 {
-            let mut player = Player::searching(door.addr, "solo-2v2", guest).await;
+            let mut player = Player::searching(door.addr, "2v2", guest).await;
             loop {
                 match player.next().await {
-                    Some(QueueMessage::Queued { mode, waiting }) => {
-                        assert_eq!((mode.as_str(), waiting), ("solo-2v2", guest as usize));
+                    Some(QueueMessage::Queued {
+                        mode,
+                        waiting,
+                        waited_ms,
+                        expected_ms,
+                    }) => {
+                        assert_eq!((mode.as_str(), waiting), ("2v2", guest as usize));
+                        assert!(waited_ms < 2000, "{waited_ms}");
+                        // No matches yet: nothing to estimate from.
+                        assert_eq!(expected_ms, None);
                         break;
                     }
                     Some(QueueMessage::Party { .. }) => {}
@@ -350,7 +380,7 @@ mod queue {
             }
             players.push(player);
         }
-        players.push(Player::searching(door.addr, "solo-2v2", 4).await);
+        players.push(Player::searching(door.addr, "2v2", 4).await);
         for player in &mut players {
             player.confirm().await;
         }
@@ -422,7 +452,7 @@ mod queue {
                 code: "not_leader".into()
             })
         );
-        leader.queue("solo-2v2").await;
+        leader.queue("1v1").await;
         assert_eq!(
             leader.next_event().await,
             Some(QueueMessage::Refused {
@@ -458,35 +488,81 @@ mod queue {
     }
 
     #[tokio::test]
-    async fn no_shows_are_dropped_and_the_others_go_back_to_the_front() {
+    async fn players_who_do_not_accept_leave_the_queue_and_the_others_go_first() {
         let (door, server) = door_and_server(Duration::from_millis(300)).await;
         let mut first = Player::searching(door.addr, "1v1", 1).await;
         let mut absent = Player::searching(door.addr, "1v1", 2).await;
-        assert!(matches!(
-            first.next_event().await,
-            Some(QueueMessage::Found { .. })
-        ));
+        assert_eq!(first.offered().await, 2);
+        assert_eq!(absent.offered().await, 2);
+        first.say(r#"{"type":"accept"}"#).await;
+        // Everyone sees the acceptance.
         assert!(matches!(
             absent.next_event().await,
-            Some(QueueMessage::Found { .. })
+            Some(QueueMessage::ReadyCheck {
+                accepted: 1,
+                total: 2,
+                you: false,
+                ..
+            })
         ));
-        first.say(r#"{"type":"ready"}"#).await;
-        // The absent player never confirms.
-        assert_eq!(absent.error().await, "not_ready");
+        // The absent player never accepts: out of the queue, still connected.
         assert_eq!(
-            first.next_event().await,
+            absent.after_check().await,
+            Some(QueueMessage::Stopped {
+                reason: "not_accepted".into()
+            })
+        );
+        assert_eq!(
+            first.after_check().await,
             Some(QueueMessage::Requeued { mode: "1v1".into() })
         );
         // A newcomer is matched with the requeued player straight away.
         let mut newcomer = Player::searching(door.addr, "1v1", 3).await;
-        assert!(matches!(
-            first.next_event().await,
-            Some(QueueMessage::Found { .. })
-        ));
-        assert!(matches!(
-            newcomer.next_event().await,
-            Some(QueueMessage::Found { .. })
-        ));
+        first.offered().await;
+        newcomer.offered().await;
+        // The absent player can queue again on the same connection.
+        absent.queue("1v1").await;
+        loop {
+            match absent.next().await {
+                Some(QueueMessage::Queued { .. }) => break,
+                Some(_) => {}
+                None => panic!("the connection closed"),
+            }
+        }
+        door.stop().await.unwrap();
+        server.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn declining_ends_the_check_for_everyone_at_once() {
+        let (door, server) = door_and_server(Duration::from_secs(5)).await;
+        let mut players = Vec::new();
+        for guest in 1..=4u128 {
+            players.push(Player::searching(door.addr, "2v2", guest).await);
+        }
+        for player in &mut players {
+            assert_eq!(player.offered().await, 4);
+        }
+        players[0].say(r#"{"type":"accept"}"#).await;
+        players[1].say(r#"{"type":"decline"}"#).await;
+        assert_eq!(
+            players[1].after_check().await,
+            Some(QueueMessage::Stopped {
+                reason: "declined".into()
+            })
+        );
+        assert_eq!(
+            players[0].after_check().await,
+            Some(QueueMessage::Requeued { mode: "2v2".into() })
+        );
+        for player in &mut players[2..] {
+            assert_eq!(
+                player.after_check().await,
+                Some(QueueMessage::Stopped {
+                    reason: "not_accepted".into()
+                })
+            );
+        }
         door.stop().await.unwrap();
         server.stop().await.unwrap();
     }
@@ -529,10 +605,10 @@ mod queue {
             })
         );
         // Opening the game in another tab replaces the first connection.
-        let mut tab = Player::searching(door.addr, "solo-3v3", 7).await;
+        let mut tab = Player::searching(door.addr, "3v3", 7).await;
         let mut other_tab = Player::hello(door.addr, 7).await;
         assert_eq!(tab.error().await, "replaced");
-        other_tab.queue("solo-3v3").await;
+        other_tab.queue("3v3").await;
         loop {
             match other_tab.next().await {
                 Some(QueueMessage::Queued { waiting, .. }) => {

@@ -1,20 +1,24 @@
-//! Queues and parties (ADR 0046).
+//! Queues and parties (ADR 0046, ADR 0047).
 //!
-//! Modes: `1v1`, `solo-2v2` and `solo-3v3` take players queueing alone;
-//! `2v2` and `3v3` take parties of up to the team size, and fill each team
-//! from other parties or single players in that queue (user decision
-//! 2026-11-15). Party members always play on the same team.
+//! Three queues: `1v1` takes players on their own; `2v2` and `3v3` take
+//! players on their own or parties up to the team size, and fill each team
+//! from whoever is queued (user decisions 2026-11-15 and 2026-11-16: no
+//! separate solo queues). Party members always play on the same team.
 //!
 //! Every connected player belongs to a party; a player who has not formed
 //! or joined one is a party of one without an invite code. A party's leader
 //! (its first member) queues it; any member may cancel the search.
 //!
-//! When a queue can fill both teams, the parties chosen are asked to confirm
-//! they are still there (a ready check, answered automatically by the game).
-//! If everyone confirms in time, the match starts, and the parties stay
-//! together to queue again afterwards. Otherwise players who did not
-//! confirm are dropped, parties that lost a member stop searching, and
-//! complete parties return to the front of the queue in their order.
+//! When a queue can fill both teams, everyone chosen is asked to accept
+//! the match within the ready check (15 s by default). If everyone accepts,
+//! the match starts and the parties stay together to queue again
+//! afterwards. If someone declines or the time runs out, players who did
+//! not accept leave the queue (they stay connected), as do their parties,
+//! since a party plays together; parties whose members all accepted go
+//! back to the front of the queue in their order.
+//!
+//! The matchmaker also keeps how long recent matches took to find, per
+//! queue, for an expected wait.
 //!
 //! A clock-free state machine like [`crate::session::Session`]: the caller
 //! passes in time and connection identifiers and carries out the returned
@@ -40,30 +44,24 @@ const FORMING_WINDOW: usize = 64;
 /// Invite code characters: no 0/O or 1/I/L to misread.
 const CODE_ALPHABET: &[u8] = b"23456789ABCDEFGHJKMNPQRSTUVWXYZ";
 pub const CODE_LENGTH: usize = 6;
+/// Recent waits kept per queue for the expected wait ...
+const RECENT_WAITS: usize = 20;
+/// ... and how many it needs before it estimates anything.
+const MIN_WAITS: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Mode {
     Duel,
     Team2v2,
     Team3v3,
-    Solo2v2,
-    Solo3v3,
 }
 impl Mode {
-    pub const ALL: [Mode; 5] = [
-        Mode::Duel,
-        Mode::Team2v2,
-        Mode::Team3v3,
-        Mode::Solo2v2,
-        Mode::Solo3v3,
-    ];
+    pub const ALL: [Mode; 3] = [Mode::Duel, Mode::Team2v2, Mode::Team3v3];
     pub fn id(self) -> &'static str {
         match self {
             Mode::Duel => "1v1",
             Mode::Team2v2 => "2v2",
             Mode::Team3v3 => "3v3",
-            Mode::Solo2v2 => "solo-2v2",
-            Mode::Solo3v3 => "solo-3v3",
         }
     }
     pub fn from_id(id: &str) -> Option<Self> {
@@ -72,19 +70,16 @@ impl Mode {
     pub fn team_size(self) -> usize {
         match self {
             Mode::Duel => 1,
-            Mode::Team2v2 | Mode::Solo2v2 => 2,
-            Mode::Team3v3 | Mode::Solo3v3 => 3,
+            Mode::Team2v2 => 2,
+            Mode::Team3v3 => 3,
         }
     }
     pub fn players(self) -> usize {
         2 * self.team_size()
     }
-    /// The largest party this queue takes.
+    /// The largest party this queue takes: one team.
     pub fn max_party(self) -> usize {
-        match self {
-            Mode::Team2v2 | Mode::Team3v3 => self.team_size(),
-            _ => 1,
-        }
+        self.team_size()
     }
     pub fn index(self) -> usize {
         self as usize
@@ -96,8 +91,6 @@ impl Mode {
 pub enum Closed {
     /// The same guest connected again elsewhere.
     Replaced,
-    /// It did not confirm in time when a match was found.
-    NotReady,
 }
 
 /// A request the matchmaker turned down; the connection stays open.
@@ -132,15 +125,24 @@ pub enum Stopped {
     Cancelled,
     /// A member left the party or disconnected.
     MemberLeft,
-    /// A member did not confirm a found match.
-    MemberNotReady,
+    /// This player declined the match.
+    Declined,
+    /// This player did not accept the match in time.
+    NotAccepted,
+    /// A party member declined the match.
+    MemberDeclined,
+    /// A party member did not accept the match in time.
+    MemberNotAccepted,
 }
 impl Stopped {
     pub fn code(self) -> &'static str {
         match self {
             Stopped::Cancelled => "cancelled",
             Stopped::MemberLeft => "member_left",
-            Stopped::MemberNotReady => "member_not_ready",
+            Stopped::Declined => "declined",
+            Stopped::NotAccepted => "not_accepted",
+            Stopped::MemberDeclined => "member_declined",
+            Stopped::MemberNotAccepted => "member_not_accepted",
         }
     }
 }
@@ -156,18 +158,31 @@ pub struct PartyView {
     pub queue: Option<Mode>,
 }
 
+/// A ready check as one player sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadyCheck {
+    pub mode: Mode,
+    /// Players who accepted so far, out of `total`.
+    pub accepted: usize,
+    pub total: usize,
+    /// Whether this player has accepted.
+    pub you: bool,
+    /// Time left to accept.
+    pub remaining: Duration,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Out {
     Party {
         conn: QueueConn,
         view: PartyView,
     },
-    /// A match was found: confirm with [`Matchmaker::ready`].
-    Found {
+    /// A match is ready to accept, or its acceptances changed.
+    ReadyCheck {
         conn: QueueConn,
-        mode: Mode,
+        check: ReadyCheck,
     },
-    /// Someone else did not confirm; back at the front of the queue.
+    /// Someone else did not accept; back at the front of the queue.
     Requeued {
         conn: QueueConn,
         mode: Mode,
@@ -181,7 +196,7 @@ pub enum Out {
         conn: QueueConn,
         reason: Refused,
     },
-    /// Everyone confirmed: issue a ticket per seat. `seats[i]` takes seat
+    /// Everyone accepted: issue a ticket per seat. `seats[i]` takes seat
     /// `i` (even seats are one team, odd seats the other). The players stay
     /// connected and in their parties, no longer searching.
     Start {
@@ -213,6 +228,8 @@ struct Party {
     /// The first member leads.
     members: Vec<Member>,
     state: State,
+    /// When this search began; kept through failed ready checks.
+    since: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -222,18 +239,19 @@ struct Forming {
     parties: Vec<u64>,
     /// Party ids per team.
     teams: [Vec<u64>; 2],
-    ready: HashSet<QueueConn>,
+    accepted: HashSet<QueueConn>,
+    declined: HashSet<QueueConn>,
     /// Parties that lost a member during the check.
     broken: HashSet<u64>,
     deadline: Instant,
 }
 
-/// Players waiting per mode, indexed by [`Mode::index`].
-pub type Waiting = [usize; 5];
+/// Players waiting per queue, indexed by [`Mode::index`].
+pub type Waiting = [usize; 3];
 
 #[derive(Debug)]
 pub struct Matchmaker {
-    queues: [VecDeque<u64>; 5],
+    queues: [VecDeque<u64>; 3],
     parties: HashMap<u64, Party>,
     codes: HashMap<String, u64>,
     forming: HashMap<u64, Forming>,
@@ -241,6 +259,8 @@ pub struct Matchmaker {
     /// Each connection's party.
     of: HashMap<QueueConn, u64>,
     guests: HashMap<Guest, QueueConn>,
+    /// How long recent matches took to find, per queue, newest last.
+    waits: [VecDeque<Duration>; 3],
     ready_timeout: Duration,
     /// A random value in `0..bound`: invite codes, team sides and seats.
     random: fn(usize) -> usize,
@@ -256,6 +276,7 @@ impl Matchmaker {
             next_id: 0,
             of: HashMap::new(),
             guests: HashMap::new(),
+            waits: Default::default(),
             ready_timeout,
             random,
         }
@@ -271,7 +292,7 @@ impl Matchmaker {
     }
 
     pub fn waiting(&self) -> Waiting {
-        let mut waiting = [0; 5];
+        let mut waiting = [0; 3];
         for party in self.parties.values() {
             let mode = match party.state {
                 State::Queued(mode) => mode,
@@ -283,17 +304,30 @@ impl Matchmaker {
         waiting
     }
 
-    /// Connections searching (not in a ready check), with their mode.
-    pub fn searching(&self) -> impl Iterator<Item = (QueueConn, Mode)> + '_ {
+    /// The expected wait for `mode`: the median of how long recent matches
+    /// took to find, or `None` until there have been a few.
+    pub fn expected_wait(&self, mode: Mode) -> Option<Duration> {
+        let recent = &self.waits[mode.index()];
+        if recent.len() < MIN_WAITS {
+            return None;
+        }
+        let mut sorted: Vec<Duration> = recent.iter().copied().collect();
+        sorted.sort();
+        Some(sorted[sorted.len() / 2])
+    }
+
+    /// Connections searching (not in a ready check): their queue and when
+    /// their search began.
+    pub fn searching(&self) -> impl Iterator<Item = (QueueConn, Mode, Instant)> + '_ {
         self.parties.values().flat_map(|party| {
-            let mode = match party.state {
-                State::Queued(mode) => Some(mode),
+            let search = match (party.state, party.since) {
+                (State::Queued(mode), Some(since)) => Some((mode, since)),
                 _ => None,
             };
             party
                 .members
                 .iter()
-                .filter_map(move |member| mode.map(|mode| (member.conn, mode)))
+                .filter_map(move |member| search.map(|(mode, since)| (member.conn, mode, since)))
         })
     }
 
@@ -319,6 +353,30 @@ impl Matchmaker {
                     view: self.view(party, member.conn),
                 });
             }
+        }
+    }
+
+    /// Tells everyone in ready check `check` where it stands.
+    fn ready_status(&self, check: u64, now: Instant, out: &mut Vec<Out>) {
+        let Some(forming) = self.forming.get(&check) else {
+            return;
+        };
+        let members: Vec<QueueConn> = forming
+            .parties
+            .iter()
+            .flat_map(|id| self.parties[id].members.iter().map(|m| m.conn))
+            .collect();
+        for conn in &members {
+            out.push(Out::ReadyCheck {
+                conn: *conn,
+                check: ReadyCheck {
+                    mode: forming.mode,
+                    accepted: forming.accepted.len(),
+                    total: members.len(),
+                    you: forming.accepted.contains(conn),
+                    remaining: forming.deadline.saturating_duration_since(now),
+                },
+            });
         }
     }
 
@@ -360,6 +418,7 @@ impl Matchmaker {
                 code: None,
                 members: vec![Member { conn, guest }],
                 state: State::Idle,
+                since: None,
             },
         );
         self.of.insert(conn, id);
@@ -400,7 +459,7 @@ impl Matchmaker {
             }
             State::Forming(check) => {
                 let forming = self.forming.get_mut(&check).expect("check exists");
-                forming.ready.remove(&conn);
+                forming.accepted.remove(&conn);
                 forming.broken.insert(id);
                 out.extend(self.fail(check, now));
             }
@@ -423,6 +482,7 @@ impl Matchmaker {
             self.queues[mode.index()].retain(|queued| *queued != id);
         }
         party.state = State::Idle;
+        party.since = None;
     }
 
     fn new_code(&mut self) -> String {
@@ -544,14 +604,17 @@ impl Matchmaker {
             State::Idle => {}
         }
         self.queues[mode.index()].push_back(id);
-        self.parties.get_mut(&id).expect("exists").state = State::Queued(mode);
+        let party = self.parties.get_mut(&id).expect("exists");
+        party.state = State::Queued(mode);
+        party.since = Some(now);
         let mut out = Vec::new();
         self.announce(id, &mut out);
         out.extend(self.form(mode, now));
         out
     }
 
-    /// Any member stops the party's search (not during a ready check).
+    /// Any member stops the party's search (not during a ready check: then
+    /// decline instead).
     pub fn cancel(&mut self, conn: QueueConn) -> Vec<Out> {
         let Some(&id) = self.of.get(&conn) else {
             return Vec::new();
@@ -578,8 +641,8 @@ impl Matchmaker {
         }
     }
 
-    /// `conn` confirmed a found match.
-    pub fn ready(&mut self, conn: QueueConn, now: Instant) -> Vec<Out> {
+    /// `conn` accepted the match it was offered.
+    pub fn accept(&mut self, conn: QueueConn, now: Instant) -> Vec<Out> {
         let Some(&id) = self.of.get(&conn) else {
             return Vec::new();
         };
@@ -587,15 +650,19 @@ impl Matchmaker {
             return Vec::new();
         };
         let forming = self.forming.get_mut(&check).expect("check exists");
-        forming.ready.insert(conn);
+        if !forming.accepted.insert(conn) {
+            return Vec::new();
+        }
         let everyone = forming.parties.iter().all(|party| {
             self.parties[party]
                 .members
                 .iter()
-                .all(|member| forming.ready.contains(&member.conn))
+                .all(|member| forming.accepted.contains(&member.conn))
         });
+        let mut out = Vec::new();
         if !everyone {
-            return Vec::new();
+            self.ready_status(check, now, &mut out);
+            return out;
         }
         let forming = self.forming.remove(&check).expect("exists");
         // Team sides at random; members in random order within their team.
@@ -616,18 +683,42 @@ impl Matchmaker {
         let seats = (0..forming.mode.players())
             .map(|seat| teams[seat % 2][seat / 2])
             .collect();
-        let mut out = vec![Out::Start {
+        out.push(Out::Start {
             mode: forming.mode,
             seats,
-        }];
+        });
         // Parties stay together after the match starts, ready to queue
-        // again when it is over.
+        // again when it is over. Their waits feed the expected wait.
+        let waits = &mut self.waits[forming.mode.index()];
         for id in &forming.parties {
-            self.parties.get_mut(id).expect("exists").state = State::Idle;
+            let party = self.parties.get_mut(id).expect("exists");
+            if let Some(since) = party.since.take() {
+                waits.push_back(now.saturating_duration_since(since));
+                if waits.len() > RECENT_WAITS {
+                    waits.pop_front();
+                }
+            }
+            party.state = State::Idle;
+        }
+        for id in &forming.parties {
             self.announce(*id, &mut out);
         }
         out.extend(self.form(forming.mode, now));
         out
+    }
+
+    /// `conn` declined the match: the ready check ends at once.
+    pub fn decline(&mut self, conn: QueueConn, now: Instant) -> Vec<Out> {
+        let Some(&id) = self.of.get(&conn) else {
+            return Vec::new();
+        };
+        let State::Forming(check) = self.parties[&id].state else {
+            return Vec::new();
+        };
+        let forming = self.forming.get_mut(&check).expect("check exists");
+        forming.accepted.remove(&conn);
+        forming.declined.insert(conn);
+        self.fail(check, now)
     }
 
     /// Fails ready checks whose time is up.
@@ -644,9 +735,10 @@ impl Matchmaker {
             .collect()
     }
 
-    /// Ends a ready check that cannot complete. Members who did not confirm
-    /// are dropped; their parties, and parties that lost a member, stop
-    /// searching; complete parties go back to the front of the queue.
+    /// Ends a ready check that cannot complete. Parties whose members all
+    /// accepted go back to the front of the queue; every other party leaves
+    /// the queue, each member told whether they or a party member declined
+    /// or did not accept in time.
     fn fail(&mut self, check: u64, now: Instant) -> Vec<Out> {
         let Some(forming) = self.forming.remove(&check) else {
             return Vec::new();
@@ -658,14 +750,11 @@ impl Matchmaker {
             let Some(party) = self.parties.get_mut(&id) else {
                 continue;
             };
-            party.state = State::Idle;
-            let unready: Vec<QueueConn> = party
+            let complete = party
                 .members
                 .iter()
-                .map(|member| member.conn)
-                .filter(|conn| !forming.ready.contains(conn))
-                .collect();
-            if unready.is_empty() && !forming.broken.contains(&id) {
+                .all(|member| forming.accepted.contains(&member.conn));
+            if complete && !forming.broken.contains(&id) {
                 party.state = State::Queued(mode);
                 for member in &party.members {
                     out.push(Out::Requeued {
@@ -676,27 +765,30 @@ impl Matchmaker {
                 back.push(id);
                 continue;
             }
-            for conn in unready {
-                out.extend(self.remove_member(conn, now));
-                out.push(Out::Close {
-                    conn,
-                    reason: Closed::NotReady,
+            party.state = State::Idle;
+            party.since = None;
+            let someone_declined = party
+                .members
+                .iter()
+                .any(|member| forming.declined.contains(&member.conn));
+            for member in &party.members {
+                let reason = if forming.declined.contains(&member.conn) {
+                    Stopped::Declined
+                } else if !forming.accepted.contains(&member.conn) {
+                    Stopped::NotAccepted
+                } else if forming.broken.contains(&id) {
+                    Stopped::MemberLeft
+                } else if someone_declined {
+                    Stopped::MemberDeclined
+                } else {
+                    Stopped::MemberNotAccepted
+                };
+                out.push(Out::Stopped {
+                    conn: member.conn,
+                    reason,
                 });
             }
-            if let Some(party) = self.parties.get(&id) {
-                let reason = if forming.broken.contains(&id) {
-                    Stopped::MemberLeft
-                } else {
-                    Stopped::MemberNotReady
-                };
-                for member in &party.members {
-                    out.push(Out::Stopped {
-                        conn: member.conn,
-                        reason,
-                    });
-                }
-                self.announce(id, &mut out);
-            }
+            self.announce(id, &mut out);
         }
         let queue = &mut self.queues[mode.index()];
         for id in back.into_iter().rev() {
@@ -747,12 +839,6 @@ impl Matchmaker {
             let check = self.id();
             for id in &parties {
                 self.parties.get_mut(id).expect("exists").state = State::Forming(check);
-                for member in &self.parties[id].members {
-                    out.push(Out::Found {
-                        conn: member.conn,
-                        mode,
-                    });
-                }
             }
             self.forming.insert(
                 check,
@@ -760,11 +846,13 @@ impl Matchmaker {
                     mode,
                     parties,
                     teams,
-                    ready: HashSet::new(),
+                    accepted: HashSet::new(),
+                    declined: HashSet::new(),
                     broken: HashSet::new(),
                     deadline: now + self.ready_timeout,
                 },
             );
+            self.ready_status(check, now, &mut out);
         }
         out
     }
@@ -787,22 +875,27 @@ impl Matchmaker {
                     let entries = self.queues[mode.index()].iter().filter(|q| *q == id);
                     assert_eq!(entries.count(), 1);
                     assert!(party.members.len() <= mode.max_party());
+                    assert!(party.since.is_some());
                 }
-                State::Forming(check) => assert!(self.forming[&check].parties.contains(id)),
-                State::Idle => {}
+                State::Forming(check) => {
+                    assert!(self.forming[&check].parties.contains(id));
+                    assert!(party.since.is_some());
+                }
+                State::Idle => assert!(party.since.is_none()),
             }
             if let Some(code) = &party.code {
                 assert_eq!(self.codes[code], *id);
             }
         }
-        assert_eq!(self.codes.len(), {
-            let coded = self.parties.values().filter(|p| p.code.is_some());
-            coded.count()
-        });
+        let coded = self.parties.values().filter(|p| p.code.is_some()).count();
+        assert_eq!(self.codes.len(), coded);
         for queue in &self.queues {
             for id in queue {
                 assert!(matches!(self.parties[id].state, State::Queued(_)));
             }
+        }
+        for waits in &self.waits {
+            assert!(waits.len() <= RECENT_WAITS);
         }
     }
 }
@@ -811,7 +904,7 @@ impl Matchmaker {
 mod tests {
     use super::*;
 
-    const READY: Duration = Duration::from_secs(10);
+    const READY: Duration = Duration::from_secs(15);
     /// Deterministic pseudo-random choices (xorshift), so invite codes
     /// differ and runs repeat exactly.
     fn pseudo(bound: usize) -> usize {
@@ -827,11 +920,12 @@ mod tests {
     fn mm() -> Matchmaker {
         Matchmaker::new(READY, pseudo)
     }
-    fn found(out: &[Out]) -> Vec<QueueConn> {
+    /// Connections offered a match (first status of a ready check).
+    fn offered(out: &[Out]) -> Vec<QueueConn> {
         let mut found: Vec<_> = out
             .iter()
             .filter_map(|out| match out {
-                Out::Found { conn, .. } => Some(*conn),
+                Out::ReadyCheck { conn, check } if check.accepted == 0 => Some(*conn),
                 _ => None,
             })
             .collect();
@@ -849,6 +943,12 @@ mod tests {
     fn view(out: &[Out], of: QueueConn) -> Option<PartyView> {
         out.iter().rev().find_map(|out| match out {
             Out::Party { conn, view } if *conn == of => Some(view.clone()),
+            _ => None,
+        })
+    }
+    fn stopped(out: &[Out], of: QueueConn) -> Option<Stopped> {
+        out.iter().find_map(|out| match out {
+            Out::Stopped { conn, reason } if *conn == of => Some(*reason),
             _ => None,
         })
     }
@@ -874,40 +974,119 @@ mod tests {
         }
         invite
     }
-    fn all_ready(mm: &mut Matchmaker, conns: &[QueueConn], now: Instant) -> Vec<Out> {
-        conns.iter().flat_map(|conn| mm.ready(*conn, now)).collect()
+    fn accept_all(mm: &mut Matchmaker, conns: &[QueueConn], now: Instant) -> Vec<Out> {
+        conns
+            .iter()
+            .flat_map(|conn| mm.accept(*conn, now))
+            .collect()
     }
 
     #[test]
-    fn modes_round_trip_their_ids_and_limit_parties() {
+    fn three_queues_and_their_party_limits() {
         for mode in Mode::ALL {
             assert_eq!(Mode::from_id(mode.id()), Some(mode));
         }
-        assert_eq!(Mode::from_id("4v4"), None);
+        assert_eq!(Mode::from_id("solo-2v2"), None, "no separate solo queues");
+        assert_eq!(Mode::Duel.max_party(), 1);
         assert_eq!(Mode::Team3v3.max_party(), 3);
-        assert_eq!(Mode::Solo3v3.max_party(), 1);
-        assert_eq!(Mode::Duel.players(), 2);
+        assert_eq!(Mode::Team2v2.players(), 4);
     }
 
     #[test]
-    fn solo_players_are_matched_when_everyone_confirms() {
+    fn everyone_offered_a_match_sees_the_check_fill_up_and_it_starts() {
         let now = Instant::now();
         let mut mm = mm();
         connect(&mut mm, 1..=4, now);
         for conn in 1..=3 {
-            assert!(found(&mm.queue(conn, Mode::Solo2v2, now)).is_empty());
+            assert!(offered(&mm.queue(conn, Mode::Team2v2, now)).is_empty());
         }
-        assert_eq!(mm.waiting()[Mode::Solo2v2.index()], 3);
-        assert_eq!(found(&mm.queue(4, Mode::Solo2v2, now)), [1, 2, 3, 4]);
-        assert!(all_ready(&mut mm, &[2, 4, 1], now).is_empty());
-        let (mode, seats) = starts(&mm.ready(3, now)).remove(0);
-        assert_eq!(mode, Mode::Solo2v2);
+        assert_eq!(mm.waiting()[Mode::Team2v2.index()], 3);
+        let out = mm.queue(4, Mode::Team2v2, now);
+        assert_eq!(offered(&out), [1, 2, 3, 4]);
+        assert!(out.contains(&Out::ReadyCheck {
+            conn: 2,
+            check: ReadyCheck {
+                mode: Mode::Team2v2,
+                accepted: 0,
+                total: 4,
+                you: false,
+                remaining: READY,
+            }
+        }));
+        // Each acceptance is shown to everyone, with the time left.
+        let later = now + Duration::from_secs(4);
+        let out = mm.accept(3, later);
+        assert_eq!(out.len(), 4);
+        assert!(out.contains(&Out::ReadyCheck {
+            conn: 3,
+            check: ReadyCheck {
+                mode: Mode::Team2v2,
+                accepted: 1,
+                total: 4,
+                you: true,
+                remaining: Duration::from_secs(11),
+            }
+        }));
+        assert!(
+            mm.accept(3, later).is_empty(),
+            "accepting twice changes nothing"
+        );
+        accept_all(&mut mm, &[1, 2], later);
+        let (mode, seats) = starts(&mm.accept(4, later)).remove(0);
+        assert_eq!(mode, Mode::Team2v2);
         let mut sorted = seats.clone();
         sorted.sort();
         assert_eq!(sorted, [1, 2, 3, 4]);
         // Still connected, no longer searching.
         assert!((1..=4).all(|conn| mm.contains(conn)));
-        assert_eq!(mm.waiting(), [0; 5]);
+        assert_eq!(mm.waiting(), [0; 3]);
+        mm.check();
+    }
+
+    #[test]
+    fn a_decline_ends_the_check_at_once_and_those_who_accepted_go_first() {
+        let now = Instant::now();
+        let mut mm = mm();
+        connect(&mut mm, 1..=5, now);
+        for conn in 1..=4 {
+            mm.queue(conn, Mode::Team2v2, now);
+        }
+        mm.queue(5, Mode::Team2v2, now);
+        accept_all(&mut mm, &[1, 3], now);
+        let out = mm.decline(2, now);
+        assert_eq!(stopped(&out, 2), Some(Stopped::Declined));
+        assert_eq!(stopped(&out, 4), Some(Stopped::NotAccepted));
+        for conn in [1, 3] {
+            assert!(out.contains(&Out::Requeued {
+                conn,
+                mode: Mode::Team2v2
+            }));
+        }
+        // Still connected, out of the queue.
+        assert!(mm.contains(2) && mm.contains(4));
+        assert_eq!(view(&out, 2).unwrap().queue, None);
+        // 1 and 3 are back in front of 5; one more player completes a match.
+        assert_eq!(mm.waiting()[Mode::Team2v2.index()], 3);
+        assert_eq!(offered(&mm.queue(2, Mode::Team2v2, now)), [1, 2, 3, 5]);
+        mm.check();
+    }
+
+    #[test]
+    fn players_who_do_not_accept_in_time_leave_the_queue() {
+        let start = Instant::now();
+        let mut mm = mm();
+        connect(&mut mm, 1..=2, start);
+        mm.queue(1, Mode::Duel, start);
+        mm.queue(2, Mode::Duel, start);
+        mm.accept(1, start);
+        assert!(mm.tick(start + READY - Duration::from_millis(1)).is_empty());
+        let out = mm.tick(start + READY);
+        assert_eq!(stopped(&out, 2), Some(Stopped::NotAccepted));
+        assert!(out.contains(&Out::Requeued {
+            conn: 1,
+            mode: Mode::Duel
+        }));
+        assert!(mm.contains(2), "not disconnected");
         mm.check();
     }
 
@@ -930,19 +1109,16 @@ mod tests {
             })
         );
         assert!(!view(&out, 2).unwrap().leader);
-        // Only the leader queues, and only where the party fits.
         assert_eq!(
             mm.queue(2, Mode::Team2v2, now),
             refused(2, Refused::NotLeader)
         );
         assert_eq!(
-            mm.queue(1, Mode::Solo2v2, now),
+            mm.queue(1, Mode::Duel, now),
             refused(1, Refused::PartyTooBig)
         );
         let out = mm.queue(1, Mode::Team2v2, now);
         assert_eq!(view(&out, 2).unwrap().queue, Some(Mode::Team2v2));
-        assert_eq!(mm.waiting()[Mode::Team2v2.index()], 2);
-        // A party that is searching takes nobody new.
         assert_eq!(
             mm.join_party(3, &invite, now),
             refused(3, Refused::PartyBusy)
@@ -951,12 +1127,8 @@ mod tests {
             mm.join_party(3, "NOPE22", now),
             refused(3, Refused::NoSuchParty)
         );
-        // Any member may cancel the search.
         let out = mm.cancel(2);
-        assert!(out.contains(&Out::Stopped {
-            conn: 1,
-            reason: Stopped::Cancelled
-        }));
+        assert_eq!(stopped(&out, 1), Some(Stopped::Cancelled));
         assert_eq!(view(&out, 1).unwrap().queue, None);
         mm.check();
     }
@@ -966,17 +1138,44 @@ mod tests {
         let now = Instant::now();
         let mut mm = mm();
         connect(&mut mm, 1..=6, now);
-        // Two friends, then four players on their own, in the 3v3 queue.
         party(&mut mm, &[1, 2], now);
         mm.queue(1, Mode::Team3v3, now);
         for conn in 3..=5 {
-            assert!(found(&mm.queue(conn, Mode::Team3v3, now)).is_empty());
+            assert!(offered(&mm.queue(conn, Mode::Team3v3, now)).is_empty());
         }
-        assert_eq!(found(&mm.queue(6, Mode::Team3v3, now)), [1, 2, 3, 4, 5, 6]);
-        let (_, seats) = starts(&all_ready(&mut mm, &[1, 2, 3, 4, 5, 6], now)).remove(0);
+        assert_eq!(
+            offered(&mm.queue(6, Mode::Team3v3, now)),
+            [1, 2, 3, 4, 5, 6]
+        );
+        let (_, seats) = starts(&accept_all(&mut mm, &[1, 2, 3, 4, 5, 6], now)).remove(0);
         let team = |conn| seats.iter().position(|seat| *seat == conn).unwrap() % 2;
         assert_eq!(team(1), team(2), "the party plays together");
         assert_eq!(seats.iter().filter(|c| team(**c) == team(1)).count(), 3);
+        mm.check();
+    }
+
+    #[test]
+    fn a_party_whose_member_declines_leaves_the_queue_together() {
+        let now = Instant::now();
+        let mut mm = mm();
+        connect(&mut mm, 1..=4, now);
+        party(&mut mm, &[1, 2], now);
+        mm.queue(1, Mode::Team2v2, now);
+        mm.queue(3, Mode::Team2v2, now);
+        mm.queue(4, Mode::Team2v2, now);
+        accept_all(&mut mm, &[1, 3, 4], now);
+        let out = mm.decline(2, now);
+        assert_eq!(stopped(&out, 2), Some(Stopped::Declined));
+        assert_eq!(stopped(&out, 1), Some(Stopped::MemberDeclined));
+        assert_eq!(
+            view(&out, 1).unwrap().members,
+            2,
+            "the party stays together"
+        );
+        assert!(out.contains(&Out::Requeued {
+            conn: 3,
+            mode: Mode::Team2v2
+        }));
         mm.check();
     }
 
@@ -985,17 +1184,16 @@ mod tests {
         let now = Instant::now();
         let mut mm = mm();
         connect(&mut mm, 1..=8, now);
-        // Queue order: parties (1,2), (3,4), (5,6), then solos 7 and 8.
         for pair in [[1, 2], [3, 4], [5, 6]] {
             party(&mut mm, &pair, now);
             mm.queue(pair[0], Mode::Team3v3, now);
         }
-        assert!(found(&mm.queue(7, Mode::Team3v3, now)).is_empty());
-        // (1,2) and (3,4) take a team each; (5,6) fits in neither, so the
-        // solos complete the match and (5,6) waits at the front.
-        assert_eq!(found(&mm.queue(8, Mode::Team3v3, now)), [1, 2, 3, 4, 7, 8]);
-        assert_eq!(mm.waiting()[Mode::Team3v3.index()], 8);
-        let out = all_ready(&mut mm, &[1, 2, 3, 4, 7, 8], now);
+        assert!(offered(&mm.queue(7, Mode::Team3v3, now)).is_empty());
+        assert_eq!(
+            offered(&mm.queue(8, Mode::Team3v3, now)),
+            [1, 2, 3, 4, 7, 8]
+        );
+        let out = accept_all(&mut mm, &[1, 2, 3, 4, 7, 8], now);
         assert_eq!(starts(&out).len(), 1);
         assert_eq!(mm.waiting()[Mode::Team3v3.index()], 2);
         mm.check();
@@ -1014,27 +1212,13 @@ mod tests {
         let out = mm.leave_party(1, now);
         assert!(view(&out, 2).unwrap().leader, "the next member leads");
         assert_eq!(view(&out, 2).unwrap().members, 2);
-        assert_eq!(
-            view(&out, 1),
-            Some(PartyView {
-                code: None,
-                members: 1,
-                leader: true,
-                queue: None
-            })
-        );
-        // The last member leaving dissolves the party and its code.
+        assert_eq!(view(&out, 1).unwrap().code, None);
         mm.disconnect(2, now);
         mm.disconnect(3, now);
         assert_eq!(
             mm.join_party(4, &invite, now),
             refused(4, Refused::NoSuchParty)
         );
-        // Creating a party while in someone else's starts a new one.
-        let mine = party(&mut mm, &[4, 1], now);
-        let out = mm.create_party(1, now);
-        assert_ne!(code(&out, 1), mine);
-        assert_eq!(view(&out, 4).unwrap().members, 1);
         mm.check();
     }
 
@@ -1046,68 +1230,9 @@ mod tests {
         party(&mut mm, &[1, 2], now);
         mm.queue(1, Mode::Team2v2, now);
         let out = mm.disconnect(2, now);
-        assert!(out.contains(&Out::Stopped {
-            conn: 1,
-            reason: Stopped::MemberLeft
-        }));
+        assert_eq!(stopped(&out, 1), Some(Stopped::MemberLeft));
         assert_eq!(view(&out, 1).unwrap().queue, None);
         assert_eq!(mm.waiting()[Mode::Team2v2.index()], 0);
-        mm.check();
-    }
-
-    #[test]
-    fn no_shows_are_dropped_and_complete_parties_keep_their_place() {
-        let start = Instant::now();
-        let mut mm = mm();
-        connect(&mut mm, 1..=5, start);
-        // A party (1, 2) and two solos fill a 2v2; 5 waits behind.
-        party(&mut mm, &[1, 2], start);
-        mm.queue(1, Mode::Team2v2, start);
-        mm.queue(3, Mode::Team2v2, start);
-        assert_eq!(found(&mm.queue(4, Mode::Team2v2, start)).len(), 4);
-        mm.queue(5, Mode::Team2v2, start);
-        all_ready(&mut mm, &[1, 2, 3], start);
-        assert!(mm.tick(start + READY / 2).is_empty());
-        let out = mm.tick(start + READY);
-        assert!(out.contains(&Out::Close {
-            conn: 4,
-            reason: Closed::NotReady
-        }));
-        for conn in [1, 2, 3] {
-            assert!(out.contains(&Out::Requeued {
-                conn,
-                mode: Mode::Team2v2
-            }));
-        }
-        // The requeued players and 5 form the next check at once.
-        assert_eq!(found(&out), [1, 2, 3, 5]);
-        mm.check();
-    }
-
-    #[test]
-    fn a_party_member_who_does_not_confirm_stops_the_party() {
-        let start = Instant::now();
-        let mut mm = mm();
-        connect(&mut mm, 1..=4, start);
-        party(&mut mm, &[1, 2], start);
-        mm.queue(1, Mode::Team2v2, start);
-        mm.queue(3, Mode::Team2v2, start);
-        mm.queue(4, Mode::Team2v2, start);
-        all_ready(&mut mm, &[1, 3, 4], start);
-        let out = mm.tick(start + READY);
-        assert!(out.contains(&Out::Close {
-            conn: 2,
-            reason: Closed::NotReady
-        }));
-        assert!(out.contains(&Out::Stopped {
-            conn: 1,
-            reason: Stopped::MemberNotReady
-        }));
-        assert_eq!(view(&out, 1).unwrap().members, 1);
-        assert!(out.contains(&Out::Requeued {
-            conn: 3,
-            mode: Mode::Team2v2
-        }));
         mm.check();
     }
 
@@ -1123,7 +1248,37 @@ mod tests {
             reason: Closed::Replaced
         }));
         assert_eq!(mm.waiting()[Mode::Duel.index()], 0);
-        assert!(!mm.contains(1) && mm.contains(2));
+        mm.check();
+    }
+
+    #[test]
+    fn the_expected_wait_is_the_median_of_recent_waits() {
+        let start = Instant::now();
+        let mut mm = mm();
+        connect(&mut mm, 1..=2, start);
+        assert_eq!(mm.expected_wait(Mode::Duel), None);
+        // Duels found after 10 s, 30 s and 20 s (the first player waits).
+        for (round, waited) in [10u64, 30, 20].into_iter().enumerate() {
+            let at = start + Duration::from_secs(1000 * round as u64);
+            mm.queue(1, Mode::Duel, at);
+            let found = at + Duration::from_secs(waited);
+            mm.queue(2, Mode::Duel, found);
+            accept_all(&mut mm, &[1, 2], found);
+            if round == 0 {
+                // Two samples: the first player's wait, and the second's 0 s.
+                assert_eq!(mm.expected_wait(Mode::Duel), None, "too few yet");
+            }
+        }
+        // Samples: 10, 0, 30, 0, 20, 0 (the second player found at once).
+        assert_eq!(mm.expected_wait(Mode::Duel), Some(Duration::from_secs(10)));
+        assert_eq!(mm.expected_wait(Mode::Team2v2), None);
+        // A failed check keeps the search's start for the next attempt.
+        mm.queue(1, Mode::Duel, start);
+        mm.queue(2, Mode::Duel, start);
+        mm.accept(1, start);
+        mm.decline(2, start);
+        let searching: Vec<_> = mm.searching().collect();
+        assert_eq!(searching, [(1, Mode::Duel, start)]);
         mm.check();
     }
 
@@ -1144,13 +1299,13 @@ mod tests {
         let mut now = start;
         let mut matches = 0;
         for _ in 0..30_000u64 {
-            now += Duration::from_millis(next(300));
+            now += Duration::from_millis(next(400));
             let conn = next(40) + 1;
             if !mm.contains(conn) {
                 mm.connect(conn, Guest::from(conn), now);
             }
-            let mode = Mode::ALL[next(5) as usize];
-            let out = match next(12) {
+            let mode = Mode::ALL[next(3) as usize];
+            let out = match next(13) {
                 0 => mm.disconnect(conn, now),
                 1 => mm.create_party(conn, now),
                 2 if !codes.is_empty() => {
@@ -1159,8 +1314,9 @@ mod tests {
                 }
                 3 => mm.leave_party(conn, now),
                 4 => mm.cancel(conn),
-                5..=7 => mm.queue(conn, mode, now),
-                8..=10 => mm.ready(conn, now),
+                5 => mm.decline(conn, now),
+                6..=8 => mm.queue(conn, mode, now),
+                9..=11 => mm.accept(conn, now),
                 _ => mm.tick(now),
             };
             for out in &out {
@@ -1175,10 +1331,9 @@ mod tests {
                 assert_eq!(seats.len(), mode.players());
                 let distinct: HashSet<_> = seats.iter().collect();
                 assert_eq!(distinct.len(), seats.len(), "one seat per player");
-                // Started players are connected and no longer searching.
                 for conn in &seats {
                     assert!(mm.contains(*conn));
-                    assert!(mm.searching().all(|(searching, _)| searching != *conn));
+                    assert!(mm.searching().all(|(searching, ..)| searching != *conn));
                 }
             }
             mm.check();

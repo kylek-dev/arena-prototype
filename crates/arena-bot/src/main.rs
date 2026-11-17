@@ -1,7 +1,7 @@
 //! `arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3]
 //!            [--seconds S] [--rtt MS] [--jitter MS] [--reconnect-every S] [--away-ms MS]
 //!            [--seed N] [--server-pid PID] [--json]
-//!            [--queue 1v1|2v2|3v3|solo-2v2|solo-3v3 --door HOST:PORT [--bots N]]`
+//!            [--queue 1v1|2v2|3v3 --door HOST:PORT [--bots N]]`
 //!
 //! Plays bot matches against a server started with `--dev` and prints a
 //! latency, consistency and recovery report. With `--queue`, `--bots` bots

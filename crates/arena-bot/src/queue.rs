@@ -19,7 +19,7 @@ use crate::{Scenario, Shared, Totals, from_hex};
 pub struct QueueScenario {
     /// `host:port` of the front door.
     pub door: String,
-    /// `1v1`, `2v2`, `3v3`, `solo-2v2` or `solo-3v3`. Bots queue alone.
+    /// `1v1`, `2v2` or `3v3`. Bots queue alone.
     pub mode: String,
     pub bots: usize,
 }
@@ -28,7 +28,9 @@ pub struct QueueScenario {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum FromDoor {
-    Found,
+    ReadyCheck {
+        you: bool,
+    },
     Match {
         server: String,
         ticket: String,
@@ -82,10 +84,12 @@ async fn find_seat(queue: &QueueScenario, guest: u128) -> Result<Found, String> 
             continue;
         };
         match serde_json::from_str::<FromDoor>(&text).map_err(|error| error.to_string())? {
-            FromDoor::Found => socket
-                .send(Message::text(r#"{"type":"ready"}"#))
+            // Bots accept every match they are offered.
+            FromDoor::ReadyCheck { you: false } => socket
+                .send(Message::text(r#"{"type":"accept"}"#))
                 .await
                 .map_err(|error| error.to_string())?,
+            FromDoor::ReadyCheck { you: true } => {}
             FromDoor::Match {
                 server,
                 ticket,
