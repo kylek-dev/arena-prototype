@@ -744,6 +744,12 @@ fn network_receive(
     } = &mut *net;
     let session = session.get_or_insert_default();
     let rejections = session.receive(&feed, now, &map.0.layout);
+    // A new match starts facing where the server placed this player: out of
+    // its starting room. The camera starts behind it.
+    if let Some(heading) = session.take_initial_heading() {
+        practice.facing = heading;
+        orbit.yaw = heading;
+    }
     if let Some(frame) = session.ping(now) {
         platform::send_network(&frame);
     }

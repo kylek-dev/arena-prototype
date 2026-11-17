@@ -570,3 +570,71 @@ fn one_enemy_down_in_a_team_match_does_not_end_the_round_for_the_hud() {
         Err(arena_sim::arena::Rejection::MatchOver)
     );
 }
+
+#[test]
+fn server_spawn_headings_face_the_other_team() {
+    for size in 1..=3 {
+        let arena = Arena::practice(layout(), size).unwrap();
+        let fighters = arena.fighters();
+        for (actor, fighter) in fighters.iter().enumerate() {
+            let heading = yaw(fighter.facing);
+            let forward = (-heading.sin(), -heading.cos());
+            let enemies: Vec<_> = fighters
+                .iter()
+                .enumerate()
+                .filter(|(other, _)| other % 2 != actor % 2)
+                .collect();
+            let (ex, ez) = enemies.iter().fold((0.0f32, 0.0f32), |(x, z), (_, f)| {
+                (x + f.position.x as f32, z + f.position.z as f32)
+            });
+            let n = enemies.len() as f32;
+            let toward = (
+                ex / n - fighter.position.x as f32,
+                ez / n - fighter.position.z as f32,
+            );
+            let length = (toward.0 * toward.0 + toward.1 * toward.1).sqrt();
+            let alignment = (forward.0 * toward.0 + forward.1 * toward.1) / length;
+            assert!(alignment > 0.9, "{size}v{size} actor {actor}: {alignment}");
+        }
+    }
+}
+
+#[test]
+fn a_new_match_hands_over_the_servers_heading_once_per_seat() {
+    // Seat 1 (team 1) spawns facing the other way from team 0.
+    let server = Arena::practice(layout(), 1).unwrap();
+    let mut session = Session::default();
+    assert_eq!(session.take_initial_heading(), None, "nothing joined yet");
+    session.receive(&feed(1, vec![welcome(1, 1)]), 0.0, &layout());
+    assert_eq!(session.take_initial_heading(), None, "no snapshot yet");
+    session.receive(
+        &feed(1, vec![snapshot(&server, 0, vec![], &[true, true])]),
+        0.0,
+        &layout(),
+    );
+    let heading = session.take_initial_heading().unwrap();
+    assert!((heading - yaw(server.fighters()[1].facing)).abs() < 1e-6);
+    assert!((heading - std::f32::consts::PI).abs() < 1e-3, "{heading}");
+    assert_eq!(session.take_initial_heading(), None, "only once");
+    // A reconnect to the same seat keeps the player's own heading.
+    session.receive(
+        &feed(
+            2,
+            vec![welcome(1, 1), snapshot(&server, 0, vec![], &[true, true])],
+        ),
+        0.0,
+        &layout(),
+    );
+    assert_eq!(session.take_initial_heading(), None);
+    // A different seat (a new match) takes the server's heading again.
+    session.receive(
+        &feed(
+            3,
+            vec![welcome(0, 1), snapshot(&server, 0, vec![], &[true, true])],
+        ),
+        0.0,
+        &layout(),
+    );
+    let heading = session.take_initial_heading().unwrap();
+    assert!(heading.abs() < 1e-6, "{heading}");
+}
