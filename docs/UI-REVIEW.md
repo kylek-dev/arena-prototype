@@ -42,3 +42,11 @@ Browser/version, device/OS/GPU, viewport, individual scenario logs and console r
 Automated DOM tests and frontend checks passed locally. No browser was launched, and no rendered or networked pass is claimed.
 
 2026-11-16: the user tried the queue flow locally and reported "this worked". Browser, OS, and which modes and party flows were exercised were not stated, so this does not cover a cross-browser review or every control listed above (issue `network-ui-review`).
+
+2026-11-17: **pending human review.** The queue bar and match-ready window ([ADR 0047](decisions/0047-accepting-matches-and-queue-status.md)):
+
+- **Queue bar.** At the top on the home screen and in the arena: queue name, live timer, expected wait or "not enough recent matches", players in the queue, Cancel, and the requeued and left-the-queue messages.
+- **Match-ready window.** Title, 15-second countdown and bar, acceptance markers, Accept (focused) and Decline, the "waiting for N more" state, and the page title countdown in a background tab.
+- **Play online panel.** Three queue buttons (1v1, 2v2, 3v3).
+
+Automated DOM tests, frontend checks and the frontend build passed locally. No browser was launched, and no rendered or networked pass is claimed.

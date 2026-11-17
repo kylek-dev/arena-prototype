@@ -59,7 +59,7 @@ pub struct DoorConfig {
     pub creation_burst: u32,
     /// ... and then one per this interval.
     pub creation_every: Duration,
-    /// How long a found player has to confirm before being dropped.
+    /// How long players have to accept a found match.
     pub ready_timeout: Duration,
     /// Open queue connections one client address may hold.
     pub queue_per_address: u32,
@@ -76,7 +76,7 @@ impl DoorConfig {
             ticket_ttl: Duration::from_secs(2 * 60 * 60),
             creation_burst: 5,
             creation_every: Duration::from_secs(30),
-            ready_timeout: Duration::from_secs(10),
+            ready_timeout: Duration::from_secs(15),
             queue_per_address: 12,
         }
     }

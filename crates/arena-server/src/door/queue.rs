@@ -6,15 +6,18 @@
 //! - `{"type":"hello","guest":"<32 hex>"}` first, within 5 s.
 //! - `{"type":"create_party"}`, `{"type":"join_party","code":"K7P2QX"}`,
 //!   `{"type":"leave_party"}`.
-//! - `{"type":"queue","mode":"1v1"|"2v2"|"3v3"|"solo-2v2"|"solo-3v3"}`
-//!   (party leader only), `{"type":"cancel"}`.
-//! - `{"type":"ready"}` after `found`, which the game sends automatically.
+//! - `{"type":"queue","mode":"1v1"|"2v2"|"3v3"}` (party leader only),
+//!   `{"type":"cancel"}`.
+//! - `{"type":"accept"}` or `{"type":"decline"}` when a match is ready.
 //!
 //! From the door:
 //! - `party` describes the player's party whenever it changes.
-//! - `queued` (with how many wait in that mode) while searching, every 2 s.
-//! - `found` when a ready check starts, `requeued` when it failed because of
-//!   someone else, and `stopped` when the party's search ended.
+//! - `queued` while searching, every 2 s: how many wait in that queue, how
+//!   long this search has run and the expected wait (when known).
+//! - `ready_check` when a match is ready to accept and whenever someone
+//!   accepts: how many accepted out of how many, whether this player did,
+//!   and the time left. `requeued` when it failed because of someone else,
+//!   and `stopped` when the party's search ended.
 //! - `refused` turns a request down; the connection stays open.
 //! - `match` carries the player's own seat ticket. The connection stays
 //!   open, so the party is still together when the match is over.
@@ -62,7 +65,8 @@ enum FromClient {
     LeaveParty {},
     Queue { mode: String },
     Cancel {},
-    Ready {},
+    Accept {},
+    Decline {},
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,14 +80,24 @@ pub enum ToClient {
         leader: bool,
         queue: Option<String>,
     },
-    /// Searching; `waiting` players (including this party) want `mode`.
+    /// Searching: `waiting` players (including this party) want `mode`;
+    /// this search has run `waited_ms`; recent matches took about
+    /// `expected_ms` to find (`None` until there have been a few).
     Queued {
         mode: String,
         waiting: usize,
+        waited_ms: u64,
+        expected_ms: Option<u64>,
     },
-    /// A match was found: answer `ready` within the ready check.
-    Found {
+    /// A match is ready: accept within `remaining_ms`. Sent again whenever
+    /// someone accepts.
+    ReadyCheck {
         mode: String,
+        accepted: usize,
+        total: usize,
+        /// Whether this player has accepted.
+        you: bool,
+        remaining_ms: u64,
     },
     /// Someone else did not confirm; back at the front of the queue.
     Requeued {
@@ -152,7 +166,10 @@ pub(super) enum Command {
     Cancel {
         conn: QueueConn,
     },
-    Ready {
+    Accept {
+        conn: QueueConn,
+    },
+    Decline {
         conn: QueueConn,
     },
     Gone {
@@ -210,7 +227,8 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     mm.queue(conn, mode, now)
                 }
                 Some(Command::Cancel { conn }) => mm.cancel(conn),
-                Some(Command::Ready { conn }) => mm.ready(conn, now),
+                Some(Command::Accept { conn }) => mm.accept(conn, now),
+                Some(Command::Decline { conn }) => mm.decline(conn, now),
                 Some(Command::Gone { conn }) => {
                     conns.remove(&conn);
                     mm.disconnect(conn, now)
@@ -220,11 +238,15 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
         for action in out {
             match action {
                 Out::Party { conn, view } => send(&conns, conn, ToClient::party(view)),
-                Out::Found { conn, mode } => send(
+                Out::ReadyCheck { conn, check } => send(
                     &conns,
                     conn,
-                    ToClient::Found {
-                        mode: mode.id().into(),
+                    ToClient::ReadyCheck {
+                        mode: check.mode.id().into(),
+                        accepted: check.accepted,
+                        total: check.total,
+                        you: check.you,
+                        remaining_ms: check.remaining.as_millis() as u64,
                     },
                 ),
                 Out::Requeued { conn, mode } => send(
@@ -248,18 +270,18 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                         code: reason.code().into(),
                     },
                 ),
-                Out::Close { conn, reason } => {
-                    let message = match reason {
-                        Closed::Replaced => ToClient::error(
+                Out::Close {
+                    conn,
+                    reason: Closed::Replaced,
+                } => {
+                    send(
+                        &conns,
+                        conn,
+                        ToClient::error(
                             "replaced",
                             "You opened the game in another tab or window.",
                         ),
-                        Closed::NotReady => ToClient::error(
-                            "not_ready",
-                            "A match was found but this game did not confirm in time.",
-                        ),
-                    };
-                    send(&conns, conn, message);
+                    );
                     conns.remove(&conn);
                 }
                 Out::Start { mode, seats } => start_match(&door, &conns, mode, seats),
@@ -270,13 +292,16 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 status_at = now + STATUS_EVERY;
             }
             let waiting = mm.waiting();
-            for (conn, mode) in mm.searching() {
+            let expected = Mode::ALL.map(|mode| mm.expected_wait(mode));
+            for (conn, mode, since) in mm.searching() {
                 send(
                     &conns,
                     conn,
                     ToClient::Queued {
                         mode: mode.id().into(),
                         waiting: waiting[mode.index()],
+                        waited_ms: now.saturating_duration_since(since).as_millis() as u64,
+                        expected_ms: expected[mode.index()].map(|wait| wait.as_millis() as u64),
                     },
                 );
             }
@@ -379,7 +404,8 @@ fn command(conn: QueueConn, message: FromClient) -> Result<Command, &'static str
             mode: Mode::from_id(&mode).ok_or("Unknown queue.")?,
         },
         FromClient::Cancel {} => Command::Cancel { conn },
-        FromClient::Ready {} => Command::Ready { conn },
+        FromClient::Accept {} => Command::Accept { conn },
+        FromClient::Decline {} => Command::Decline { conn },
     })
 }
 
@@ -494,12 +520,12 @@ mod tests {
             Ok(FromClient::JoinParty { .. })
         ));
         assert!(matches!(
-            parse(r#"{"type":"ready"}"#),
-            Ok(FromClient::Ready {})
+            parse(r#"{"type":"accept"}"#),
+            Ok(FromClient::Accept {})
         ));
         for bad in [
             r#"{"type":"start"}"#,
-            r#"{"type":"ready","seat":1}"#,
+            r#"{"type":"accept","seat":1}"#,
             r#"{"type":"queue","mode":"1v1","party":2}"#,
             r#"{"mode":"1v1"}"#,
             "ready",

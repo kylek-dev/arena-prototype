@@ -146,20 +146,21 @@ the connection with `error`.
 | `{"type":"create_party"}` | Get an invite code (leaving someone else's party for a new one). |
 | `{"type":"join_party","code":"K7P2QX"}` | Join a friend's party (up to 3 players, not while it searches). |
 | `{"type":"leave_party"}` | Back on one's own; the next member leads. |
-| `{"type":"queue","mode":"1v1"\|"2v2"\|"3v3"\|"solo-2v2"\|"solo-3v3"}` | Leader only. Solo queues and 1v1 take one player; 2v2 and 3v3 take parties up to the team size. |
+| `{"type":"queue","mode":"1v1"\|"2v2"\|"3v3"}` | Leader only. 1v1 takes one player; 2v2 and 3v3 take players alone or parties up to the team size ([ADR 0047](decisions/0047-accepting-matches-and-queue-status.md)). |
 | `{"type":"cancel"}` | Any member stops the party's search. |
-| `{"type":"ready"}` | Confirms a found match (sent automatically). |
+| `{"type":"accept"}` | Accepts the match on offer. |
+| `{"type":"decline"}` | Declines it: the check ends for everyone, and this player's party leaves the queue. |
 
 | From the door | Meaning |
 | --- | --- |
 | `party` `{code, members, leader, queue}` | The party, whenever it changes (`code` is `null` on one's own). |
-| `queued` `{mode, waiting}` | Searching; sent on queueing and every 2 s. |
-| `found` `{mode}` | Ready check started: confirm within 10 s. |
-| `requeued` `{mode}` | Someone else did not confirm; back at the front of the queue. |
-| `stopped` `{reason}` | `cancelled`, `member_left` or `member_not_ready`. |
+| `queued` `{mode, waiting, waited_ms, expected_ms}` | Searching; sent on queueing and every 2 s. `waited_ms` is this search's time on the door's clock; `expected_ms` is the median of the queue's last 20 waits, or `null` with fewer than 3. |
+| `ready_check` `{mode, accepted, total, you, remaining_ms}` | A match to accept within 15 s; sent again whenever someone accepts. |
+| `requeued` `{mode}` | Someone else did not accept; back at the front of the queue. |
+| `stopped` `{reason}` | `cancelled`, `member_left`, `declined`, `not_accepted`, `member_declined` or `member_not_accepted`. The connection stays open. |
 | `refused` `{code}` | `not_leader`, `party_too_big`, `party_full`, `party_busy` or `no_such_party`; nothing changed. |
 | `match` `{mode, match_id, seat, server, ticket, expires}` | This player's seat ticket. The connection stays open. |
-| `error` `{code, message}` | Then the door closes: `bad_request`, `rate_limited`, `replaced`, `not_ready` or `shutdown`. |
+| `error` `{code, message}` | Then the door closes: `bad_request`, `rate_limited`, `replaced` or `shutdown`. |
 
 ## Match lifecycle
 

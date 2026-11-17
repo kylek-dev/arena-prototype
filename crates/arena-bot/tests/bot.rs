@@ -87,7 +87,7 @@ async fn bots_that_drop_out_are_seen_as_disconnected_and_rejoin() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn bots_queue_through_the_front_door_and_play_what_it_forms() {
+async fn bots_queue_through_the_front_door_accept_and_play_what_it_forms() {
     use arena_bot::queue::QueueScenario;
     use arena_server::door::{self, DoorConfig};
     let (running, mut scenario) = scenario(20, 5).await;
@@ -100,7 +100,7 @@ async fn bots_queue_through_the_front_door_and_play_what_it_forms() {
     let door = door::start(config).await.unwrap();
     scenario.queue = Some(QueueScenario {
         door: door.addr.to_string(),
-        mode: "solo-2v2".into(),
+        mode: "2v2".into(),
         bots: 4,
     });
     let report = run(scenario).await.unwrap();

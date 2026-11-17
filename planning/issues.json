@@ -61,7 +61,7 @@
   },
   {
     "key": "matchmaking-queues",
-    "title": "Queue for 1v1, solo 2v2 and solo 3v3 from inside the game",
+    "title": "Queue for 1v1, 2v2 and 3v3 from inside the game",
     "body_file": "planning/issues/matchmaking-queues.md"
   },
   {
