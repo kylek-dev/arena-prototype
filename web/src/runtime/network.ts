@@ -106,6 +106,12 @@ export function createLink(deps: LinkDeps) {
   const end = (reason: string | null) => {
     stopTimer();
     dropSocket();
+    // The link is over: a socket that already closed may have left its
+    // generation and last frames for the engine. Nobody reads them now, and
+    // a later join must not hand them to the engine as the new match's
+    // (its final `MatchOver` would end the new match at once).
+    generation = 0;
+    queue = [];
     ticket = null;
     store(deps.tab, TAB_KEY, null);
     // The seat is gone for good: do not offer it again later. A seat taken

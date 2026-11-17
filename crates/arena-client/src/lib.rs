@@ -665,12 +665,32 @@ fn simulate(mut practice: ResMut<Practice>, mut net: ResMut<Net>) {
         }
     }
 }
+/// The action bar's status for the local player (actor 0) attacking
+/// `target`.
+fn attack_status(arena: &Arena, target: usize) -> &'static str {
+    match arena.can_attack(0, target) {
+        Ok(()) => "Ready",
+        Err(arena_sim::arena::Rejection::OutOfRange) => "Out of range",
+        Err(arena_sim::arena::Rejection::Cooldown) => "Recharging",
+        Err(arena_sim::arena::Rejection::LineOfSight) => "Line of sight blocked",
+        Err(arena_sim::arena::Rejection::InvalidTarget) => "Invalid target",
+        // The player is down while teammates may fight on: not the round's end.
+        Err(arena_sim::arena::Rejection::InvalidActor) => "You are defeated",
+        Err(_) => "Round complete",
+    }
+}
+
+/// Feedback when a defeated player tries to act while the round goes on.
+const DEFEATED_FEEDBACK: &str = "You are defeated · your team fights on";
+
 fn rejection_feedback(reason: arena_sim::arena::Rejection) -> &'static str {
     match reason {
         arena_sim::arena::Rejection::OutOfRange => "Out of range · move closer",
         arena_sim::arena::Rejection::Cooldown => "Pulse is recharging",
         arena_sim::arena::Rejection::LineOfSight => "Line of sight blocked by pillar",
         arena_sim::arena::Rejection::MatchOver => "Round complete · reset to play again",
+        // The player's own fighter is down; in a team match the round goes on.
+        arena_sim::arena::Rejection::InvalidActor => DEFEATED_FEEDBACK,
         _ => "Command rejected",
     }
 }
@@ -941,14 +961,7 @@ fn publish(
         (player.position.distance_squared(selected_target.position) as f64).sqrt() / 1000.0;
     let cooldown =
         player.ready_at.saturating_sub(practice.arena.tick()) as f64 / TICKS_PER_SECOND as f64;
-    let attack_status = match practice.arena.can_attack(0, practice.selected.unwrap_or(1)) {
-        Ok(()) => "Ready",
-        Err(arena_sim::arena::Rejection::OutOfRange) => "Out of range",
-        Err(arena_sim::arena::Rejection::Cooldown) => "Recharging",
-        Err(arena_sim::arena::Rejection::LineOfSight) => "Line of sight blocked",
-        Err(arena_sim::arena::Rejection::InvalidTarget) => "Invalid target",
-        _ => "Round complete",
-    };
+    let attack_status = attack_status(&practice.arena, practice.selected.unwrap_or(1));
     let screen = cameras
         .single()
         .ok()
@@ -1260,6 +1273,31 @@ fn focus_cursor(x: f32, y: f32) -> Option<Vec2> {
 mod tests {
     use super::*;
     use arena_sim::arena::ArenaCommand;
+
+    #[test]
+    fn a_defeated_player_is_told_so_while_the_round_goes_on() {
+        // 2v2: the local player (actor 0) is down; everyone else stands.
+        let layout = arena_map::colosseum().layout;
+        let start = Arena::practice(layout.clone(), 2).unwrap();
+        let mut fighters = start.fighters().to_vec();
+        fighters[0].health = 0;
+        let arena = Arena::restore(layout.clone(), 1, fighters.clone(), None).unwrap();
+        assert_eq!(arena.result(), None);
+        assert_eq!(attack_status(&arena, 1), "You are defeated");
+        assert_eq!(
+            rejection_feedback(arena_sim::arena::Rejection::InvalidActor),
+            "You are defeated · your team fights on"
+        );
+        // Once the server decides the round, it is the round that is over.
+        let over = Arena::restore(
+            layout,
+            1,
+            fighters,
+            Some(arena_sim::arena::RoundResult::Won { team: 1 }),
+        )
+        .unwrap();
+        assert_eq!(attack_status(&over, 1), "Round complete");
+    }
 
     #[test]
     fn browser_hud_focus_does_not_enable_event_driven_low_power_updates() {
