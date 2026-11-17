@@ -125,6 +125,8 @@ pub struct Report {
     pub rejoins_succeeded: u64,
     pub rejoins_too_late: u64,
     pub snapshots_showing_disconnected: u64,
+    /// Snapshots whose result disagreed with the fighters' health.
+    pub wrong_results: u64,
     /// Inputs the bots predicted, as a browser client does.
     pub predicted_inputs: u64,
     /// Reconciliations that moved a prediction.
@@ -151,6 +153,7 @@ pub(crate) struct Totals {
     rejoins_succeeded: u64,
     rejoins_too_late: u64,
     saw_disconnected: u64,
+    wrong_results: u64,
     predicted_inputs: u64,
     corrections: u64,
     correction_mm: Vec<u32>,
@@ -176,6 +179,7 @@ impl Totals {
         self.rejoins_succeeded += seat.rejoins_succeeded;
         self.rejoins_too_late += seat.rejoins_too_late;
         self.saw_disconnected += seat.saw_disconnected;
+        self.wrong_results += seat.wrong_results;
         self.predicted_inputs += seat.predicted_inputs;
         self.corrections += seat.corrections;
         self.correction_mm.extend(seat.correction_mm);
@@ -198,6 +202,7 @@ impl Totals {
         self.rejoins_succeeded += other.rejoins_succeeded;
         self.rejoins_too_late += other.rejoins_too_late;
         self.saw_disconnected += other.saw_disconnected;
+        self.wrong_results += other.wrong_results;
         self.predicted_inputs += other.predicted_inputs;
         self.corrections += other.corrections;
         self.correction_mm.extend(other.correction_mm);
@@ -304,6 +309,7 @@ pub async fn run(mut scenario: Scenario) -> Result<Report, String> {
         rejoins_succeeded: totals.rejoins_succeeded,
         rejoins_too_late: totals.rejoins_too_late,
         snapshots_showing_disconnected: totals.saw_disconnected,
+        wrong_results: totals.wrong_results,
         predicted_inputs: totals.predicted_inputs,
         corrections: totals.corrections,
         correction_mm: percentiles(totals.correction_mm),
@@ -485,8 +491,8 @@ impl fmt::Display for Report {
         )?;
         writeln!(
             f,
-            "consistency    {} cross-seat hash checks, {} mismatches",
-            self.hash_checks, self.hash_mismatches
+            "consistency    {} cross-seat hash checks, {} mismatches, {} wrong round results",
+            self.hash_checks, self.hash_mismatches, self.wrong_results
         )?;
         writeln!(
             f,

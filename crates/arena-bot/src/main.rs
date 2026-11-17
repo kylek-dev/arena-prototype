@@ -44,6 +44,7 @@ async fn main() -> ExitCode {
                 let healthy = report.errors.is_empty()
                     && report.unexpected_closes == 0
                     && report.hash_mismatches == 0
+                    && report.wrong_results == 0
                     && report.rejoins_succeeded + report.rejoins_too_late
                         == report.rejoins_attempted;
                 if healthy {
