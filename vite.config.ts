@@ -24,5 +24,12 @@ export default defineConfig({
       },
     },
   },
-  server: { host: "127.0.0.1", port: 8000 },
+  server: {
+    host: "127.0.0.1",
+    port: 8000,
+    // The front door (`scripts/dev-door.sh`) on the page's own origin, as a
+    // deployment's reverse proxy does: match links, the lobby and the queue.
+    // Preview uses the same proxy.
+    proxy: { "/api": { target: "http://127.0.0.1:8090", ws: true } },
+  },
 });

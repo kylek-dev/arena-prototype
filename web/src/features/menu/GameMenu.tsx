@@ -10,6 +10,7 @@ import { characterKits, customizerVisible } from "../../state/appearance";
 import { networkLink } from "../../state/network";
 import { createStore } from "../../state/store";
 import type { LinkState } from "../../domain/network";
+import { PlayOnline } from "../play-online/PlayOnline";
 
 const NO_LINK = createStore<LinkState>({ phase: "idle", attempt: 0, ended: null, status: null });
 
@@ -52,6 +53,7 @@ export function GameMenu() {
           Rejoin last match
         </Button>
       )}
+      {!inMatch && <PlayOnline onQueue={() => setPanel(null)} />}
       {!inMatch && (
         <>
           <label className="stack">

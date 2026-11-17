@@ -1,0 +1,229 @@
+// The browser end of queues and parties (ADR 0046): one WebSocket to the
+// front door, opened when the player first queues, forms or joins a party,
+// and kept open so the party stays together between matches. It confirms
+// ready checks by itself and hands the seat ticket it receives to the match
+// link, which joins as it does for a rejoin, so the ticket is never shown
+// or put in a URL.
+
+import {
+  IDLE_QUEUE,
+  guestId,
+  isGuestId,
+  normalizeCode,
+  parsePartyFragment,
+  parseQueueMessage,
+  queueUrl,
+  requests,
+  type QueueMode,
+  type QueueState,
+} from "../domain/matchmaking";
+import type { MatchTicket } from "../domain/network";
+import { createStore } from "../state/store";
+
+type TextSocket = {
+  readyState: number;
+  onopen: (() => void) | null;
+  onclose: (() => void) | null;
+  onerror: (() => void) | null;
+  onmessage: ((event: { data: unknown }) => void) | null;
+  send(data: string): void;
+  close(): void;
+};
+type StorageLike = Pick<Storage, "getItem" | "setItem">;
+export type QueueDeps = {
+  url: string;
+  createSocket(url: string): TextSocket;
+  now(): number;
+  /** Keeps the guest id; `null` when storage is unavailable. */
+  storage: StorageLike | null;
+  randomBytes(count: number): Uint8Array;
+  /** Joins the seat the queue found. */
+  onMatch(ticket: MatchTicket): void;
+};
+
+const GUEST_KEY = "arena.guest";
+const OPEN = 1;
+
+/** This browser's guest id, created once and kept. Without storage, a new
+ * one per page: queueing still works, but two tabs count as two guests. */
+function loadGuest(deps: QueueDeps) {
+  try {
+    const stored = deps.storage?.getItem(GUEST_KEY);
+    if (isGuestId(stored)) return stored;
+  } catch {
+    // Storage can be unavailable (private modes).
+  }
+  const fresh = guestId(deps.randomBytes(16));
+  try {
+    deps.storage?.setItem(GUEST_KEY, fresh);
+  } catch {
+    // Keep it for this page only.
+  }
+  return fresh;
+}
+
+export function createQueue(deps: QueueDeps) {
+  const state = createStore<QueueState>(IDLE_QUEUE);
+  const guest = loadGuest(deps);
+  let socket: TextSocket | null = null;
+  /** Requests made while the connection opens. */
+  let pending: string[] = [];
+  const update = (patch: Partial<QueueState>) => state.set({ ...state.get(), ...patch });
+  const drop = () => {
+    if (!socket) return;
+    socket.onopen = socket.onclose = socket.onerror = socket.onmessage = null;
+    socket.close();
+    socket = null;
+    pending = [];
+  };
+  const end = (reason: string) => {
+    drop();
+    state.set({ ...IDLE_QUEUE, connection: "ended", ended: reason });
+  };
+  /** Sends `request`, connecting first when needed. */
+  const request = (message: string) => {
+    if (socket?.readyState === OPEN && state.get().connection === "online") {
+      socket.send(message);
+      return;
+    }
+    pending.push(message);
+    if (socket) return;
+    update({ connection: "connecting", ended: null, notice: null });
+    const next = deps.createSocket(deps.url);
+    socket = next;
+    next.onopen = () => {
+      next.send(requests.hello(guest));
+      update({ connection: "online" });
+      for (const queued of pending) next.send(queued);
+      pending = [];
+    };
+    next.onmessage = (event) => receive(event.data);
+    next.onerror = () => {};
+    next.onclose = () => {
+      if (socket !== next) return;
+      socket = null;
+      end(state.get().connection === "online" ? "lost" : "unreachable");
+    };
+  };
+  const receive = (data: unknown) => {
+    const message = parseQueueMessage(data);
+    if (!message) return;
+    const current = state.get();
+    switch (message.type) {
+      case "party":
+        if (message.queue === null)
+          update({ party: message.party, phase: "idle", since: null, waiting: null });
+        else
+          update({
+            party: message.party,
+            mode: message.queue,
+            phase: current.phase === "found" ? "found" : "queued",
+            since: current.phase === "idle" ? deps.now() : current.since,
+          });
+        break;
+      case "queued":
+        if (current.phase !== "found")
+          update({
+            phase: "queued",
+            mode: message.mode,
+            waiting: message.waiting,
+            since: current.since ?? deps.now(),
+          });
+        break;
+      case "found":
+        update({ phase: "found", mode: message.mode, notice: null });
+        if (socket?.readyState === OPEN) socket.send(requests.ready());
+        break;
+      case "requeued":
+        update({ phase: "queued" });
+        break;
+      case "stopped":
+        update({ phase: "idle", since: null, waiting: null, notice: message.reason });
+        break;
+      case "refused":
+        update({ notice: message.code });
+        break;
+      case "match":
+        update({ phase: "idle", since: null, waiting: null, notice: null });
+        deps.onMatch(message.ticket);
+        break;
+      case "error":
+        end(message.code);
+        break;
+    }
+  };
+
+  return {
+    state,
+    guest,
+    /** The clock search times are measured on. */
+    now: deps.now,
+    /** Searches for `mode` (party leader, or on one's own). */
+    queue(mode: QueueMode) {
+      update({ mode, notice: null });
+      request(requests.queue(mode));
+    },
+    /** Stops the party's search. */
+    cancel() {
+      if (state.get().phase === "queued") request(requests.cancel());
+    },
+    /** Starts a party with an invite code. */
+    createParty() {
+      request(requests.createParty());
+    },
+    /** Joins a friend's party; `false` when the code cannot be one. */
+    joinParty(text: string) {
+      const code = normalizeCode(text);
+      if (!code) {
+        update({ notice: "no_such_party" });
+        return false;
+      }
+      request(requests.joinParty(code));
+      return true;
+    },
+    leaveParty() {
+      request(requests.leaveParty());
+    },
+    /** Clears the notice, or an ended connection's message. */
+    dismiss() {
+      const current = state.get();
+      if (current.connection === "ended") state.set(IDLE_QUEUE);
+      else update({ notice: null });
+    },
+    dispose() {
+      drop();
+    },
+  };
+}
+export type Queue = ReturnType<typeof createQueue>;
+
+export function browserQueue(onMatch: (ticket: MatchTicket) => void) {
+  let storage: StorageLike | null = null;
+  try {
+    storage = window.localStorage;
+  } catch {
+    storage = null;
+  }
+  return createQueue({
+    url: queueUrl(window.location),
+    createSocket: (url) => new WebSocket(url) as unknown as TextSocket,
+    now: () => Date.now(),
+    storage,
+    randomBytes: (count) => crypto.getRandomValues(new Uint8Array(count)),
+    onMatch,
+  });
+}
+
+/** Joins the party in an invite link (`#party=K7P2QX`), on load and when
+ * a link is pasted into an open tab, and removes it from the address bar. */
+export function installPartyLinks(queue: Queue, win: Window = window) {
+  const take = () => {
+    const code = parsePartyFragment(win.location.hash);
+    if (!win.location.hash.includes("party=")) return;
+    win.history.replaceState(null, "", win.location.pathname + win.location.search);
+    if (code) queue.joinParty(code);
+  };
+  take();
+  win.addEventListener("hashchange", take);
+  return () => win.removeEventListener("hashchange", take);
+}

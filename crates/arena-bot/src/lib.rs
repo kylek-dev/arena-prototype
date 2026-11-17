@@ -8,9 +8,13 @@
 //! input-to-acknowledgement latency, snapshot spacing and bandwidth. They
 //! also cross-check that every seat of a match sees the same state hash for
 //! the same tick.
+//!
+//! With [`Scenario::queue`], bots instead queue through the front door's
+//! solo queues ([`queue`]) and play whatever match they are put in.
 
 pub mod bot;
 pub mod link;
+pub mod queue;
 pub mod stats;
 
 use std::collections::{BTreeMap, HashMap};
@@ -42,6 +46,8 @@ pub struct Scenario {
     pub seed: u64,
     /// Linux only: measure this process's CPU time over the run.
     pub server_pid: Option<u32>,
+    /// Queue through a front door instead of creating matches.
+    pub queue: Option<queue::QueueScenario>,
 }
 
 /// State hashes seen per match and tick, to catch any divergence between
@@ -93,6 +99,8 @@ pub struct ServerMetrics {
 #[derive(Debug, Serialize)]
 pub struct Report {
     pub server: String,
+    /// The queue the bots joined, when they queued through a front door.
+    pub queue: Option<String>,
     pub matches: usize,
     pub team_size: usize,
     pub players: usize,
@@ -129,7 +137,7 @@ pub struct Report {
 }
 
 #[derive(Default)]
-struct Totals {
+pub(crate) struct Totals {
     rtt: Samples,
     input_latency: Samples,
     snapshot_gap: Samples,
@@ -198,7 +206,22 @@ impl Totals {
     }
 }
 
-pub async fn run(scenario: Scenario) -> Result<Report, String> {
+pub async fn run(mut scenario: Scenario) -> Result<Report, String> {
+    if let Some(queue) = &scenario.queue {
+        scenario.team_size = match queue.mode.as_str() {
+            "1v1" => 1,
+            "2v2" | "solo-2v2" => 2,
+            "3v3" | "solo-3v3" => 3,
+            other => {
+                return Err(format!(
+                    "unknown queue {other}: use 1v1, 2v2, 3v3, solo-2v2 or solo-3v3"
+                ));
+            }
+        };
+        if queue.bots == 0 {
+            return Err("need at least one bot".into());
+        }
+    }
     if !(1..=3).contains(&scenario.team_size) || scenario.matches == 0 {
         return Err("need at least one match and a team size of 1, 2 or 3".into());
     }
@@ -207,17 +230,31 @@ pub async fn run(scenario: Scenario) -> Result<Report, String> {
     let started = Instant::now();
     let deadline = started + scenario.duration;
     let cpu_start = scenario.server_pid.and_then(cpu_seconds);
-    let groups: Vec<_> = (0..scenario.matches)
-        .map(|group| {
-            tokio::spawn(run_group(
-                scenario.clone(),
-                group as u64,
-                deadline,
-                shared.clone(),
-                layout.clone(),
-            ))
-        })
-        .collect();
+    let groups: Vec<_> = match scenario.queue.clone() {
+        Some(queue) => (0..queue.bots)
+            .map(|bot| {
+                tokio::spawn(queue::run_bot(
+                    scenario.clone(),
+                    queue.clone(),
+                    bot as u64,
+                    deadline,
+                    shared.clone(),
+                    layout.clone(),
+                ))
+            })
+            .collect(),
+        None => (0..scenario.matches)
+            .map(|group| {
+                tokio::spawn(run_group(
+                    scenario.clone(),
+                    group as u64,
+                    deadline,
+                    shared.clone(),
+                    layout.clone(),
+                ))
+            })
+            .collect(),
+    };
     let mut totals = Totals::default();
     for group in groups {
         totals.merge(group.await.map_err(|error| error.to_string())??);
@@ -233,10 +270,21 @@ pub async fn run(scenario: Scenario) -> Result<Report, String> {
         .ok()
         .filter(|(status, _)| *status == 200)
         .map(|(_, body)| parse_metrics(&body));
-    let players = scenario.matches * scenario.team_size * 2;
+    let players = match &scenario.queue {
+        Some(queue) => queue.bots,
+        None => scenario.matches * scenario.team_size * 2,
+    };
     Ok(Report {
         server: scenario.server,
-        matches: scenario.matches,
+        queue: scenario
+            .queue
+            .as_ref()
+            .map(|queue| format!("{} via {}", queue.mode, queue.door)),
+        matches: if scenario.queue.is_some() {
+            0
+        } else {
+            scenario.matches
+        },
         team_size: scenario.team_size,
         players,
         seconds,
@@ -387,7 +435,7 @@ fn cpu_seconds(pid: u32) -> Option<f64> {
     Some((user + system) / 100.0)
 }
 
-fn from_hex(text: &str) -> Option<Vec<u8>> {
+pub(crate) fn from_hex(text: &str) -> Option<Vec<u8>> {
     if !text.len().is_multiple_of(2) || !text.is_ascii() {
         return None;
     }
@@ -399,11 +447,23 @@ fn from_hex(text: &str) -> Option<Vec<u8>> {
 
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(
-            f,
-            "scenario       {} matches × {}v{} = {} bots against {} for {:.1} s",
-            self.matches, self.team_size, self.team_size, self.players, self.server, self.seconds
-        )?;
+        match &self.queue {
+            Some(queue) => writeln!(
+                f,
+                "scenario       {} bots queueing for {queue} for {:.1} s",
+                self.players, self.seconds
+            )?,
+            None => writeln!(
+                f,
+                "scenario       {} matches × {}v{} = {} bots against {} for {:.1} s",
+                self.matches,
+                self.team_size,
+                self.team_size,
+                self.players,
+                self.server,
+                self.seconds
+            )?,
+        }
         writeln!(
             f,
             "link           base RTT {:.0} ms, jitter up to {:.0} ms per direction{}",

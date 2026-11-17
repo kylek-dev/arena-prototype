@@ -1,18 +1,23 @@
 //! `arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3]
 //!            [--seconds S] [--rtt MS] [--jitter MS] [--reconnect-every S] [--away-ms MS]
-//!            [--seed N] [--server-pid PID] [--json]`
+//!            [--seed N] [--server-pid PID] [--json]
+//!            [--queue 1v1|2v2|3v3|solo-2v2|solo-3v3 --door HOST:PORT [--bots N]]`
 //!
 //! Plays bot matches against a server started with `--dev` and prints a
-//! latency, consistency and recovery report. Exits non-zero when a bot saw
+//! latency, consistency and recovery report. With `--queue`, `--bots` bots
+//! instead queue through the front door at `--door` and play the matches it
+//! forms, alongside any people in that queue. `--server` then only serves
+//! the final metrics. Exits non-zero when a bot saw
 //! an error, an unexpected close or a state hash mismatch.
 
 use std::process::ExitCode;
 use std::time::Duration;
 
 use arena_bot::link::Link;
+use arena_bot::queue::QueueScenario;
 use arena_bot::{Scenario, run};
 
-const USAGE: &str = "usage: arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3] [--seconds S] [--rtt MS] [--jitter MS] [--reconnect-every S] [--away-ms MS] [--seed N] [--server-pid PID] [--json]";
+const USAGE: &str = "usage: arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3] [--seconds S] [--rtt MS] [--jitter MS] [--reconnect-every S] [--away-ms MS] [--seed N] [--server-pid PID] [--json] [--queue MODE --door HOST:PORT [--bots N]]";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -62,8 +67,10 @@ fn parse() -> Result<(Option<Scenario>, bool), String> {
         away: Duration::from_secs(1),
         seed: 1,
         server_pid: None,
+        queue: None,
     };
     let (mut rtt, mut jitter, mut json) = (0u64, 0u64, false);
+    let (mut queue, mut door, mut bots) = (None, None, 1usize);
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = |name: &str| -> Result<String, String> {
@@ -98,6 +105,9 @@ fn parse() -> Result<(Option<Scenario>, bool), String> {
                 scenario.server_pid = Some(number("--server-pid", value("--server-pid")?)? as u32);
             }
             "--json" => json = true,
+            "--queue" => queue = Some(value("--queue")?),
+            "--door" => door = Some(value("--door")?),
+            "--bots" => bots = number("--bots", value("--bots")?)? as usize,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok((None, false));
@@ -106,5 +116,10 @@ fn parse() -> Result<(Option<Scenario>, bool), String> {
         }
     }
     scenario.link = Link::round_trip(Duration::from_millis(rtt), Duration::from_millis(jitter));
+    scenario.queue = match (queue, door) {
+        (Some(mode), Some(door)) => Some(QueueScenario { door, mode, bots }),
+        (None, None) => None,
+        _ => return Err(format!("--queue and --door go together\n{USAGE}")),
+    };
     Ok((Some(scenario), json))
 }

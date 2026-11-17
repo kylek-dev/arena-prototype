@@ -26,6 +26,7 @@ async fn scenario(rtt_ms: u64, jitter_ms: u64) -> (arena_server::Running, Scenar
         away: Duration::from_millis(200),
         seed: 7,
         server_pid: Some(std::process::id()),
+        queue: None,
     };
     (running, scenario)
 }
@@ -82,5 +83,35 @@ async fn bots_that_drop_out_are_seen_as_disconnected_and_rejoin() {
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(report.unexpected_closes, 0);
     assert_eq!(report.hash_mismatches, 0);
+    running.shut_down(Duration::ZERO).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bots_queue_through_the_front_door_and_play_what_it_forms() {
+    use arena_bot::queue::QueueScenario;
+    use arena_server::door::{self, DoorConfig};
+    let (running, mut scenario) = scenario(20, 5).await;
+    let mut config = DoorConfig::new(
+        running.app.key().clone(),
+        format!("ws://{}/play", running.addr),
+        "http://localhost:8000/".into(),
+    );
+    config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
+    let door = door::start(config).await.unwrap();
+    scenario.queue = Some(QueueScenario {
+        door: door.addr.to_string(),
+        mode: "solo-2v2".into(),
+        bots: 4,
+    });
+    let report = run(scenario).await.unwrap();
+    println!("{report}");
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.unexpected_closes, 0);
+    assert_eq!((report.players, report.team_size), (4, 2));
+    // All four were put in one match together: each started it.
+    assert!(report.rounds_started >= 4, "{}", report.rounds_started);
+    assert!(report.hash_checks > 0);
+    assert_eq!(report.hash_mismatches, 0);
+    door.stop().await.unwrap();
     running.shut_down(Duration::ZERO).await.unwrap();
 }

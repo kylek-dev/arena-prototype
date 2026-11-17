@@ -131,6 +131,36 @@ allowed (`--allow-origin`) with HTTP 403, and a client address holding too
 many open connections (`--connections-per-address`) with 429. Both happen
 before the WebSocket upgrade, so no `Error` frame is sent.
 
+## Queues and parties
+
+The front door's `GET /api/queue` is a WebSocket of small JSON text
+messages ([ADR 0046](decisions/0046-queues-parties-and-home-screen.md)),
+separate from the binary match protocol. It is checked against the page
+`Origin`, limited to 12 connections per address and 10 messages per
+second, and messages are at most 512 bytes. Unknown fields or types close
+the connection with `error`.
+
+| From the browser | Meaning |
+| --- | --- |
+| `{"type":"hello","guest":"<32 hex>"}` | First, within 5 s. One connection per guest; a newer one replaces it. |
+| `{"type":"create_party"}` | Get an invite code (leaving someone else's party for a new one). |
+| `{"type":"join_party","code":"K7P2QX"}` | Join a friend's party (up to 3 players, not while it searches). |
+| `{"type":"leave_party"}` | Back on one's own; the next member leads. |
+| `{"type":"queue","mode":"1v1"\|"2v2"\|"3v3"\|"solo-2v2"\|"solo-3v3"}` | Leader only. Solo queues and 1v1 take one player; 2v2 and 3v3 take parties up to the team size. |
+| `{"type":"cancel"}` | Any member stops the party's search. |
+| `{"type":"ready"}` | Confirms a found match (sent automatically). |
+
+| From the door | Meaning |
+| --- | --- |
+| `party` `{code, members, leader, queue}` | The party, whenever it changes (`code` is `null` on one's own). |
+| `queued` `{mode, waiting}` | Searching; sent on queueing and every 2 s. |
+| `found` `{mode}` | Ready check started: confirm within 10 s. |
+| `requeued` `{mode}` | Someone else did not confirm; back at the front of the queue. |
+| `stopped` `{reason}` | `cancelled`, `member_left` or `member_not_ready`. |
+| `refused` `{code}` | `not_leader`, `party_too_big`, `party_full`, `party_busy` or `no_such_party`; nothing changed. |
+| `match` `{mode, match_id, seat, server, ticket, expires}` | This player's seat ticket. The connection stays open. |
+| `error` `{code, message}` | Then the door closes: `bad_request`, `rate_limited`, `replaced`, `not_ready` or `shutdown`. |
+
 ## Match lifecycle
 
 - **Waiting:** the rules do not advance until every seat has connected once,

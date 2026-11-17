@@ -1,0 +1,39 @@
+/* Party and queue controls (home screen and game menu). */
+.play-online .party {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--gray-6);
+  border-radius: var(--radius-3);
+}
+.party-actions,
+.party-invite,
+.party-join {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.party-code {
+  font-family: ui-monospace, monospace;
+  letter-spacing: 0.08em;
+}
+.party-join input {
+  width: 9ch;
+  font-family: ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.party-link {
+  width: 100%;
+  font-size: 12px;
+}
+.play-online-notice {
+  color: var(--pal-gold-5);
+}
+.play-online-ended {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--pal-gold-5);
+}

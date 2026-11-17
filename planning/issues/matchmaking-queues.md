@@ -16,3 +16,8 @@ Acceptance criteria:
   - Headless matchmaker tests: forming teams, cancelling, no-shows and requeueing, and no player in two matches.
   - An `arena-bot --queue MODE` option, so load runs and solo playtests can fill queues with bots.
 - **The lobby page:** decide whether `/lobby/` and its links stay as a playtest tool or are replaced by custom matches.
+
+**Status (2026-11-16).** Implemented with team queues and parties (see `party-queues`), the home screen and queueing bots ([ADR 0046](../../docs/decisions/0046-queues-parties-and-home-screen.md)). The lobby page stays until custom matches. Still open:
+- Human browser review.
+- A queue cooldown for players who leave matches early (not decided).
+- Scaling the matchmaker beyond one door.

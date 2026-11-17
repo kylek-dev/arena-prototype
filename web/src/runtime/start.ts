@@ -4,7 +4,7 @@ import { readGraphics } from "../state/graphics";
 import { readWeapons } from "../state/weapons";
 import { readLighting } from "../state/lighting";
 import { loadStartupMap, onMapStatus, readMap } from "../state/map-editor";
-import { readAppearance, readPreview } from "../state/appearance";
+import { beforeMatch, enterArena, readAppearance, readPreview } from "../state/appearance";
 import { observeCastResult } from "./cast-feedback";
 import { engine, error, focus, nameplateScene } from "../state/session";
 import { reconcileFocus } from "../domain/units/selection";
@@ -15,7 +15,8 @@ import { installInput } from "./input-router";
 import { installSpellDragging } from "./spell-drag";
 import { debugEnabled, measureFrames, metrics, recordError, recordState } from "./diagnostics";
 import { browserLink, installJoinLinks, takeJoinFragment } from "./network";
-import { networkLink } from "../state/network";
+import { browserQueue, installPartyLinks } from "./matchmaking";
+import { matchQueue, networkLink } from "../state/network";
 export function startRuntime(canvas: HTMLCanvasElement) {
   const pointer = installPointer(canvas, () => router.cancel());
   const router = installInput(canvas, pointer.end);
@@ -33,6 +34,14 @@ export function startRuntime(canvas: HTMLCanvasElement) {
   window.addEventListener("unhandledrejection", (e) => fail(String(e.reason?.message ?? e.reason)));
   const link = browserLink();
   networkLink.set(link);
+  // A seat found by the queue is joined like any other, leaving the home
+  // screen if the player is still there.
+  const queue = browserQueue((ticket) => {
+    if (beforeMatch.get()) enterArena(() => {});
+    link.join(ticket);
+  });
+  matchQueue.set(queue);
+  const stopPartyLinks = installPartyLinks(queue);
   // A join link wins; otherwise a reload rejoins this tab's match.
   const joining = takeJoinFragment() ?? link.resumable();
   if (joining) link.join(joining);
@@ -98,6 +107,9 @@ export function startRuntime(canvas: HTMLCanvasElement) {
   });
   return () => {
     stopJoinLinks();
+    stopPartyLinks();
+    queue.dispose();
+    matchQueue.set(null);
     link.dispose();
     networkLink.set(null);
     stopFrameTiming();

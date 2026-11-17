@@ -1,3 +1,5 @@
+**Next (user decision, 2026-11-16):** players set up their look on the home screen before queueing, and it is shown to everyone in the match. This item moves ahead of the round clock.
+
 Show every player's chosen character look in matches. Today only the local player (actor 0) gets the customizable kit model; everyone else is the procedural placeholder, and looks are never sent to the server. User decision: a look is locked once a player joins a match.
 
 Acceptance criteria:

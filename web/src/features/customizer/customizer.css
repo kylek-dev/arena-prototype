@@ -104,6 +104,11 @@
   gap: 8px;
   margin-top: 8px;
 }
+.start-setup {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
 .customizer-panel {
   pointer-events: auto;
   display: flex;
