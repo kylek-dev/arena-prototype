@@ -1,6 +1,11 @@
 # ADR 0046: Queues, parties and the home screen
 
 Date: 2026-11-16. **Status: accepted and implemented**, with automated tests.
+**Amended by [ADR 0047](0047-accepting-matches-and-queue-status.md)
+(2026-11-17):** the solo 2v2 and solo 3v3 queues are gone (2v2 and 3v3 take
+everyone), and players now accept or decline found matches within 15 s
+instead of the game confirming for them. The sections below describe the
+original decision.
 Human browser review of the home screen and the Play online panel is
 pending; see [UI review](../UI-REVIEW.md).
 

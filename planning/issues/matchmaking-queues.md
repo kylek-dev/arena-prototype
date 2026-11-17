@@ -17,6 +17,8 @@ Acceptance criteria:
   - An `arena-bot --queue MODE` option, so load runs and solo playtests can fill queues with bots.
 - **The lobby page:** decide whether `/lobby/` and its links stay as a playtest tool or are replaced by custom matches.
 
+**Status (2026-11-17).** Solo 2v2 and solo 3v3 were folded into 2v2 and 3v3, and found matches are now accepted or declined within 15 s, with a queue bar showing the time waited and the expected wait ([ADR 0047](../../docs/decisions/0047-accepting-matches-and-queue-status.md)). Not yet decided: a sound or system notification when a match is ready.
+
 **Status (2026-11-16).** Implemented with team queues and parties (see `party-queues`), the home screen and queueing bots ([ADR 0046](../../docs/decisions/0046-queues-parties-and-home-screen.md)). The lobby page stays until custom matches. Still open:
 - Human browser review.
 - A queue cooldown for players who leave matches early (not decided).

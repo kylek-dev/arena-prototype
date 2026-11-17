@@ -14,6 +14,8 @@ import { BindingConflict } from "../features/keybindings/BindingsEditor";
 import { LayoutToolbar } from "../features/layout-editor/LayoutSettings";
 import { CombatErrors } from "../features/combat-errors/CombatErrors";
 import { MatchStatus } from "../features/match-status/MatchStatus";
+import { MatchReady } from "../features/queue/MatchReady";
+import { QueueBar } from "../features/queue/QueueBar";
 import { Loading } from "../features/loading/Loading";
 import { Diagnostics } from "../features/diagnostics/Diagnostics";
 import { LightingTweaks } from "../features/lighting-tweaks/LightingTweaks";
@@ -76,6 +78,9 @@ export function App() {
           </>
         )}
         <Diagnostics />
+        {/* The queue follows the player from the home screen into the arena. */}
+        <QueueBar />
+        <MatchReady />
         <LightingTweaks />
         <MapEditor />
         <StartScreen />

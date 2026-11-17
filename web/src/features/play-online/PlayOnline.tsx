@@ -16,6 +16,13 @@ import { createStore, useStore } from "../../state/store";
 import "./play-online.css";
 
 const NO_QUEUE = createStore(IDLE_QUEUE);
+const REFUSALS = new Set([
+  "not_leader",
+  "party_too_big",
+  "party_full",
+  "party_busy",
+  "no_such_party",
+]);
 
 function InviteLink({ code }: { code: string }) {
   const link = inviteLink(window.location, code);
@@ -92,7 +99,8 @@ export function PlayOnline({ onQueue }: { onQueue?: () => void }) {
   if (!queue) return null;
   const party = state.party?.code ? state.party : null;
   const searching = state.phase !== "idle";
-  const notice = noticeText(state.notice);
+  // Answers to this panel's own requests; the queue bar tells the rest.
+  const notice = REFUSALS.has(state.notice ?? "") ? noticeText(state.notice) : null;
   const start = (mode: QueueMode) => {
     queue.queue(mode);
     onQueue?.();
@@ -157,13 +165,13 @@ export function PlayOnline({ onQueue }: { onQueue?: () => void }) {
       {searching && state.mode ? (
         <div className="stack">
           <Text size="1" color="gray">
-            {state.phase === "found"
-              ? "Match found · getting ready…"
-              : `Searching for a ${modeLabel(state.mode)} match. You can keep practicing or customizing; the match starts when everyone is found.`}
+            {state.phase === "ready"
+              ? "Your match is ready: accept it in the window."
+              : `In the ${modeLabel(state.mode)} queue. The bar at the top shows your wait; you can keep practicing or customizing meanwhile.`}
           </Text>
           {state.phase === "queued" && (
             <Button variant="soft" color="gray" onClick={() => queue.cancel()}>
-              Cancel search
+              Leave queue
             </Button>
           )}
         </div>

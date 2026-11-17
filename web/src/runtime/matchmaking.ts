@@ -1,9 +1,9 @@
-// The browser end of queues and parties (ADR 0046): one WebSocket to the
-// front door, opened when the player first queues, forms or joins a party,
-// and kept open so the party stays together between matches. It confirms
-// ready checks by itself and hands the seat ticket it receives to the match
-// link, which joins as it does for a rejoin, so the ticket is never shown
-// or put in a URL.
+// The browser end of queues and parties (ADR 0046, ADR 0047): one WebSocket
+// to the front door, opened when the player first queues, forms or joins a
+// party, and kept open so the party stays together between matches. The
+// player accepts or declines found matches; the seat ticket that follows
+// goes to the match link, which joins as it does for a rejoin, so the
+// ticket is never shown or put in a URL.
 
 import {
   IDLE_QUEUE,
@@ -109,42 +109,54 @@ export function createQueue(deps: QueueDeps) {
     const message = parseQueueMessage(data);
     if (!message) return;
     const current = state.get();
+    const now = deps.now();
     switch (message.type) {
       case "party":
         if (message.queue === null)
-          update({ party: message.party, phase: "idle", since: null, waiting: null });
+          update({ party: message.party, phase: "idle", since: null, readyCheck: null });
         else
           update({
             party: message.party,
             mode: message.queue,
-            phase: current.phase === "found" ? "found" : "queued",
-            since: current.phase === "idle" ? deps.now() : current.since,
+            phase: current.phase === "ready" ? "ready" : "queued",
+            since: current.since ?? now,
           });
         break;
       case "queued":
-        if (current.phase !== "found")
+        if (current.phase !== "ready")
           update({
             phase: "queued",
             mode: message.mode,
             waiting: message.waiting,
-            since: current.since ?? deps.now(),
+            expectedMs: message.expectedMs,
+            // The door's measure, so every party member sees the same time.
+            since: now - message.waitedMs,
           });
         break;
-      case "found":
-        update({ phase: "found", mode: message.mode, notice: null });
-        if (socket?.readyState === OPEN) socket.send(requests.ready());
+      case "ready_check":
+        update({
+          phase: "ready",
+          mode: message.mode,
+          notice: null,
+          readyCheck: {
+            accepted: message.accepted,
+            total: message.total,
+            you: message.you,
+            deadline: now + message.remainingMs,
+          },
+        });
         break;
       case "requeued":
-        update({ phase: "queued" });
+        update({ phase: "queued", readyCheck: null, notice: "requeued" });
         break;
       case "stopped":
-        update({ phase: "idle", since: null, waiting: null, notice: message.reason });
+        update({ phase: "idle", since: null, readyCheck: null, notice: message.reason });
         break;
       case "refused":
         update({ notice: message.code });
         break;
       case "match":
-        update({ phase: "idle", since: null, waiting: null, notice: null });
+        update({ phase: "idle", since: null, readyCheck: null, notice: null });
         deps.onMatch(message.ticket);
         break;
       case "error":
@@ -166,6 +178,17 @@ export function createQueue(deps: QueueDeps) {
     /** Stops the party's search. */
     cancel() {
       if (state.get().phase === "queued") request(requests.cancel());
+    },
+    /** Accepts the match on offer. */
+    accept() {
+      const check = state.get().readyCheck;
+      if (state.get().phase !== "ready" || !check || check.you) return;
+      update({ readyCheck: { ...check, you: true } });
+      request(requests.accept());
+    },
+    /** Declines the match on offer, leaving the queue. */
+    decline() {
+      if (state.get().phase === "ready") request(requests.decline());
     },
     /** Starts a party with an invite code. */
     createParty() {
