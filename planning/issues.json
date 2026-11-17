@@ -78,5 +78,10 @@
     "key": "spectating",
     "title": "Spectate matches",
     "body_file": "planning/issues/spectating.md"
+  },
+  {
+    "key": "scoreboard",
+    "title": "Show a scoreboard with per-player stats when a match ends",
+    "body_file": "planning/issues/scoreboard.md"
   }
 ]

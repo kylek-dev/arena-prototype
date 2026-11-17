@@ -59,6 +59,9 @@ pub struct SeatStats {
     pub rejoins_too_late: u64,
     /// Snapshots that showed some other fighter as disconnected.
     pub saw_disconnected: u64,
+    /// Results that do not match the fighters: a team declared beaten while
+    /// one of its fighters still stands. Must stay 0.
+    pub wrong_results: u64,
     /// Inputs applied to the predicted fighter, as a browser client does.
     pub predicted_inputs: u64,
     /// Reconciliations that moved the prediction, and by how much (mm).
@@ -231,6 +234,11 @@ async fn session(
                         if snapshot.tick > 0 {
                             seat.shared.check_hash(seat.match_id, snapshot.tick, snapshot.hash);
                         }
+                        if let Some(result) = snapshot.result
+                            && !result_matches(result, &snapshot.fighters)
+                        {
+                            stats.wrong_results += 1;
+                        }
                         if snapshot.result.is_some() {
                             predictor.reset();
                         } else if snapshot.tick == 0 {
@@ -312,6 +320,25 @@ async fn session(
 }
 
 /// Chooses an input from the bot's (delayed) view: walk toward the nearest
+/// Whether a round result agrees with the fighters' health: a win needs the
+/// whole losing team down, and a draw with nobody beaten is only the time
+/// limit.
+pub fn result_matches(result: arena_protocol::WireResult, fighters: &[FighterState]) -> bool {
+    let standing = |team: usize| {
+        fighters
+            .iter()
+            .enumerate()
+            .any(|(index, fighter)| index % 2 == team && fighter.health > 0)
+    };
+    match result {
+        arena_protocol::WireResult::Won { team } => {
+            let loser = 1 - usize::from(team.min(1));
+            standing(usize::from(team)) && !standing(loser)
+        }
+        arena_protocol::WireResult::Draw => true,
+    }
+}
+
 /// standing enemy, attack when it looks in range, face it, and jump now and
 /// then. The server judges everything; the bot is often wrong on purpose.
 pub fn decide(actor: usize, snapshot: &Snapshot, rng: &mut Rng) -> InputFrame {

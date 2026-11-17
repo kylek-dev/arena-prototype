@@ -286,3 +286,23 @@ it("shows network statistics in the diagnostics overlay during a match", () => {
   fake.drop();
   expect(stats.getByText("reconnecting · attempt 1")).toBeTruthy();
 });
+
+it("a match joined after another ended starts clean, without the ended match's last frames", () => {
+  const fake = fakeLink();
+  const { link } = fake;
+  act(() => link.join(ticket));
+  fake.open();
+  expect(link.read()[0]).toBe(1);
+  // The server ends the match: `Error(MatchOver)`, then it closes.
+  fake.closeWith(3);
+  expect(link.state.get()).toMatchObject({ phase: "ended", ended: "MatchOver" });
+  expect(link.read()).toEqual([]);
+  // The next match (a queue found it): until its socket opens, the engine
+  // must see nothing — not the old generation and its `MatchOver` frame,
+  // which would end the new match before it starts.
+  act(() => link.join({ ...ticket, ticket: "cd02" }));
+  expect(link.read()).toEqual([0]);
+  fake.open();
+  expect(link.read()).toEqual([2]);
+  expect(link.state.get().phase).toBe("open");
+});

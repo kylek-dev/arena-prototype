@@ -190,6 +190,8 @@ pub struct Session {
     own: Option<Own>,
     /// The newest snapshot's state in server order, to reconcile with.
     newest_state: Option<(u64, Vec<Combatant>, Option<RoundResult>, u32)>,
+    /// Whether this seat's heading has been taken from the server yet.
+    heading_taken: bool,
     pub stats: Stats,
 }
 
@@ -272,6 +274,7 @@ impl Session {
                         self.snapshots.clear();
                         self.events.clear();
                         self.view_tick = None;
+                        self.heading_taken = false;
                     }
                     self.seat = Some(seat);
                     self.order = seat_order(seat, count);
@@ -457,6 +460,19 @@ impl Session {
     /// The predicted fighter, for drawing; `None` unless a round is running.
     pub fn own(&self) -> Option<Own> {
         self.own
+    }
+    /// This player's heading as the server has it (radians), once per seat:
+    /// the first time a snapshot is in after joining a match or taking a
+    /// different seat. The heading is local afterwards, for responsive
+    /// turning; a reconnect to the same seat keeps it. Joining a new match
+    /// thus starts facing out of the starting room, toward the other team.
+    pub fn take_initial_heading(&mut self) -> Option<f32> {
+        if self.heading_taken {
+            return None;
+        }
+        let own = self.snapshots.back()?.fighters.first()?;
+        self.heading_taken = true;
+        Some(yaw(own.facing))
     }
     /// The predicted fighter's rules state, for the HUD's own checks.
     pub fn predicted(&self) -> Option<Combatant> {

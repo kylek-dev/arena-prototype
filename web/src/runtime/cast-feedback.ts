@@ -36,6 +36,7 @@ export function observeCastResult(next: Snapshot) {
     "Pulse is recharging",
     "Line of sight blocked by pillar",
     "Round complete · reset to play again",
+    "You are defeated · your team fights on",
     "Command rejected",
   ];
   if (next.feedback !== previous.feedback && rejectedFeedback.includes(next.feedback)) {
