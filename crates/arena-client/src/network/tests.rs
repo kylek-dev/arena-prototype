@@ -534,3 +534,39 @@ fn returning_from_a_background_tab_keeps_the_server_rate_and_full_speed() {
         "the server rate was misjudged by {worst} ticks/s"
     );
 }
+
+#[test]
+fn one_enemy_down_in_a_team_match_does_not_end_the_round_for_the_hud() {
+    // 2v2, this player is seat 1 (team 1): server actors 0 and 2 are the
+    // enemies. Enemy actor 0 is defeated; actor 2 still stands.
+    let start = Arena::practice(layout(), 2).unwrap();
+    let mut fighters = start.fighters().to_vec();
+    fighters[0].health = 0;
+    let mut server = Arena::restore(layout(), 1, fighters, None).unwrap();
+    let mut session = joined(1, 2);
+    let mut frames = Vec::new();
+    for _ in 0..10 {
+        server.step(&[]);
+        frames.push(snapshot(&server, 0, vec![], &[true; 4]));
+    }
+    session.receive(&feed(1, frames), 0.0, &layout());
+    assert_eq!(server.result(), None);
+    assert_eq!(session.phase, Phase::Playing);
+    let view = session.view(0.0, 0.0).unwrap();
+    assert_eq!(view.result, None);
+    // The HUD's own copy of the arena, in local order, as lib.rs builds it.
+    let hud = Arena::restore(layout(), view.tick, view.fighters, view.result).unwrap();
+    assert_eq!(hud.result(), None);
+    // Local 1 is enemy actor 0 (down), local 3 is enemy actor 2 (standing).
+    assert_eq!(seat_order(1, 4), vec![1, 0, 3, 2]);
+    assert_eq!(hud.fighters()[1].health, 0);
+    assert!(hud.fighters()[3].health > 0);
+    assert_eq!(
+        hud.can_attack(0, 1),
+        Err(arena_sim::arena::Rejection::InvalidTarget)
+    );
+    assert_ne!(
+        hud.can_attack(0, 3),
+        Err(arena_sim::arena::Rejection::MatchOver)
+    );
+}
