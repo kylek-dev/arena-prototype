@@ -175,18 +175,22 @@ impl TickRate {
     /// Fits the lower edge of the bucket minima: least squares, then drop
     /// points more than `LATE` above the line and refit, a few times.
     fn fit(&self) -> Option<f64> {
-        let mut points: Vec<(f64, f64)> = self
-            .buckets
-            .iter()
-            .map(|(_, tick, offset)| (*tick as f64, *offset))
-            .collect();
+        let mut points = [(0.0_f64, 0.0_f64); RATE_WINDOW_BUCKETS];
+        let mut len = 0usize;
+        for &(_, tick, offset) in &self.buckets {
+            if len < RATE_WINDOW_BUCKETS {
+                points[len] = (tick as f64, offset);
+                len += 1;
+            }
+        }
         let mut slope = 0.0;
         for _ in 0..4 {
-            let n = points.len() as f64;
-            if points.len() < 3 {
+            if len < 3 {
                 return None;
             }
-            let (first, last) = (*points.first()?, *points.last()?);
+            let slice = &points[..len];
+            let n = len as f64;
+            let (first, last) = (slice[0], slice[len - 1]);
             // A first estimate after about a second keeps a skewed client
             // from flooding the server while it waits for one; it must span
             // a second of server ticks and of local time.
@@ -194,22 +198,30 @@ impl TickRate {
             if last.0 - first.0 < NOMINAL_TICK_RATE || local(last) - local(first) < 1.0 {
                 return None;
             }
-            let (mx, my) = points
+            let (mx, my) = slice
                 .iter()
                 .fold((0.0, 0.0), |(x, y), (px, py)| (x + px / n, y + py / n));
-            let (sxy, sxx) = points.iter().fold((0.0, 0.0), |(sxy, sxx), (px, py)| {
+            let (sxy, sxx) = slice.iter().fold((0.0, 0.0), |(sxy, sxx), (px, py)| {
                 (sxy + (px - mx) * (py - my), sxx + (px - mx) * (px - mx))
             });
             slope = sxy / sxx;
             let intercept = my - slope * mx;
             // The lowest residual marks the lower edge; keep points near it.
-            let lowest = points
+            let lowest = slice
                 .iter()
                 .map(|(x, y)| y - (intercept + slope * x))
                 .fold(f64::INFINITY, f64::min);
-            let before = points.len();
-            points.retain(|(x, y)| y - (intercept + slope * x) - lowest <= LATE);
-            if points.len() == before {
+            let before = len;
+            let mut kept = 0usize;
+            for i in 0..len {
+                let (x, y) = points[i];
+                if y - (intercept + slope * x) - lowest <= LATE {
+                    points[kept] = (x, y);
+                    kept += 1;
+                }
+            }
+            len = kept;
+            if len == before {
                 break;
             }
         }
@@ -309,11 +321,24 @@ impl Predictor {
             self.pending.pop_front();
         }
         let before = self.predicted();
-        let mut arena = Arena::restore(layout.clone(), tick, fighters, result)?;
-        if actor >= arena.fighters().len() {
+        let valid =
+            (2..=crate::MAX_FIGHTERS).contains(&fighters.len()) && fighters.len().is_multiple_of(2);
+        if !valid {
+            return None;
+        }
+        if actor >= fighters.len() {
             self.arena = None;
             return None;
         }
+        let mut arena = match self.arena.take() {
+            Some(mut existing) if existing.layout() == layout => {
+                if !existing.restore_in_place(tick, &fighters, result) {
+                    return None;
+                }
+                existing
+            }
+            _ => Arena::restore(layout.clone(), tick, fighters, result)?,
+        };
         for (_, input) in &self.pending {
             step(&mut arena, actor, *input);
         }
@@ -329,9 +354,15 @@ impl Predictor {
 }
 
 fn step(arena: &mut Arena, actor: usize, input: ActorInput) {
-    let mut slots = vec![ActorInput::default(); actor + 1];
-    slots[actor] = input;
-    arena.advance(&slots);
+    let mut slots = [ActorInput::default(); crate::MAX_FIGHTERS];
+    if let Some(slot) = slots.get_mut(actor) {
+        *slot = input;
+        arena.advance(&slots[..=actor]);
+    } else {
+        let mut slots = vec![ActorInput::default(); actor + 1];
+        slots[actor] = input;
+        arena.advance(&slots);
+    }
 }
 
 /// Distance between two predicted states, in millimetres, including height.

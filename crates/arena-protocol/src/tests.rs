@@ -439,3 +439,49 @@ fn the_debug_dump_is_readable_json() {
     let value: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
     assert_eq!(value["Snapshot"]["fighters"].as_array().unwrap().len(), 6);
 }
+
+#[test]
+fn encoded_snapshot_body_matches_full_server_message_bytes() {
+    let mut snapshots = vec![
+        Snapshot::capture(&colosseum(1), 0, Vec::new(), &[true, false]),
+        busy_snapshot(),
+    ];
+    let mut with_queued = Snapshot::capture(
+        &colosseum(3),
+        123_456,
+        vec![TickEvent {
+            tick: 7,
+            event: WireEvent::Jumped { actor: 2 },
+        }],
+        &[true; MAX_FIGHTERS],
+    );
+    with_queued.queued = 9;
+    with_queued.result = Some(WireResult::Draw);
+    snapshots.push(with_queued);
+
+    for snapshot in snapshots {
+        let expected = ServerMessage::Snapshot(snapshot.clone()).encode();
+        let with_shared = EncodedSnapshotBody::new(
+            snapshot.tick,
+            snapshot.hash,
+            snapshot.result,
+            &snapshot.fighters,
+            Some(&snapshot.events),
+        );
+        assert_eq!(
+            with_shared.encode_for_seat(snapshot.ack, snapshot.queued, &[]),
+            expected
+        );
+        let with_per_seat = EncodedSnapshotBody::new(
+            snapshot.tick,
+            snapshot.hash,
+            snapshot.result,
+            &snapshot.fighters,
+            None,
+        );
+        assert_eq!(
+            with_per_seat.encode_for_seat(snapshot.ack, snapshot.queued, &snapshot.events),
+            expected
+        );
+    }
+}

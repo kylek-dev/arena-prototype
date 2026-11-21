@@ -228,6 +228,24 @@ impl Arena {
             result,
         })
     }
+    /// Updates an arena's state without reallocating its layout or fighter
+    /// buffer. Returns `false` and leaves the arena unchanged unless there
+    /// are 2–6 fighters in teams of equal size.
+    pub fn restore_in_place(
+        &mut self,
+        tick: u64,
+        fighters: &[Combatant],
+        result: Option<RoundResult>,
+    ) -> bool {
+        if !(2..=MAX_TEAM * 2).contains(&fighters.len()) || !fighters.len().is_multiple_of(2) {
+            return false;
+        }
+        self.tick = tick;
+        self.fighters.clear();
+        self.fighters.extend_from_slice(fighters);
+        self.result = result;
+        true
+    }
     pub fn tick(&self) -> u64 {
         self.tick
     }
@@ -292,7 +310,9 @@ impl Arena {
     /// resolves exactly as [`Arena::advance`].
     pub fn step(&mut self, commands: &[ArenaCommand]) -> Vec<ArenaEvent> {
         let mut events = Vec::new();
-        let mut inputs = vec![ActorInput::default(); self.fighters.len()];
+        let count = self.fighters.len();
+        let mut inputs = [ActorInput::default(); MAX_TEAM * 2];
+        let inputs = &mut inputs[..count];
         for &command in commands {
             let actor = command.actor();
             let Some(slot) = inputs.get_mut(actor) else {
@@ -335,7 +355,7 @@ impl Arena {
                 });
             }
         }
-        events.extend(self.advance(&inputs));
+        events.extend(self.advance(inputs));
         events
     }
 
@@ -433,7 +453,7 @@ impl Arena {
         }
 
         // 4. Attacks, validated against one shared state and applied together.
-        let mut incoming = vec![0u16; count];
+        let mut incoming = [0u16; MAX_TEAM * 2];
         for (actor, input) in inputs.iter().enumerate() {
             let Some(target) = input.attack else {
                 continue;
@@ -451,7 +471,7 @@ impl Arena {
                 damage,
             });
         }
-        for (fighter, damage) in self.fighters.iter_mut().zip(incoming) {
+        for (fighter, &damage) in self.fighters.iter_mut().zip(&incoming[..count]) {
             fighter.health = fighter.health.saturating_sub(damage);
         }
         let standing = |team: usize| {
@@ -493,14 +513,20 @@ impl Arena {
     /// fighter, for comparing a server's state with a replay or a client's
     /// prediction. The layout is fixed per match and versioned separately.
     pub fn state_hash(&self) -> u64 {
+        Self::hash_state(self.tick, &self.fighters, self.result)
+    }
+
+    /// Computes [`Self::state_hash`] directly from components without needing
+    /// an [`Arena`] or cloning its layout.
+    pub fn hash_state(tick: u64, fighters: &[Combatant], result: Option<RoundResult>) -> u64 {
         let mut hash = Fnv::default();
-        hash.write(&self.tick.to_le_bytes());
-        hash.write(&match self.result {
+        hash.write(&tick.to_le_bytes());
+        hash.write(&match result {
             None => [0, 0],
             Some(RoundResult::Won { team }) => [1, team as u8],
             Some(RoundResult::Draw) => [2, 0],
         });
-        for fighter in &self.fighters {
+        for fighter in fighters {
             for value in [
                 fighter.position.x,
                 fighter.position.z,
@@ -1508,6 +1534,21 @@ mod tests {
         let one = original.fighters()[0];
         for count in [0, 1, 3, 8] {
             assert!(Arena::restore(fixture(), 0, vec![one; count], None).is_none());
+        }
+        // In-place restore updates state without cloning the layout and keeps
+        // the previous state intact when given an invalid fighter count.
+        let mut reusable = default_arena();
+        assert!(
+            reusable.restore_in_place(original.tick(), original.fighters(), original.result(),)
+        );
+        assert_eq!(reusable, original);
+        assert_eq!(
+            Arena::hash_state(original.tick(), original.fighters(), original.result()),
+            original.state_hash()
+        );
+        for count in [0, 1, 3, 8] {
+            assert!(!reusable.restore_in_place(99, &vec![one; count], None));
+            assert_eq!(reusable, original);
         }
     }
     const GOLDEN_STATE_HASH: u64 = 395_746_746_345_043_275;

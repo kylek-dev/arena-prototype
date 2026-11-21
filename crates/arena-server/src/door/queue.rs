@@ -208,8 +208,10 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
     let mut stop = door.shutdown.subscribe();
     loop {
         let now = Instant::now();
-        // Searches that started now get a status at once.
-        let mut announce_status = false;
+        // A party that just queued gets an immediate status; everyone else
+        // updates on the periodic cadence (avoiding an O(N^2) broadcast storm
+        // on queue arrivals).
+        let mut queued_conn = None;
         let out = tokio::select! {
             _ = stop.wait_for(|stop| *stop) => break,
             _ = tick.tick() => mm.tick(now),
@@ -223,7 +225,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 Some(Command::JoinParty { conn, code }) => mm.join_party(conn, &code, now),
                 Some(Command::LeaveParty { conn }) => mm.leave_party(conn, now),
                 Some(Command::Queue { conn, mode }) => {
-                    announce_status = true;
+                    queued_conn = Some(conn);
                     mm.queue(conn, mode, now)
                 }
                 Some(Command::Cancel { conn }) => mm.cancel(conn),
@@ -287,10 +289,8 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 Out::Start { mode, seats } => start_match(&door, &conns, mode, seats),
             }
         }
-        if announce_status || now >= status_at {
-            if now >= status_at {
-                status_at = now + STATUS_EVERY;
-            }
+        if now >= status_at {
+            status_at = now + STATUS_EVERY;
             let waiting = mm.waiting();
             let expected = Mode::ALL.map(|mode| mm.expected_wait(mode));
             for (conn, mode, since) in mm.searching() {
@@ -302,6 +302,24 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                         waiting: waiting[mode.index()],
                         waited_ms: now.saturating_duration_since(since).as_millis() as u64,
                         expected_ms: expected[mode.index()].map(|wait| wait.as_millis() as u64),
+                    },
+                );
+            }
+        } else if let Some(conn) = queued_conn
+            && let Some((mode, since, members)) = mm.searching_party(conn)
+        {
+            let waiting = mm.waiting()[mode.index()];
+            let expected_ms = mm.expected_wait(mode).map(|wait| wait.as_millis() as u64);
+            let waited_ms = now.saturating_duration_since(since).as_millis() as u64;
+            for member in members {
+                send(
+                    &conns,
+                    member,
+                    ToClient::Queued {
+                        mode: mode.id().into(),
+                        waiting,
+                        waited_ms,
+                        expected_ms,
                     },
                 );
             }

@@ -40,7 +40,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 
 use ingress::{Cidr, OpenPerAddress, OpenSlot, Origins};
 use metrics::Metrics;
-use session::{ConnId, Limits, Out, Session};
+use session::{ConnId, EncodedOut, Limits, Out, Session};
 use ticket::{Claims, TicketKey};
 
 pub use ticket::NewMatch;
@@ -227,6 +227,60 @@ impl App {
     }
 }
 
+/// Up to six connections per match; linear scan avoids hashing on every frame.
+type Conns = Vec<(ConnId, mpsc::Sender<Outbound>)>;
+
+fn insert_conn(conns: &mut Conns, conn: ConnId, sender: mpsc::Sender<Outbound>) {
+    if let Some((_, existing)) = conns.iter_mut().find(|(id, _)| *id == conn) {
+        *existing = sender;
+    } else {
+        conns.push((conn, sender));
+    }
+}
+
+fn get_conn(conns: &Conns, conn: ConnId) -> Option<&mpsc::Sender<Outbound>> {
+    conns
+        .iter()
+        .find(|(id, _)| *id == conn)
+        .map(|(_, sender)| sender)
+}
+
+fn remove_conn(conns: &mut Conns, conn: ConnId) -> Option<mpsc::Sender<Outbound>> {
+    let at = conns.iter().position(|(id, _)| *id == conn)?;
+    Some(conns.swap_remove(at).1)
+}
+
+fn apply_command(
+    app: &App,
+    id: u64,
+    session: &mut Session,
+    conns: &mut Conns,
+    command: Option<Command>,
+) {
+    let out = match command {
+        Some(Command::Attach { seat, conn, out }) => {
+            insert_conn(conns, conn, out);
+            let out = session.attach(seat, conn);
+            log_attach(id, seat, conn, &out);
+            out
+        }
+        Some(Command::Input { seat, conn, frame }) => {
+            session.receive(seat, conn, frame);
+            return;
+        }
+        Some(Command::Detach { seat, conn }) => {
+            remove_conn(conns, conn);
+            if session.holds(seat, conn) {
+                eprintln!("match {id:016x}: seat {seat} disconnected (connection {conn})");
+            }
+            session.detach(seat, conn);
+            return;
+        }
+        None => session.shut_down(),
+    };
+    deliver(app, id, conns, out);
+}
+
 async fn run_match(
     app: Arc<App>,
     id: u64,
@@ -234,7 +288,7 @@ async fn run_match(
     mut session: Session,
     mut commands: mpsc::Receiver<Command>,
 ) {
-    let mut conns: HashMap<ConnId, mpsc::Sender<Outbound>> = HashMap::new();
+    let mut conns: Conns = Vec::with_capacity(arena_protocol::MAX_FIGHTERS);
     // Under overload the clock stretches rather than bursting missed ticks,
     // so the rules never run faster than real time.
     let mut interval = tokio::time::interval(app.config.tick);
@@ -247,36 +301,61 @@ async fn run_match(
     let mut report_from = Instant::now();
     loop {
         let mut ticked = None;
-        let out = tokio::select! {
+        tokio::select! {
             biased;
-            _ = shutdown.wait_for(|stop| *stop) => session.shut_down(),
+            _ = shutdown.wait_for(|stop| *stop) => {
+                let out = session.shut_down();
+                deliver(&app, id, &mut conns, out);
+            }
             _ = interval.tick() => {
                 ticked = Some(Instant::now());
-                session.tick()
-            }
-            command = commands.recv() => match command {
-                Some(Command::Attach { seat, conn, out }) => {
-                    conns.insert(conn, out);
-                    let out = session.attach(seat, conn);
-                    log_attach(id, seat, conn, &out);
-                    out
-                }
-                Some(Command::Input { seat, conn, frame }) => {
-                    session.receive(seat, conn, frame);
-                    Vec::new()
-                }
-                Some(Command::Detach { seat, conn }) => {
-                    conns.remove(&conn);
-                    if session.holds(seat, conn) {
-                        eprintln!("match {id:016x}: seat {seat} disconnected (connection {conn})");
+                if app.config.debug_json {
+                    let out = session.tick();
+                    deliver(&app, id, &mut conns, out);
+                } else {
+                    let mut bytes_out = 0u64;
+                    let mut frames_dropped = 0u64;
+                    session.tick_encoded(|out| match out {
+                        EncodedOut::Frame { conn, frame } => {
+                            let Some(sender) = get_conn(&conns, conn) else {
+                                return;
+                            };
+                            bytes_out += frame.len() as u64;
+                            if let Err(mpsc::error::TrySendError::Full(_)) =
+                                sender.try_send(Outbound::Frame(frame))
+                            {
+                                frames_dropped += 1;
+                            }
+                        }
+                        EncodedOut::Close { conn, error } => {
+                            if let Some(sender) = remove_conn(&mut conns, conn) {
+                                let _ = sender.try_send(Outbound::Close(error));
+                            }
+                        }
+                    });
+                    if bytes_out > 0 {
+                        Metrics::add(&app.metrics.bytes_out, bytes_out);
                     }
-                    session.detach(seat, conn);
-                    Vec::new()
+                    if frames_dropped > 0 {
+                        Metrics::add(&app.metrics.frames_dropped, frames_dropped);
+                    }
                 }
-                None => session.shut_down(),
-            },
-        };
-        deliver(&app, id, &mut conns, out);
+            }
+            command = commands.recv() => {
+                apply_command(&app, id, &mut session, &mut conns, command);
+                // Drain a burst of queued inputs without re-entering select!
+                // while keeping a small bound so ticks are never starved.
+                for _ in 0..64 {
+                    if session.is_ended() {
+                        break;
+                    }
+                    match commands.try_recv() {
+                        Ok(next) => apply_command(&app, id, &mut session, &mut conns, Some(next)),
+                        Err(_) => break,
+                    }
+                }
+            }
+        }
         if let Some(started) = ticked {
             app.metrics
                 .record_tick(started.elapsed().as_micros() as u64, interval_us);
@@ -343,11 +422,13 @@ fn log_attach(id: u64, seat: usize, conn: ConnId, out: &[Out]) {
     }
 }
 
-fn deliver(app: &App, id: u64, conns: &mut HashMap<ConnId, mpsc::Sender<Outbound>>, out: Vec<Out>) {
+fn deliver(app: &App, id: u64, conns: &mut Conns, out: Vec<Out>) {
+    let mut bytes_out = 0u64;
+    let mut frames_dropped = 0u64;
     for out in out {
         match out {
             Out::Send { conn, message } => {
-                let Some(sender) = conns.get(&conn) else {
+                let Some(sender) = get_conn(conns, conn) else {
                     continue;
                 };
                 if app.config.debug_json {
@@ -357,21 +438,27 @@ fn deliver(app: &App, id: u64, conns: &mut HashMap<ConnId, mpsc::Sender<Outbound
                     );
                 }
                 let frame = message.encode();
-                Metrics::add(&app.metrics.bytes_out, frame.len() as u64);
+                bytes_out += frame.len() as u64;
                 if let Err(mpsc::error::TrySendError::Full(_)) =
                     sender.try_send(Outbound::Frame(frame))
                 {
-                    Metrics::add(&app.metrics.frames_dropped, 1);
+                    frames_dropped += 1;
                 }
             }
             Out::Close { conn, error } => {
                 // Dropping the sender also closes a connection whose queue is
                 // full, after it drains what is already queued.
-                if let Some(sender) = conns.remove(&conn) {
+                if let Some(sender) = remove_conn(conns, conn) {
                     let _ = sender.try_send(Outbound::Close(error));
                 }
             }
         }
+    }
+    if bytes_out > 0 {
+        Metrics::add(&app.metrics.bytes_out, bytes_out);
+    }
+    if frames_dropped > 0 {
+        Metrics::add(&app.metrics.frames_dropped, frames_dropped);
     }
 }
 

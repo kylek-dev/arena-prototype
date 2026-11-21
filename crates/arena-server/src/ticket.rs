@@ -85,7 +85,7 @@ pub enum TicketError {
 }
 
 #[derive(Clone)]
-pub struct TicketKey(Vec<u8>);
+pub struct TicketKey(Hmac<Sha256>);
 impl std::fmt::Debug for TicketKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("TicketKey(..)")
@@ -94,13 +94,17 @@ impl std::fmt::Debug for TicketKey {
 impl TicketKey {
     /// `None` when shorter than [`MIN_KEY`] bytes.
     pub fn new(bytes: Vec<u8>) -> Option<Self> {
-        (bytes.len() >= MIN_KEY).then_some(Self(bytes))
+        if bytes.len() < MIN_KEY {
+            return None;
+        }
+        let mac = Hmac::<Sha256>::new_from_slice(&bytes).expect("HMAC accepts any key length");
+        Some(Self(mac))
     }
     /// A fresh random key from the operating system.
     pub fn random() -> Self {
         let mut bytes = vec![0; MIN_KEY];
         getrandom::fill(&mut bytes).expect("the operating system provides randomness");
-        Self(bytes)
+        Self::new(bytes).expect("MIN_KEY bytes")
     }
     /// Parses a hex key, as given in `ARENA_TICKET_KEY`.
     pub fn from_hex(text: &str) -> Option<Self> {
@@ -108,7 +112,7 @@ impl TicketKey {
     }
 
     fn mac(&self) -> Hmac<Sha256> {
-        Hmac::<Sha256>::new_from_slice(&self.0).expect("HMAC accepts any key length")
+        self.0.clone()
     }
 
     pub fn issue(&self, claims: &Claims) -> Vec<u8> {
@@ -142,7 +146,13 @@ impl TicketKey {
 }
 
 pub fn to_hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 pub fn from_hex(text: &str) -> Option<Vec<u8>> {
@@ -248,7 +258,10 @@ mod tests {
         );
         assert_eq!(from_hex("abc"), None);
         assert_eq!(from_hex("é1"), None);
-        assert_ne!(TicketKey::random().0, TicketKey::random().0);
+        assert_ne!(
+            TicketKey::random().issue(&CLAIMS),
+            TicketKey::random().issue(&CLAIMS)
+        );
         assert_eq!(format!("{:?}", key(1)), "TicketKey(..)", "keys never print");
     }
 }
