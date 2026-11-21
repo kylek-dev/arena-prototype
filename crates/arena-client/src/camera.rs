@@ -80,6 +80,7 @@ impl Obstacle {
     }
 }
 
+#[cfg(test)]
 pub(super) fn resolve_distance(
     focus: Vec3,
     direction: Vec3,
@@ -89,13 +90,26 @@ pub(super) fn resolve_distance(
     obstacles: impl IntoIterator<Item = Obstacle>,
 ) -> f32 {
     let obstacles: Vec<_> = obstacles.into_iter().collect();
+    resolve_distance_slice(
+        focus, direction, requested, previous, delta_secs, &obstacles,
+    )
+}
+
+fn resolve_distance_slice(
+    focus: Vec3,
+    direction: Vec3,
+    requested: f32,
+    previous: f32,
+    delta_secs: f32,
+    obstacles: &[Obstacle],
+) -> f32 {
     let mut safe = requested;
     // Contact at the requested eye, or an obstacle right beside the player,
     // retracts. A pillar farther along the boom may obscure the player.
     // Repeat because retracting out of one overlapping box can enter another.
     for _ in 0..=obstacles.len() {
         let before = safe;
-        for obstacle in &obstacles {
+        for obstacle in obstacles {
             let Some(hit) = obstacle.entry(focus, direction, safe) else {
                 continue;
             };
@@ -158,13 +172,13 @@ pub(super) fn resolve_eye(
     delta_secs: f32,
     obstacles: &[Obstacle],
 ) -> Vec3 {
-    let distance = resolve_distance(
+    let distance = resolve_distance_slice(
         focus,
         direction,
         requested,
         previous.map_or(requested, |eye| eye.distance(focus)),
         delta_secs,
-        obstacles.iter().copied(),
+        obstacles,
     );
     let target = focus + direction * distance;
     previous.map_or(target, |eye| {

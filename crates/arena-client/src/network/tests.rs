@@ -1,6 +1,6 @@
 use super::*;
 use arena_protocol::{PROTOCOL_VERSION, Snapshot, TickEvent, Welcome, WireRejection, WireResult};
-use arena_sim::arena::{ActorInput, ArenaCommand, Axes};
+use arena_sim::arena::{ActorInput, Arena, ArenaCommand, Axes};
 
 fn layout() -> Layout {
     arena_map::colosseum().layout
@@ -103,6 +103,10 @@ fn snapshots_are_shown_from_this_seats_side_and_checked_against_their_hash() {
     assert_eq!(view.connected, vec![true, false]);
     assert!((view.facings[0] - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
     assert_eq!(session.stats.hash_mismatches, 0);
+    assert_eq!(
+        snapshot_state_hash(server.tick(), server.fighters(), server.result()),
+        server.state_hash()
+    );
     // A snapshot whose state does not match its hash is counted.
     let mut wrong = match ServerMessage::decode(&frame).unwrap() {
         ServerMessage::Snapshot(snapshot) => snapshot,

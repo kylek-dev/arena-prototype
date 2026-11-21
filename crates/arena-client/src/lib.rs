@@ -95,7 +95,7 @@ struct Net {
     session: Option<network::Session>,
     /// Seconds since start, read once per frame for the fixed tick.
     now: f64,
-    last_status: Option<(f64, String)>,
+    last_status: Option<(f64, network::Phase)>,
 }
 #[derive(Resource)]
 struct Orbit {
@@ -474,6 +474,7 @@ fn restart(practice: &mut Practice, orbit: &mut Orbit, map: &MapFile, size: usiz
         ..default()
     };
 }
+#[allow(clippy::too_many_arguments)]
 fn read_controls(
     mut practice: ResMut<Practice>,
     mut orbit: ResMut<Orbit>,
@@ -482,6 +483,7 @@ fn read_controls(
     visuals: Query<(&FighterVisual, &GlobalTransform)>,
     preview: Res<appearance::Preview>,
     net: Res<Net>,
+    mut cached_blockers: Local<Option<Vec<prism::Prism>>>,
 ) {
     let mut input = platform::read_input();
     // The server owns the round in a network match: no local reset or
@@ -505,29 +507,34 @@ fn read_controls(
             .unwrap_or(practice.arena.fighters().len() / 2);
         restart(&mut practice, &mut orbit, &map.0, size);
     }
-    let blockers = hover::pillar_blockers(&map.0);
+    if map.is_changed() {
+        *cached_blockers = None;
+    }
     orbit.yaw -= input.orbit_x * 0.005;
     orbit.pitch = camera::pitch(orbit.pitch, input.orbit_y * 0.004);
     orbit.distance = camera::zoom(orbit.distance, input.zoom * 0.01);
     update_movement(&mut practice, &orbit, &input);
     update_selection(&mut practice, &input);
-    let actor_count = practice.arena.fighters().len();
-    let pick = |cursor| {
-        cameras.single().ok().and_then(|(camera, view)| {
-            camera.viewport_to_world(view, cursor).ok().and_then(|ray| {
-                hover::pick(
-                    ray,
-                    visuals
-                        .iter()
-                        .filter(|(unit, _)| unit.0 < actor_count)
-                        .map(|(unit, transform)| (unit.0, transform.translation())),
-                    &blockers,
-                )
+    if input.click.is_some() || input.focus_click.is_some() {
+        let blockers = cached_blockers.get_or_insert_with(|| hover::pillar_blockers(&map.0));
+        let actor_count = practice.arena.fighters().len();
+        let pick = |cursor| {
+            cameras.single().ok().and_then(|(camera, view)| {
+                camera.viewport_to_world(view, cursor).ok().and_then(|ray| {
+                    hover::pick(
+                        ray,
+                        visuals
+                            .iter()
+                            .filter(|(unit, _)| unit.0 < actor_count)
+                            .map(|(unit, transform)| (unit.0, transform.translation())),
+                        blockers,
+                    )
+                })
             })
-        })
-    };
-    if let Some(unit) = update_world_clicks(&mut practice, &input, pick) {
-        platform::focus_unit(unit);
+        };
+        if let Some(unit) = update_world_clicks(&mut practice, &input, pick) {
+            platform::focus_unit(unit);
+        }
     }
     if input.attack {
         practice.attack = true;
@@ -812,13 +819,11 @@ fn network_receive(
         }
     }
     // Tell the runtime about phase changes at once, and stats 4 times a second.
-    let status = session.status_json();
-    let phase_changed = last_status
-        .as_ref()
-        .is_none_or(|(_, previous)| previous.split(',').next() != status.split(',').next());
-    if phase_changed || last_status.as_ref().is_some_and(|(at, _)| now - at >= 0.25) {
+    let phase = session.phase;
+    if last_status.is_none_or(|(at, previous)| previous != phase || now - at >= 0.25) {
+        let status = session.status_json();
         platform::network_status(&status);
-        *last_status = Some((now, status));
+        *last_status = Some((now, phase));
     }
 }
 
@@ -829,47 +834,57 @@ fn present(
     startup: Res<startup::State>,
     preview: Res<appearance::Preview>,
     obstacles: Query<&camera::Obstacle>,
+    added_obstacles: Query<(), Added<camera::Obstacle>>,
+    mut removed_obstacles: RemovedComponents<camera::Obstacle>,
+    mut cached_obstacles: Local<Vec<camera::Obstacle>>,
     fixed: Res<Time<Fixed>>,
     time: Res<Time>,
     mut fighters: Query<(&FighterVisual, &mut Transform, &mut Visibility), Without<Camera>>,
     mut cameras: Query<&mut Transform, (With<Camera>, Without<FighterVisual>)>,
     net: Option<Res<Net>>,
 ) {
-    let positions: Vec<Vec3> = match &practice.remote {
+    let mut positions = [Vec3::ZERO; arena_protocol::MAX_FIGHTERS];
+    let count = match &practice.remote {
         // In a network match the player's own fighter is predicted, drawn
         // part-way through the current fixed tick like local practice.
         Some(remote) => {
-            let mut positions = remote.clone();
+            let count = remote.len().min(positions.len());
+            positions[..count].copy_from_slice(&remote[..count]);
             let own = net
                 .as_ref()
                 .and_then(|net| net.session.as_ref())
                 .and_then(network::Session::own);
-            if let (Some(own), Some(first)) = (own, positions.first_mut()) {
-                *first = own.at(fixed.overstep_fraction());
+            if let Some(own) = own
+                && count > 0
+            {
+                positions[0] = own.at(fixed.overstep_fraction());
             }
-            positions
+            count
         }
-        None => (0..practice.arena.fighters().len())
-            .map(|i| {
-                practice.previous[i].lerp(
-                    fighter_world(practice.arena.fighters()[i]),
-                    fixed.overstep_fraction(),
-                )
-            })
-            .collect(),
+        None => {
+            let fighters = practice.arena.fighters();
+            let count = fighters.len().min(positions.len());
+            let overstep = fixed.overstep_fraction();
+            for i in 0..count {
+                positions[i] = practice.previous[i].lerp(fighter_world(fighters[i]), overstep);
+            }
+            count
+        }
     };
+    let positions = &positions[..count];
+    let obstacles_changed =
+        !added_obstacles.is_empty() || removed_obstacles.read().next().is_some();
+    if obstacles_changed || (cached_obstacles.is_empty() && !obstacles.is_empty()) {
+        cached_obstacles.clear();
+        cached_obstacles.extend(obstacles.iter().copied());
+    }
     practice.combat_text.advance(time.delta_secs());
     let mut hide_player = false;
     if let Ok(mut camera) = cameras.single_mut()
         && preview.open
         && startup.sweep().is_none()
     {
-        *camera = preview_camera(
-            positions[0],
-            practice.facing,
-            &preview,
-            &obstacles.iter().copied().collect::<Vec<_>>(),
-        );
+        *camera = preview_camera(positions[0], practice.facing, &preview, &cached_obstacles);
         // The ordinary boom snaps back from where it was when closed.
         orbit.eye = None;
     } else if let Ok(mut camera) = cameras.single_mut() {
@@ -880,7 +895,6 @@ fn present(
         let sweep = startup.sweep();
         let direction = Quat::from_rotation_y(orbit.yaw + sweep.unwrap_or(0.0))
             * Vec3::new(0.0, orbit.pitch.sin(), orbit.pitch.cos());
-        let obstacles: Vec<_> = obstacles.iter().copied().collect();
         // First person sits at the eyes and looks along the boom; there is no
         // boom to collide, and a near-zero offset would give a noisy view.
         let first_person = sweep.is_none() && camera::first_person(orbit.distance);
@@ -893,7 +907,7 @@ fn present(
                 orbit.distance,
                 orbit.eye.filter(|_| sweep.is_none()),
                 time.delta_secs(),
-                &obstacles,
+                &cached_obstacles,
             )
         };
         orbit.eye = sweep.is_none().then_some(eye);
@@ -950,6 +964,7 @@ fn preview_camera(
     let aim = focus + right * eye.distance(focus) * 0.22;
     Transform::from_translation(eye).looking_at(aim, Vec3::Y)
 }
+#[allow(clippy::too_many_arguments)]
 fn publish(
     practice: Res<Practice>,
     startup: Res<startup::State>,
@@ -958,7 +973,10 @@ fn publish(
     character: Res<character::CharacterModel>,
     cameras: Query<(&Camera, &GlobalTransform)>,
     visuals: Query<(&FighterVisual, &GlobalTransform)>,
+    mut cached_blockers: Local<Option<Vec<prism::Prism>>>,
+    mut json: Local<String>,
 ) {
+    use std::fmt::Write;
     let fighters = practice.arena.fighters();
     let player = fighters[0];
     let target = fighters[1];
@@ -968,98 +986,78 @@ fn publish(
     let cooldown =
         player.ready_at.saturating_sub(practice.arena.tick()) as f64 / TICKS_PER_SECOND as f64;
     let attack_status = attack_status(&practice.arena, practice.selected.unwrap_or(1));
-    let screen = cameras
-        .single()
-        .ok()
+    let camera_view = cameras.single().ok();
+    let screen = camera_view
         .and_then(|(camera, transform)| {
             camera
                 .world_to_viewport(transform, world(target.position) + Vec3::Y)
                 .ok()
         })
         .unwrap_or(Vec2::splat(-1.0));
+    let mut visual_positions = [None::<Vec3>; arena_protocol::MAX_FIGHTERS];
+    for (unit, transform) in &visuals {
+        if unit.0 < fighters.len() && unit.0 < visual_positions.len() {
+            visual_positions[unit.0] = Some(transform.translation());
+        }
+    }
+    if map.is_changed() {
+        *cached_blockers = None;
+    }
     let hovered = platform::read_hover()
         .and_then(|cursor| {
-            cameras
-                .single()
-                .ok()
+            camera_view
                 .and_then(|(camera, transform)| camera.viewport_to_world(transform, cursor).ok())
         })
         .and_then(|ray| {
+            let blockers = cached_blockers.get_or_insert_with(|| hover::pillar_blockers(&map.0));
             hover::pick(
                 ray,
-                visuals
+                visual_positions
                     .iter()
-                    .filter(|(unit, _)| unit.0 < fighters.len())
-                    .map(|(unit, transform)| (unit.0, transform.translation())),
-                &hover::pillar_blockers(&map.0),
+                    .enumerate()
+                    .filter_map(|(id, pos)| pos.map(|p| (id, p))),
+                blockers,
             )
         });
-    let hovered = hovered
-        .map(|actor| format!("\"{}\"", unit_tag(actor)))
-        .unwrap_or_else(|| "null".into());
-    // The local player is deliberately excluded, independently of selection/focus.
-    let plates = cameras
-        .single()
-        .ok()
-        .map(|(camera, view)| {
-            visuals
-                .iter()
-                .filter(|(unit, _)| unit.0 > 0 && unit.0 < fighters.len())
-                .filter_map(|(unit, transform)| {
-                    nameplates::anchor(camera, view, transform.translation()).map(|point| {
-                        format!(
-                            r#"{{"tag":"{}","x":{},"y":{}}}"#,
-                            unit_tag(unit.0),
-                            point.x,
-                            point.y
-                        )
-                    })
-                })
-                .collect::<Vec<_>>()
-                .join(",")
-        })
-        .unwrap_or_default();
-    let combat_text = cameras.single().ok().map(|(camera, view)| {
-        practice.combat_text.entries.iter().filter_map(|entry| {
-            let (_, transform) = visuals.iter().find(|(unit, _)| unit.0 == entry.target)?;
-            let point = nameplates::anchor(camera, view, transform.translation() + Vec3::Y * (0.25 + entry.age * 0.7))?;
-            Some(format!(r#"{{"id":{},"source":"Player","target":"{}","delta":{},"x":{},"y":{},"progress":{}}}"#,
-                entry.id, unit_tag(entry.target), entry.delta, point.x, point.y, entry.age / 1.2))
-        }).collect::<Vec<_>>().join(",")
-    }).unwrap_or_default();
-    let roster = fighters
-        .iter()
-        .enumerate()
-        .map(|(actor, fighter)| {
-            // Network matches say whether each player is attached.
-            let connected = practice
-                .connected
-                .as_ref()
-                .and_then(|connected| connected.get(actor))
-                .map(|connected| format!(r#","connected":{connected}"#))
-                .unwrap_or_default();
-            format!(
-                r#"{{"actor":{},"tag":"{}","health":{}{}}}"#,
-                actor,
-                unit_tag(actor),
-                fighter.health,
-                connected
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    let extra = format!(
-        r#""startup":{},"teamSize":{},"selectedActor":{},"roster":[{}],"#,
+
+    json.clear();
+    let _ = write!(
+        json,
+        r#"{{"startup":{},"teamSize":{},"selectedActor":"#,
         startup.json(),
         fighters.len() / 2,
-        practice
-            .selected
-            .map(|actor| actor.to_string())
-            .unwrap_or_else(|| "null".into()),
-        roster
     );
-    let json = format!(
-        r#"{{"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"selectedPlayer":{},"hoveredUnit":{},"distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":{}}},"maxHealth":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}},"nameplates":[{}],"combatText":[{}]}}"#,
+    match practice.selected {
+        Some(actor) => {
+            let _ = write!(json, "{actor}");
+        }
+        None => json.push_str("null"),
+    }
+    json.push_str(r#","roster":["#);
+    for (actor, fighter) in fighters.iter().enumerate() {
+        if actor > 0 {
+            json.push(',');
+        }
+        let _ = write!(
+            json,
+            r#"{{"actor":{},"tag":"{}","health":{}"#,
+            actor,
+            unit_tag_str(actor),
+            fighter.health,
+        );
+        // Network matches say whether each player is attached.
+        if let Some(connected) = practice
+            .connected
+            .as_ref()
+            .and_then(|connected| connected.get(actor))
+        {
+            let _ = write!(json, r#","connected":{connected}"#);
+        }
+        json.push('}');
+    }
+    let _ = write!(
+        json,
+        r#"],"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"selectedPlayer":{},"hoveredUnit":"#,
         practice.arena.tick(),
         practice.frames,
         player.position.x,
@@ -1073,7 +1071,16 @@ fn publish(
         screen.y,
         practice.selected.is_some(),
         practice.selected == Some(0),
-        hovered,
+    );
+    match hovered {
+        Some(actor) => {
+            let _ = write!(json, r#""{}""#, unit_tag_str(actor));
+        }
+        None => json.push_str("null"),
+    }
+    let _ = write!(
+        json,
+        r#","distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":true}},"maxHealth":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}},"nameplates":["#,
         distance,
         ATTACK_RANGE / 1000,
         cooldown,
@@ -1085,17 +1092,79 @@ fn publish(
         orbit.distance,
         character.status(),
         character.meshes,
-        true,
         arena_sim::arena::MAX_HEALTH,
         ATTACK_DAMAGE,
         ATTACK_RANGE / 1000,
         ATTACK_COOLDOWN as f64 / TICKS_PER_SECOND as f64,
-        plates,
-        combat_text
     );
-    platform::publish(&format!("{{{}{}", extra, &json[1..]));
+    // The local player is deliberately excluded, independently of selection/focus.
+    if let Some((camera, view)) = camera_view {
+        let mut first = true;
+        for (actor, pos) in visual_positions.iter().enumerate().skip(1) {
+            let Some(pos) = *pos else {
+                continue;
+            };
+            let Some(point) = nameplates::anchor(camera, view, pos) else {
+                continue;
+            };
+            if !first {
+                json.push(',');
+            }
+            first = false;
+            let _ = write!(
+                json,
+                r#"{{"tag":"{}","x":{},"y":{}}}"#,
+                unit_tag_str(actor),
+                point.x,
+                point.y
+            );
+        }
+    }
+    json.push_str(r#"],"combatText":["#);
+    if let Some((camera, view)) = camera_view {
+        let mut first = true;
+        for entry in &practice.combat_text.entries {
+            let Some(pos) = visual_positions.get(entry.target).copied().flatten() else {
+                continue;
+            };
+            let Some(point) =
+                nameplates::anchor(camera, view, pos + Vec3::Y * (0.25 + entry.age * 0.7))
+            else {
+                continue;
+            };
+            if !first {
+                json.push(',');
+            }
+            first = false;
+            let _ = write!(
+                json,
+                r#"{{"id":{},"source":"Player","target":"{}","delta":{},"x":{},"y":{},"progress":{}}}"#,
+                entry.id,
+                unit_tag_str(entry.target),
+                entry.delta,
+                point.x,
+                point.y,
+                entry.age / 1.2
+            );
+        }
+    }
+    json.push_str("]}");
+    platform::publish(&json);
 }
 
+fn unit_tag_str(actor: usize) -> &'static str {
+    match actor {
+        0 => "Player",
+        1 => "Opponent1",
+        2 => "Team1",
+        3 => "Opponent2",
+        4 => "Team2",
+        5 => "Opponent3",
+        _ => "Opponent3",
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
 fn unit_tag(actor: usize) -> String {
     if actor == 0 {
         "Player".into()

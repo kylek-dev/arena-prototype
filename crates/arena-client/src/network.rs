@@ -22,12 +22,13 @@
 //! correction out over a few frames instead of snapping.
 
 use std::collections::VecDeque;
+use std::sync::OnceLock;
 
 use arena_protocol::prediction::{Pacer, Predictor, TickRate};
 use arena_protocol::{
     ClientMessage, ErrorCode, FighterState, InputFrame, ServerMessage, WireEvent,
 };
-use arena_sim::arena::{ActorInput, Arena, Axes, Combatant, Rejection, RoundResult};
+use arena_sim::arena::{ActorInput, Axes, Combatant, Rejection, RoundResult};
 use arena_sim::map::Layout;
 use bevy::math::Vec3;
 
@@ -222,8 +223,9 @@ impl Session {
     /// Whether the server announced a different map from the one this
     /// build embeds (`None` before the welcome).
     pub fn map_differs(&self) -> Option<bool> {
-        self.map
-            .map(|digest| digest != fnv1a(arena_map::COLOSSEUM_JSON.as_bytes()))
+        static COLOSSEUM_HASH: OnceLock<u64> = OnceLock::new();
+        let expected = *COLOSSEUM_HASH.get_or_init(|| fnv1a(arena_map::COLOSSEUM_JSON.as_bytes()));
+        self.map.map(|digest| digest != expected)
     }
     /// Whether intent should be sent now.
     pub fn joined(&self) -> bool {
@@ -309,9 +311,10 @@ impl Session {
                         self.stats.queued = self.pacer.average();
                         self.stats.queued_min = self.pacer.minimum();
                     }
-                    if let Some(arena) =
-                        Arena::restore(layout.clone(), snapshot.tick, authoritative.clone(), result)
-                        && arena.state_hash() != snapshot.hash
+                    if (2..=arena_protocol::MAX_FIGHTERS).contains(&authoritative.len())
+                        && authoritative.len().is_multiple_of(2)
+                        && snapshot_state_hash(snapshot.tick, &authoritative, result)
+                            != snapshot.hash
                     {
                         self.stats.hash_mismatches += 1;
                     }
@@ -713,9 +716,43 @@ impl Session {
 
 /// 64-bit FNV-1a, as the server digests its map file.
 pub fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
-    })
+    fnv1a_update(0xcbf2_9ce4_8422_2325, bytes)
+}
+
+fn fnv1a_update(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &byte in bytes {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Computes `Arena::state_hash` directly without cloning `Layout` or `Vec<Combatant>`.
+fn snapshot_state_hash(tick: u64, fighters: &[Combatant], result: Option<RoundResult>) -> u64 {
+    let mut hash = fnv1a_update(0xcbf2_9ce4_8422_2325, &tick.to_le_bytes());
+    hash = fnv1a_update(
+        hash,
+        &match result {
+            None => [0, 0],
+            Some(RoundResult::Won { team }) => [1, team as u8],
+            Some(RoundResult::Draw) => [2, 0],
+        },
+    );
+    for fighter in fighters {
+        for value in [
+            fighter.position.x,
+            fighter.position.z,
+            fighter.height,
+            fighter.vertical_velocity,
+            fighter.momentum.x,
+            fighter.momentum.z,
+        ] {
+            hash = fnv1a_update(hash, &value.to_le_bytes());
+        }
+        hash = fnv1a_update(hash, &fighter.health.to_le_bytes());
+        hash = fnv1a_update(hash, &fighter.ready_at.to_le_bytes());
+        hash = fnv1a_update(hash, &fighter.facing.to_le_bytes());
+    }
+    hash
 }
 
 /// Exponential smoothing: a new sample moves the estimate an eighth of the way.

@@ -38,11 +38,20 @@ export type StartupState = {
   timedOut: boolean;
 };
 
+const STARTUP_PHASES = new Set(["assets", "render", "warming", "ready"]);
+const CHARACTER_STATUSES = new Set(["ready", "failed", "placeholder", "loading"]);
+const HOVERED_UNIT_RE = /^(Player|Opponent[1-3]|Team[1-2])$/;
+const NAMEPLATE_TAG_RE = /^(Opponent|Team)[1-3]$/;
+
+function isNonNegativeFinite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
 function validStartup(value: unknown): value is StartupState {
   const s = value as StartupState;
   return (
     !!s &&
-    ["assets", "render", "warming", "ready"].includes(s.phase) &&
+    STARTUP_PHASES.has(s.phase) &&
     typeof s.ready === "boolean" &&
     s.ready === (s.phase === "ready") &&
     Number.isInteger(s.pending) &&
@@ -68,31 +77,32 @@ export function needsImmediateDelivery(previous: Snapshot | null, next: Snapshot
 export function adaptSnapshot(raw: unknown): Snapshot {
   if (!raw || typeof raw !== "object") throw new Error("Invalid engine snapshot");
   const r = raw as Snapshot;
-  for (const n of [
-    r.tick,
-    r.frames,
-    r.player?.health,
-    r.target?.health,
-    r.cooldown,
-    r.distance,
-    r.range,
-    r.pulse?.damage,
-    r.pulse?.cooldown,
-    r.pulse?.range,
-  ])
-    if (!Number.isFinite(n) || n < 0) throw new Error("Invalid engine snapshot values");
-  for (const n of [
-    r.player?.x,
-    r.player?.z,
-    r.target?.x,
-    r.target?.z,
-    r.camera?.yaw,
-    r.camera?.pitch,
-    r.camera?.distance,
-  ]) {
-    if (!Number.isFinite(n)) throw new Error("Invalid engine coordinates");
+  if (
+    !isNonNegativeFinite(r.tick) ||
+    !isNonNegativeFinite(r.frames) ||
+    !isNonNegativeFinite(r.player?.health) ||
+    !isNonNegativeFinite(r.target?.health) ||
+    !isNonNegativeFinite(r.cooldown) ||
+    !isNonNegativeFinite(r.distance) ||
+    !isNonNegativeFinite(r.range) ||
+    !isNonNegativeFinite(r.pulse?.damage) ||
+    !isNonNegativeFinite(r.pulse?.cooldown) ||
+    !isNonNegativeFinite(r.pulse?.range)
+  ) {
+    throw new Error("Invalid engine snapshot values");
   }
-  if (!["ready", "failed", "placeholder", "loading"].includes(r.character?.status)) {
+  if (
+    !Number.isFinite(r.player?.x) ||
+    !Number.isFinite(r.player?.z) ||
+    !Number.isFinite(r.target?.x) ||
+    !Number.isFinite(r.target?.z) ||
+    !Number.isFinite(r.camera?.yaw) ||
+    !Number.isFinite(r.camera?.pitch) ||
+    !Number.isFinite(r.camera?.distance)
+  ) {
+    throw new Error("Invalid engine coordinates");
+  }
+  if (!CHARACTER_STATUSES.has(r.character?.status)) {
     throw new Error("Invalid character loading status");
   }
   if (r.startup !== undefined && !validStartup(r.startup)) throw new Error("Invalid startup state");
@@ -101,7 +111,7 @@ export function adaptSnapshot(raw: unknown): Snapshot {
     (r.selectedPlayer !== undefined && typeof r.selectedPlayer !== "boolean") ||
     (r.hoveredUnit !== undefined &&
       r.hoveredUnit !== null &&
-      !/^(Player|Opponent[1-3]|Team[1-2])$/.test(r.hoveredUnit)) ||
+      !HOVERED_UNIT_RE.test(r.hoveredUnit)) ||
     typeof r.won !== "boolean" ||
     typeof r.feedback !== "string" ||
     typeof r.attackStatus !== "string"
@@ -109,23 +119,28 @@ export function adaptSnapshot(raw: unknown): Snapshot {
     throw new Error("Invalid engine snapshot flags");
   const maxHealth = (raw as { maxHealth?: number }).maxHealth;
   if (r.combatText !== undefined) {
-    if (
-      !Array.isArray(r.combatText) ||
-      r.combatText.length > 32 ||
-      !r.combatText.every(validCombatText) ||
-      new Set(r.combatText.map((entry) => entry.id)).size !== r.combatText.length
-    )
+    if (!Array.isArray(r.combatText) || r.combatText.length > 32)
       throw new Error("Invalid combat text projections");
+    const len = r.combatText.length;
+    if (len > 0) {
+      for (let i = 0; i < len; i += 1) {
+        const entry = r.combatText[i];
+        if (!validCombatText(entry)) throw new Error("Invalid combat text projections");
+        for (let j = 0; j < i; j += 1) {
+          if (r.combatText[j].id === entry.id) throw new Error("Invalid combat text projections");
+        }
+      }
+    }
   }
   if (r.nameplates !== undefined) {
     if (!Array.isArray(r.nameplates) || r.nameplates.length > 6)
       throw new Error("Invalid nameplate projections");
-    const tags = new Set<string>();
-    for (const plate of r.nameplates) {
+    const len = r.nameplates.length;
+    for (let i = 0; i < len; i += 1) {
+      const plate = r.nameplates[i];
       if (
         !plate ||
-        !/^(Opponent|Team)[1-3]$/.test(plate.tag) ||
-        tags.has(plate.tag) ||
+        !NAMEPLATE_TAG_RE.test(plate.tag) ||
         !Number.isFinite(plate.x) ||
         !Number.isFinite(plate.y) ||
         plate.x < 0 ||
@@ -134,7 +149,9 @@ export function adaptSnapshot(raw: unknown): Snapshot {
         plate.y > 1
       )
         throw new Error("Invalid nameplate projection");
-      tags.add(plate.tag);
+      for (let j = 0; j < i; j += 1) {
+        if (r.nameplates[j].tag === plate.tag) throw new Error("Invalid nameplate projection");
+      }
     }
   }
   if (!Number.isFinite(maxHealth) || !maxHealth || maxHealth < 1)
@@ -142,17 +159,25 @@ export function adaptSnapshot(raw: unknown): Snapshot {
   let roster: RosterEntry[] | undefined;
   let networked = false;
   if (r.roster !== undefined) {
+    const teamSize = r.teamSize;
     if (
-      ![1, 2, 3].includes(r.teamSize ?? 0) ||
+      (teamSize !== 1 && teamSize !== 2 && teamSize !== 3) ||
       !Array.isArray(r.roster) ||
-      r.roster.length !== (r.teamSize ?? 0) * 2
+      r.roster.length !== teamSize * 2
     )
       throw new Error("Invalid practice roster");
-    const connected = r.roster.map((unit) => (unit as { connected?: unknown }).connected);
-    networked = connected.some((value) => value !== undefined);
-    if (networked && !connected.every((value) => typeof value === "boolean"))
-      throw new Error("Invalid connection flags");
-    roster = r.roster.map((unit, actor) => {
+    let anyConnected = false;
+    let allBoolean = true;
+    for (let i = 0; i < r.roster.length; i += 1) {
+      const value = (r.roster[i] as { connected?: unknown }).connected;
+      if (value !== undefined) anyConnected = true;
+      if (typeof value !== "boolean") allBoolean = false;
+    }
+    networked = anyConnected;
+    if (networked && !allBoolean) throw new Error("Invalid connection flags");
+    roster = new Array<RosterEntry>(r.roster.length);
+    for (let actor = 0; actor < r.roster.length; actor += 1) {
+      const unit = r.roster[actor];
       const tag =
         actor === 0
           ? "Player"
@@ -167,7 +192,8 @@ export function adaptSnapshot(raw: unknown): Snapshot {
         unit.health > maxHealth
       )
         throw new Error("Invalid practice unit");
-      return {
+      const conn = (unit as { connected?: boolean }).connected;
+      roster[actor] = {
         actor,
         tag: tag as UnitTag,
         health: unit.health,
@@ -186,12 +212,14 @@ export function adaptSnapshot(raw: unknown): Snapshot {
               : networked
                 ? `Opponent ${Math.floor(actor / 2) + 1}`
                 : `Enemy Bot${actor === 1 ? "" : ` ${Math.floor(actor / 2) + 1}`}`,
-        ...(connected[actor] === false ? { disconnected: true } : {}),
+        ...(conn === false ? { disconnected: true } : {}),
       };
-    });
+    }
     if (
       r.selectedActor !== null &&
-      (!Number.isInteger(r.selectedActor) || !roster.some((unit) => unit.actor === r.selectedActor))
+      (!Number.isInteger(r.selectedActor) ||
+        (r.selectedActor as number) < 0 ||
+        (r.selectedActor as number) >= roster.length)
     )
       throw new Error("Invalid selected actor");
     if (r.selected !== (r.selectedActor !== null) || r.selectedPlayer !== (r.selectedActor === 0))
