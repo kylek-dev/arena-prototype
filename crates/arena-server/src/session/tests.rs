@@ -696,3 +696,54 @@ fn paced_clients_hold_a_small_cushion_through_jitter_clumps_drift_and_bursts() {
         "RESULT smooth {smooth:?}\nRESULT clumped {clumped:?}\nRESULT skewed {skewed:?}\nRESULT unpaced {unpaced:?}"
     );
 }
+
+#[test]
+fn tick_encoded_matches_tick_wire_bytes_including_per_seat_rejections() {
+    let mut a = running(arena(2));
+    let mut b = running(arena(2));
+    for step in 0..4u32 {
+        let feed = |session: &mut Session| {
+            session.receive(0, conn(0), frame(step + 1));
+            if step == 1 {
+                // Seat 1 gets a per-seat rejection; seat 2 jumps (shared event).
+                session.receive(
+                    1,
+                    conn(1),
+                    InputFrame {
+                        seq: 1,
+                        attack: Some(0),
+                        ..InputFrame::default()
+                    },
+                );
+                session.receive(
+                    2,
+                    conn(2),
+                    InputFrame {
+                        seq: 1,
+                        jump: true,
+                        ..InputFrame::default()
+                    },
+                );
+            }
+            if step == 2 {
+                session.detach(3, conn(3));
+            }
+        };
+        feed(&mut a);
+        feed(&mut b);
+        let expected: Vec<(ConnId, Vec<u8>)> = a
+            .tick()
+            .into_iter()
+            .map(|out| match out {
+                Out::Send { conn, message } => (conn, message.encode()),
+                Out::Close { .. } => panic!("unexpected close"),
+            })
+            .collect();
+        let mut actual = Vec::new();
+        b.tick_encoded(|out| match out {
+            EncodedOut::Frame { conn, frame } => actual.push((conn, frame)),
+            EncodedOut::Close { .. } => panic!("unexpected close"),
+        });
+        assert_eq!(actual, expected, "step {step}");
+    }
+}

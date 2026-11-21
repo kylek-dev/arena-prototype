@@ -22,11 +22,16 @@ pub struct Metrics {
     pub matches_active: AtomicU64,
     pub matches_created: AtomicU64,
     pub connections_open: AtomicU64,
+    /// Separate hot-path counters onto distinct cache lines to avoid cross-core
+    /// false sharing under concurrent matches.
+    _pad_ticks: [u64; 8],
     pub ticks: AtomicU64,
     /// Ticks whose processing took longer than one tick interval.
     pub tick_overruns: AtomicU64,
     /// Slowest single tick, microseconds.
+    _pad_max_us: [u64; 8],
     pub tick_max_us: AtomicU64,
+    _pad_inputs: [u64; 8],
     pub inputs: AtomicU64,
     pub inputs_stale: AtomicU64,
     pub inputs_overflow: AtomicU64,
@@ -36,6 +41,7 @@ pub struct Metrics {
     pub inputs_starved: AtomicU64,
     /// Outgoing frames dropped because a client's send queue was full.
     pub frames_dropped: AtomicU64,
+    _pad_bytes: [u64; 8],
     pub bytes_out: AtomicU64,
     /// Connections refused before upgrading for their page origin.
     pub refused_origin: AtomicU64,
@@ -45,6 +51,7 @@ pub struct Metrics {
     /// Ticks by how many inputs a connected seat received since the last
     /// one: 0, 1, 2, 3 and 4 or more. Steady clients are almost all 1;
     /// clumped delivery (jitter) shows as 0s and 2+s.
+    _pad_arrivals: [u64; 8],
     arrivals: [AtomicU64; 5],
 }
 
@@ -71,11 +78,20 @@ impl Metrics {
     pub fn record_arrivals(&self, inputs: u32) {
         Self::add(&self.arrivals[(inputs as usize).min(4)], 1);
     }
+    pub fn record_arrivals_batch(&self, counts: [u64; 5]) {
+        for (counter, count) in self.arrivals.iter().zip(counts) {
+            if count > 0 {
+                Self::add(counter, count);
+            }
+        }
+    }
     pub fn arrivals(&self) -> [u64; 5] {
         std::array::from_fn(|index| Self::get(&self.arrivals[index]))
     }
     pub fn record_tick(&self, micros: u64, interval_micros: u64) {
-        self.tick_max_us.fetch_max(micros, Ordering::Relaxed);
+        if micros > self.tick_max_us.load(Ordering::Relaxed) {
+            self.tick_max_us.fetch_max(micros, Ordering::Relaxed);
+        }
         if micros > interval_micros {
             Self::add(&self.tick_overruns, 1);
         }
