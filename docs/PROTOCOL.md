@@ -11,7 +11,7 @@ yet.
 ## Principles
 
 - Clients send **intent**, never results. The server never accepts an actor
-  ID, coordinates, health, damage or cooldown state from a client.
+  ID, coordinates, health, damage, resource, cast progress or cooldown state from a client.
 - The server derives the sender's actor (seat) from its join ticket only.
 - Every message is versioned. A `protocol` mismatch is refused at `Hello`.
 - Everything is bounded: frame size, messages per tick, queue depth and the
@@ -41,7 +41,7 @@ yet.
   queued is idle for that seat. A clump of inputs simply drains one per
   tick. Only if more than four inputs stay waiting for a whole second is
   the excess folded into one tick with `InputFrame::merge_into` (the
-  latest movement, facing and attack target win, and a jump from any of
+  latest movement, facing and non-empty combat action win, and a jump from any of
   them is kept), so a client that sends too fast cannot build up delay.
   Each snapshot's `queued` tells the recipient how many of its inputs are
   still waiting. Clients pace their input interval to keep the queue's
@@ -56,7 +56,7 @@ yet.
 | Message | Fields | Notes |
 | --- | --- | --- |
 | `Hello` | `protocol: u16`, `ticket: bytes (≤ 512)` | Must be the first message, within 5 s of connecting. Stays variant 0 with `protocol` first in every version; `peek_hello_protocol` reads it from any version so the server can answer `VersionMismatch`. |
-| `Input` | `seq: u32`, `movement: [i16; 2]`, `facing: u16`, `jump: bool`, `attack: Option<u8>` | `seq` increases by 1 per message; gaps are allowed, repeats and regressions are dropped. Axes must lie in ±1000; the rules reject anything else. |
+| `Input` | `seq: u32`, `movement: [i16; 2]`, `facing: u16`, `jump: bool`, `action: WireAction` | `seq` increases by 1 per message; gaps are allowed, repeats and regressions are dropped. Axes must lie in ±1000; the rules reject anything else. `action` is `None`, `Cast { spell, target }` (`Pulse`, `RiftBolt`, `Quell`, `Mend`), or `CancelCast`. |
 | `Ping` | `nonce: u32` | Echoed in `Pong` for RTT measurement. |
 
 ## Server → client
@@ -64,7 +64,7 @@ yet.
 | Message | Fields | Notes |
 | --- | --- | --- |
 | `Welcome` | `protocol`, `actor: u8`, `team_size: u8`, `tick: u64`, `tick_rate: u8`, `round_ticks: u64`, `rules: u32`, `map: u64` | `round_ticks` is the round's tick limit (`1..=MAX_ROUND_TICKS`, default 20 minutes), `rules` is the rules version and `map` a digest of the layout, so the remaining clock, replays and mismatches are explainable. |
-| `Snapshot` | `tick: u64`, `ack: u32`, `hash: u64`, `result`, `fighters` (≤ 6), `events` (≤ 256) | `ack` is the last input `seq` applied, and `queued` how many of the recipient's inputs are still waiting. `hash` is `Arena::state_hash()`. `result` is `None` while running, or `Won { team }`, `Draw` (simultaneous elimination) or `TimeLimitDraw` (round clock expired with both teams standing). `fighters` carries each fighter's full rule state in actor order (position, height, vertical velocity, momentum, health, `ready_at`, facing), so a client can rebuild the arena and check `hash`, plus `connected`: whether that fighter's player is attached (not part of the rules or `hash`). `events` are tick-tagged events since the previous snapshot: `Jumped`, `Hit`, `Finished`, and `Rejected` only for the actor it names. `Moved` is not sent because positions show it. |
+| `Snapshot` | `tick: u64`, `ack: u32`, `hash: u64`, `result`, `fighters` (≤ 6), `events` (≤ 256) | `ack` is the last input `seq` applied, and `queued` how many of the recipient's inputs are still waiting. `hash` is `Arena::state_hash()`. `result` is `None` while running, or `Won { team }`, `Draw` (simultaneous elimination) or `TimeLimitDraw` (round clock expired with both teams standing). `fighters` carries each fighter's full rule state in actor order (position, height, vertical velocity, momentum, health, resource, `gcd_remaining`, `lockout_remaining`, per-spell `cooldowns`, `active_cast`, facing), so a client can rebuild the arena and check `hash`, plus `connected`: whether that fighter's player is attached (not part of the rules or `hash`). `events` are tick-tagged events since the previous snapshot: `Jumped`, `CastStarted`, `CastCompleted`, `CastInterrupted`, `Hit`, `Healed`, `Finished`, and `Rejected` only for the actor it names. `Moved` is not sent because positions show it. |
 | `Pong` | `nonce: u32` | |
 | `Error` | `code` | Sent before the server closes: `VersionMismatch`, `BadTicket`, `MatchFull`, `MatchOver`, `RateLimited`, `Malformed`, `HelloTimeout`, `ServerShutdown`, `Replaced` (a newer connection with the same ticket took the seat). |
 
@@ -88,17 +88,17 @@ These are message sizes, not network measurements.
 | Outgoing frames queued per connection | 64 | Drop the frame and count it (snapshots carry full state) |
 | `Hello` deadline | 5 s | Close |
 | Undecodable message (truncated, unknown variant, invalid tag, trailing bytes) | — | Close with `Malformed` |
-| Over a field limit (ticket, `round_ticks`, fighters, events) | — | Close with `Malformed` |
+| Over a field limit (ticket, `round_ticks`, fighters, events, or combat/cast invariants) | — | Close with `Malformed` |
 
 ## Versioning
 
-`PROTOCOL_VERSION` (currently 2: `Welcome.round_ticks` and
-`WireResult::TimeLimitDraw`) changes with any incompatible layout change;
-the golden-frame test fails until it is bumped deliberately.
-`RULES_VERSION` (currently 3: time-limit draws are distinct from
-mutual-elimination draws and round limits are explicit)
-changes when a rules change could alter a
-replayed outcome. `Welcome.map` identifies the layout.
+`PROTOCOL_VERSION` (currently 3: `InputFrame.action`, casting/resource state
+on `FighterState`, and cast/interrupt/heal events and rejections) changes with
+any incompatible layout change; the golden-frame test fails until it is bumped
+deliberately.
+`RULES_VERSION` (currently 4: server-authoritative casting, GCD, per-spell
+cooldowns, resources, and interrupts) changes when a rules change could alter
+a replayed outcome. `Welcome.map` identifies the layout.
 
 ## Join tickets
 

@@ -2,6 +2,7 @@
 use std::time::Duration;
 
 use arena_sim::arena::{Combatant, GRAVITY, JUMP_SPEED};
+use arena_sim::spells::SpellId;
 use bevy::prelude::*;
 
 /// Indices are fixed by scripts/prepare_character.py, not source export order.
@@ -93,7 +94,7 @@ pub(crate) struct Controller {
     timing: Timing,
     previous: Option<Vec3>,
     tick: u64,
-    ready_at: u64,
+    pulse_cd: u32,
     cast_remaining: f32,
     current: Option<Clip>,
     locomotion: Option<Clip>,
@@ -180,7 +181,7 @@ impl Controller {
             timing,
             previous: None,
             tick: 0,
-            ready_at: 0,
+            pulse_cd: 0,
             cast_remaining: 0.0,
             current: None,
             locomotion: None,
@@ -199,10 +200,11 @@ impl Controller {
             || sample.tick < self.tick
             || !(0.0..=0.1).contains(&sample.dt)
             || delta.xz().length() > 1.0;
-        let cast_started = !reset && sample.fighter.ready_at > self.ready_at;
+        let pulse_cd = sample.fighter.cooldown_remaining(SpellId::Pulse);
+        let cast_started = !reset && pulse_cd > self.pulse_cd;
         self.previous = Some(sample.position);
         self.tick = sample.tick;
-        self.ready_at = sample.fighter.ready_at;
+        self.pulse_cd = pulse_cd;
         self.cast_remaining = if reset {
             0.0
         } else if cast_started {
@@ -411,13 +413,13 @@ mod tests {
         controller.step(sample(Vec3::ZERO, 0));
         assert_eq!(controller.step(sample(Vec3::ZERO, 1)).clip, Clip::Idle);
         let mut accepted = sample(Vec3::ZERO, 2);
-        accepted.fighter.ready_at = 32;
+        accepted.fighter.cooldowns[SpellId::Pulse.index()] = 29;
         let playback = controller.step(accepted);
         assert_eq!(playback.clip, Clip::Cast);
         assert!(playback.cast_started);
         for tick in 3..80 {
             let mut unchanged = sample(Vec3::ZERO, tick);
-            unchanged.fighter.ready_at = 32;
+            unchanged.fighter.cooldowns[SpellId::Pulse.index()] = 32u32.saturating_sub(tick as u32);
             assert!(!controller.step(unchanged).cast_started);
         }
         assert_eq!(controller.cast_remaining, 0.0);
@@ -430,7 +432,7 @@ mod tests {
             let mut controller = controller();
             controller.step(sample(Vec3::ZERO, 20));
             let mut accepted = sample(Vec3::ZERO, 21);
-            accepted.fighter.ready_at = 51;
+            accepted.fighter.cooldowns[SpellId::Pulse.index()] = 29;
             assert_eq!(controller.step(accepted).clip, Clip::Cast);
             let mut reset = sample(Vec3::ZERO, 22);
             if mode == 0 {
@@ -703,7 +705,7 @@ mod tests {
         jump_again.fighter.vertical_velocity = JUMP_SPEED - GRAVITY;
         assert_eq!(controller.step(jump_again).clip, Clip::JumpStart);
         let mut successful_cast = sample(Vec3::ZERO, 14);
-        successful_cast.fighter.ready_at = 44;
+        successful_cast.fighter.cooldowns[SpellId::Pulse.index()] = 29;
         assert_eq!(controller.step(successful_cast).clip, Clip::Cast);
         // A reset discards both the cast and any pending landing recovery.
         assert_eq!(controller.step(sample(Vec3::ZERO, 0)).clip, Clip::Idle);
@@ -726,7 +728,7 @@ mod tests {
             let mut controller = Controller::new(timing);
             controller.step(sample(Vec3::ZERO, 0));
             let mut accepted = sample(Vec3::ZERO, 1);
-            accepted.fighter.ready_at = 31;
+            accepted.fighter.cooldowns[SpellId::Pulse.index()] = 29;
             let playback = controller.step(accepted);
             assert_eq!(playback.clip, Clip::Cast);
             assert_eq!(playback.seek, Some(timing.cast.0));
@@ -740,7 +742,7 @@ mod tests {
     #[test]
     fn late_asset_loading_does_not_replay_an_old_cast() {
         let mut first = sample(Vec3::ZERO, 100);
-        first.fighter.ready_at = 110;
+        first.fighter.cooldowns[SpellId::Pulse.index()] = 10;
         let playback = controller().step(first);
         assert!(playback.reset);
         assert_eq!(playback.clip, Clip::Idle);

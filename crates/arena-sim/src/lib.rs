@@ -195,10 +195,13 @@ mod tests {
 pub mod arena;
 pub mod auras;
 pub mod auto_attacks;
+pub mod casting;
 pub mod classes;
+pub mod combat_state;
 pub mod effects;
 pub mod formulas;
 pub mod map;
 pub mod specs;
 pub mod spells;
 pub mod stat_templates;
+pub mod talents;

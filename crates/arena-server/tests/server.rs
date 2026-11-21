@@ -210,7 +210,7 @@ async fn two_players_play_a_match_the_server_decides() {
     // Actor 1 attacks from out of range: refused, and only actor 1 hears so.
     second
         .input(InputFrame {
-            attack: Some(0),
+            action: InputFrame::pulse(0),
             ..InputFrame::default()
         })
         .await;
@@ -705,5 +705,160 @@ async fn a_round_that_reaches_the_time_limit_ends_in_a_time_limit_draw() {
     let mut late = Client::open(addr).await;
     late.hello(from_hex(&created.tickets[0]).unwrap()).await;
     assert_eq!(late.error().await, ErrorCode::MatchOver);
+    running.shut_down(Duration::ZERO).await.unwrap();
+}
+
+#[tokio::test]
+async fn server_judges_timed_casts_resources_cooldowns_and_interrupts_over_websockets() {
+    use arena_protocol::{WireAction, WireInterruptReason, WireSpell};
+    use arena_sim::spells::{MEND_CAST_TICKS, MEND_COST, RIFT_BOLT_CAST_TICKS, RIFT_BOLT_COST};
+
+    // Ticks run at 200 Hz (5 ms) in this test, so allow proportional message rate while walking into range.
+    let mut cfg = config(true);
+    cfg.messages_per_second = 500;
+    let running = start(cfg).await.unwrap();
+    let addr = running.addr;
+    let created = new_match(addr, 1).await;
+    let (mut first, _) = Client::join(addr, &created.tickets[0]).await;
+    let (mut second, _) = Client::join(addr, &created.tickets[1]).await;
+
+    // Wait for running tick, then cast Mend on self (always in range/LoS from spawn).
+    let start = first.snapshot_until(|s| s.tick > 0).await;
+    assert_eq!(start.fighters[0].resource, 100);
+    first
+        .input(InputFrame {
+            action: WireAction::Cast {
+                spell: WireSpell::Mend,
+                target: Some(0),
+            },
+            ..InputFrame::default()
+        })
+        .await;
+    let started = first
+        .snapshot_until(|s| {
+            s.events.iter().any(|e| {
+                matches!(
+                    e.event,
+                    WireEvent::CastStarted {
+                        actor: 0,
+                        spell: WireSpell::Mend,
+                        target: Some(0),
+                        duration_ticks: MEND_CAST_TICKS,
+                    }
+                )
+            })
+        })
+        .await;
+    assert_eq!(started.fighters[0].resource, 100 - MEND_COST);
+    assert!(started.fighters[0].gcd_remaining > 0);
+    assert!(started.fighters[0].active_cast.is_some());
+
+    // Moving cancels the stationary Mend cast with Moved and does not refund resource.
+    first.input(forward()).await;
+    let cancelled = first
+        .snapshot_until(|s| {
+            s.events.iter().any(|e| {
+                e.event
+                    == WireEvent::CastInterrupted {
+                        actor: 0,
+                        spell: WireSpell::Mend,
+                        reason: WireInterruptReason::Moved,
+                        by: None,
+                    }
+            })
+        })
+        .await;
+    assert_eq!(cancelled.fighters[0].active_cast, None);
+    assert_eq!(cancelled.fighters[0].cooldowns[3], 0);
+
+    // Both players walk toward center until within Quell range (8 m).
+    let mut latest = cancelled;
+    while (i64::from(latest.fighters[0].z) - i64::from(latest.fighters[1].z)).abs() > 7_000 {
+        first.input(forward()).await;
+        second
+            .input(InputFrame {
+                movement: [0, 1000],
+                ..InputFrame::default()
+            })
+            .await;
+        let seq = first.seq;
+        latest = first.snapshot_until(|s| s.ack == seq).await;
+    }
+
+    // Wait until Seat 0's GCD is clear and resource >= RIFT_BOLT_COST, then cast Rift Bolt.
+    let _ready = first
+        .snapshot_until(|s| {
+            s.fighters[0].gcd_remaining == 0 && s.fighters[0].resource >= RIFT_BOLT_COST
+        })
+        .await;
+    first
+        .input(InputFrame {
+            action: WireAction::Cast {
+                spell: WireSpell::RiftBolt,
+                target: Some(1),
+            },
+            ..InputFrame::default()
+        })
+        .await;
+    let bolt_started = second
+        .snapshot_until(|s| {
+            s.events.iter().any(|e| {
+                matches!(
+                    e.event,
+                    WireEvent::CastStarted {
+                        actor: 0,
+                        spell: WireSpell::RiftBolt,
+                        target: Some(1),
+                        duration_ticks: RIFT_BOLT_CAST_TICKS,
+                    }
+                )
+            })
+        })
+        .await;
+    assert!(bolt_started.fighters[0].active_cast.is_some());
+
+    // Seat 1 casts Quell and interrupts Seat 0's Rift Bolt, applying lockout.
+    second
+        .input(InputFrame {
+            action: WireAction::Cast {
+                spell: WireSpell::Quell,
+                target: Some(0),
+            },
+            ..InputFrame::default()
+        })
+        .await;
+    let interrupted = first
+        .snapshot_until(|s| {
+            s.events.iter().any(|e| {
+                e.event
+                    == WireEvent::CastInterrupted {
+                        actor: 0,
+                        spell: WireSpell::RiftBolt,
+                        reason: WireInterruptReason::Interrupted,
+                        by: Some(1),
+                    }
+            })
+        })
+        .await;
+    assert_eq!(interrupted.fighters[0].active_cast, None);
+    assert!(interrupted.fighters[0].lockout_remaining > 0);
+    assert_eq!(interrupted.fighters[1].health, 100);
+
+    // Seat 0 tries to Pulse while locked out -> Silenced rejection.
+    first
+        .input(InputFrame {
+            action: InputFrame::pulse(1),
+            ..InputFrame::default()
+        })
+        .await;
+    let silenced = first
+        .snapshot_until(|s| {
+            s.events
+                .iter()
+                .any(|e| e.event == WireEvent::Rejected(WireRejection::Silenced))
+        })
+        .await;
+    assert_eq!(silenced.fighters[1].health, 100);
+
     running.shut_down(Duration::ZERO).await.unwrap();
 }

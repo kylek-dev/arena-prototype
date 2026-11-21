@@ -58,15 +58,7 @@ mod tests {
     use crate::map::Pillar;
 
     fn fighter(x: i32) -> Combatant {
-        Combatant {
-            position: Position { x, z: 0 },
-            height: 0,
-            vertical_velocity: 0,
-            momentum: Position { x: 0, z: 0 },
-            health: 100,
-            ready_at: 0,
-            facing: 0,
-        }
+        Combatant::new(Position { x, z: 0 }, 0)
     }
 
     #[test]

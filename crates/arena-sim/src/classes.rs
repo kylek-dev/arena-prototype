@@ -1,4 +1,4 @@
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Class {
     Necromancer,
     PlagueDoctor,
@@ -8,13 +8,13 @@ pub enum Class {
     Wildkeeper,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Role {
     DPS,
     Healer,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Resource {
     Mana,
     Energy,
@@ -42,5 +42,32 @@ impl Class {
 
             Self::Wildkeeper => vec![Resource::LifeEssence],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_class_declares_at_least_one_unique_resource() {
+        let all = [
+            Class::Necromancer,
+            Class::PlagueDoctor,
+            Class::Gladiator,
+            Class::Nightblade,
+            Class::Bloodbinder,
+            Class::Wildkeeper,
+        ];
+        for class in all {
+            let resources = class.resources();
+            assert!(!resources.is_empty(), "{class:?}");
+            let unique: std::collections::BTreeSet<_> = resources.iter().copied().collect();
+            assert_eq!(unique.len(), resources.len(), "{class:?}");
+        }
+        assert_eq!(
+            Class::PlagueDoctor.resources(),
+            vec![Resource::Mana, Resource::Toxicity]
+        );
     }
 }

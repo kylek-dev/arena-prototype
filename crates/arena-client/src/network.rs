@@ -26,12 +26,13 @@ use std::sync::OnceLock;
 
 use arena_protocol::prediction::{Pacer, Predictor, TickRate};
 use arena_protocol::{
-    ClientMessage, ErrorCode, FighterState, InputFrame, ServerMessage, WireEvent,
+    ClientMessage, ErrorCode, FighterState, InputFrame, ServerMessage, WireAction, WireEvent,
 };
 use arena_sim::arena::{
-    ActorInput, Arena, Axes, Combatant, MAX_ROUND_TICKS, Rejection, RoundResult,
+    ActorInput, Arena, Axes, Combatant, InterruptReason, MAX_ROUND_TICKS, Rejection, RoundResult,
 };
 use arena_sim::map::Layout;
+use arena_sim::spells::SpellId;
 use bevy::math::Vec3;
 
 /// Ticks the view trails the newest snapshot: 100 ms at 30 Hz, enough to
@@ -87,10 +88,32 @@ pub enum Outcome {
 /// Something to show when the view reaches its tick, in local indices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shown {
+    CastStarted {
+        actor: usize,
+        spell: SpellId,
+        target: Option<usize>,
+        duration_ticks: u32,
+    },
+    CastCompleted {
+        actor: usize,
+        spell: SpellId,
+        target: Option<usize>,
+    },
+    CastInterrupted {
+        actor: usize,
+        spell: SpellId,
+        reason: InterruptReason,
+        by: Option<usize>,
+    },
     Hit {
         actor: usize,
         target: usize,
         damage: u16,
+    },
+    Healed {
+        actor: usize,
+        target: usize,
+        amount: u16,
     },
     Jumped {
         actor: usize,
@@ -339,10 +362,18 @@ impl Session {
                     {
                         self.stats.hash_mismatches += 1;
                     }
-                    let fighters = self
+                    let fighters: Vec<Combatant> = self
                         .order
                         .iter()
-                        .map(|&actor| authoritative[actor])
+                        .map(|&actor| {
+                            let mut fighter = authoritative[actor];
+                            if let Some(cast) = fighter.active_cast.as_mut() {
+                                cast.target = cast.target.and_then(|server_target| {
+                                    self.order.iter().position(|&a| a == server_target)
+                                });
+                            }
+                            fighter
+                        })
                         .collect();
                     let connected = self
                         .order
@@ -512,7 +543,42 @@ impl Session {
 
     fn local_event(&self, event: WireEvent, my_team: usize) -> Option<Shown> {
         let local = |actor: u8| self.order.iter().position(|&a| a == usize::from(actor));
+        let opt_local = |actor: Option<u8>| match actor {
+            None => Some(None),
+            Some(a) => Some(Some(local(a)?)),
+        };
         Some(match event {
+            WireEvent::CastStarted {
+                actor,
+                spell,
+                target,
+                duration_ticks,
+            } => Shown::CastStarted {
+                actor: local(actor)?,
+                spell: spell.into(),
+                target: opt_local(target)?,
+                duration_ticks,
+            },
+            WireEvent::CastCompleted {
+                actor,
+                spell,
+                target,
+            } => Shown::CastCompleted {
+                actor: local(actor)?,
+                spell: spell.into(),
+                target: opt_local(target)?,
+            },
+            WireEvent::CastInterrupted {
+                actor,
+                spell,
+                reason,
+                by,
+            } => Shown::CastInterrupted {
+                actor: local(actor)?,
+                spell: spell.into(),
+                reason: reason.into(),
+                by: opt_local(by)?,
+            },
             WireEvent::Hit {
                 actor,
                 target,
@@ -521,6 +587,15 @@ impl Session {
                 actor: local(actor)?,
                 target: local(target)?,
                 damage,
+            },
+            WireEvent::Healed {
+                actor,
+                target,
+                amount,
+            } => Shown::Healed {
+                actor: local(actor)?,
+                target: local(target)?,
+                amount,
             },
             WireEvent::Jumped { actor } => Shown::Jumped {
                 actor: local(actor)?,
@@ -587,7 +662,7 @@ impl Session {
                     }),
                     facing: Some(facing),
                     jump,
-                    attack: None,
+                    action: None,
                 },
             );
             if let (Some(predicted), Some(own)) = (predicted, self.own.as_mut()) {
@@ -596,16 +671,17 @@ impl Session {
             }
             self.stats.predicted_ticks = self.predictor.pending();
         }
-        let attack = attack
+        let action = attack
             .and_then(|local| self.order.get(local))
-            .and_then(|&actor| u8::try_from(actor).ok());
+            .and_then(|&actor| u8::try_from(actor).ok())
+            .map_or(WireAction::None, InputFrame::pulse);
         Some(
             ClientMessage::Input(InputFrame {
                 seq: self.seq,
                 movement,
                 facing,
                 jump,
-                attack,
+                action,
             })
             .encode(),
         )

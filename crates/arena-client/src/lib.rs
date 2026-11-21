@@ -26,9 +26,10 @@ mod weapons;
 use arena_map::MapFile;
 use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::{
-    ATTACK_COOLDOWN, ATTACK_DAMAGE, ATTACK_RANGE, ActorInput, Arena, ArenaEvent, Axes, Combatant,
-    Position,
+    ATTACK_COOLDOWN, ATTACK_DAMAGE, ATTACK_RANGE, ActiveCastState, ActorInput, Arena, ArenaEvent,
+    Axes, Combatant, Position,
 };
+use arena_sim::spells::{MAX_RESOURCE, SpellId};
 use bevy::{asset::AssetMetaCheck, core_pipeline::tonemapping::Tonemapping, prelude::*};
 
 #[derive(Resource)]
@@ -635,11 +636,11 @@ fn simulate(mut practice: ResMut<Practice>, mut net: ResMut<Net>) {
         }),
         facing: Some(binary_angle(practice.facing)),
         jump: std::mem::take(&mut practice.jump),
-        attack: None,
+        action: None,
     };
     if std::mem::take(&mut practice.attack) {
         if let Some(target) = practice.selected {
-            input.attack = Some(target);
+            input.action = ActorInput::pulse(target);
         } else {
             practice.feedback = "Select a target first";
         }
@@ -657,15 +658,25 @@ fn simulate(mut practice: ResMut<Practice>, mut net: ResMut<Net>) {
                 practice.feedback = "Pulse hit · 25 damage";
                 practice.zap = Some(lightning::Zap::new(actor, target, practice.arena.tick()));
             }
+            ArenaEvent::Healed {
+                actor,
+                target,
+                amount,
+            } => {
+                practice
+                    .combat_text
+                    .record(actor, target, i32::from(amount));
+            }
             ArenaEvent::Finished(arena_sim::arena::RoundResult::TimeLimitDraw) => {
                 practice.feedback = "Time's up · draw · reset to play again";
             }
             ArenaEvent::Finished(_) => {
                 practice.feedback = "Round complete · reset to play again";
             }
-            // A second press in flight is harmless, not a spell-cast error.
+            // A second jump press in flight or cancelling while idle is harmless.
             ArenaEvent::Rejected {
-                reason: arena_sim::arena::Rejection::Airborne,
+                reason:
+                    arena_sim::arena::Rejection::Airborne | arena_sim::arena::Rejection::NotCasting,
                 ..
             } => (),
             ArenaEvent::Rejected { actor: 0, reason } => {
@@ -688,6 +699,11 @@ fn attack_status(arena: &Arena, target: usize) -> &'static str {
         Ok(()) => "Ready",
         Err(arena_sim::arena::Rejection::OutOfRange) => "Out of range",
         Err(arena_sim::arena::Rejection::Cooldown) => "Recharging",
+        Err(arena_sim::arena::Rejection::GlobalCooldown) => "Global cooldown",
+        Err(arena_sim::arena::Rejection::AlreadyCasting) => "Casting",
+        Err(arena_sim::arena::Rejection::NotEnoughResource) => "Not enough resource",
+        Err(arena_sim::arena::Rejection::Silenced) => "Locked out",
+        Err(arena_sim::arena::Rejection::Moving) => "Cannot cast while moving",
         Err(arena_sim::arena::Rejection::LineOfSight) => "Line of sight blocked",
         Err(arena_sim::arena::Rejection::InvalidTarget) => "Invalid target",
         // The player is down while teammates may fight on: not the round's end.
@@ -703,6 +719,11 @@ fn rejection_feedback(reason: arena_sim::arena::Rejection) -> &'static str {
     match reason {
         arena_sim::arena::Rejection::OutOfRange => "Out of range · move closer",
         arena_sim::arena::Rejection::Cooldown => "Pulse is recharging",
+        arena_sim::arena::Rejection::GlobalCooldown => "Global cooldown active",
+        arena_sim::arena::Rejection::AlreadyCasting => "Already casting",
+        arena_sim::arena::Rejection::NotEnoughResource => "Not enough resource",
+        arena_sim::arena::Rejection::Moving => "Stand still to cast",
+        arena_sim::arena::Rejection::Silenced => "Casting locked out",
         arena_sim::arena::Rejection::LineOfSight => "Line of sight blocked by pillar",
         arena_sim::arena::Rejection::MatchOver => "Round complete · reset to play again",
         // The player's own fighter is down; in a team match the round goes on.
@@ -773,15 +794,24 @@ fn network_receive(
         practice.feedback = "This build's map differs from the server's";
     }
     for reason in rejections {
-        // A second press in flight is harmless, not a spell-cast error.
-        if reason != arena_sim::arena::Rejection::Airborne {
+        // A second jump press in flight or cancelling while idle is harmless.
+        if !matches!(
+            reason,
+            arena_sim::arena::Rejection::Airborne | arena_sim::arena::Rejection::NotCasting
+        ) {
             practice.feedback = rejection_feedback(reason);
         }
     }
     if let Some(mut view) = session.view(time.delta_secs_f64(), now) {
-        // The HUD's range and sight checks use where the player sees itself.
+        // The HUD's range and sight checks use where the player sees itself,
+        // while combat authority (health, resources, casts, cooldowns) stays
+        // strictly server-owned.
         if let Some(predicted) = session.predicted() {
-            view.fighters[0] = predicted;
+            view.fighters[0].position = predicted.position;
+            view.fighters[0].height = predicted.height;
+            view.fighters[0].vertical_velocity = predicted.vertical_velocity;
+            view.fighters[0].momentum = predicted.momentum;
+            view.fighters[0].facing = predicted.facing;
         }
         if practice.arena.tick() != view.tick
             || practice.arena.max_round_ticks() != session.round_ticks()
@@ -818,6 +848,30 @@ fn network_receive(
                     }
                     practice.zap = Some(lightning::Zap::new(actor, target, practice.arena.tick()));
                 }
+                network::Shown::Healed {
+                    actor,
+                    target,
+                    amount,
+                } => {
+                    practice
+                        .combat_text
+                        .record(actor, target, i32::from(amount));
+                }
+                network::Shown::CastInterrupted {
+                    actor: 0, reason, ..
+                } => {
+                    practice.feedback = match reason {
+                        arena_sim::arena::InterruptReason::Interrupted => "Cast interrupted",
+                        arena_sim::arena::InterruptReason::Moved => "Cast cancelled by movement",
+                        arena_sim::arena::InterruptReason::OutOfRange => {
+                            "Out of range · move closer"
+                        }
+                        arena_sim::arena::InterruptReason::LineOfSight => {
+                            "Line of sight blocked by pillar"
+                        }
+                        _ => "Cast cancelled",
+                    };
+                }
                 network::Shown::Finished { outcome } => {
                     practice.feedback = match outcome {
                         network::Outcome::Won => "Victory · the match closes shortly",
@@ -828,7 +882,10 @@ fn network_receive(
                         }
                     };
                 }
-                network::Shown::Jumped { .. } => {}
+                network::Shown::Jumped { .. }
+                | network::Shown::CastStarted { .. }
+                | network::Shown::CastCompleted { .. }
+                | network::Shown::CastInterrupted { .. } => {}
             }
         }
     }
@@ -997,8 +1054,10 @@ fn publish(
     let selected_target = fighters[practice.selected.unwrap_or(1)];
     let distance =
         (player.position.distance_squared(selected_target.position) as f64).sqrt() / 1000.0;
-    let cooldown =
-        player.ready_at.saturating_sub(practice.arena.tick()) as f64 / TICKS_PER_SECOND as f64;
+    let cooldown = player
+        .cooldown_remaining(SpellId::Pulse)
+        .max(player.gcd_remaining) as f64
+        / TICKS_PER_SECOND as f64;
     let attack_status = attack_status(&practice.arena, practice.selected.unwrap_or(1));
     let camera_view = cameras.single().ok();
     let screen = camera_view
@@ -1054,11 +1113,15 @@ fn publish(
         }
         let _ = write!(
             json,
-            r#"{{"actor":{},"tag":"{}","health":{}"#,
+            r#"{{"actor":{},"tag":"{}","health":{},"resource":{},"gcdRemaining":{},"lockoutRemaining":{},"cast":"#,
             actor,
             unit_tag_str(actor),
             fighter.health,
+            fighter.resource,
+            fighter.gcd_remaining,
+            fighter.lockout_remaining,
         );
+        write_active_cast_json(&mut json, fighter.active_cast);
         // Network matches say whether each player is attached.
         if let Some(connected) = practice
             .connected
@@ -1071,16 +1134,32 @@ fn publish(
     }
     let _ = write!(
         json,
-        r#"],"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"yaw":{}}},"target":{{"x":{},"z":{},"health":{},"screenX":{},"screenY":{}}},"selected":{},"selectedPlayer":{},"hoveredUnit":"#,
+        r#"],"tick":{},"frames":{},"player":{{"x":{},"z":{},"health":{},"resource":{},"gcdRemaining":{},"lockoutRemaining":{},"cast":"#,
         practice.arena.tick(),
         practice.frames,
         player.position.x,
         player.position.z,
         player.health,
+        player.resource,
+        player.gcd_remaining,
+        player.lockout_remaining,
+    );
+    write_active_cast_json(&mut json, player.active_cast);
+    let _ = write!(
+        json,
+        r#","yaw":{}}},"target":{{"x":{},"z":{},"health":{},"resource":{},"gcdRemaining":{},"lockoutRemaining":{},"cast":"#,
         practice.facing,
         target.position.x,
         target.position.z,
         target.health,
+        target.resource,
+        target.gcd_remaining,
+        target.lockout_remaining,
+    );
+    write_active_cast_json(&mut json, target.active_cast);
+    let _ = write!(
+        json,
+        r#","screenX":{},"screenY":{}}},"selected":{},"selectedPlayer":{},"hoveredUnit":"#,
         screen.x,
         screen.y,
         practice.selected.is_some(),
@@ -1094,7 +1173,7 @@ fn publish(
     }
     let _ = write!(
         json,
-        r#","distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"roundResult":{},"maxRoundTicks":{},"tickRate":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":true}},"maxHealth":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}},"nameplates":["#,
+        r#","distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"roundResult":{},"maxRoundTicks":{},"tickRate":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":true}},"maxHealth":{},"maxResource":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}},"nameplates":["#,
         distance,
         ATTACK_RANGE / 1000,
         cooldown,
@@ -1110,6 +1189,7 @@ fn publish(
         character.status(),
         character.meshes,
         arena_sim::arena::MAX_HEALTH,
+        MAX_RESOURCE,
         ATTACK_DAMAGE,
         ATTACK_RANGE / 1000,
         ATTACK_COOLDOWN as f64 / TICKS_PER_SECOND as f64,
@@ -1176,6 +1256,31 @@ fn round_result_json(result: Option<arena_sim::arena::RoundResult>) -> &'static 
         Some(arena_sim::arena::RoundResult::Won { .. }) => "\"lost\"",
         Some(arena_sim::arena::RoundResult::Draw) => "\"draw\"",
         Some(arena_sim::arena::RoundResult::TimeLimitDraw) => "\"time_limit_draw\"",
+    }
+}
+
+fn spell_key_str(spell: SpellId) -> &'static str {
+    match spell {
+        SpellId::Pulse => "pulse",
+        SpellId::RiftBolt => "rift_bolt",
+        SpellId::Quell => "quell",
+        SpellId::Mend => "mend",
+    }
+}
+
+fn write_active_cast_json(json: &mut String, cast: Option<ActiveCastState>) {
+    use std::fmt::Write;
+    match cast {
+        None => json.push_str("null"),
+        Some(cast) => {
+            let _ = write!(
+                json,
+                r#"{{"spell":"{}","remainingTicks":{},"totalTicks":{}}}"#,
+                spell_key_str(cast.spell),
+                cast.remaining_ticks,
+                cast.total_ticks,
+            );
+        }
     }
 }
 
@@ -1620,7 +1725,10 @@ mod tests {
         let [input] = inputs[..] else {
             panic!("expected one input, got {inputs:?}");
         };
-        assert_eq!((input.seq, input.attack), (1, Some(0)));
+        assert_eq!(
+            (input.seq, input.action),
+            (1, arena_protocol::InputFrame::pulse(0))
+        );
         assert_eq!(app.world().resource::<Practice>().arena.tick(), 3);
         assert!(platform::NETWORK_STATUS.lock().unwrap().is_some());
         // When the runtime ends the match, a fresh local practice round starts.

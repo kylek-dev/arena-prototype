@@ -71,6 +71,75 @@ describe("engine snapshot boundary", () => {
     }
   });
 
+  it("validates authoritative resources, GCD, lockout, and active cast metadata", () => {
+    const base = {
+      ...teamSnapshot(1),
+      maxHealth: 100,
+      maxResource: 100,
+    };
+    const idle = adaptSnapshot({
+      ...base,
+      player: { ...base.player, resource: 100, gcdRemaining: 0, lockoutRemaining: 0, cast: null },
+      target: { ...base.target, resource: 65, gcdRemaining: 12, lockoutRemaining: 0, cast: null },
+      roster: base.roster?.map((unit, idx) => ({
+        ...unit,
+        resource: idx === 0 ? 100 : 65,
+        gcdRemaining: idx === 0 ? 0 : 12,
+        lockoutRemaining: 0,
+        cast: null,
+      })),
+    });
+    expect(idle.maxResource).toBe(100);
+    expect(idle.player.resource).toBe(100);
+    expect(idle.player.maxResource).toBe(100);
+    expect(idle.target.resource).toBe(65);
+    expect(idle.roster?.[1].gcdRemaining).toBe(12);
+
+    const casting = adaptSnapshot({
+      ...base,
+      player: {
+        ...base.player,
+        resource: 65,
+        gcdRemaining: 28,
+        lockoutRemaining: 0,
+        cast: { spell: "rift_bolt", remainingTicks: 44, totalTicks: 45 },
+      },
+      target: { ...base.target, resource: 100, gcdRemaining: 0, lockoutRemaining: 0, cast: null },
+    });
+    expect(casting.player.cast).toEqual({
+      spell: "rift_bolt",
+      remainingTicks: 44,
+      totalTicks: 45,
+    });
+    expect(needsImmediateDelivery(idle, casting)).toBe(true);
+
+    for (const invalid of [
+      { ...base, maxResource: 0 },
+      { ...base, maxResource: 1e30 },
+      { ...base, player: { ...base.player, resource: 101 } },
+      { ...base, player: { ...base.player, resource: -1 } },
+      { ...base, player: { ...base.player, gcdRemaining: 1.5 } },
+      { ...base, player: { ...base.player, lockoutRemaining: -2 } },
+      {
+        ...base,
+        player: { ...base.player, cast: { spell: "rift_bolt", remainingTicks: 0, totalTicks: 45 } },
+      },
+      {
+        ...base,
+        player: {
+          ...base.player,
+          cast: { spell: "rift_bolt", remainingTicks: 46, totalTicks: 45 },
+        },
+      },
+      {
+        ...base,
+        player: { ...base.player, cast: { spell: "invalid", remainingTicks: 10, totalTicks: 45 } },
+      },
+    ]) {
+      expect(() => adaptSnapshot(invalid)).toThrow();
+    }
+  });
+
   it.each([
     null,
     { ...snapshot(), maxHealth: 0 },

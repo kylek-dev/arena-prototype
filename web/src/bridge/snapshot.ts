@@ -1,3 +1,4 @@
+import { isValidActiveCast, type ActiveCast } from "../domain/casting";
 import type { Entity } from "../domain/units/selection";
 import type { UnitTag } from "../domain/units/tags";
 export type RosterEntry = Entity & { actor: number; tag: UnitTag };
@@ -31,6 +32,8 @@ export type Snapshot = {
   maxRoundTicks?: number;
   /** Authoritative simulation ticks per second. */
   tickRate?: number;
+  /** Maximum primary resource pool; absent from older clients. */
+  maxResource?: number;
   character: { status: string };
   /** Render warmup behind the loading screen; absent from older clients. */
   startup?: StartupState;
@@ -68,6 +71,59 @@ function validStartup(value: unknown): value is StartupState {
   );
 }
 
+function isNonNegativeSafeInt(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function validateCombatFields(
+  unit: {
+    resource?: unknown;
+    gcdRemaining?: unknown;
+    lockoutRemaining?: unknown;
+    cast?: unknown;
+  },
+  maxResource: number | undefined,
+): {
+  resource?: number;
+  maxResource?: number;
+  gcdRemaining?: number;
+  lockoutRemaining?: number;
+  cast?: ActiveCast | null;
+} {
+  const out: {
+    resource?: number;
+    maxResource?: number;
+    gcdRemaining?: number;
+    lockoutRemaining?: number;
+    cast?: ActiveCast | null;
+  } = {};
+  if (unit.resource !== undefined) {
+    if (
+      !isNonNegativeSafeInt(unit.resource) ||
+      (maxResource !== undefined && unit.resource > maxResource)
+    ) {
+      throw new Error("Invalid unit resource");
+    }
+    out.resource = unit.resource;
+    if (maxResource !== undefined) out.maxResource = maxResource;
+  }
+  if (unit.gcdRemaining !== undefined) {
+    if (!isNonNegativeSafeInt(unit.gcdRemaining)) throw new Error("Invalid unit GCD");
+    out.gcdRemaining = unit.gcdRemaining;
+  }
+  if (unit.lockoutRemaining !== undefined) {
+    if (!isNonNegativeSafeInt(unit.lockoutRemaining)) throw new Error("Invalid unit lockout");
+    out.lockoutRemaining = unit.lockoutRemaining;
+  }
+  if (unit.cast !== undefined) {
+    if (unit.cast !== null && !isValidActiveCast(unit.cast)) {
+      throw new Error("Invalid unit active cast");
+    }
+    out.cast = unit.cast;
+  }
+  return out;
+}
+
 export function needsImmediateDelivery(previous: Snapshot | null, next: Snapshot) {
   return (
     !previous ||
@@ -80,7 +136,9 @@ export function needsImmediateDelivery(previous: Snapshot | null, next: Snapshot
     next.startup?.ready !== previous.startup?.ready ||
     next.hoveredUnit !== previous.hoveredUnit ||
     next.cooldown > previous.cooldown ||
-    (next.cooldown === 0) !== (previous.cooldown === 0)
+    (next.cooldown === 0) !== (previous.cooldown === 0) ||
+    Boolean(next.player.cast) !== Boolean(previous.player.cast) ||
+    next.player.cast?.spell !== previous.player.cast?.spell
   );
 }
 // Local practice snapshots optionally append a team roster; not a network protocol.
@@ -133,6 +191,13 @@ export function adaptSnapshot(raw: unknown): Snapshot {
   )
     throw new Error("Invalid engine snapshot flags");
   const maxHealth = (raw as { maxHealth?: number }).maxHealth;
+  const maxResource = (raw as { maxResource?: unknown }).maxResource;
+  if (
+    maxResource !== undefined &&
+    (typeof maxResource !== "number" || !Number.isSafeInteger(maxResource) || maxResource < 1)
+  ) {
+    throw new Error("Invalid maximum resource");
+  }
   if (r.combatText !== undefined) {
     if (!Array.isArray(r.combatText) || r.combatText.length > 32)
       throw new Error("Invalid combat text projections");
@@ -208,11 +273,13 @@ export function adaptSnapshot(raw: unknown): Snapshot {
       )
         throw new Error("Invalid practice unit");
       const conn = (unit as { connected?: boolean }).connected;
+      const combat = validateCombatFields(unit, maxResource);
       roster[actor] = {
         actor,
         tag: tag as UnitTag,
         health: unit.health,
         maxHealth,
+        ...combat,
         id:
           actor === 0
             ? "practice-player"
@@ -248,14 +315,18 @@ export function adaptSnapshot(raw: unknown): Snapshot {
   ) {
     throw new Error("Invalid engine rule metadata");
   }
+  const playerCombat = validateCombatFields(r.player, maxResource);
+  const targetCombat = validateCombatFields(r.target, maxResource);
   const opponent = roster?.[1];
   return {
     ...r,
+    ...(maxResource !== undefined ? { maxResource } : {}),
     roster,
     networked,
-    player: { ...r.player, maxHealth, id: "practice-player", name: "Player" },
+    player: { ...r.player, ...playerCombat, maxHealth, id: "practice-player", name: "Player" },
     target: {
       ...r.target,
+      ...targetCombat,
       maxHealth,
       id: "practice-opponent",
       name: opponent?.name ?? "Enemy Bot",

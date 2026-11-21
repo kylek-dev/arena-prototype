@@ -11,7 +11,7 @@ fn input(seq: u32) -> InputFrame {
         movement: [-1000, 707],
         facing: 0xC000,
         jump: true,
-        attack: Some(3),
+        action: InputFrame::pulse(3),
     }
 }
 
@@ -26,6 +26,11 @@ fn client_samples() -> Vec<ClientMessage> {
             ticket: Vec::new(),
         },
         ClientMessage::Input(input(u32::MAX)),
+        ClientMessage::Input(InputFrame {
+            seq: 42,
+            action: WireAction::CancelCast,
+            ..InputFrame::default()
+        }),
         ClientMessage::Input(InputFrame::default()),
         ClientMessage::Ping { nonce: 0xDEAD_BEEF },
     ]
@@ -37,7 +42,7 @@ fn busy_snapshot() -> Snapshot {
     arena.step(&[ArenaCommand::Jump { actor: 4 }]);
     let mut events = Vec::new();
     for index in 0..MAX_EVENTS {
-        let event = match index % 4 {
+        let event = match index % 8 {
             0 => WireEvent::Jumped { actor: 5 },
             1 => WireEvent::Hit {
                 actor: 1,
@@ -45,7 +50,29 @@ fn busy_snapshot() -> Snapshot {
                 damage: u16::MAX,
             },
             2 => WireEvent::Rejected(WireRejection::LineOfSight),
-            _ => WireEvent::Finished(WireResult::Won { team: 1 }),
+            3 => WireEvent::Finished(WireResult::Won { team: 1 }),
+            4 => WireEvent::CastStarted {
+                actor: 0,
+                spell: WireSpell::RiftBolt,
+                target: Some(1),
+                duration_ticks: 45,
+            },
+            5 => WireEvent::CastCompleted {
+                actor: 0,
+                spell: WireSpell::RiftBolt,
+                target: Some(1),
+            },
+            6 => WireEvent::CastInterrupted {
+                actor: 2,
+                spell: WireSpell::Mend,
+                reason: WireInterruptReason::Interrupted,
+                by: Some(3),
+            },
+            _ => WireEvent::Healed {
+                actor: 2,
+                target: 0,
+                amount: 30,
+            },
         };
         events.push(TickEvent {
             tick: u64::MAX - index as u64,
@@ -54,10 +81,18 @@ fn busy_snapshot() -> Snapshot {
     }
     let mut snapshot = Snapshot::capture(&arena, u32::MAX, events, &[true; MAX_FIGHTERS]);
     for fighter in &mut snapshot.fighters {
-        // Worst-case varints everywhere.
+        // Worst-case varints everywhere while respecting valid invariants.
         fighter.x = i32::MIN;
         fighter.z = i32::MAX;
-        fighter.ready_at = u64::MAX;
+        fighter.gcd_remaining = u32::MAX;
+        fighter.lockout_remaining = u32::MAX;
+        fighter.cooldowns = [u32::MAX; SpellId::COUNT];
+        fighter.active_cast = Some(WireCast {
+            spell: WireSpell::RiftBolt,
+            target: Some(5),
+            remaining_ticks: 45,
+            total_ticks: 45,
+        });
     }
     snapshot
 }
@@ -118,21 +153,21 @@ fn ordinary_traffic_is_small() {
 #[test]
 fn the_wire_layout_is_pinned() {
     // Golden frames: changing them requires a PROTOCOL_VERSION bump.
-    assert_eq!(PROTOCOL_VERSION, 2);
+    assert_eq!(PROTOCOL_VERSION, 3);
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 2,
+            protocol: 3,
             ticket: vec![0xAB, 0xCD],
         }
         .encode(),
-        [0, 2, 2, 0xAB, 0xCD]
+        [0, 3, 2, 0xAB, 0xCD]
     );
     assert_eq!(
         ClientMessage::Input(input(300)).encode(),
         // variant 1, seq 300 (varint), x -1000 / z 707 (zigzag varints),
-        // facing 0xC000, jump, Some(3).
+        // facing 0xC000, jump, WireAction::Cast { Pulse (0), Some(3) }.
         [
-            1, 0xAC, 0x02, 0xCF, 0x0F, 0x86, 0x0B, 0x80, 0x80, 0x03, 1, 1, 3
+            1, 0xAC, 0x02, 0xCF, 0x0F, 0x86, 0x0B, 0x80, 0x80, 0x03, 1, 1, 0, 1, 3
         ]
     );
     // The browser runtime reads these two-byte error frames itself (so a
@@ -177,20 +212,27 @@ fn malformed_frames_are_rejected_not_trusted() {
     let mut padded = ClientMessage::Ping { nonce: 1 }.encode();
     padded.push(0);
     assert_eq!(ClientMessage::decode(&padded), Err(DecodeError::Malformed));
-    // Unknown variants, invalid bool and option tags.
+    // Unknown variants, invalid bool and enum/option tags.
     assert_eq!(ClientMessage::decode(&[9, 0]), Err(DecodeError::Malformed));
     let mut bad_bool = ClientMessage::Input(input(1)).encode();
-    let jump = bad_bool.len() - 3;
+    let jump = bad_bool.len() - 5;
     bad_bool[jump] = 2;
     assert_eq!(
         ClientMessage::decode(&bad_bool),
         Err(DecodeError::Malformed)
     );
-    let mut bad_option = ClientMessage::Input(input(1)).encode();
-    let tag = bad_option.len() - 2;
-    bad_option[tag] = 7;
+    let mut bad_action = ClientMessage::Input(input(1)).encode();
+    let action_tag = bad_action.len() - 4;
+    bad_action[action_tag] = 7;
     assert_eq!(
-        ClientMessage::decode(&bad_option),
+        ClientMessage::decode(&bad_action),
+        Err(DecodeError::Malformed)
+    );
+    let mut bad_spell = ClientMessage::Input(input(1)).encode();
+    let spell_tag = bad_spell.len() - 3;
+    bad_spell[spell_tag] = 99;
+    assert_eq!(
+        ClientMessage::decode(&bad_spell),
         Err(DecodeError::Malformed)
     );
     // A length prefix promising more than the frame holds.
@@ -232,6 +274,104 @@ fn malformed_frames_are_rejected_not_trusted() {
         });
         assert_eq!(
             ServerMessage::decode(&bad_welcome.encode()),
+            Err(DecodeError::OverLimit)
+        );
+    }
+
+    // Corrupted combat/cast invariants in snapshots are rejected at decode time.
+    let base_snap = Snapshot::capture(&colosseum(1), 0, Vec::new(), &[true, true]);
+    let bad_snapshots = vec![
+        {
+            let mut s = base_snap.clone();
+            s.fighters[0].health = arena_sim::arena::MAX_HEALTH + 1;
+            s
+        },
+        {
+            let mut s = base_snap.clone();
+            s.fighters[0].resource = arena_sim::spells::MAX_RESOURCE + 1;
+            s
+        },
+        {
+            let mut s = base_snap.clone();
+            s.fighters[0].active_cast = Some(WireCast {
+                spell: WireSpell::Pulse,
+                target: Some(1),
+                remaining_ticks: 1,
+                total_ticks: 1,
+            });
+            s
+        },
+        {
+            let mut s = base_snap.clone();
+            s.fighters[0].active_cast = Some(WireCast {
+                spell: WireSpell::RiftBolt,
+                target: Some(1),
+                remaining_ticks: 0,
+                total_ticks: 45,
+            });
+            s
+        },
+        {
+            let mut s = base_snap.clone();
+            s.fighters[0].active_cast = Some(WireCast {
+                spell: WireSpell::RiftBolt,
+                target: Some(1),
+                remaining_ticks: 46,
+                total_ticks: 45,
+            });
+            s
+        },
+        {
+            let mut s = base_snap.clone();
+            s.fighters[0].active_cast = Some(WireCast {
+                spell: WireSpell::RiftBolt,
+                target: Some(2),
+                remaining_ticks: 10,
+                total_ticks: 45,
+            });
+            s
+        },
+        {
+            let mut s = base_snap.clone();
+            s.fighters[0].health = 0;
+            s.fighters[0].active_cast = Some(WireCast {
+                spell: WireSpell::RiftBolt,
+                target: Some(1),
+                remaining_ticks: 10,
+                total_ticks: 45,
+            });
+            s
+        },
+        {
+            let mut s = base_snap.clone();
+            s.events.push(TickEvent {
+                tick: 1,
+                event: WireEvent::CastStarted {
+                    actor: 0,
+                    spell: WireSpell::RiftBolt,
+                    target: Some(1),
+                    duration_ticks: 0,
+                },
+            });
+            s
+        },
+        {
+            let mut s = base_snap.clone();
+            s.events.push(TickEvent {
+                tick: 1,
+                event: WireEvent::CastStarted {
+                    actor: 0,
+                    spell: WireSpell::Pulse,
+                    target: Some(1),
+                    duration_ticks: 10,
+                },
+            });
+            s
+        },
+    ];
+    for bad in bad_snapshots {
+        assert_eq!(
+            ServerMessage::decode(&ServerMessage::Snapshot(bad).encode()),
             Err(DecodeError::OverLimit)
         );
     }
@@ -301,7 +441,7 @@ fn merged_inputs_keep_one_command_of_each_kind_and_never_lose_a_press() {
         movement: [5, 6],
         facing: 9,
         jump: false,
-        attack: None,
+        action: WireAction::None,
     }
     .merge_into(&mut slot);
     assert_eq!(
@@ -310,20 +450,36 @@ fn merged_inputs_keep_one_command_of_each_kind_and_never_lose_a_press() {
             movement: Some(Axes { x: 5, z: 6 }),
             facing: Some(9),
             jump: true,
-            attack: Some(3),
+            action: ActorInput::pulse(3),
         }
     );
     InputFrame {
-        attack: Some(1),
+        action: WireAction::Cast {
+            spell: WireSpell::RiftBolt,
+            target: Some(1),
+        },
         ..InputFrame::default()
     }
     .merge_into(&mut slot);
-    assert_eq!(slot.attack, Some(1), "the latest target wins");
+    assert_eq!(
+        slot.action,
+        Some(CastAction::Cast {
+            spell: SpellId::RiftBolt,
+            target: Some(1),
+        }),
+        "the latest combat action wins"
+    );
+    InputFrame {
+        action: WireAction::CancelCast,
+        ..InputFrame::default()
+    }
+    .merge_into(&mut slot);
+    assert_eq!(slot.action, Some(CastAction::Cancel));
     // A client-chosen target is only intent: the rules still judge it.
     let mut arena = colosseum(1);
     let mut slot = ActorInput::default();
     InputFrame {
-        attack: Some(u8::MAX),
+        action: InputFrame::pulse(u8::MAX),
         ..InputFrame::default()
     }
     .merge_into(&mut slot);
@@ -378,6 +534,56 @@ fn recipients_see_only_their_own_rejections_and_no_movement_noise() {
             WireEvent::Rejected(WireRejection::InvalidTarget)
         ]
     );
+    // Cast/interrupt/heal events translate cleanly and drop out-of-range actor indices.
+    assert_eq!(
+        WireEvent::for_recipient(
+            &ArenaEvent::CastStarted {
+                actor: 0,
+                spell: SpellId::RiftBolt,
+                target: Some(1),
+                duration_ticks: 45,
+            },
+            1
+        ),
+        Some(WireEvent::CastStarted {
+            actor: 0,
+            spell: WireSpell::RiftBolt,
+            target: Some(1),
+            duration_ticks: 45,
+        })
+    );
+    assert_eq!(
+        WireEvent::for_recipient(
+            &ArenaEvent::CastInterrupted {
+                actor: 0,
+                spell: SpellId::RiftBolt,
+                reason: InterruptReason::Interrupted,
+                by: Some(1),
+            },
+            0
+        ),
+        Some(WireEvent::CastInterrupted {
+            actor: 0,
+            spell: WireSpell::RiftBolt,
+            reason: WireInterruptReason::Interrupted,
+            by: Some(1),
+        })
+    );
+    assert_eq!(
+        WireEvent::for_recipient(
+            &ArenaEvent::Healed {
+                actor: 0,
+                target: 2,
+                amount: 30,
+            },
+            1
+        ),
+        Some(WireEvent::Healed {
+            actor: 0,
+            target: 2,
+            amount: 30,
+        })
+    );
     // Scripted commands naming impossible actors never reach anyone.
     assert_eq!(
         WireEvent::for_recipient(&ArenaEvent::Jumped { actor: 300 }, 0),
@@ -412,6 +618,11 @@ fn snapshots_carry_the_authoritative_state_and_its_hash() {
             facing: 77,
         },
         ArenaCommand::Jump { actor: 3 },
+        ArenaCommand::Cast {
+            actor: 0,
+            spell: SpellId::Mend,
+            target: Some(0),
+        },
     ]);
     let snapshot = Snapshot::capture(&arena, 41, Vec::new(), &[true, false, true]);
     assert_eq!(snapshot.tick, 1);
@@ -425,9 +636,12 @@ fn snapshots_carry_the_authoritative_state_and_its_hash() {
         assert_eq!(*wire, FighterState::new(fighter, connected));
         assert_eq!(wire.connected, connected);
         assert_eq!(wire.health, fighter.health);
+        assert_eq!(wire.resource, fighter.resource);
+        assert_eq!(wire.gcd_remaining, fighter.gcd_remaining);
         assert_eq!((wire.x, wire.z), (fighter.position.x, fighter.position.z));
     }
     assert_eq!(snapshot.fighters[2].facing, 77);
+    assert!(snapshot.fighters[0].active_cast.is_some());
     // Wire state converts back to the exact rule state.
     let fighters: Vec<_> = snapshot
         .fighters
@@ -444,10 +658,31 @@ fn snapshots_carry_the_authoritative_state_and_its_hash() {
     }
     for reason in [
         Rejection::Cooldown,
+        Rejection::GlobalCooldown,
+        Rejection::AlreadyCasting,
+        Rejection::NotEnoughResource,
+        Rejection::Moving,
+        Rejection::Silenced,
+        Rejection::NotCasting,
         Rejection::LineOfSight,
         Rejection::Duplicate,
     ] {
         assert_eq!(Rejection::from(WireRejection::from(reason)), reason);
+    }
+    for interrupt in [
+        InterruptReason::Cancelled,
+        InterruptReason::Moved,
+        InterruptReason::Interrupted,
+        InterruptReason::Silenced,
+        InterruptReason::OutOfRange,
+        InterruptReason::LineOfSight,
+        InterruptReason::TargetDead,
+        InterruptReason::CasterDead,
+    ] {
+        assert_eq!(
+            InterruptReason::from(WireInterruptReason::from(interrupt)),
+            interrupt
+        );
     }
     assert!(snapshot.fighters[3].height > 0);
 }
@@ -457,7 +692,8 @@ fn the_debug_dump_is_readable_json() {
     let json = ClientMessage::Input(input(5)).to_debug_json();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value["Input"]["seq"], 5);
-    assert_eq!(value["Input"]["attack"], 3);
+    assert_eq!(value["Input"]["action"]["Cast"]["spell"], "Pulse");
+    assert_eq!(value["Input"]["action"]["Cast"]["target"], 3);
     let json = ServerMessage::Error(ErrorCode::BadTicket).to_debug_json();
     assert_eq!(json, r#"{"Error":"BadTicket"}"#);
     let snapshot = ServerMessage::Snapshot(busy_snapshot()).to_debug_json();

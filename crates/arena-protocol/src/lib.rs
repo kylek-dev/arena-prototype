@@ -1,29 +1,33 @@
-//! Match wire protocol (ADR 0044, `docs/PROTOCOL.md`).
+//! Match wire protocol (ADR 0044, ADR 0048, `docs/PROTOCOL.md`).
 //!
 //! Every WebSocket binary frame holds exactly one message encoded with
 //! `postcard`. Decoding is strict and bounded: oversized frames, trailing
-//! bytes, unknown variants and over-long fields are errors, never panics.
-//! Clients send intent only; nothing here lets a client name an actor or
-//! claim a position, health or cooldown. The JSON rendering is for
-//! diagnostics and is never accepted on the wire.
+//! bytes, unknown variants and over-long or out-of-bounds fields are errors,
+//! never panics. Clients send intent only; nothing here lets a client name an
+//! actor or claim a position, health, resource, cast progress or cooldown.
+//! The JSON rendering is for diagnostics and is never accepted on the wire.
 
 pub mod prediction;
 
 use arena_sim::arena::{
-    ActorInput, Arena, ArenaEvent, Axes, Combatant, MAX_ROUND_TICKS, Position, Rejection,
-    RoundResult,
+    ActiveCastState, ActorInput, Arena, ArenaEvent, Axes, CastAction, Combatant, InterruptReason,
+    MAX_ROUND_TICKS, Position, Rejection, RoundResult,
 };
+use arena_sim::spells::SpellId;
 use serde::{Deserialize, Serialize};
 
 /// Bumped on any incompatible change to a message layout. `Hello` stays
 /// variant 0 with `protocol` as its first field forever, so a server can
 /// always read the version of a client it no longer understands.
 /// 2: `Welcome.round_ticks` and `WireResult::TimeLimitDraw`.
-pub const PROTOCOL_VERSION: u16 = 2;
+/// 3: `InputFrame.action` (`WireAction`), casting/resource fields on `FighterState`,
+///    and cast/interrupt/heal events & rejections.
+pub const PROTOCOL_VERSION: u16 = 3;
 /// Bumped whenever a rules change could alter a replayed outcome.
 /// 2: rounds end in a draw after twenty minutes (`MAX_ROUND_TICKS`).
 /// 3: time-limit draws are distinct from mutual-elimination draws and round limits are explicit.
-pub const RULES_VERSION: u32 = 3;
+/// 4: server-authoritative casting, GCD, per-spell cooldowns, resources, and interrupts.
+pub const RULES_VERSION: u32 = 4;
 /// Largest frame a client may send.
 pub const MAX_CLIENT_FRAME: usize = 1024;
 /// Largest frame the server sends; a full 3v3 snapshot is far smaller.
@@ -49,6 +53,47 @@ pub enum ClientMessage {
     },
 }
 
+/// Wire identifier for a spell in the shared arena kit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WireSpell {
+    Pulse,
+    RiftBolt,
+    Quell,
+    Mend,
+}
+impl From<WireSpell> for SpellId {
+    fn from(spell: WireSpell) -> Self {
+        match spell {
+            WireSpell::Pulse => Self::Pulse,
+            WireSpell::RiftBolt => Self::RiftBolt,
+            WireSpell::Quell => Self::Quell,
+            WireSpell::Mend => Self::Mend,
+        }
+    }
+}
+impl From<SpellId> for WireSpell {
+    fn from(spell: SpellId) -> Self {
+        match spell {
+            SpellId::Pulse => Self::Pulse,
+            SpellId::RiftBolt => Self::RiftBolt,
+            SpellId::Quell => Self::Quell,
+            SpellId::Mend => Self::Mend,
+        }
+    }
+}
+
+/// One combat intent carried in an [`InputFrame`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WireAction {
+    #[default]
+    None,
+    Cast {
+        spell: WireSpell,
+        target: Option<u8>,
+    },
+    CancelCast,
+}
+
 /// One input message. Several may arrive between ticks; the server merges
 /// them into the sender's slot with [`InputFrame::merge_into`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,14 +105,22 @@ pub struct InputFrame {
     /// Binary angle, as `Combatant::facing`.
     pub facing: u16,
     pub jump: bool,
-    /// Attack this actor index.
-    pub attack: Option<u8>,
+    /// Spell cast or explicit cast cancellation for this tick.
+    pub action: WireAction,
 }
 impl InputFrame {
+    /// Convenience action for the default Pulse attack against `target`.
+    pub const fn pulse(target: u8) -> WireAction {
+        WireAction::Cast {
+            spell: WireSpell::Pulse,
+            target: Some(target),
+        }
+    }
+
     /// Folds this frame into the slot for the next tick: the latest movement,
-    /// facing and attack target win, and a jump from any frame is kept, so
-    /// a one-shot press is never lost between ticks and the rules still see
-    /// at most one command of each kind.
+    /// facing and non-empty combat action win, and a jump from any frame is
+    /// kept, so a one-shot press is never lost between ticks and the rules
+    /// still see at most one command of each kind.
     pub fn merge_into(&self, slot: &mut ActorInput) {
         slot.movement = Some(Axes {
             x: self.movement[0],
@@ -75,8 +128,17 @@ impl InputFrame {
         });
         slot.facing = Some(self.facing);
         slot.jump |= self.jump;
-        if let Some(target) = self.attack {
-            slot.attack = Some(usize::from(target));
+        match self.action {
+            WireAction::None => {}
+            WireAction::Cast { spell, target } => {
+                slot.action = Some(CastAction::Cast {
+                    spell: spell.into(),
+                    target: target.map(usize::from),
+                });
+            }
+            WireAction::CancelCast => {
+                slot.action = Some(CastAction::Cancel);
+            }
         }
     }
 }
@@ -150,7 +212,36 @@ impl Snapshot {
     }
 }
 
+/// Wire representation of an in-progress timed cast.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireCast {
+    pub spell: WireSpell,
+    pub target: Option<u8>,
+    pub remaining_ticks: u32,
+    pub total_ticks: u32,
+}
+impl From<ActiveCastState> for WireCast {
+    fn from(cast: ActiveCastState) -> Self {
+        Self {
+            spell: cast.spell.into(),
+            target: cast.target.map(|t| t as u8),
+            remaining_ticks: cast.remaining_ticks,
+            total_ticks: cast.total_ticks,
+        }
+    }
+}
+impl From<WireCast> for ActiveCastState {
+    fn from(cast: WireCast) -> Self {
+        Self {
+            spell: cast.spell.into(),
+            target: cast.target.map(usize::from),
+            remaining_ticks: cast.remaining_ticks,
+            total_ticks: cast.total_ticks,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FighterState {
     pub x: i32,
     pub z: i32,
@@ -158,7 +249,11 @@ pub struct FighterState {
     pub vertical_velocity: i32,
     pub momentum: [i32; 2],
     pub health: u16,
-    pub ready_at: u64,
+    pub resource: u16,
+    pub gcd_remaining: u32,
+    pub lockout_remaining: u32,
+    pub cooldowns: [u32; SpellId::COUNT],
+    pub active_cast: Option<WireCast>,
     pub facing: u16,
     /// Whether this fighter's player is attached. A disconnected fighter
     /// stands idle (no forfeit) and its player may rejoin with the same
@@ -181,7 +276,11 @@ impl FighterState {
                 z: self.momentum[1],
             },
             health: self.health,
-            ready_at: self.ready_at,
+            resource: self.resource,
+            gcd_remaining: self.gcd_remaining,
+            lockout_remaining: self.lockout_remaining,
+            cooldowns: self.cooldowns,
+            active_cast: self.active_cast.map(ActiveCastState::from),
             facing: self.facing,
         }
     }
@@ -193,7 +292,11 @@ impl FighterState {
             vertical_velocity: fighter.vertical_velocity,
             momentum: [fighter.momentum.x, fighter.momentum.z],
             health: fighter.health,
-            ready_at: fighter.ready_at,
+            resource: fighter.resource,
+            gcd_remaining: fighter.gcd_remaining,
+            lockout_remaining: fighter.lockout_remaining,
+            cooldowns: fighter.cooldowns,
+            active_cast: fighter.active_cast.map(WireCast::from),
             facing: fighter.facing,
             connected,
         }
@@ -227,6 +330,46 @@ impl From<RoundResult> for WireResult {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WireInterruptReason {
+    Cancelled,
+    Moved,
+    Interrupted,
+    Silenced,
+    OutOfRange,
+    LineOfSight,
+    TargetDead,
+    CasterDead,
+}
+impl From<WireInterruptReason> for InterruptReason {
+    fn from(reason: WireInterruptReason) -> Self {
+        match reason {
+            WireInterruptReason::Cancelled => Self::Cancelled,
+            WireInterruptReason::Moved => Self::Moved,
+            WireInterruptReason::Interrupted => Self::Interrupted,
+            WireInterruptReason::Silenced => Self::Silenced,
+            WireInterruptReason::OutOfRange => Self::OutOfRange,
+            WireInterruptReason::LineOfSight => Self::LineOfSight,
+            WireInterruptReason::TargetDead => Self::TargetDead,
+            WireInterruptReason::CasterDead => Self::CasterDead,
+        }
+    }
+}
+impl From<InterruptReason> for WireInterruptReason {
+    fn from(reason: InterruptReason) -> Self {
+        match reason {
+            InterruptReason::Cancelled => Self::Cancelled,
+            InterruptReason::Moved => Self::Moved,
+            InterruptReason::Interrupted => Self::Interrupted,
+            InterruptReason::Silenced => Self::Silenced,
+            InterruptReason::OutOfRange => Self::OutOfRange,
+            InterruptReason::LineOfSight => Self::LineOfSight,
+            InterruptReason::TargetDead => Self::TargetDead,
+            InterruptReason::CasterDead => Self::CasterDead,
+        }
+    }
+}
+
 /// An event and the tick it happened on (the tick before advancing).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TickEvent {
@@ -239,10 +382,32 @@ pub enum WireEvent {
     Jumped {
         actor: u8,
     },
+    CastStarted {
+        actor: u8,
+        spell: WireSpell,
+        target: Option<u8>,
+        duration_ticks: u32,
+    },
+    CastCompleted {
+        actor: u8,
+        spell: WireSpell,
+        target: Option<u8>,
+    },
+    CastInterrupted {
+        actor: u8,
+        spell: WireSpell,
+        reason: WireInterruptReason,
+        by: Option<u8>,
+    },
     Hit {
         actor: u8,
         target: u8,
         damage: u16,
+    },
+    Healed {
+        actor: u8,
+        target: u8,
+        amount: u16,
     },
     Finished(WireResult),
     /// Only ever sent to the actor whose intent was refused.
@@ -254,10 +419,45 @@ impl WireEvent {
     /// events naming a nonexistent actor are withheld.
     pub fn for_recipient(event: &ArenaEvent, recipient: usize) -> Option<Self> {
         let actor = |index: usize| u8::try_from(index).ok().filter(|_| index < MAX_FIGHTERS);
+        let opt_actor = |index: Option<usize>| match index {
+            None => Some(None),
+            Some(i) => Some(Some(actor(i)?)),
+        };
         match *event {
             ArenaEvent::Moved { .. } => None,
             ArenaEvent::Jumped { actor: index } => Some(Self::Jumped {
                 actor: actor(index)?,
+            }),
+            ArenaEvent::CastStarted {
+                actor: index,
+                spell,
+                target,
+                duration_ticks,
+            } => Some(Self::CastStarted {
+                actor: actor(index)?,
+                spell: spell.into(),
+                target: opt_actor(target)?,
+                duration_ticks,
+            }),
+            ArenaEvent::CastCompleted {
+                actor: index,
+                spell,
+                target,
+            } => Some(Self::CastCompleted {
+                actor: actor(index)?,
+                spell: spell.into(),
+                target: opt_actor(target)?,
+            }),
+            ArenaEvent::CastInterrupted {
+                actor: index,
+                spell,
+                reason,
+                by,
+            } => Some(Self::CastInterrupted {
+                actor: actor(index)?,
+                spell: spell.into(),
+                reason: reason.into(),
+                by: opt_actor(by)?,
             }),
             ArenaEvent::Hit {
                 actor: index,
@@ -267,6 +467,15 @@ impl WireEvent {
                 actor: actor(index)?,
                 target: actor(target)?,
                 damage,
+            }),
+            ArenaEvent::Healed {
+                actor: index,
+                target,
+                amount,
+            } => Some(Self::Healed {
+                actor: actor(index)?,
+                target: actor(target)?,
+                amount,
             }),
             ArenaEvent::Finished(result) => Some(Self::Finished(result.into())),
             ArenaEvent::Rejected { actor, reason } => {
@@ -285,6 +494,12 @@ pub enum WireRejection {
     Airborne,
     MatchOver,
     Cooldown,
+    GlobalCooldown,
+    AlreadyCasting,
+    NotEnoughResource,
+    Moving,
+    Silenced,
+    NotCasting,
     OutOfRange,
     LineOfSight,
 }
@@ -298,6 +513,12 @@ impl From<WireRejection> for Rejection {
             WireRejection::Airborne => Self::Airborne,
             WireRejection::MatchOver => Self::MatchOver,
             WireRejection::Cooldown => Self::Cooldown,
+            WireRejection::GlobalCooldown => Self::GlobalCooldown,
+            WireRejection::AlreadyCasting => Self::AlreadyCasting,
+            WireRejection::NotEnoughResource => Self::NotEnoughResource,
+            WireRejection::Moving => Self::Moving,
+            WireRejection::Silenced => Self::Silenced,
+            WireRejection::NotCasting => Self::NotCasting,
             WireRejection::OutOfRange => Self::OutOfRange,
             WireRejection::LineOfSight => Self::LineOfSight,
         }
@@ -313,6 +534,12 @@ impl From<Rejection> for WireRejection {
             Rejection::Airborne => Self::Airborne,
             Rejection::MatchOver => Self::MatchOver,
             Rejection::Cooldown => Self::Cooldown,
+            Rejection::GlobalCooldown => Self::GlobalCooldown,
+            Rejection::AlreadyCasting => Self::AlreadyCasting,
+            Rejection::NotEnoughResource => Self::NotEnoughResource,
+            Rejection::Moving => Self::Moving,
+            Rejection::Silenced => Self::Silenced,
+            Rejection::NotCasting => Self::NotCasting,
             Rejection::OutOfRange => Self::OutOfRange,
             Rejection::LineOfSight => Self::LineOfSight,
         }
@@ -339,7 +566,7 @@ pub enum DecodeError {
     Oversized,
     /// Undecodable, truncated, an unknown variant, or trailing bytes.
     Malformed,
-    /// Well formed but over a field limit (ticket, round_ticks, fighters or events).
+    /// Well formed but over a field limit (ticket, round_ticks, fighters, events, or combat invariants).
     OverLimit,
 }
 
@@ -359,6 +586,49 @@ impl ClientMessage {
     }
 }
 
+fn valid_snapshot(snapshot: &Snapshot) -> bool {
+    if snapshot.fighters.len() > MAX_FIGHTERS || snapshot.events.len() > MAX_EVENTS {
+        return false;
+    }
+    let count = snapshot.fighters.len();
+    for fighter in &snapshot.fighters {
+        if !fighter.combatant().is_valid(count) {
+            return false;
+        }
+    }
+    for item in &snapshot.events {
+        let valid_actor = |a: u8| usize::from(a) < MAX_FIGHTERS;
+        let ok = match item.event {
+            WireEvent::Jumped { actor } => valid_actor(actor),
+            WireEvent::CastStarted {
+                actor,
+                spell,
+                target,
+                duration_ticks,
+            } => {
+                valid_actor(actor)
+                    && target.is_none_or(valid_actor)
+                    && SpellId::from(spell).definition().cast_ticks > 0
+                    && duration_ticks > 0
+            }
+            WireEvent::CastCompleted { actor, target, .. } => {
+                valid_actor(actor) && target.is_none_or(valid_actor)
+            }
+            WireEvent::CastInterrupted { actor, by, .. } => {
+                valid_actor(actor) && by.is_none_or(valid_actor)
+            }
+            WireEvent::Hit { actor, target, .. } | WireEvent::Healed { actor, target, .. } => {
+                valid_actor(actor) && valid_actor(target)
+            }
+            WireEvent::Finished(_) | WireEvent::Rejected(_) => true,
+        };
+        if !ok {
+            return false;
+        }
+    }
+    true
+}
+
 impl ServerMessage {
     pub fn encode(&self) -> Vec<u8> {
         encode(self)
@@ -371,11 +641,7 @@ impl ServerMessage {
             {
                 Err(DecodeError::OverLimit)
             }
-            Self::Snapshot(snapshot)
-                if snapshot.fighters.len() > MAX_FIGHTERS || snapshot.events.len() > MAX_EVENTS =>
-            {
-                Err(DecodeError::OverLimit)
-            }
+            Self::Snapshot(snapshot) if !valid_snapshot(snapshot) => Err(DecodeError::OverLimit),
             _ => Ok(message),
         }
     }
@@ -424,7 +690,7 @@ impl EncodedSnapshotBody {
         shared_events: Option<&[TickEvent]>,
     ) -> Self {
         let mut tail = Vec::with_capacity(
-            16 + fighters.len() * 24 + shared_events.map_or(0, |e| e.len() * 8 + 1),
+            16 + fighters.len() * 32 + shared_events.map_or(0, |e| e.len() * 10 + 1),
         );
         tail = postcard::to_extend(&(hash, result, fighters), tail)
             .expect("snapshot body always encodes");
@@ -447,7 +713,7 @@ impl EncodedSnapshotBody {
         let extra = if self.includes_events {
             0
         } else {
-            events.len() * 8 + 2
+            events.len() * 10 + 2
         };
         let mut frame = Vec::with_capacity(18 + self.tail.len() + extra);
         // ServerMessage::Snapshot is variant 1, followed by tick, ack, queued.

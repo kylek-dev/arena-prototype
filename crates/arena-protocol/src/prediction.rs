@@ -298,11 +298,13 @@ impl Predictor {
     }
 
     /// Applies this player's input `seq` for the next tick, as the server
-    /// will. Returns the new predicted state, or `None` before the first
+    /// will. Combat actions (casts and cancellations) are never predicted:
+    /// the server stays sole authority for casts, cooldowns, resources and
+    /// interrupts. Returns the new predicted state, or `None` before the first
     /// reconcile.
     pub fn apply(&mut self, seq: u32, input: ActorInput) -> Option<Combatant> {
         let input = ActorInput {
-            attack: None,
+            action: None,
             ..input
         };
         self.pending.push_back((seq, input));
@@ -317,13 +319,16 @@ impl Predictor {
 
     /// Rebuilds from the server's state (`fighters` in server actor order,
     /// `actor` this player's seat, `ack` the last input it applied) and
-    /// replays the inputs it has not applied yet. Returns how far the
-    /// prediction moved, in millimetres, or `None` if there was none yet.
+    /// replays the inputs it has not applied yet. Active casts are stripped
+    /// from the local prediction arena so timed cast completions, damage,
+    /// kills, and round endings are never client-predicted (ADR 0048).
+    /// Returns how far the prediction moved, in millimetres, or `None` if
+    /// there was none yet.
     pub fn reconcile(
         &mut self,
         layout: &Layout,
         tick: u64,
-        fighters: Vec<Combatant>,
+        mut fighters: Vec<Combatant>,
         result: Option<RoundResult>,
         actor: usize,
         ack: u32,
@@ -340,6 +345,10 @@ impl Predictor {
         if actor >= fighters.len() {
             self.arena = None;
             return None;
+        }
+        // Never predict timed cast completions or phantom kills while replaying movement.
+        for fighter in &mut fighters {
+            fighter.active_cast = None;
         }
         let round_ticks = self.round_ticks.unwrap_or(MAX_ROUND_TICKS);
         let mut arena = match self.arena.take() {
@@ -403,7 +412,7 @@ mod tests {
                 movement: Some(Axes { x: 0, z: -1000 }),
                 facing: Some(0),
                 jump: seq == 3,
-                attack: Some(1),
+                action: ActorInput::pulse(1),
             },
         )
     }
@@ -559,6 +568,47 @@ mod tests {
         assert_eq!(moved, Some(0));
         assert_eq!(predictor.corrections(), 0);
         assert_eq!(predictor.predicted(), Some(expected_after_4));
+    }
+
+    #[test]
+    fn prediction_never_completes_active_casts_or_freezes_movement_on_phantom_kills() {
+        use arena_sim::arena::{ActiveCastState, Position};
+        use arena_sim::spells::SpellId;
+
+        let mut fighters = Arena::practice(layout(), 1).unwrap().fighters().to_vec();
+        fighters[0].position = Position { x: 0, z: 0 };
+        fighters[1].position = Position { x: 0, z: -3_000 };
+        // Both fighters are one tick away from lethal Rift Bolt completions at 30 HP.
+        fighters[0].health = 30;
+        fighters[1].health = 30;
+        fighters[0].active_cast = Some(ActiveCastState {
+            spell: SpellId::RiftBolt,
+            target: Some(1),
+            remaining_ticks: 1,
+            total_ticks: 45,
+        });
+        fighters[1].active_cast = Some(ActiveCastState {
+            spell: SpellId::RiftBolt,
+            target: Some(0),
+            remaining_ticks: 1,
+            total_ticks: 45,
+        });
+
+        let mut predictor = Predictor::default();
+        predictor.reconcile(&layout(), 10, fighters.clone(), None, 0, 0);
+        // Replaying 3 movement inputs must keep moving smoothly without predicting
+        // either fighter's lethal cast completion.
+        for seq in 1..=3 {
+            predictor.apply(seq, walk(seq).1);
+        }
+        let predicted = predictor.predicted().unwrap();
+        assert_eq!(predicted.health, 30);
+        assert_eq!(predicted.active_cast, None);
+        assert_eq!(
+            predicted.position.z,
+            -3 * arena_sim::arena::MOVE_PER_TICK,
+            "movement prediction must not freeze on unconfirmed casts"
+        );
     }
 }
 
