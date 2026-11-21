@@ -145,7 +145,7 @@ it("shares attempted-cast errors for clicks and keys, excluding empty slots and 
     </Tooltip.Provider>,
   );
   const area = screen.getByRole("status", { name: "Combat errors" });
-  act(() => activateSlot("bar-1-s2"));
+  act(() => activateSlot("bar-1-s5"));
   expect(area.textContent).toBe("");
   fireEvent.click(screen.getByRole("button", { name: "Slot 1 Pulse" }));
   expect(area.textContent).toBe("Line of sight blocked");
@@ -162,4 +162,17 @@ it("shares attempted-cast errors for clicks and keys, excluding empty slots and 
   expect(area.textContent).toBe("Line of sight blocked");
   act(() => dispatch("reset"));
   expect(area.textContent).toBe("");
+});
+
+it("activates all four default action-bar spells and allows Mend without an enemy target", () => {
+  engine.set(snapshot());
+  activateSlot("bar-1-s1");
+  expect(input.readInput()[19]).toBe(1);
+  activateSlot("bar-1-s2");
+  expect(input.readInput()[19]).toBe(2);
+  activateSlot("bar-1-s3");
+  expect(input.readInput()[19]).toBe(3);
+  engine.set(snapshot({ selected: false }));
+  activateSlot("bar-1-s4");
+  expect(input.readInput()[19]).toBe(4);
 });

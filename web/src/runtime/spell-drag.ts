@@ -80,6 +80,7 @@ export function installSpellDragging(canvas: HTMLCanvasElement) {
         x: event.clientX,
         y: event.clientY,
         target: target?.dataset.spellDropSlot ?? null,
+        ability: press.assignment.ability,
       });
     },
     options,

@@ -56,5 +56,6 @@ Automated DOM tests, frontend checks and the frontend build passed locally. No b
 - **Unit frames.** Live authoritative resource bars (replacing the placeholder meter when resource data is present), unit-frame cast bars showing spell name and remaining seconds, and a "Locked out" status badge while silenced/interrupted.
 - **World nameplates.** Slim overhead cast bar beneath the health bar during timed casts and a compact "Locked" tag while locked out.
 - **3D casting & multi-bolt VFX.** Raised-arms procedural channeling pose (`animation.rs`), authored `Clip::Cast` playback while channeling (`character_animation.rs`), and concurrent multi-bolt lightning rendering (`lightning.rs`) with accurate hit feedback text.
+- **Multi-spell action bar & Spellbook.** Default 4-spell kit on slots 1–4 (`1` Pulse, `2` Rift Bolt, `3` Quell, `4` Mend) with additive migration for existing profiles, all 4 spells draggable in the Spellbook, per-spell cooldown sweeps & tooltips, and auto-self-casting Mend when targeting an enemy or nobody.
 
 Automated DOM tests, Rust unit tests, frontend checks, WASM Clippy, and the complete web build passed locally. No browser was launched by the agent, and no rendered pass is claimed.

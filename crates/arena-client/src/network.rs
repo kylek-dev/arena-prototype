@@ -29,7 +29,8 @@ use arena_protocol::{
     ClientMessage, ErrorCode, FighterState, InputFrame, ServerMessage, WireAction, WireEvent,
 };
 use arena_sim::arena::{
-    ActorInput, Arena, Axes, Combatant, InterruptReason, MAX_ROUND_TICKS, Rejection, RoundResult,
+    ActorInput, Arena, Axes, CastAction, Combatant, InterruptReason, MAX_ROUND_TICKS, Rejection,
+    RoundResult,
 };
 use arena_sim::map::Layout;
 use arena_sim::spells::SpellId;
@@ -613,12 +614,35 @@ impl Session {
     }
 
     /// The input frame for this tick, if joined. `attack` is a local index.
+    #[cfg(test)]
     pub fn input(
         &mut self,
         movement: [i16; 2],
         facing: u16,
         jump: bool,
         attack: Option<usize>,
+        now: f64,
+    ) -> Option<Vec<u8>> {
+        self.input_action(
+            movement,
+            facing,
+            jump,
+            attack.map(|target| CastAction::Cast {
+                spell: SpellId::Pulse,
+                target: Some(target),
+            }),
+            now,
+        )
+    }
+
+    /// The input frame for this tick with any spell or cast-cancel action.
+    /// Target indices inside `action` are local indices (0 = local player).
+    pub fn input_action(
+        &mut self,
+        movement: [i16; 2],
+        facing: u16,
+        jump: bool,
+        action: Option<CastAction>,
         now: f64,
     ) -> Option<Vec<u8>> {
         if !self.joined() {
@@ -671,17 +695,31 @@ impl Session {
             }
             self.stats.predicted_ticks = self.predictor.pending();
         }
-        let action = attack
-            .and_then(|local| self.order.get(local))
-            .and_then(|&actor| u8::try_from(actor).ok())
-            .map_or(WireAction::None, InputFrame::pulse);
+        let wire_action = match action {
+            None => WireAction::None,
+            Some(CastAction::Cancel) => WireAction::CancelCast,
+            Some(CastAction::Cast { spell, target }) => match target {
+                None => WireAction::Cast {
+                    spell: spell.into(),
+                    target: None,
+                },
+                Some(local) => self
+                    .order
+                    .get(local)
+                    .and_then(|&actor| u8::try_from(actor).ok())
+                    .map_or(WireAction::None, |server_actor| WireAction::Cast {
+                        spell: spell.into(),
+                        target: Some(server_actor),
+                    }),
+            },
+        };
         Some(
             ClientMessage::Input(InputFrame {
                 seq: self.seq,
                 movement,
                 facing,
                 jump,
-                action,
+                action: wire_action,
             })
             .encode(),
         )

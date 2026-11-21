@@ -1,17 +1,19 @@
 import type { Snapshot } from "../bridge/snapshot";
+import type { AbilityId } from "../domain/action-bars/model";
+import { spellCooldown } from "../domain/abilities/catalog";
 import { createStore } from "../state/store";
 
 export const castError = createStore<{ message: string } | null>(null);
-let pending: Snapshot | null = null;
+let pending: { snapshot: Snapshot; ability: AbilityId } | null = null;
 
 export function rejectCast(message: string) {
   pending = null;
   castError.set({ message });
 }
 
-export function beginCast(state: Snapshot) {
+export function beginCast(state: Snapshot, ability: AbilityId = "pulse") {
   castError.set(null);
-  pending = state;
+  pending = { snapshot: state, ability };
 }
 
 export function clearCastFeedback() {
@@ -22,26 +24,37 @@ export function clearCastFeedback() {
 // Observe only submitted attempts, never turn passive availability into an error.
 export function observeCastResult(next: Snapshot) {
   if (!pending) return;
-  if (next.tick < pending.tick) {
+  if (next.tick < pending.snapshot.tick) {
     clearCastFeedback();
     return;
   }
-  if (next.tick === pending.tick) return;
-  const previous = pending;
+  if (next.tick === pending.snapshot.tick) return;
+  const { snapshot: previous, ability } = pending;
   pending = null;
-  if (next.cooldown > previous.cooldown || next.target.health < previous.target.health) return;
+  if (
+    spellCooldown(next, ability) > spellCooldown(previous, ability) ||
+    next.player.cast?.spell === ability ||
+    next.target.health < previous.target.health
+  )
+    return;
   const rejectedFeedback = [
     "Select a target first",
     "Out of range · move closer",
     "Pulse is recharging",
+    "Global cooldown active",
+    "Already casting",
+    "Not enough resource",
+    "Stand still to cast",
+    "Casting locked out",
     "Line of sight blocked by pillar",
     "Round complete · reset to play again",
     "You are defeated · your team fights on",
     "Command rejected",
   ];
+  const status = next.spells?.[ability].status ?? next.attackStatus;
   if (next.feedback !== previous.feedback && rejectedFeedback.includes(next.feedback)) {
     rejectCast(next.feedback);
-  } else if (next.attackStatus !== "Ready") {
-    rejectCast(next.attackStatus);
+  } else if (status !== "Ready") {
+    rejectCast(status);
   }
 }

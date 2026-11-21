@@ -76,7 +76,7 @@ it("shares spell details across slots and the spellbook, with live status and em
   render(
     <TooltipProvider>
       <ActionSlot slot={{ id: "bar-1-s1", ability: "pulse" }} number={1} />
-      <ActionSlot slot={{ id: "bar-1-s2", ability: null }} number={2} />
+      <ActionSlot slot={{ id: "bar-1-s5", ability: null }} number={5} />
       <Spellbook />
     </TooltipProvider>,
   );

@@ -1,5 +1,9 @@
 import { layout, type Layout } from "../layout/model";
-export type AbilityId = "pulse";
+export type AbilityId = "pulse" | "rift_bolt" | "quell" | "mend";
+export const ABILITY_IDS: readonly AbilityId[] = ["pulse", "rift_bolt", "quell", "mend"];
+export function isAbilityId(value: unknown): value is AbilityId {
+  return typeof value === "string" && (ABILITY_IDS as readonly string[]).includes(value);
+}
 export type Slot = { id: string; ability: AbilityId | null };
 export type Bar = { id: string; slots: Slot[]; rows: number; vertical: boolean; layout: Layout };
 export const MAX_BARS = 4;
@@ -9,7 +13,7 @@ export function newBar(id: string): Bar {
     id,
     slots: Array.from({ length: 12 }, (_, i) => ({
       id: `${id}-s${i + 1}`,
-      ability: i === 0 ? "pulse" : null,
+      ability: i < ABILITY_IDS.length ? ABILITY_IDS[i] : null,
     })),
     rows: 1,
     vertical: false,
@@ -30,7 +34,7 @@ export function place(bars: Bar[], destination: string, payload: Placement): Bar
   const from = payload.source ? all.find((s) => s.id === payload.source) : undefined;
   if (
     !to ||
-    payload.ability !== "pulse" ||
+    !isAbilityId(payload.ability) ||
     (payload.source && (!from || from.ability !== payload.ability)) ||
     from === to
   )

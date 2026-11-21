@@ -79,7 +79,10 @@ export function defaults(bars: Bar[]): Bindings {
   result.autorun = [chord({ code: "NumLock" }), chord({ code: "Backquote" })];
   result.clearTarget = [chord({ code: "Escape", shiftKey: true }), null];
   result.toggleFriendlyNameplates = [chord({ code: "KeyV", shiftKey: true }), null];
-  if (bars[0]?.slots[0]) result[`slot:${bars[0].slots[0].id}`] = [chord({ code: "Digit1" }), null];
+  for (const [index, code] of (["Digit1", "Digit2", "Digit3", "Digit4"] as const).entries()) {
+    const slot = bars[0]?.slots[index];
+    if (slot) result[`slot:${slot.id}`] = [chord({ code }), null];
+  }
   return result;
 }
 export function conflicts(bindings: Bindings, value: Chord, action: string, entry: number) {

@@ -1,6 +1,8 @@
 // Deterministic browser intent state. No DOM, renderer, clocks, or game authority.
 const keys = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Digit1', 'Tab', 'Escape', 'KeyR', 'Space', 'NumLock']);
 
+const CAST_CODES = { pulse: 1, rift_bolt: 2, quell: 3, mend: 4 };
+
 export class InputState {
   constructor() {
     this.held = new Set();
@@ -28,7 +30,13 @@ export class InputState {
   }
 
   keyUp(code) { this.held.delete(code); }
-  requestAttack() { this.attack = true; }
+  requestAttack() { this.requestCast('pulse'); }
+  requestCast(spell) {
+    const code = CAST_CODES[spell] ?? 0;
+    if (!code) return;
+    this.castSpell = code;
+    if (spell === 'pulse') this.attack = true;
+  }
   requestReset() { this.cancel(); this.reset = true; }
   wheel(deltaY) { this.zoom += deltaY; }
 
@@ -90,6 +98,7 @@ export class InputState {
     this.focusClick = null;
     this.selectActor = -1;
     this.teamSize = 0;
+    this.castSpell = 0;
   }
 
   readInput() {
@@ -100,6 +109,8 @@ export class InputState {
     input.push(Number(this.jump));
     input.push(this.focusClick?.[0] ?? -1, this.focusClick?.[1] ?? -1);
     input.push(this.selectActor, this.teamSize);
+    input.push(this.castSpell);
+    this.castSpell = 0;
     this.selectActor = -1;
     this.teamSize = 0;
     this.focusClick = null;

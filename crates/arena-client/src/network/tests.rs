@@ -141,6 +141,57 @@ fn inputs_carry_this_seats_intent_with_targets_in_server_numbering() {
             action: InputFrame::pulse(0),
         }))
     );
+    // Non-Pulse spells translate local target indices through seat ordering too.
+    let bolt = session
+        .input_action(
+            [0, 0],
+            0x4000,
+            false,
+            Some(arena_sim::arena::CastAction::Cast {
+                spell: SpellId::RiftBolt,
+                target: Some(1),
+            }),
+            0.01,
+        )
+        .unwrap();
+    assert_eq!(
+        ClientMessage::decode(&bolt),
+        Ok(ClientMessage::Input(InputFrame {
+            seq: 2,
+            movement: [0, 0],
+            facing: 0x4000,
+            jump: false,
+            action: arena_protocol::WireAction::Cast {
+                spell: arena_protocol::WireSpell::RiftBolt,
+                target: Some(0),
+            },
+        }))
+    );
+    let mend = session
+        .input_action(
+            [0, 0],
+            0x4000,
+            false,
+            Some(arena_sim::arena::CastAction::Cast {
+                spell: SpellId::Mend,
+                target: Some(0),
+            }),
+            0.02,
+        )
+        .unwrap();
+    assert_eq!(
+        ClientMessage::decode(&mend),
+        Ok(ClientMessage::Input(InputFrame {
+            seq: 3,
+            movement: [0, 0],
+            facing: 0x4000,
+            jump: false,
+            action: arena_protocol::WireAction::Cast {
+                spell: arena_protocol::WireSpell::Mend,
+                target: Some(1),
+            },
+        }))
+    );
     // An acknowledgement 0.1 s later measures input latency.
     let mut server = Arena::practice(layout(), 1).unwrap();
     server.step(&[]);

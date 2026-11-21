@@ -162,11 +162,11 @@ describe("production input routing", () => {
     render(
       <Tooltip.Provider>
         <ActionSlot slot={{ id: "bar-1-s1", ability: "pulse" }} number={1} />
-        <ActionSlot slot={{ id: "bar-1-s2", ability: null }} number={2} />
+        <ActionSlot slot={{ id: "bar-1-s5", ability: null }} number={5} />
       </Tooltip.Provider>,
     );
     const slot = screen.getByRole("button", { name: "Slot 1 Pulse" });
-    const empty = screen.getByRole("button", { name: "Slot 2 empty" });
+    const empty = screen.getByRole("button", { name: "Slot 5 empty" });
     for (const state of [snapshot(), snapshot({ cooldown: 0.5 }), snapshot({ selected: false })]) {
       act(() => {
         engine.set(state);
@@ -185,12 +185,12 @@ describe("production input routing", () => {
     act(() => {
       updateConfig((c) => ({
         ...c,
-        bindings: bind(c.bindings, "slot:bar-1-s2", 0, chord({ code: "Digit2" })),
+        bindings: bind(c.bindings, "slot:bar-1-s5", 0, chord({ code: "Digit5" })),
       }));
-      key("Digit2");
+      key("Digit5");
     });
     expect(empty.classList.contains("key-held")).toBe(true);
-    act(() => release("Digit2"));
+    act(() => release("Digit5"));
     expect(empty.classList.contains("key-held")).toBe(false);
   });
 

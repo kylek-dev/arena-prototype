@@ -1,5 +1,5 @@
 import type { Slot } from "../../domain/action-bars/model";
-import { actionTint, availability } from "../../domain/abilities/catalog";
+import { SPELLS, actionTint, availability, spellCooldown } from "../../domain/abilities/catalog";
 import { label } from "../../domain/bindings/model";
 import { useConfigSelector } from "../../state/config";
 import { engine, heldSlots, interaction, spellDragPreview } from "../../state/session";
@@ -15,8 +15,10 @@ export function ActionSlot({ slot, number }: { slot: Slot; number: number }) {
     mode = useStore(interaction, (s) => s);
   const locked = useConfigSelector((c) => c.assignmentsLocked),
     pair = useConfigSelector((c) => c.bindings[`slot:${slot.id}`]);
-  const status = availability(state),
-    cooling = slot.ability && (state?.cooldown ?? 0) > 0;
+  const ability = slot.ability;
+  const meta = ability ? SPELLS[ability] : null;
+  const status = ability ? availability(state, ability) : "";
+  const cooling = !!ability && spellCooldown(state, ability) > 0;
   const eligibility = useRef({ pointer: false, focus: false });
   const dropTarget = useStore(spellDragPreview, (preview) => preview?.target === slot.id);
   const keyHeld = useStore(heldSlots, (slots) => slots.has(slot.id));
@@ -33,8 +35,9 @@ export function ActionSlot({ slot, number }: { slot: Slot; number: number }) {
   return (
     <Hint
       text={
-        slot.ability ? (
+        ability ? (
           <SpellDetails
+            ability={ability}
             state={state}
             shortcut={pair?.filter(Boolean).map(label).join(" / ") || "Unbound"}
             instruction={
@@ -54,20 +57,19 @@ export function ActionSlot({ slot, number }: { slot: Slot; number: number }) {
       }
     >
       <button
-        className={`action-slot ${mode.quick && mode.hovered === slot.id ? "binding-hover" : ""} ${dropTarget ? "drop-target" : ""} ${slot.ability ? "" : "empty"} ${keyHeld ? "key-held" : ""}`}
+        className={`action-slot ${mode.quick && mode.hovered === slot.id ? "binding-hover" : ""} ${dropTarget ? "drop-target" : ""} ${ability ? "" : "empty"} ${keyHeld ? "key-held" : ""}`}
         data-spell-drop-slot={slot.id}
-        data-unusable={slot.ability ? actionTint(state) : undefined}
-        data-spell-draggable={!locked && !!slot.ability && !mode.quick && !mode.layout}
-        aria-label={`Slot ${number} ${slot.ability ? "Pulse" : "empty"}`}
-        aria-disabled={!slot.ability || status !== "Ready"}
+        data-unusable={ability ? actionTint(state, ability) : undefined}
+        data-spell-draggable={!locked && !!ability && !mode.quick && !mode.layout}
+        aria-label={`Slot ${number} ${meta ? meta.name : "empty"}`}
+        aria-disabled={!ability || status !== "Ready"}
         draggable={false}
         onMouseEnter={() => hover("pointer", true)}
         onMouseLeave={() => hover("pointer", false)}
         onFocus={() => hover("focus", true)}
         onBlur={() => hover("focus", false)}
         onPointerDown={(event) => {
-          if (!locked && slot.ability)
-            beginSpellPress(event, { ability: slot.ability, source: slot.id });
+          if (!locked && ability) beginSpellPress(event, { ability, source: slot.id });
         }}
         onClick={() => {
           if (!mode.quick && !mode.layout && !mode.panel) activateSlot(slot.id);
@@ -76,9 +78,9 @@ export function ActionSlot({ slot, number }: { slot: Slot; number: number }) {
       >
         <kbd>{pair?.filter(Boolean).map(label).join(" / ")}</kbd>
         <span className="spell-symbol" aria-hidden="true">
-          {slot.ability ? "ϟ" : "·"}
+          {meta ? meta.symbol : "·"}
         </span>
-        {cooling && <Cooldown />}
+        {ability && cooling && <Cooldown ability={ability} />}
       </button>
     </Hint>
   );

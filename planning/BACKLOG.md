@@ -28,7 +28,6 @@ Ordered from [ROADMAP.md](ROADMAP.md) and automated critic opportunities:
 Agent implements on a branch, runs automated checks + WASM build, and appends a `pending human review` entry to [docs/UI-REVIEW.md](../docs/UI-REVIEW.md):
 
 - [ ] **Round clock HUD timer & time-limit result banner** ([round-clock](issues/round-clock.md)) — render remaining `MM:SS` countdown and `"Time's up · draw"` outcome using `web/src/domain/round-clock.ts` and `Snapshot.{maxRoundTicks,tickRate,roundResult}`.
-- [ ] **Multi-spell player action bar & keybinds** ([server-casting-resources](issues/server-casting-resources.md), [ADR 0048](../docs/decisions/0048-server-authoritative-casting-and-resources.md)) — add Rift Bolt, Quell, and Mend slots/keybinds and client input bindings to the action bar (unit-frame/nameplate cast bars, live resource meters, lockout badges, and 3D casting visuals are implemented on `auto/server-casting-resources`, pending human review).
 - [ ] **Networked character appearance** ([networked-appearance](issues/networked-appearance.md))
 - [ ] **End-of-match scoreboard** ([scoreboard](issues/scoreboard.md))
 - [ ] **Private custom matches** ([custom-matches](issues/custom-matches.md))

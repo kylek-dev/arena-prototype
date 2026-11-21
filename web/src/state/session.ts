@@ -1,4 +1,5 @@
 import type { Snapshot } from "../bridge/snapshot";
+import type { AbilityId } from "../domain/action-bars/model";
 import { createStore } from "./store";
 export const engine = createStore<Snapshot | null>(null);
 // Render-rate presentation, separate from the throttled ordinary HUD snapshot.
@@ -11,9 +12,12 @@ export const heldSlots = createStore<ReadonlySet<string>>(new Set());
 // Synchronous reset intent lets input adapters release browser capture before
 // the one-shot engine reset is queued, regardless of its UI/key entry point.
 export const inputReset = createStore(0);
-export const spellDragPreview = createStore<{ x: number; y: number; target: string | null } | null>(
-  null,
-);
+export const spellDragPreview = createStore<{
+  x: number;
+  y: number;
+  target: string | null;
+  ability: AbilityId;
+} | null>(null);
 export type Panel = "menu" | "settings" | "spellbook" | null;
 export const selectedLayout = createStore<string | null>(null);
 export const interaction = createStore({

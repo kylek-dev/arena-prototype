@@ -103,23 +103,49 @@ describe("slot transactions", () => {
   });
   it("copies from catalog, moves, swaps and removes without mutation", () => {
     const bars = [newBar("one")];
-    const copied = place(bars, "one-s2", { ability: "pulse" });
-    expect(copied[0].slots[1].ability).toBe("pulse");
-    const moved = place(bars, "one-s2", { ability: "pulse", source: "one-s1" });
+    expect(bars[0].slots.slice(0, 4).map((s) => s.ability)).toEqual([
+      "pulse",
+      "rift_bolt",
+      "quell",
+      "mend",
+    ]);
+    const copied = place(bars, "one-s5", { ability: "pulse" });
+    expect(copied[0].slots[4].ability).toBe("pulse");
+    const moved = place(bars, "one-s5", { ability: "pulse", source: "one-s1" });
     expect(moved[0].slots[0].ability).toBeNull();
-    expect(moved[0].slots[1].ability).toBe("pulse");
-    const swapped = place(copied, "one-s2", { ability: "pulse", source: "one-s1" });
+    expect(moved[0].slots[4].ability).toBe("pulse");
+    const swapped = place(copied, "one-s5", { ability: "pulse", source: "one-s1" });
     expect(swapped[0].slots[0].ability).toBe("pulse");
-    const explicitCopy = place(bars, "one-s3", { ability: "pulse", source: "one-s1", copy: true });
+    const explicitCopy = place(bars, "one-s6", { ability: "pulse", source: "one-s1", copy: true });
     expect(explicitCopy[0].slots[0].ability).toBe("pulse");
-    expect(bars[0].slots[1].ability).toBeNull();
+    expect(bars[0].slots[4].ability).toBeNull();
   });
 
   it("treats stale, invalid and self drops as no-ops", () => {
     const bars = [newBar("one")];
     expect(place(bars, "missing", { ability: "pulse" })).toBe(bars);
-    expect(place(bars, "one-s2", { ability: "pulse", source: "one-s3" })).toBe(bars);
+    expect(place(bars, "one-s5", { ability: "pulse", source: "one-s6" })).toBe(bars);
     expect(place(bars, "one-s1", { ability: "pulse", source: "one-s1" })).toBe(bars);
+  });
+
+  it("migrates legacy single-spell profiles by filling slots 2-4 and Digit2-Digit4 when free", () => {
+    const legacy = initial().profiles[0].config;
+    legacy.bars[0].slots[1].ability = null;
+    legacy.bars[0].slots[2].ability = null;
+    legacy.bars[0].slots[3].ability = null;
+    legacy.bindings["slot:bar-1-s2"] = [null, null];
+    legacy.bindings["slot:bar-1-s3"] = [null, null];
+    legacy.bindings["slot:bar-1-s4"] = [null, null];
+    const migrated = validateConfig(legacy);
+    expect(migrated.bars[0].slots.slice(0, 4).map((s) => s.ability)).toEqual([
+      "pulse",
+      "rift_bolt",
+      "quell",
+      "mend",
+    ]);
+    expect(migrated.bindings["slot:bar-1-s2"][0]?.code).toBe("Digit2");
+    expect(migrated.bindings["slot:bar-1-s3"][0]?.code).toBe("Digit3");
+    expect(migrated.bindings["slot:bar-1-s4"][0]?.code).toBe("Digit4");
   });
 });
 

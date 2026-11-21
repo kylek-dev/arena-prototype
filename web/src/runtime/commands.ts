@@ -1,5 +1,6 @@
 import { InputState } from "../../input.js";
 import { availability, canActivate, isEngineReady } from "../domain/abilities/catalog";
+import { isAbilityId } from "../domain/action-bars/model";
 import { beginCast, clearCastFeedback, rejectCast } from "./cast-feedback";
 import { nameplateNotice, setNameplates } from "./nameplate-feedback";
 import { nextTarget } from "../domain/units/selection";
@@ -62,13 +63,13 @@ export function activateSlot(id: string) {
     .bars.flatMap((b) => b.slots)
     .find((s) => s.id === id);
   const state = engine.get();
-  if (slot?.ability !== "pulse" || !isEngineReady(state)) return;
-  if (!canActivate(state)) {
-    rejectCast(availability(state));
+  if (!slot?.ability || !isAbilityId(slot.ability) || !isEngineReady(state)) return;
+  if (!canActivate(state, slot.ability)) {
+    rejectCast(availability(state, slot.ability));
     return;
   }
-  beginCast(state);
-  input.requestAttack();
+  beginCast(state, slot.ability);
+  input.requestCast(slot.ability);
 }
 export function dispatch(action: string) {
   const interfaceAction = ["menu", "settings", "spellbook", "quickBind", "layout"].includes(action);
