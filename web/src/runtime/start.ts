@@ -68,18 +68,21 @@ export function startRuntime(canvas: HTMLCanvasElement) {
         recordState(next.frames);
         observeCastResult(next);
         nameplateScene.set(next);
-        focus.set(
-          reconcileFocus(
-            focus.get(),
-            next.roster ?? [next.player, next.target],
-            !!previous && (next.tick < previous.tick || next.teamSize !== previous.teamSize),
-          ),
-        );
+        const currentFocus = focus.get();
+        if (currentFocus !== null) {
+          focus.set(
+            reconcileFocus(
+              currentFocus,
+              next.roster ?? [next.player, next.target],
+              !!previous && (next.tick < previous.tick || next.teamSize !== previous.teamSize),
+            ),
+          );
+        }
         // Deliver cooldown edges immediately so starting/finishing never waits
         // for the ordinary HUD throttle. In-between snapshots animate in rAF.
-        if (performance.now() - lastDelivery < 80 && !needsImmediateDelivery(previous, next))
-          return;
-        lastDelivery = performance.now();
+        const now = performance.now();
+        if (now - lastDelivery < 80 && !needsImmediateDelivery(previous, next)) return;
+        lastDelivery = now;
         engine.set(next);
         if (!previous && document.activeElement === document.body) canvas.focus();
       } catch (e) {

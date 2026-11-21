@@ -48,31 +48,33 @@ fn sampler(address_v: ImageAddressMode) -> ImageSampler {
 /// The transform keeps its scale because camera collision reads it.
 pub fn tiled_cube(transform: &Transform, tile: f32) -> Mesh {
     let mut mesh = Cuboid::from_size(Vec3::ONE).mesh().build();
-    let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
-        Some(VertexAttributeValues::Float32x3(values)) => values.clone(),
-        _ => unreachable!("cuboid meshes have float positions"),
+    let uvs: Vec<[f32; 2]> = {
+        let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
+            Some(VertexAttributeValues::Float32x3(values)) => values,
+            _ => unreachable!("cuboid meshes have float positions"),
+        };
+        let normals = match mesh.attribute(Mesh::ATTRIBUTE_NORMAL) {
+            Some(VertexAttributeValues::Float32x3(values)) => values,
+            _ => unreachable!("cuboid meshes have float normals"),
+        };
+        positions
+            .iter()
+            .zip(normals)
+            .map(|(p, n)| {
+                let world = transform.translation + Vec3::from(*p) * transform.scale;
+                let n = Vec3::from(*n);
+                let uv = if n.y.abs() > 0.5 {
+                    Vec2::new(world.x, world.z)
+                } else if n.x.abs() > 0.5 {
+                    // Walls keep courses horizontal: v runs down the face.
+                    Vec2::new(world.z * n.x.signum(), -world.y)
+                } else {
+                    Vec2::new(-world.x * n.z.signum(), -world.y)
+                };
+                (uv / tile).to_array()
+            })
+            .collect()
     };
-    let normals = match mesh.attribute(Mesh::ATTRIBUTE_NORMAL) {
-        Some(VertexAttributeValues::Float32x3(values)) => values.clone(),
-        _ => unreachable!("cuboid meshes have float normals"),
-    };
-    let uvs: Vec<[f32; 2]> = positions
-        .iter()
-        .zip(&normals)
-        .map(|(p, n)| {
-            let world = transform.translation + Vec3::from(*p) * transform.scale;
-            let n = Vec3::from(*n);
-            let uv = if n.y.abs() > 0.5 {
-                Vec2::new(world.x, world.z)
-            } else if n.x.abs() > 0.5 {
-                // Walls keep courses horizontal: v runs down the face.
-                Vec2::new(world.z * n.x.signum(), -world.y)
-            } else {
-                Vec2::new(-world.x * n.z.signum(), -world.y)
-            };
-            (uv / tile).to_array()
-        })
-        .collect();
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh
 }
@@ -165,48 +167,70 @@ pub fn add_mips(image: &mut Image) -> bool {
     let Some(base) = image.data.as_ref() else {
         return false;
     };
-    let lut: Vec<f32> = (0..=255).map(to_linear).collect();
+    let lut: [f32; 256] = std::array::from_fn(|i| to_linear(i as u8));
     let (mut width, mut height) = (image.width(), image.height());
-    let mut data = base.clone();
-    let mut level: Vec<f32> = base
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .flat_map(|p| {
-            [
-                lut[p[0] as usize],
-                lut[p[1] as usize],
-                lut[p[2] as usize],
-                f32::from(p[3]) / 255.0,
-            ]
-        })
-        .collect();
+    // A full 2D mip chain adds at most ~1/3 more texels (plus rounding on odd sizes).
+    let mut data = Vec::with_capacity(base.len() + base.len() / 2 + 16);
+    data.extend_from_slice(base);
+    let mut level: Vec<f32> = Vec::with_capacity(base.len());
+    for p in base.as_chunks::<4>().0 {
+        level.extend_from_slice(&[
+            lut[p[0] as usize],
+            lut[p[1] as usize],
+            lut[p[2] as usize],
+            f32::from(p[3]) / 255.0,
+        ]);
+    }
+    let mut next: Vec<f32> = Vec::with_capacity(base.len() / 4 + 4);
     let mut levels = 1;
     while width > 1 || height > 1 {
         let (next_w, next_h) = ((width / 2).max(1), (height / 2).max(1));
-        let mut next = vec![0.0; (next_w * next_h * 4) as usize];
-        for y in 0..next_h {
-            for x in 0..next_w {
-                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                    let sx = (x * 2 + dx).min(width - 1);
-                    let sy = (y * 2 + dy).min(height - 1);
-                    let from = ((sy * width + sx) * 4) as usize;
-                    let to = ((y * next_w + x) * 4) as usize;
+        next.clear();
+        next.resize((next_w * next_h * 4) as usize, 0.0);
+        let row_stride = (width * 4) as usize;
+        if width >= 2 && height >= 2 {
+            for y in 0..next_h {
+                let row0 = (y * 2) as usize * row_stride;
+                let row1 = row0 + row_stride;
+                let dst_row = (y * next_w * 4) as usize;
+                for x in 0..next_w {
+                    let c0 = (x * 8) as usize;
+                    let c1 = c0 + 4;
+                    let dst = dst_row + (x * 4) as usize;
                     for c in 0..4 {
-                        next[to + c] += level[from + c] / 4.0;
+                        next[dst + c] = 0.25
+                            * (level[row0 + c0 + c]
+                                + level[row0 + c1 + c]
+                                + level[row1 + c0 + c]
+                                + level[row1 + c1 + c]);
+                    }
+                }
+            }
+        } else {
+            for y in 0..next_h {
+                for x in 0..next_w {
+                    let to = ((y * next_w + x) * 4) as usize;
+                    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                        let sx = (x * 2 + dx).min(width - 1);
+                        let sy = (y * 2 + dy).min(height - 1);
+                        let from = ((sy * width + sx) * 4) as usize;
+                        for c in 0..4 {
+                            next[to + c] += level[from + c] * 0.25;
+                        }
                     }
                 }
             }
         }
-        data.extend(next.as_chunks::<4>().0.iter().flat_map(|p| {
-            [
+        for p in next.as_chunks::<4>().0 {
+            data.extend_from_slice(&[
                 to_srgb(p[0]),
                 to_srgb(p[1]),
                 to_srgb(p[2]),
                 (p[3] * 255.0).round() as u8,
-            ]
-        }));
-        (width, height, level) = (next_w, next_h, next);
+            ]);
+        }
+        std::mem::swap(&mut level, &mut next);
+        (width, height) = (next_w, next_h);
         levels += 1;
     }
     image.data = Some(data);
