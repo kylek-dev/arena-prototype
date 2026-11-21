@@ -100,6 +100,14 @@ impl Pillar {
 
     /// Whether `point` is within `padding` of the hexagon (or inside it).
     pub fn contains(self, point: Position, padding: i32) -> bool {
+        if self.half_x >= 0 && self.half_z >= 0 {
+            let pad = i64::from(padding).abs();
+            let dx = (i64::from(point.x) - i64::from(self.center.x)).abs();
+            let dz = (i64::from(point.z) - i64::from(self.center.z)).abs();
+            if dx > i64::from(self.half_x) + pad || dz > i64::from(self.half_z) + pad {
+                return false;
+            }
+        }
         if self.inside(point) {
             return true;
         }
@@ -286,11 +294,9 @@ impl Layout {
         self.edge_point(room.edge, room.offset, -ROOM_OVERLAP)
     }
 
-    /// Walkable rectangles for a body centre, already shrunk by the body
-    /// radius: the floor and each room, which reaches into the floor.
-    pub fn regions(&self) -> Vec<Rect> {
+    fn floor_region(&self) -> Rect {
         let r = BODY_RADIUS;
-        let mut regions = vec![Rect {
+        Rect {
             min: Position {
                 x: -self.half_x + r,
                 z: -self.half_z + r,
@@ -299,21 +305,33 @@ impl Layout {
                 x: self.half_x - r,
                 z: self.half_z - r,
             },
-        }];
-        for room in &self.rooms {
-            let half = room.width / 2;
-            regions.push(self.edge_rect(
-                room.edge,
-                (room.offset - half + r, room.offset + half - r),
-                (-ROOM_OVERLAP, room.depth - r),
-            ));
         }
-        regions
+    }
+
+    fn room_region(&self, room: &Room) -> Rect {
+        let r = BODY_RADIUS;
+        let half = room.width / 2;
+        self.edge_rect(
+            room.edge,
+            (room.offset - half + r, room.offset + half - r),
+            (-ROOM_OVERLAP, room.depth - r),
+        )
+    }
+
+    fn regions_iter(&self) -> impl Iterator<Item = Rect> + '_ {
+        std::iter::once(self.floor_region())
+            .chain(self.rooms.iter().map(|room| self.room_region(room)))
+    }
+
+    /// Walkable rectangles for a body centre, already shrunk by the body
+    /// radius: the floor and each room, which reaches into the floor.
+    pub fn regions(&self) -> Vec<Rect> {
+        self.regions_iter().collect()
     }
 
     /// Whether a body centred at `p` fits in the walkable space, clear of pillars.
     pub fn walkable(&self, p: Position) -> bool {
-        self.regions().iter().any(|region| region.contains(p)) && !self.blocked(p)
+        self.regions_iter().any(|region| region.contains(p)) && !self.blocked(p)
     }
 
     fn blocked(&self, p: Position) -> bool {
@@ -329,12 +347,10 @@ impl Layout {
     /// second pillar), pillars veto each axis instead. The same footprint
     /// applies in the air: jumping cannot bypass cover.
     pub fn slide(&self, mut p: Position, delta: Position) -> Position {
-        let regions = self.regions();
         let reach = |p: Position, target: i32, along_x: bool| {
             let coord = |q: Position| if along_x { q.x } else { q.z };
             let start = coord(p);
-            regions
-                .iter()
+            self.regions_iter()
                 .filter(|region| region.contains(p))
                 .map(|region| target.clamp(coord(region.min), coord(region.max)))
                 .fold(start, |best, limit| {
@@ -416,16 +432,136 @@ impl Layout {
         walls
     }
 
+    /// Tests whether the segment `start`–`end` intersects any wall in `self.walls()`
+    /// without allocating in the common cases (0 or 1 room per touched edge).
+    fn hits_wall(
+        &self,
+        start: Position,
+        end: Position,
+        seg_min_x: i32,
+        seg_max_x: i32,
+        seg_min_z: i32,
+        seg_max_z: i32,
+    ) -> bool {
+        for edge in Edge::ALL {
+            let crosses_edge = match edge {
+                Edge::North => seg_min_z <= -self.half_z && -self.half_z <= seg_max_z,
+                Edge::South => seg_min_z <= self.half_z && self.half_z <= seg_max_z,
+                Edge::West => seg_min_x <= -self.half_x && -self.half_x <= seg_max_x,
+                Edge::East => seg_min_x <= self.half_x && self.half_x <= seg_max_x,
+            };
+            if !crosses_edge {
+                continue;
+            }
+            let half = self.edge_half(edge);
+            let mut count = 0usize;
+            let mut single = (0i32, 0i32);
+            for room in &self.rooms {
+                if room.edge == edge {
+                    count += 1;
+                    single = (room.offset - room.width / 2, room.offset + room.width / 2);
+                }
+            }
+            match count {
+                0 => {
+                    if half > -half
+                        && segments_intersect(
+                            start,
+                            end,
+                            self.edge_point(edge, -half, 0),
+                            self.edge_point(edge, half, 0),
+                        )
+                    {
+                        return true;
+                    }
+                }
+                1 => {
+                    let (a, b) = single;
+                    let mut seg_start = -half;
+                    if a > seg_start
+                        && segments_intersect(
+                            start,
+                            end,
+                            self.edge_point(edge, seg_start, 0),
+                            self.edge_point(edge, a, 0),
+                        )
+                    {
+                        return true;
+                    }
+                    seg_start = seg_start.max(b);
+                    if half > seg_start
+                        && segments_intersect(
+                            start,
+                            end,
+                            self.edge_point(edge, seg_start, 0),
+                            self.edge_point(edge, half, 0),
+                        )
+                    {
+                        return true;
+                    }
+                }
+                _ => {
+                    let mut openings: Vec<(i32, i32)> = self
+                        .rooms
+                        .iter()
+                        .filter(|room| room.edge == edge)
+                        .map(|room| (room.offset - room.width / 2, room.offset + room.width / 2))
+                        .collect();
+                    openings.sort();
+                    let mut seg_start = -half;
+                    for (a, b) in openings.into_iter().chain([(half, half)]) {
+                        if a > seg_start
+                            && segments_intersect(
+                                start,
+                                end,
+                                self.edge_point(edge, seg_start, 0),
+                                self.edge_point(edge, a, 0),
+                            )
+                        {
+                            return true;
+                        }
+                        seg_start = seg_start.max(b);
+                    }
+                }
+            }
+        }
+        let strictly_inside_floor = seg_min_x > -self.half_x
+            && seg_max_x < self.half_x
+            && seg_min_z > -self.half_z
+            && seg_max_z < self.half_z;
+        for room in &self.rooms {
+            if strictly_inside_floor && room.depth >= 0 {
+                continue;
+            }
+            let (a, b) = (room.offset - room.width / 2, room.offset + room.width / 2);
+            let corner = |along, out| self.edge_point(room.edge, along, out);
+            if segments_intersect(start, end, corner(a, 0), corner(a, room.depth))
+                || segments_intersect(start, end, corner(b, 0), corner(b, room.depth))
+                || segments_intersect(start, end, corner(a, room.depth), corner(b, room.depth))
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Pillars and walls block sight; segments touching an edge are blocked too.
     pub fn line_of_sight(&self, start: Position, end: Position) -> bool {
-        if self
-            .walls()
-            .iter()
-            .any(|&(a, b)| segments_intersect(start, end, a, b))
-        {
+        let (seg_min_x, seg_max_x) = (start.x.min(end.x), start.x.max(end.x));
+        let (seg_min_z, seg_max_z) = (start.z.min(end.z), start.z.max(end.z));
+        if self.hits_wall(start, end, seg_min_x, seg_max_x, seg_min_z, seg_max_z) {
             return false;
         }
         !self.pillars.iter().any(|pillar| {
+            if pillar.half_x >= 0
+                && pillar.half_z >= 0
+                && (i64::from(seg_max_x) < i64::from(pillar.center.x) - i64::from(pillar.half_x)
+                    || i64::from(seg_min_x) > i64::from(pillar.center.x) + i64::from(pillar.half_x)
+                    || i64::from(seg_max_z) < i64::from(pillar.center.z) - i64::from(pillar.half_z)
+                    || i64::from(seg_min_z) > i64::from(pillar.center.z) + i64::from(pillar.half_z))
+            {
+                return false;
+            }
             if pillar.contains(start, 0) || pillar.contains(end, 0) {
                 return true;
             }
@@ -779,5 +915,91 @@ mod tests {
         assert_eq!(east.validate(), Ok(()));
         let spawn = east.spawns(0)[0];
         assert!(spawn.x > east.half_x && east.walkable(spawn));
+    }
+
+    #[test]
+    fn fast_line_of_sight_matches_explicit_walls_and_pillars_across_room_counts() {
+        let reference_los = |layout: &Layout, start: Position, end: Position| {
+            if layout
+                .walls()
+                .iter()
+                .any(|&(a, b)| segments_intersect(start, end, a, b))
+            {
+                return false;
+            }
+            !layout.pillars.iter().any(|pillar| {
+                if pillar.inside(start) || pillar.inside(end) {
+                    return true;
+                }
+                pillar
+                    .edges()
+                    .any(|(a, b)| segments_intersect(start, end, a, b))
+            })
+        };
+        let mut two_on_south = fixture();
+        two_on_south.rooms[0].offset = -12_000;
+        let mut second_south = two_on_south.rooms[0].clone();
+        second_south.offset = 12_000;
+        two_on_south.rooms.push(second_south);
+        assert_eq!(two_on_south.validate(), Ok(()));
+
+        for layout in [fixture(), two_on_south] {
+            let points = [
+                Position { x: 0, z: 0 },
+                Position {
+                    x: -21_000,
+                    z: -15_000,
+                },
+                Position {
+                    x: -25_500,
+                    z: -15_000,
+                },
+                Position {
+                    x: -25_501,
+                    z: -15_000,
+                },
+                Position {
+                    x: -16_000,
+                    z: -15_000,
+                },
+                Position {
+                    x: 21_000,
+                    z: 20_000,
+                },
+                Position { x: 0, z: 42_000 },
+                Position { x: 0, z: 47_000 },
+                Position {
+                    x: -12_000,
+                    z: 47_000,
+                },
+                Position {
+                    x: 12_000,
+                    z: 47_000,
+                },
+                Position {
+                    x: 8_000,
+                    z: 39_000,
+                },
+                Position {
+                    x: 2_000,
+                    z: 46_000,
+                },
+                Position { x: 0, z: -47_000 },
+                Position {
+                    x: 53_500,
+                    z: 10_000,
+                },
+                Position { x: -54_000, z: 0 },
+            ];
+            for &a in &points {
+                for &b in &points {
+                    assert_eq!(
+                        layout.line_of_sight(a, b),
+                        reference_los(&layout, a, b),
+                        "mismatch between {a:?} and {b:?}"
+                    );
+                }
+            }
+        }
     }
 }
