@@ -188,6 +188,7 @@ async fn session(
     let mut latest: Option<Snapshot> = None;
     let mut last_snapshot_at: Option<Instant> = None;
     let mut seq = 0u32;
+    let mut pending_cast_ack: Option<u32> = None;
     let mut unacked: VecDeque<(u32, Instant)> = VecDeque::new();
     let mut pings: HashMap<u32, Instant> = HashMap::new();
     let mut nonce = 0u32;
@@ -281,6 +282,9 @@ async fn session(
                         {
                             stats.saw_disconnected += 1;
                         }
+                        if pending_cast_ack.is_some_and(|pending| snapshot.ack >= pending) {
+                            pending_cast_ack = None;
+                        }
                         latest = Some(snapshot);
                     }
                     ServerMessage::Pong { nonce } => {
@@ -294,7 +298,22 @@ async fn session(
             _ = inputs.tick(), if welcomed && writable => {
                 let Some(snapshot) = &latest else { continue };
                 seq += 1;
-                let frame = InputFrame { seq, ..decide(seat.actor, snapshot, rng) };
+                let mut frame = InputFrame { seq, ..decide(seat.actor, snapshot, rng) };
+                // Hold still while a newly submitted timed cast is still in flight so the
+                // next tick's movement frame never cancels it before the server acknowledges it.
+                if pending_cast_ack.is_some() {
+                    frame.movement = [0, 0];
+                    frame.jump = false;
+                    frame.action = WireAction::None;
+                } else if matches!(
+                    frame.action,
+                    WireAction::Cast {
+                        spell: WireSpell::RiftBolt | WireSpell::Mend,
+                        ..
+                    }
+                ) {
+                    pending_cast_ack = Some(seq);
+                }
                 if !send(ClientMessage::Input(frame)) {
                     writable = false;
                     continue;
@@ -423,17 +442,24 @@ pub fn decide(actor: usize, snapshot: &Snapshot, rng: &mut Rng) -> InputFrame {
         [(mx * 1000.0) as i16, (mz * 1000.0) as i16]
     };
 
-    // Interrupt a casting enemy within Quell range when Quell is ready (off-GCD, usable while moving).
+    // Interrupt a casting enemy within Quell range after a human-like reaction window
+    // (~0.45 s into the cast) so cast bars are readable instead of getting kicked on tick 1.
+    const QUELL_REACTION_TICKS: u32 = 14;
     let casting_enemy = snapshot
         .fighters
         .iter()
         .enumerate()
         .find(|(idx, fighter)| {
-            idx % 2 != actor % 2 && fighter.health > 0 && fighter.active_cast.is_some() && {
-                let ex = i64::from(fighter.x) - i64::from(me.x);
-                let ez = i64::from(fighter.z) - i64::from(me.z);
-                ex * ex + ez * ez <= i64::from(QUELL_RANGE).pow(2)
-            }
+            idx % 2 != actor % 2
+                && fighter.health > 0
+                && fighter.active_cast.is_some_and(|cast| {
+                    cast.total_ticks.saturating_sub(cast.remaining_ticks) >= QUELL_REACTION_TICKS
+                })
+                && {
+                    let ex = i64::from(fighter.x) - i64::from(me.x);
+                    let ez = i64::from(fighter.z) - i64::from(me.z);
+                    ex * ex + ez * ez <= i64::from(QUELL_RANGE).pow(2)
+                }
         })
         .map(|(idx, _)| idx as u8);
     if let Some(victim) = casting_enemy
@@ -453,16 +479,20 @@ pub fn decide(actor: usize, snapshot: &Snapshot, rng: &mut Rng) -> InputFrame {
         };
     }
 
-    // Stagger Rift Bolt casts from mid-range so bots do not all plant in lockstep on the exact
-    // tick they cross 12 m.
-    let can_bolt = distance > f64::from(ATTACK_RANGE)
-        && distance <= f64::from(RIFT_BOLT_RANGE)
+    // Stagger Rift Bolt casts across mid-range and combat so bots weave visible timed casts
+    // without all planting in lockstep on the exact tick they cross 12 m.
+    let can_bolt = distance <= f64::from(RIFT_BOLT_RANGE)
         && me.height == 0
         && me.lockout_remaining == 0
         && me.gcd_remaining == 0
         && me.cooldowns[SpellId::RiftBolt.index()] == 0
         && me.resource >= RIFT_BOLT_COST;
-    if can_bolt && rng.unit() < 0.08 {
+    let bolt_chance = if distance > f64::from(ATTACK_RANGE) {
+        0.06
+    } else {
+        0.04
+    };
+    if can_bolt && rng.unit() < bolt_chance {
         return InputFrame {
             seq: 0,
             movement: [0, 0],
@@ -545,7 +575,9 @@ mod tests {
             "faces −Z: {}",
             input.facing
         );
-        let near = snapshot(vec![fighter(0, 0, 100), fighter(3_000, 0, 100)]);
+        let mut near_me = fighter(0, 0, 100);
+        near_me.cooldowns[SpellId::RiftBolt.index()] = 60;
+        let near = snapshot(vec![near_me, fighter(3_000, 0, 100)]);
         let input = decide(0, &near, &mut rng);
         assert_eq!(input.action, InputFrame::pulse(1));
         // Close-range bots strafe laterally instead of standing frozen.
@@ -600,7 +632,23 @@ mod tests {
             (cast_input.action, cast_input.movement),
             (WireAction::None, [0, 0])
         );
-        // Enemy casting within 8 m: bot casts off-GCD Quell to interrupt while moving.
+        // Enemy casting within 8 m: bot waits past the human-like reaction window before
+        // casting off-GCD Quell to interrupt while moving.
+        let mut early_casting_enemy = fighter(7_000, 0, 100);
+        early_casting_enemy.active_cast = Some(WireCast {
+            spell: WireSpell::RiftBolt,
+            target: Some(0),
+            remaining_ticks: 43,
+            total_ticks: 45,
+        });
+        let early_snap = snapshot(vec![fighter(0, 0, 100), early_casting_enemy]);
+        assert_ne!(
+            decide(0, &early_snap, &mut rng).action,
+            WireAction::Cast {
+                spell: WireSpell::Quell,
+                target: Some(1),
+            }
+        );
         let mut casting_enemy = fighter(7_000, 0, 100);
         casting_enemy.active_cast = Some(WireCast {
             spell: WireSpell::RiftBolt,
