@@ -44,8 +44,8 @@ struct Practice {
     attack: bool,
     jump: bool,
     feedback: &'static str,
-    /// The Pulse lightning currently on screen, if any.
-    zap: Option<lightning::Zap>,
+    /// Active spell lightning bolts currently on screen.
+    zaps: Vec<lightning::Zap>,
     frames: u32,
     combat_text: combat_text::CombatText,
     /// In a network match: interpolated authoritative positions to draw,
@@ -81,12 +81,19 @@ impl Practice {
             attack: false,
             jump: false,
             feedback: "Select the opponent to begin",
-            zap: None,
+            zaps: Vec::new(),
             frames: 0,
             combat_text: default(),
             remote: None,
             connected: None,
         }
+    }
+
+    fn push_zap(&mut self, zap: lightning::Zap) {
+        if self.zaps.len() >= lightning::MAX_ZAPS {
+            self.zaps.remove(0);
+        }
+        self.zaps.push(zap);
     }
 }
 
@@ -655,8 +662,9 @@ fn simulate(mut practice: ResMut<Practice>, mut net: ResMut<Net>) {
                 practice
                     .combat_text
                     .record(actor, target, -i32::from(damage));
-                practice.feedback = "Pulse hit · 25 damage";
-                practice.zap = Some(lightning::Zap::new(actor, target, practice.arena.tick()));
+                practice.feedback = hit_feedback(damage);
+                let tick = practice.arena.tick();
+                practice.push_zap(lightning::Zap::new(actor, target, tick));
             }
             ArenaEvent::Healed {
                 actor,
@@ -714,6 +722,14 @@ fn attack_status(arena: &Arena, target: usize) -> &'static str {
 
 /// Feedback when a defeated player tries to act while the round goes on.
 const DEFEATED_FEEDBACK: &str = "You are defeated · your team fights on";
+
+fn hit_feedback(damage: u16) -> &'static str {
+    match damage {
+        arena_sim::spells::RIFT_BOLT_DAMAGE => "Rift Bolt hit · 40 damage",
+        ATTACK_DAMAGE => "Pulse hit · 25 damage",
+        _ => "Spell hit",
+    }
+}
 
 fn rejection_feedback(reason: arena_sim::arena::Rejection) -> &'static str {
     match reason {
@@ -844,9 +860,10 @@ fn network_receive(
                         .combat_text
                         .record(actor, target, -i32::from(damage));
                     if actor == 0 {
-                        practice.feedback = "Pulse hit · 25 damage";
+                        practice.feedback = hit_feedback(damage);
                     }
-                    practice.zap = Some(lightning::Zap::new(actor, target, practice.arena.tick()));
+                    let tick = practice.arena.tick();
+                    practice.push_zap(lightning::Zap::new(actor, target, tick));
                 }
                 network::Shown::Healed {
                     actor,

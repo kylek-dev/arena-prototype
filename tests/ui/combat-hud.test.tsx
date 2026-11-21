@@ -50,6 +50,39 @@ it("gives every live and sample frame separate health and resource bars", () => 
   expect(screen.getAllByRole("meter")).toHaveLength(16);
 });
 
+it("renders live unit resources, active cast bars, and lockout badges when present", () => {
+  engine.set(
+    snapshot({
+      maxResource: 100,
+      player: {
+        ...snapshot().player,
+        resource: 65,
+        maxResource: 100,
+        cast: { spell: "rift_bolt", remainingTicks: 15, totalTicks: 45 },
+      },
+      target: {
+        ...snapshot().target,
+        resource: 40,
+        maxResource: 100,
+        lockoutRemaining: 30,
+        cast: null,
+      },
+    }),
+  );
+  render(<Frames />);
+  const playerResource = screen.getByRole("meter", { name: "player resource" });
+  expect(within(playerResource).getByText("65/100")).toBeTruthy();
+  expect(playerResource.getAttribute("aria-valuenow")).toBe("65");
+  expect(playerResource.getAttribute("aria-valuetext")).toBe("65/100");
+  const castBar = screen.getByRole("progressbar", { name: "player casting Rift Bolt" });
+  expect(castBar.getAttribute("aria-valuenow")).toBe("67");
+  expect(within(castBar).getByText("Rift Bolt")).toBeTruthy();
+  expect(within(castBar).getByText("0.5s")).toBeTruthy();
+  const targetResource = screen.getByRole("meter", { name: "target resource" });
+  expect(within(targetResource).getByText("40/100")).toBeTruthy();
+  expect(screen.getAllByText("Locked out").length).toBeGreaterThanOrEqual(1);
+});
+
 it("shows errors only after an attempted cast, refreshes repeated errors and expires them", () => {
   vi.useFakeTimers();
   render(<CombatErrors />);

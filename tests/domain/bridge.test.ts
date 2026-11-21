@@ -112,6 +112,19 @@ describe("engine snapshot boundary", () => {
       totalTicks: 45,
     });
     expect(needsImmediateDelivery(idle, casting)).toBe(true);
+    const enemyLocked = adaptSnapshot({
+      ...base,
+      player: { ...base.player, resource: 100, gcdRemaining: 0, lockoutRemaining: 0, cast: null },
+      target: { ...base.target, resource: 65, gcdRemaining: 12, lockoutRemaining: 60, cast: null },
+      roster: base.roster?.map((unit, idx) => ({
+        ...unit,
+        resource: idx === 0 ? 100 : 65,
+        gcdRemaining: idx === 0 ? 0 : 12,
+        lockoutRemaining: idx === 1 ? 60 : 0,
+        cast: null,
+      })),
+    });
+    expect(needsImmediateDelivery(idle, enemyLocked)).toBe(true);
 
     for (const invalid of [
       { ...base, maxResource: 0 },

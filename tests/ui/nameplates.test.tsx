@@ -149,3 +149,34 @@ it("settings independently toggle each category using the saved profile configur
   expect(config().nameplates).toEqual({ friendly: false, enemy: false });
   expect(screen.queryByRole("button", { name: /Enemy Bot/ })).toBeNull();
 });
+
+it("renders an overhead cast bar while casting and a locked indicator when silenced", () => {
+  nameplateScene.set(
+    snapshot({
+      target: {
+        ...snapshot().target,
+        cast: { spell: "rift_bolt", remainingTicks: 22, totalTicks: 45 },
+      },
+      nameplates: [{ tag: "Opponent1", x: 0.4, y: 0.3 }],
+    }),
+  );
+  render(<Nameplates />);
+  const bar = screen.getByRole("button", { name: /Enemy Bot health 75\/100, casting Rift Bolt/ });
+  expect(bar.querySelector(".nameplate-cast-label")?.textContent).toBe("Rift Bolt");
+  expect(bar.querySelector(".nameplate-lockout")).toBeNull();
+  act(() =>
+    nameplateScene.set(
+      snapshot({
+        target: {
+          ...snapshot().target,
+          cast: null,
+          lockoutRemaining: 45,
+        },
+        nameplates: [{ tag: "Opponent1", x: 0.4, y: 0.3 }],
+      }),
+    ),
+  );
+  const lockedBar = screen.getByRole("button", { name: /Enemy Bot health 75\/100\./ });
+  expect(lockedBar.querySelector(".nameplate-cast")).toBeNull();
+  expect(lockedBar.querySelector(".nameplate-lockout")?.textContent).toBe("Locked");
+});

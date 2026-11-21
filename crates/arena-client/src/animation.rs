@@ -52,6 +52,7 @@ pub(crate) struct Animator {
     phase: f32,
     velocity: Vec2,
     airborne: f32,
+    casting: f32,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -61,6 +62,7 @@ struct Pose {
     direction: Vec2,
     amount: f32,
     airborne: f32,
+    casting: f32,
 }
 
 impl Animator {
@@ -68,12 +70,14 @@ impl Animator {
         Self { actor, ..default() }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn step(
         &mut self,
         position: Vec3,
         rotation: Quat,
         tick: u64,
         airborne: bool,
+        casting: bool,
         dt: f32,
         settings: &Settings,
     ) -> Pose {
@@ -89,6 +93,7 @@ impl Animator {
             self.phase = 0.0;
             self.velocity = Vec2::ZERO;
             self.airborne = f32::from(airborne);
+            self.casting = f32::from(casting);
         }
         let blend = 1.0 - (-settings.blend_rate * dt.clamp(0.0, 0.1)).exp();
         let local = rotation.inverse() * delta;
@@ -99,6 +104,7 @@ impl Animator {
         };
         self.velocity = self.velocity.lerp(velocity, blend);
         self.airborne += (f32::from(airborne) - self.airborne) * blend;
+        self.casting += (f32::from(casting) - self.casting) * blend;
         let speed = self.velocity.length();
         if !airborne {
             self.phase = (self.phase
@@ -112,6 +118,7 @@ impl Animator {
             direction: self.velocity.normalize_or_zero(),
             amount: (speed / 3.0).min(1.0) * (1.0 - self.airborne),
             airborne: self.airborne,
+            casting: self.casting,
         }
     }
 }
@@ -123,14 +130,17 @@ fn joint_rotation(joint: &Joint, pose: Pose, settings: &Settings) -> Quat {
     let forward = -pose.direction.y;
     let strafe = pose.direction.x;
     let breath = (pose.seconds * 1.8).sin() * (1.0 - pose.amount);
+    let channel = (pose.seconds * 9.0).sin() * pose.casting;
     let (pitch, yaw, roll) = match joint.kind {
         JointKind::Chest => (
-            -0.08 * forward * pose.amount - 0.10 * pose.airborne + 0.012 * breath,
+            -0.08 * forward * pose.amount - 0.10 * pose.airborne + 0.012 * breath
+                - 0.06 * pose.casting
+                + 0.03 * channel,
             pose.phase.sin() * 0.055 * forward * pose.amount,
             -0.06 * strafe * pose.amount,
         ),
         JointKind::Head => (
-            0.035 * forward * pose.amount - 0.012 * breath,
+            0.035 * forward * pose.amount - 0.012 * breath + 0.04 * pose.casting,
             -pose.phase.sin() * 0.035 * forward * pose.amount,
             0.025 * strafe * pose.amount,
         ),
@@ -145,15 +155,20 @@ fn joint_rotation(joint: &Joint, pose: Pose, settings: &Settings) -> Quat {
             0.0,
         ),
         JointKind::Shoulder => (
-            -swing * forward * settings.arm_swing - pose.airborne * 0.22,
-            0.0,
-            joint.side * (0.06 + 0.08 * pose.airborne) - swing * strafe * settings.arm_swing * 0.25,
+            -swing * forward * settings.arm_swing - pose.airborne * 0.22
+                + 1.15 * pose.casting
+                + 0.08 * channel,
+            -joint.side * 0.18 * pose.casting,
+            joint.side * (0.06 + 0.08 * pose.airborne + 0.28 * pose.casting + 0.04 * channel)
+                - swing * strafe * settings.arm_swing * 0.25,
         ),
         JointKind::Elbow => (
             0.12 + 0.24 * pose.amount
                 + (-swing * forward).max(0.0) * 0.30
                 + pose.airborne * 0.35
-                + 0.015 * breath,
+                + 0.015 * breath
+                + 0.65 * pose.casting
+                + 0.10 * channel,
             0.0,
             0.0,
         ),
@@ -179,21 +194,25 @@ pub(crate) fn animate(
         if actor >= practice.arena.fighters().len() {
             continue;
         }
+        let unit = practice.arena.fighters()[actor];
         let mut pose = animator.step(
             fighter.translation,
             fighter.rotation,
             practice.arena.tick(),
-            practice.arena.fighters()[actor].height > 0,
+            unit.height > 0,
+            unit.active_cast.is_some(),
             time.delta_secs(),
             &settings,
         );
         pose.seconds = time.elapsed_secs() + actor as f32 * 0.73;
         let breath = (time.elapsed_secs() * 1.8).sin() * 0.5 + 0.5;
+        let channel_bob = ((pose.seconds * 9.0).sin() * 0.5 + 0.5) * 0.012 * pose.casting;
         transform.translation.y = if animator.authored {
             0.0
         } else {
             settings.walk_bob * (1.0 - (pose.phase * 2.0).cos()) * pose.amount
                 + settings.idle_breath * breath * (1.0 - pose.amount) * (1.0 - pose.airborne)
+                + channel_bob
         };
         poses[actor] = pose;
     }
@@ -215,6 +234,7 @@ mod tests {
             direction: Vec2::NEG_Y,
             amount: 1.0,
             airborne: 0.0,
+            casting: 0.0,
         };
         let rotation = |kind, side, pose| {
             joint_rotation(
@@ -351,16 +371,40 @@ mod tests {
         let mut position = Vec3::ZERO;
         for tick in 0..60 {
             position.z -= 0.05;
-            animator.step(position, Quat::IDENTITY, tick, false, 1.0 / 60.0, &settings);
+            animator.step(
+                position,
+                Quat::IDENTITY,
+                tick,
+                false,
+                false,
+                1.0 / 60.0,
+                &settings,
+            );
         }
         assert!(animator.velocity.length() > 2.9);
         let phase = animator.phase;
         for tick in 60..180 {
-            animator.step(position, Quat::IDENTITY, tick, false, 1.0 / 60.0, &settings);
+            animator.step(
+                position,
+                Quat::IDENTITY,
+                tick,
+                false,
+                false,
+                1.0 / 60.0,
+                &settings,
+            );
         }
         assert!(animator.velocity.length() < 0.0001);
         assert_ne!(phase, animator.phase);
-        let reset = animator.step(Vec3::ZERO, Quat::IDENTITY, 0, false, 1.0 / 60.0, &settings);
+        let reset = animator.step(
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            0,
+            false,
+            false,
+            1.0 / 60.0,
+            &settings,
+        );
         assert_eq!(reset.amount, 0.0);
         assert_eq!(reset.phase, 0.0);
     }
@@ -369,7 +413,7 @@ mod tests {
     fn jump_tucks_knees_and_landing_blends_back_to_rest() {
         let settings = Settings::default();
         let mut animator = Animator::default();
-        let pose = animator.step(Vec3::Y, Quat::IDENTITY, 1, true, 0.016, &settings);
+        let pose = animator.step(Vec3::Y, Quat::IDENTITY, 1, true, false, 0.016, &settings);
         assert_eq!(pose.amount, 0.0);
         let knee = Joint {
             actor: 0,
@@ -383,14 +427,75 @@ mod tests {
                 Quat::IDENTITY,
                 tick,
                 false,
+                false,
                 1.0 / 60.0,
                 &settings,
             );
         }
         assert!(animator.airborne < 0.0001);
-        let paused = animator.step(Vec3::ZERO, Quat::IDENTITY, 122, false, 2.0, &settings);
+        let paused = animator.step(
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            122,
+            false,
+            false,
+            2.0,
+            &settings,
+        );
         assert!(paused.phase.is_finite());
         assert_eq!(paused.amount, 0.0);
         assert_eq!(paused.phase, 0.0);
+    }
+
+    #[test]
+    fn casting_raises_arms_forward_and_blends_back_to_rest() {
+        let settings = Settings::default();
+        let mut animator = Animator::default();
+        let idle = animator.step(
+            Vec3::ZERO,
+            Quat::IDENTITY,
+            1,
+            false,
+            false,
+            1.0 / 60.0,
+            &settings,
+        );
+        let mut casting = idle;
+        for tick in 2..40 {
+            casting = animator.step(
+                Vec3::ZERO,
+                Quat::IDENTITY,
+                tick,
+                false,
+                true,
+                1.0 / 60.0,
+                &settings,
+            );
+        }
+        assert!(casting.casting > 0.99);
+        let shoulder = Joint {
+            actor: 0,
+            kind: JointKind::Shoulder,
+            side: -1.0,
+        };
+        // Raising arms forward points the downward arm vector (-Y) toward -Z.
+        let idle_arm = joint_rotation(&shoulder, idle, &settings) * Vec3::NEG_Y;
+        let cast_arm = joint_rotation(&shoulder, casting, &settings) * Vec3::NEG_Y;
+        assert!(
+            cast_arm.z < idle_arm.z - 0.5,
+            "{idle_arm:?} -> {cast_arm:?}"
+        );
+        for tick in 40..120 {
+            animator.step(
+                Vec3::ZERO,
+                Quat::IDENTITY,
+                tick,
+                false,
+                false,
+                1.0 / 60.0,
+                &settings,
+            );
+        }
+        assert!(animator.casting < 0.001);
     }
 }

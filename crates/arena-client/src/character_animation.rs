@@ -78,6 +78,7 @@ impl Timing {
 }
 
 const CAST_SPEED: f32 = 1.5;
+const CHANNEL_SPEED: f32 = 0.55;
 /// Share of rule flight that plays the complete authored takeoff, so it hands
 /// over to the airborne loop exactly on that loop's first pose.
 const TAKEOFF_SHARE: f32 = 0.70;
@@ -96,6 +97,7 @@ pub(crate) struct Controller {
     tick: u64,
     pulse_cd: u32,
     cast_remaining: f32,
+    was_channeling: bool,
     current: Option<Clip>,
     locomotion: Option<Clip>,
     was_airborne: bool,
@@ -183,6 +185,7 @@ impl Controller {
             tick: 0,
             pulse_cd: 0,
             cast_remaining: 0.0,
+            was_channeling: false,
             current: None,
             locomotion: None,
             was_airborne: false,
@@ -201,17 +204,23 @@ impl Controller {
             || !(0.0..=0.1).contains(&sample.dt)
             || delta.xz().length() > 1.0;
         let pulse_cd = sample.fighter.cooldown_remaining(SpellId::Pulse);
-        let cast_started = !reset && pulse_cd > self.pulse_cd;
+        let pulse_started = !reset && pulse_cd > self.pulse_cd;
+        let channeling = !reset && sample.fighter.active_cast.is_some();
+        let channel_started = channeling && !self.was_channeling;
+        let cast_started = pulse_started || channel_started;
         self.previous = Some(sample.position);
         self.tick = sample.tick;
         self.pulse_cd = pulse_cd;
         self.cast_remaining = if reset {
             0.0
-        } else if cast_started {
+        } else if pulse_started {
             (self.timing.cast.1 - self.timing.cast.0) / CAST_SPEED
+        } else if !channeling && self.was_channeling {
+            0.0
         } else {
             (self.cast_remaining - sample.dt).max(0.0)
         };
+        self.was_channeling = channeling;
         let velocity = if reset || sample.dt <= 0.0 {
             Vec2::ZERO
         } else {
@@ -246,9 +255,9 @@ impl Controller {
             } else {
                 Clip::Jump
             }
-        } else if self.cast_remaining > 0.0 {
-            // Pulse is the only current ability. Play its cosmetic release only
-            // after a successful rule-owned cooldown edge, never on rejected input.
+        } else if self.cast_remaining > 0.0 || channeling {
+            // Play the cast clip on a rule-owned Pulse cooldown edge or while
+            // channeling an authoritative timed cast, never on rejected input.
             Clip::Cast
         } else if self.timing.jump_edges.is_some() && self.land_remaining > 0.0 {
             Clip::JumpLand
@@ -260,7 +269,13 @@ impl Controller {
             clip,
             speed: match clip {
                 Clip::Jump | Clip::JumpStart | Clip::JumpLand => 0.0,
-                Clip::Cast => CAST_SPEED,
+                Clip::Cast => {
+                    if channeling && self.cast_remaining <= 0.0 {
+                        CHANNEL_SPEED
+                    } else {
+                        CAST_SPEED
+                    }
+                }
                 Clip::Idle => 1.0,
                 _ => (velocity.length() / 2.4).clamp(0.65, 2.0),
             },
@@ -746,5 +761,35 @@ mod tests {
         let playback = controller().step(first);
         assert!(playback.reset);
         assert_eq!(playback.clip, Clip::Idle);
+    }
+
+    #[test]
+    fn timed_cast_plays_cast_clip_and_clears_on_interrupt() {
+        use arena_sim::arena::ActiveCastState;
+        let mut controller = controller();
+        controller.step(sample(Vec3::ZERO, 0));
+        let mut channeling = sample(Vec3::ZERO, 1);
+        channeling.fighter.active_cast = Some(ActiveCastState {
+            spell: SpellId::RiftBolt,
+            target: Some(1),
+            remaining_ticks: 44,
+            total_ticks: 45,
+        });
+        let started = controller.step(channeling);
+        assert_eq!(started.clip, Clip::Cast);
+        assert!(started.cast_started);
+        assert_eq!(started.speed, CHANNEL_SPEED);
+        let mut continuing = sample(Vec3::ZERO, 2);
+        continuing.fighter.active_cast = Some(ActiveCastState {
+            spell: SpellId::RiftBolt,
+            target: Some(1),
+            remaining_ticks: 43,
+            total_ticks: 45,
+        });
+        let held = controller.step(continuing);
+        assert_eq!(held.clip, Clip::Cast);
+        assert!(!held.cast_started);
+        let interrupted = controller.step(sample(Vec3::ZERO, 3));
+        assert_eq!(interrupted.clip, Clip::Idle);
     }
 }

@@ -124,8 +124,19 @@ function validateCombatFields(
   return out;
 }
 
-export function needsImmediateDelivery(previous: Snapshot | null, next: Snapshot) {
+function combatEdgesDiffer(
+  previous: { cast?: ActiveCast | null; lockoutRemaining?: number } | undefined,
+  next: { cast?: ActiveCast | null; lockoutRemaining?: number } | undefined,
+) {
   return (
+    Boolean(next?.cast) !== Boolean(previous?.cast) ||
+    next?.cast?.spell !== previous?.cast?.spell ||
+    (next?.lockoutRemaining ?? 0) > 0 !== (previous?.lockoutRemaining ?? 0) > 0
+  );
+}
+
+export function needsImmediateDelivery(previous: Snapshot | null, next: Snapshot) {
+  if (
     !previous ||
     next.tick < previous.tick ||
     next.teamSize !== previous.teamSize ||
@@ -137,9 +148,17 @@ export function needsImmediateDelivery(previous: Snapshot | null, next: Snapshot
     next.hoveredUnit !== previous.hoveredUnit ||
     next.cooldown > previous.cooldown ||
     (next.cooldown === 0) !== (previous.cooldown === 0) ||
-    Boolean(next.player.cast) !== Boolean(previous.player.cast) ||
-    next.player.cast?.spell !== previous.player.cast?.spell
-  );
+    combatEdgesDiffer(previous.player, next.player) ||
+    combatEdgesDiffer(previous.target, next.target)
+  ) {
+    return true;
+  }
+  if (previous.roster && next.roster && previous.roster.length === next.roster.length) {
+    for (let i = 0; i < next.roster.length; i += 1) {
+      if (combatEdgesDiffer(previous.roster[i], next.roster[i])) return true;
+    }
+  }
+  return false;
 }
 // Local practice snapshots optionally append a team roster; not a network protocol.
 export function adaptSnapshot(raw: unknown): Snapshot {

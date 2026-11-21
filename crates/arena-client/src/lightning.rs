@@ -20,6 +20,8 @@ use crate::{FighterVisual, Practice, appearance::PlayerBody};
 
 /// How long one Pulse's lightning lasts, in seconds.
 pub(crate) const LIFETIME: f32 = 0.42;
+/// Maximum simultaneous lightning bolts rendered in one frame.
+pub(crate) const MAX_ZAPS: usize = 12;
 /// The bolt holds full strength until this fraction of its life, then fades.
 const FADE_FROM: f32 = 0.5;
 /// Re-rolls per second. Each roll re-forks every strand, which makes the crackle.
@@ -173,11 +175,9 @@ pub(crate) fn draw(
     };
     // Behind the loading overlay a sample bolt is drawn so its pipeline is
     // compiled before the first real Pulse.
-    let zap = practice.zap.or_else(|| {
-        startup.sweep().map(|_| Zap {
-            age: 0.12,
-            ..Zap::new(0, 1, 0)
-        })
+    let warmup = (practice.zaps.is_empty() && startup.sweep().is_some()).then(|| Zap {
+        age: 0.12,
+        ..Zap::new(0, 1, 0)
     });
     let fighter = |index: usize| {
         fighters
@@ -185,48 +185,58 @@ pub(crate) fn draw(
             .find(|(visual, _)| visual.0 == index)
             .map(|(_, transform)| *transform)
     };
-    let frame = zap.and_then(|zap| {
-        let eye = cameras.single().ok()?.translation();
-        let caster = fighter(zap.actor)?;
-        let target = fighter(zap.target)?.translation() + Vec3::Y * CHEST;
-        let candidates: Vec<_> = (zap.actor == 0)
-            .then(|| {
-                hands.iter().map(|(entity, rank, transform)| {
-                    // Only the shown model counts: a kit still loading, or the
-                    // fallback it replaced, sits under a hidden root. The
-                    // fighter itself may be hidden when the camera is inside it.
-                    let active = parents
-                        .iter_ancestors(entity)
-                        .take_while(|ancestor| !bodies.contains(*ancestor))
-                        .all(|ancestor| !matches!(shown.get(ancestor), Ok(Visibility::Hidden)));
-                    (*rank, transform.translation(), active)
-                })
-            })
-            .into_iter()
-            .flatten()
-            .collect();
-        let hand = pick_origin(&candidates, &caster).unwrap_or_else(|| {
-            caster.translation() + caster.rotation() * Vec3::new(-0.18, 1.3, -0.4)
-        });
-        let origin = hand + (target - hand).normalize_or_zero() * FINGER_REACH;
-        let mut ribbons = Ribbons::default();
-        ribbons.bolt(origin, target, eye, zap.seed, zap.age);
-        Some(ribbons)
-    });
-    if let Some(zap) = &mut practice.zap {
-        zap.age += time.delta_secs();
-        if zap.age >= LIFETIME {
-            practice.zap = None;
+    let mut ribbons = Ribbons::default();
+    if let Ok(eye) = cameras.single().map(|camera| camera.translation()) {
+        let mut player_candidates: Option<Vec<(CastingHand, Vec3, bool)>> = None;
+        for zap in practice.zaps.iter().copied().chain(warmup) {
+            let Some(caster) = fighter(zap.actor) else {
+                continue;
+            };
+            let Some(target_transform) = fighter(zap.target) else {
+                continue;
+            };
+            let target = target_transform.translation() + Vec3::Y * CHEST;
+            let hand = if zap.actor == 0 {
+                let candidates = player_candidates.get_or_insert_with(|| {
+                    hands
+                        .iter()
+                        .map(|(entity, rank, transform)| {
+                            // Only the shown model counts: a kit still loading, or the
+                            // fallback it replaced, sits under a hidden root. The
+                            // fighter itself may be hidden when the camera is inside it.
+                            let active = parents
+                                .iter_ancestors(entity)
+                                .take_while(|ancestor| !bodies.contains(*ancestor))
+                                .all(|ancestor| {
+                                    !matches!(shown.get(ancestor), Ok(Visibility::Hidden))
+                                });
+                            (*rank, transform.translation(), active)
+                        })
+                        .collect()
+                });
+                pick_origin(candidates, &caster)
+            } else {
+                None
+            }
+            .unwrap_or_else(|| {
+                caster.translation() + caster.rotation() * Vec3::new(-0.18, 1.3, -0.4)
+            });
+            let origin = hand + (target - hand).normalize_or_zero() * FINGER_REACH;
+            ribbons.bolt(origin, target, eye, zap.seed, zap.age);
         }
     }
-    let next = match frame {
-        Some(ribbons) if !ribbons.indices.is_empty() => {
-            if let Some(mut mesh) = meshes.get_mut(&bolt.0) {
-                ribbons.write(&mut mesh);
-            }
-            Visibility::Visible
+    let dt = time.delta_secs();
+    practice.zaps.retain_mut(|zap| {
+        zap.age += dt;
+        zap.age < LIFETIME
+    });
+    let next = if !ribbons.indices.is_empty() {
+        if let Some(mut mesh) = meshes.get_mut(&bolt.0) {
+            ribbons.write(&mut mesh);
         }
-        _ => Visibility::Hidden,
+        Visibility::Visible
+    } else {
+        Visibility::Hidden
     };
     if *visibility != next {
         *visibility = next;
@@ -760,9 +770,17 @@ mod tests {
         app.update();
         assert_eq!(shown(&mut app), Visibility::Hidden, "no hit, no bolt");
 
-        app.world_mut().resource_mut::<Practice>().zap = Some(Zap::new(0, 1, 30));
+        app.world_mut()
+            .resource_mut::<Practice>()
+            .push_zap(Zap::new(0, 1, 30));
         app.update();
         assert_eq!(shown(&mut app), Visibility::Visible);
+        let single_vertices = app
+            .world()
+            .resource::<Assets<Mesh>>()
+            .get(&bolt)
+            .unwrap()
+            .count_vertices();
         let mesh = app.world().resource::<Assets<Mesh>>().get(&bolt).unwrap();
         let positions = mesh
             .attribute(Mesh::ATTRIBUTE_POSITION)
@@ -776,11 +794,24 @@ mod tests {
             .fold(f32::MAX, f32::min);
         assert!(nearest < FINGER_REACH + 0.05, "{nearest}");
 
-        for _ in 0..(LIFETIME / 0.05).ceil() as usize + 1 {
+        // A second simultaneous hit renders alongside the first instead of replacing it.
+        app.world_mut()
+            .resource_mut::<Practice>()
+            .push_zap(Zap::new(1, 0, 31));
+        app.update();
+        let double_vertices = app
+            .world()
+            .resource::<Assets<Mesh>>()
+            .get(&bolt)
+            .unwrap()
+            .count_vertices();
+        assert!(double_vertices > single_vertices);
+
+        for _ in 0..(LIFETIME / 0.05).ceil() as usize + 2 {
             app.update();
         }
         assert_eq!(shown(&mut app), Visibility::Hidden);
-        assert_eq!(app.world().resource::<Practice>().zap, None);
+        assert!(app.world().resource::<Practice>().zaps.is_empty());
     }
 
     #[test]
