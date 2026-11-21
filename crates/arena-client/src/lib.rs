@@ -657,6 +657,9 @@ fn simulate(mut practice: ResMut<Practice>, mut net: ResMut<Net>) {
                 practice.feedback = "Pulse hit · 25 damage";
                 practice.zap = Some(lightning::Zap::new(actor, target, practice.arena.tick()));
             }
+            ArenaEvent::Finished(arena_sim::arena::RoundResult::TimeLimitDraw) => {
+                practice.feedback = "Time's up · draw · reset to play again";
+            }
             ArenaEvent::Finished(_) => {
                 practice.feedback = "Round complete · reset to play again";
             }
@@ -666,7 +669,13 @@ fn simulate(mut practice: ResMut<Practice>, mut net: ResMut<Net>) {
                 ..
             } => (),
             ArenaEvent::Rejected { actor: 0, reason } => {
-                practice.feedback = rejection_feedback(reason);
+                practice.feedback = if reason == arena_sim::arena::Rejection::MatchOver
+                    && practice.arena.result() == Some(arena_sim::arena::RoundResult::TimeLimitDraw)
+                {
+                    "Time's up · draw · reset to play again"
+                } else {
+                    rejection_feedback(reason)
+                };
             }
             _ => (),
         }
@@ -775,12 +784,14 @@ fn network_receive(
             view.fighters[0] = predicted;
         }
         if practice.arena.tick() != view.tick
+            || practice.arena.max_round_ticks() != session.round_ticks()
             || practice.arena.fighters() != view.fighters.as_slice()
             || practice.arena.result() != view.result
         {
             practice.arena =
                 Arena::restore(map.0.layout.clone(), view.tick, view.fighters, view.result)
-                    .expect("the session only keeps complete rosters");
+                    .and_then(|arena| arena.with_round_limit(session.round_ticks()))
+                    .expect("the session only keeps complete rosters and valid round limits");
         }
         let count = view.positions.len();
         if practice.selected.is_some_and(|actor| actor >= count) {
@@ -807,11 +818,14 @@ fn network_receive(
                     }
                     practice.zap = Some(lightning::Zap::new(actor, target, practice.arena.tick()));
                 }
-                network::Shown::Finished { won } => {
-                    practice.feedback = match won {
-                        Some(true) => "Victory · the match closes shortly",
-                        Some(false) => "Defeat · the match closes shortly",
-                        None => "Draw · the match closes shortly",
+                network::Shown::Finished { outcome } => {
+                    practice.feedback = match outcome {
+                        network::Outcome::Won => "Victory · the match closes shortly",
+                        network::Outcome::Lost => "Defeat · the match closes shortly",
+                        network::Outcome::Draw => "Draw · the match closes shortly",
+                        network::Outcome::TimeLimitDraw => {
+                            "Time's up · draw · the match closes shortly"
+                        }
                     };
                 }
                 network::Shown::Jumped { .. } => {}
@@ -1080,13 +1094,16 @@ fn publish(
     }
     let _ = write!(
         json,
-        r#","distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":true}},"maxHealth":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}},"nameplates":["#,
+        r#","distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"roundResult":{},"maxRoundTicks":{},"tickRate":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":true}},"maxHealth":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}},"nameplates":["#,
         distance,
         ATTACK_RANGE / 1000,
         cooldown,
         attack_status,
         practice.feedback,
         practice.arena.result().is_some(),
+        round_result_json(practice.arena.result()),
+        practice.arena.max_round_ticks(),
+        TICKS_PER_SECOND,
         orbit.yaw,
         orbit.pitch,
         orbit.distance,
@@ -1150,6 +1167,16 @@ fn publish(
     }
     json.push_str("]}");
     platform::publish(&json);
+}
+
+fn round_result_json(result: Option<arena_sim::arena::RoundResult>) -> &'static str {
+    match result {
+        None => "null",
+        Some(arena_sim::arena::RoundResult::Won { team: 0 }) => "\"won\"",
+        Some(arena_sim::arena::RoundResult::Won { .. }) => "\"lost\"",
+        Some(arena_sim::arena::RoundResult::Draw) => "\"draw\"",
+        Some(arena_sim::arena::RoundResult::TimeLimitDraw) => "\"time_limit_draw\"",
+    }
 }
 
 fn unit_tag_str(actor: usize) -> &'static str {
@@ -1372,6 +1399,42 @@ mod tests {
         )
         .unwrap();
         assert_eq!(attack_status(&over, 1), "Round complete");
+        assert_eq!(round_result_json(None), "null");
+        assert_eq!(
+            round_result_json(Some(arena_sim::arena::RoundResult::Won { team: 0 })),
+            "\"won\""
+        );
+        assert_eq!(
+            round_result_json(Some(arena_sim::arena::RoundResult::Won { team: 1 })),
+            "\"lost\""
+        );
+        assert_eq!(
+            round_result_json(Some(arena_sim::arena::RoundResult::Draw)),
+            "\"draw\""
+        );
+        assert_eq!(
+            round_result_json(Some(arena_sim::arena::RoundResult::TimeLimitDraw)),
+            "\"time_limit_draw\""
+        );
+        // Local practice keeps TimeLimitDraw feedback on subsequent idle ticks.
+        let mut app = App::new();
+        app.init_resource::<Practice>()
+            .init_resource::<Net>()
+            .add_systems(FixedUpdate, simulate);
+        {
+            let mut practice = app.world_mut().resource_mut::<Practice>();
+            practice.arena = practice.arena.clone().with_round_limit(1).unwrap();
+        }
+        app.world_mut().run_schedule(FixedUpdate);
+        assert_eq!(
+            app.world().resource::<Practice>().feedback,
+            "Time's up · draw · reset to play again"
+        );
+        app.world_mut().run_schedule(FixedUpdate);
+        assert_eq!(
+            app.world().resource::<Practice>().feedback,
+            "Time's up · draw · reset to play again"
+        );
     }
 
     #[test]
@@ -1501,6 +1564,7 @@ mod tests {
                 team_size: 1,
                 tick: 0,
                 tick_rate: 30,
+                round_ticks: arena_sim::arena::MAX_ROUND_TICKS,
                 rules: arena_protocol::RULES_VERSION,
                 map: network::fnv1a(arena_map::COLOSSEUM_JSON.as_bytes()),
             })

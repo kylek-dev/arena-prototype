@@ -63,8 +63,8 @@ yet.
 
 | Message | Fields | Notes |
 | --- | --- | --- |
-| `Welcome` | `protocol`, `actor: u8`, `team_size: u8`, `tick: u64`, `tick_rate: u8`, `rules: u32`, `map: u64` | `rules` is the rules version and `map` a digest of the layout, so replays and mismatches are explainable. |
-| `Snapshot` | `tick: u64`, `ack: u32`, `hash: u64`, `result`, `fighters` (≤ 6), `events` (≤ 256) | `ack` is the last input `seq` applied, and `queued` how many of the recipient's inputs are still waiting. `hash` is `Arena::state_hash()`. `fighters` carries each fighter's full rule state in actor order (position, height, vertical velocity, momentum, health, `ready_at`, facing), so a client can rebuild the arena and check `hash`, plus `connected`: whether that fighter's player is attached (not part of the rules or `hash`). `events` are tick-tagged events since the previous snapshot: `Jumped`, `Hit`, `Finished`, and `Rejected` only for the actor it names. `Moved` is not sent because positions show it. |
+| `Welcome` | `protocol`, `actor: u8`, `team_size: u8`, `tick: u64`, `tick_rate: u8`, `round_ticks: u64`, `rules: u32`, `map: u64` | `round_ticks` is the round's tick limit (`1..=MAX_ROUND_TICKS`, default 20 minutes), `rules` is the rules version and `map` a digest of the layout, so the remaining clock, replays and mismatches are explainable. |
+| `Snapshot` | `tick: u64`, `ack: u32`, `hash: u64`, `result`, `fighters` (≤ 6), `events` (≤ 256) | `ack` is the last input `seq` applied, and `queued` how many of the recipient's inputs are still waiting. `hash` is `Arena::state_hash()`. `result` is `None` while running, or `Won { team }`, `Draw` (simultaneous elimination) or `TimeLimitDraw` (round clock expired with both teams standing). `fighters` carries each fighter's full rule state in actor order (position, height, vertical velocity, momentum, health, `ready_at`, facing), so a client can rebuild the arena and check `hash`, plus `connected`: whether that fighter's player is attached (not part of the rules or `hash`). `events` are tick-tagged events since the previous snapshot: `Jumped`, `Hit`, `Finished`, and `Rejected` only for the actor it names. `Moved` is not sent because positions show it. |
 | `Pong` | `nonce: u32` | |
 | `Error` | `code` | Sent before the server closes: `VersionMismatch`, `BadTicket`, `MatchFull`, `MatchOver`, `RateLimited`, `Malformed`, `HelloTimeout`, `ServerShutdown`, `Replaced` (a newer connection with the same ticket took the seat). |
 
@@ -88,15 +88,15 @@ These are message sizes, not network measurements.
 | Outgoing frames queued per connection | 64 | Drop the frame and count it (snapshots carry full state) |
 | `Hello` deadline | 5 s | Close |
 | Undecodable message (truncated, unknown variant, invalid tag, trailing bytes) | — | Close with `Malformed` |
-| Over a field limit (ticket, fighters, events) | — | Close with `Malformed` |
+| Over a field limit (ticket, `round_ticks`, fighters, events) | — | Close with `Malformed` |
 
 ## Versioning
 
-`PROTOCOL_VERSION` (currently 1) changes with any incompatible layout change;
-the golden-frame test fails until it is bumped deliberately. Until the first
-browser client ships, version 1 is a draft and may still change without a
-bump (the per-fighter `connected` flag was added this way).
-`RULES_VERSION` (currently 2: rounds end in a draw after 20 minutes)
+`PROTOCOL_VERSION` (currently 2: `Welcome.round_ticks` and
+`WireResult::TimeLimitDraw`) changes with any incompatible layout change;
+the golden-frame test fails until it is bumped deliberately.
+`RULES_VERSION` (currently 3: time-limit draws are distinct from
+mutual-elimination draws and round limits are explicit)
 changes when a rules change could alter a
 replayed outcome. `Welcome.map` identifies the layout.
 

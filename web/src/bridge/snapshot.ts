@@ -3,6 +3,7 @@ import type { UnitTag } from "../domain/units/tags";
 export type RosterEntry = Entity & { actor: number; tag: UnitTag };
 import type { NameplateProjection } from "../domain/units/nameplates";
 import { validCombatText, type CombatTextProjection } from "../domain/units/combat-text";
+export type RoundResult = "won" | "lost" | "draw" | "time_limit_draw";
 export type Snapshot = {
   tick: number;
   frames: number;
@@ -24,6 +25,12 @@ export type Snapshot = {
   attackStatus: string;
   feedback: string;
   won: boolean;
+  /** Authoritative outcome from this player's side; absent from older clients. */
+  roundResult?: RoundResult | null;
+  /** Total authoritative ticks in the round before a time-limit draw. */
+  maxRoundTicks?: number;
+  /** Authoritative simulation ticks per second. */
+  tickRate?: number;
   character: { status: string };
   /** Render warmup behind the loading screen; absent from older clients. */
   startup?: StartupState;
@@ -39,6 +46,7 @@ export type StartupState = {
 };
 
 const STARTUP_PHASES = new Set(["assets", "render", "warming", "ready"]);
+const ROUND_RESULTS = new Set<RoundResult>(["won", "lost", "draw", "time_limit_draw"]);
 const CHARACTER_STATUSES = new Set(["ready", "failed", "placeholder", "loading"]);
 const HOVERED_UNIT_RE = /^(Player|Opponent[1-3]|Team[1-2])$/;
 const NAMEPLATE_TAG_RE = /^(Opponent|Team)[1-3]$/;
@@ -67,6 +75,8 @@ export function needsImmediateDelivery(previous: Snapshot | null, next: Snapshot
     next.teamSize !== previous.teamSize ||
     next.selectedActor !== previous.selectedActor ||
     next.won !== previous.won ||
+    next.roundResult !== previous.roundResult ||
+    next.maxRoundTicks !== previous.maxRoundTicks ||
     next.startup?.ready !== previous.startup?.ready ||
     next.hoveredUnit !== previous.hoveredUnit ||
     next.cooldown > previous.cooldown ||
@@ -113,6 +123,11 @@ export function adaptSnapshot(raw: unknown): Snapshot {
       r.hoveredUnit !== null &&
       !HOVERED_UNIT_RE.test(r.hoveredUnit)) ||
     typeof r.won !== "boolean" ||
+    (r.roundResult !== undefined && r.roundResult !== null && !ROUND_RESULTS.has(r.roundResult)) ||
+    (r.roundResult !== undefined && r.won !== (r.roundResult !== null)) ||
+    (r.maxRoundTicks !== undefined &&
+      (!Number.isSafeInteger(r.maxRoundTicks) || r.maxRoundTicks < 1)) ||
+    (r.tickRate !== undefined && (!Number.isSafeInteger(r.tickRate) || r.tickRate < 1)) ||
     typeof r.feedback !== "string" ||
     typeof r.attackStatus !== "string"
   )

@@ -13,7 +13,7 @@
 
 use std::collections::VecDeque;
 
-use arena_sim::arena::{ActorInput, Arena, Combatant, RoundResult};
+use arena_sim::arena::{ActorInput, Arena, Combatant, MAX_ROUND_TICKS, RoundResult};
 use arena_sim::map::Layout;
 
 /// Unacknowledged inputs kept for replay (over 8 s at 30 Hz).
@@ -252,11 +252,22 @@ pub struct Predictor {
     /// The server's latest state plus every unacknowledged input.
     arena: Option<Arena>,
     actor: usize,
+    round_ticks: Option<u64>,
     pending: VecDeque<(u32, ActorInput)>,
     corrections: u64,
 }
 
 impl Predictor {
+    /// Configures the authoritative round limit announced by `Welcome`.
+    /// Ignores invalid values outside `1..=MAX_ROUND_TICKS`.
+    pub fn set_round_limit(&mut self, round_ticks: u64) {
+        if round_ticks > 0 && round_ticks <= MAX_ROUND_TICKS {
+            self.round_ticks = Some(round_ticks);
+            if let Some(arena) = self.arena.as_mut() {
+                arena.set_round_limit(round_ticks);
+            }
+        }
+    }
     /// The predicted state of this player's fighter, once reconciled once.
     pub fn predicted(&self) -> Option<Combatant> {
         self.arena
@@ -330,14 +341,18 @@ impl Predictor {
             self.arena = None;
             return None;
         }
+        let round_ticks = self.round_ticks.unwrap_or(MAX_ROUND_TICKS);
         let mut arena = match self.arena.take() {
             Some(mut existing) if existing.layout() == layout => {
-                if !existing.restore_in_place(tick, &fighters, result) {
+                if !existing.restore_in_place(tick, &fighters, result)
+                    || !existing.set_round_limit(round_ticks)
+                {
                     return None;
                 }
                 existing
             }
-            _ => Arena::restore(layout.clone(), tick, fighters, result)?,
+            _ => Arena::restore(layout.clone(), tick, fighters, result)?
+                .with_round_limit(round_ticks)?,
         };
         for (_, input) in &self.pending {
             step(&mut arena, actor, *input);
@@ -488,17 +503,12 @@ mod tests {
         predictor.reconcile(&layout(), 0, server.fighters().to_vec(), None, 3, 0);
         let moved = predictor.apply(1, walk(1).1).unwrap();
         assert_ne!(moved.position, server.fighters()[3].position);
-        // After the result nothing moves.
-        let mut over = Predictor::default();
-        over.reconcile(
-            &layout(),
-            0,
-            server.fighters().to_vec(),
-            Some(RoundResult::Draw),
-            0,
-            0,
-        );
-        assert_eq!(over.apply(1, walk(1).1), Some(server.fighters()[0]));
+        // After the result nothing moves (for both mutual-KO and time-limit draws).
+        for result in [RoundResult::Draw, RoundResult::TimeLimitDraw] {
+            let mut over = Predictor::default();
+            over.reconcile(&layout(), 0, server.fighters().to_vec(), Some(result), 0, 0);
+            assert_eq!(over.apply(1, walk(1).1), Some(server.fighters()[0]));
+        }
         // A seat outside the roster predicts nothing.
         let mut lost = Predictor::default();
         assert_eq!(
@@ -506,6 +516,49 @@ mod tests {
             None
         );
         assert_eq!(lost.predicted(), None);
+    }
+
+    #[test]
+    fn prediction_respects_custom_round_limit_across_time_expiry() {
+        let mut server = Arena::practice(layout(), 1)
+            .unwrap()
+            .with_round_limit(4)
+            .unwrap();
+        let mut predictor = Predictor::default();
+        predictor.set_round_limit(4);
+        predictor.reconcile(&layout(), 0, server.fighters().to_vec(), None, 0, 0);
+        // Send 6 movement inputs; only the first 4 ticks happen before TimeLimitDraw.
+        let mut sent = Vec::new();
+        for seq in 1..=6 {
+            let (_, input) = walk(seq);
+            predictor.apply(seq, input);
+            sent.push(input);
+        }
+        let expected_after_4 = {
+            let mut replay = server.clone();
+            for input in sent.iter().take(4) {
+                replay.advance(&[*input]);
+            }
+            assert_eq!(replay.result(), Some(RoundResult::TimeLimitDraw));
+            replay.fighters()[0]
+        };
+        assert_eq!(predictor.predicted(), Some(expected_after_4));
+        // Reconciling at tick 3 (one tick left) replays the remaining pending inputs
+        // and still stops cleanly at tick 4 with zero corrections.
+        for input in sent.iter().take(3) {
+            server.advance(&[*input]);
+        }
+        let moved = predictor.reconcile(
+            &layout(),
+            server.tick(),
+            server.fighters().to_vec(),
+            server.result(),
+            0,
+            3,
+        );
+        assert_eq!(moved, Some(0));
+        assert_eq!(predictor.corrections(), 0);
+        assert_eq!(predictor.predicted(), Some(expected_after_4));
     }
 }
 

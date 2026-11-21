@@ -28,9 +28,13 @@ use std::time::Duration;
 use arena_server::ingress::{Cidr, Origins};
 use arena_server::ticket::TicketKey;
 use arena_server::{Config, start};
+use arena_sim::TICKS_PER_SECOND;
+use arena_sim::arena::MAX_ROUND_TICKS;
 
+const MAX_ROUND_SECONDS: u64 = MAX_ROUND_TICKS / TICKS_PER_SECOND;
 const USAGE: &str = "usage: arena-server [--bind ADDR] [--dev] [--debug-json] [--drain-seconds N] \
-[--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]... [--connections-per-address N]";
+[--round-seconds N] [--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]... \
+[--connections-per-address N]";
 /// How often a drain reports the matches it is waiting for.
 const DRAIN_REPORT: Duration = Duration::from_secs(10);
 
@@ -75,11 +79,23 @@ fn origins_for(allowed: Vec<String>, any: bool, dev: bool) -> Result<Origins, St
     }
 }
 
+/// Round duration in ticks (`1..=MAX_ROUND_SECONDS`, defaulting to 20 minutes).
+fn round_ticks_for(seconds: Option<u64>) -> Result<u64, String> {
+    match seconds {
+        None => Ok(MAX_ROUND_TICKS),
+        Some(secs) if (1..=MAX_ROUND_SECONDS).contains(&secs) => Ok(secs * TICKS_PER_SECOND),
+        Some(_) => Err(format!(
+            "--round-seconds must be between 1 and {MAX_ROUND_SECONDS}"
+        )),
+    }
+}
+
 async fn run() -> Result<(), String> {
     let mut bind: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 8080));
     let mut dev = false;
     let mut debug_json = false;
     let mut drain_seconds = None;
+    let mut round_seconds = None;
     let mut allowed = Vec::new();
     let mut any_origin = false;
     let mut trusted_proxies = Vec::new();
@@ -101,6 +117,14 @@ async fn run() -> Result<(), String> {
                     value
                         .parse()
                         .map_err(|_| format!("invalid --drain-seconds {value}"))?,
+                );
+            }
+            "--round-seconds" => {
+                let value = args.next().ok_or(USAGE)?;
+                round_seconds = Some(
+                    value
+                        .parse()
+                        .map_err(|_| format!("invalid --round-seconds {value}"))?,
                 );
             }
             "--allow-origin" => {
@@ -131,6 +155,7 @@ async fn run() -> Result<(), String> {
         }
     }
     let drain = drain_for(drain_seconds, dev)?;
+    let round_ticks = round_ticks_for(round_seconds)?;
     let origins = origins_for(allowed, any_origin, dev)?;
     let key = match std::env::var("ARENA_TICKET_KEY") {
         Ok(hex) => TicketKey::from_hex(&hex)
@@ -144,6 +169,7 @@ async fn run() -> Result<(), String> {
     config.debug_json = debug_json;
     config.origins = origins;
     config.trusted_proxies = trusted_proxies;
+    config.round_ticks = round_ticks;
     if let Some(limit) = connections_per_address {
         config.connections_per_address = limit;
     } else if dev {
@@ -232,5 +258,17 @@ mod tests {
         assert!(origins_for(page(), true, false).is_err());
         let refused = origins_for(Vec::new(), false, false).unwrap_err();
         assert!(refused.contains("--allow-origin"), "{refused}");
+    }
+
+    #[test]
+    fn round_seconds_defaults_to_twenty_minutes_and_rejects_out_of_range() {
+        assert_eq!(round_ticks_for(None), Ok(MAX_ROUND_TICKS));
+        assert_eq!(round_ticks_for(Some(1)), Ok(TICKS_PER_SECOND));
+        assert_eq!(
+            round_ticks_for(Some(MAX_ROUND_SECONDS)),
+            Ok(MAX_ROUND_TICKS)
+        );
+        assert!(round_ticks_for(Some(0)).is_err());
+        assert!(round_ticks_for(Some(MAX_ROUND_SECONDS + 1)).is_err());
     }
 }

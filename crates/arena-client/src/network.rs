@@ -28,7 +28,9 @@ use arena_protocol::prediction::{Pacer, Predictor, TickRate};
 use arena_protocol::{
     ClientMessage, ErrorCode, FighterState, InputFrame, ServerMessage, WireEvent,
 };
-use arena_sim::arena::{ActorInput, Axes, Combatant, Rejection, RoundResult};
+use arena_sim::arena::{
+    ActorInput, Arena, Axes, Combatant, MAX_ROUND_TICKS, Rejection, RoundResult,
+};
 use arena_sim::map::Layout;
 use bevy::math::Vec3;
 
@@ -71,6 +73,17 @@ pub enum Phase {
     Closed(ErrorCode),
 }
 
+/// A finished round's result from this player's side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Won,
+    Lost,
+    /// Both teams were eliminated on the same tick.
+    Draw,
+    /// The round clock expired while both teams still stood.
+    TimeLimitDraw,
+}
+
 /// Something to show when the view reaches its tick, in local indices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shown {
@@ -82,9 +95,8 @@ pub enum Shown {
     Jumped {
         actor: usize,
     },
-    /// The round's result from this player's side: `won` is `None` on a draw.
     Finished {
-        won: Option<bool>,
+        outcome: Outcome,
     },
 }
 
@@ -170,6 +182,7 @@ pub struct Session {
     /// `order[local] = server actor`.
     order: Vec<usize>,
     map: Option<u64>,
+    round_ticks: Option<u64>,
     snapshots: VecDeque<Received>,
     newest_at: f64,
     view_tick: Option<f64>,
@@ -227,6 +240,10 @@ impl Session {
         let expected = *COLOSSEUM_HASH.get_or_init(|| fnv1a(arena_map::COLOSSEUM_JSON.as_bytes()));
         self.map.map(|digest| digest != expected)
     }
+    /// Total ticks in the round announced by the server (`MAX_ROUND_TICKS` before welcome).
+    pub fn round_ticks(&self) -> u64 {
+        self.round_ticks.unwrap_or(MAX_ROUND_TICKS)
+    }
     /// Whether intent should be sent now.
     pub fn joined(&self) -> bool {
         self.seat.is_some() && matches!(self.phase, Phase::Waiting | Phase::Playing)
@@ -267,7 +284,10 @@ impl Session {
                 ServerMessage::Welcome(welcome) => {
                     let count = usize::from(welcome.team_size) * 2;
                     let seat = usize::from(welcome.actor);
-                    if seat >= count {
+                    if seat >= count
+                        || welcome.round_ticks == 0
+                        || welcome.round_ticks > MAX_ROUND_TICKS
+                    {
                         self.phase = Phase::Closed(ErrorCode::Malformed);
                         continue;
                     }
@@ -281,6 +301,8 @@ impl Session {
                     self.seat = Some(seat);
                     self.order = seat_order(seat, count);
                     self.map = Some(welcome.map);
+                    self.round_ticks = Some(welcome.round_ticks);
+                    self.predictor.set_round_limit(welcome.round_ticks);
                     self.phase = Phase::Waiting;
                 }
                 ServerMessage::Snapshot(snapshot) => {
@@ -313,8 +335,7 @@ impl Session {
                     }
                     if (2..=arena_protocol::MAX_FIGHTERS).contains(&authoritative.len())
                         && authoritative.len().is_multiple_of(2)
-                        && snapshot_state_hash(snapshot.tick, &authoritative, result)
-                            != snapshot.hash
+                        && Arena::hash_state(snapshot.tick, &authoritative, result) != snapshot.hash
                     {
                         self.stats.hash_mismatches += 1;
                     }
@@ -329,6 +350,13 @@ impl Session {
                         .map(|&actor| snapshot.fighters[actor].connected)
                         .collect();
                     let my_team = self.seat.map_or(0, |seat| seat % 2);
+                    // Translate result team parity into local numbering (local 0 is my team).
+                    let local_result = result.map(|result| match result {
+                        RoundResult::Won { team } => RoundResult::Won {
+                            team: usize::from(team != my_team),
+                        },
+                        other => other,
+                    });
                     for event in &snapshot.events {
                         match event.event {
                             WireEvent::Rejected(reason) => rejections.push(reason.into()),
@@ -363,7 +391,7 @@ impl Session {
                         tick: snapshot.tick,
                         fighters,
                         connected,
-                        result,
+                        result: local_result,
                     });
                     self.newest_at = now;
                     while self.snapshots.len() > BUFFER {
@@ -498,9 +526,11 @@ impl Session {
                 actor: local(actor)?,
             },
             WireEvent::Finished(result) => Shown::Finished {
-                won: match RoundResult::from(result) {
-                    RoundResult::Won { team } => Some(team == my_team),
-                    RoundResult::Draw => None,
+                outcome: match RoundResult::from(result) {
+                    RoundResult::Won { team } if team == my_team => Outcome::Won,
+                    RoundResult::Won { .. } => Outcome::Lost,
+                    RoundResult::Draw => Outcome::Draw,
+                    RoundResult::TimeLimitDraw => Outcome::TimeLimitDraw,
                 },
             },
             WireEvent::Rejected(_) => return None,
@@ -722,35 +752,6 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
 fn fnv1a_update(mut hash: u64, bytes: &[u8]) -> u64 {
     for &byte in bytes {
         hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
-}
-
-/// Computes `Arena::state_hash` directly without cloning `Layout` or `Vec<Combatant>`.
-fn snapshot_state_hash(tick: u64, fighters: &[Combatant], result: Option<RoundResult>) -> u64 {
-    let mut hash = fnv1a_update(0xcbf2_9ce4_8422_2325, &tick.to_le_bytes());
-    hash = fnv1a_update(
-        hash,
-        &match result {
-            None => [0, 0],
-            Some(RoundResult::Won { team }) => [1, team as u8],
-            Some(RoundResult::Draw) => [2, 0],
-        },
-    );
-    for fighter in fighters {
-        for value in [
-            fighter.position.x,
-            fighter.position.z,
-            fighter.height,
-            fighter.vertical_velocity,
-            fighter.momentum.x,
-            fighter.momentum.z,
-        ] {
-            hash = fnv1a_update(hash, &value.to_le_bytes());
-        }
-        hash = fnv1a_update(hash, &fighter.health.to_le_bytes());
-        hash = fnv1a_update(hash, &fighter.ready_at.to_le_bytes());
-        hash = fnv1a_update(hash, &fighter.facing.to_le_bytes());
     }
     hash
 }

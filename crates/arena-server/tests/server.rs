@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use arena_protocol::{
     ClientMessage, ErrorCode, FighterState, InputFrame, PROTOCOL_VERSION, ServerMessage, Snapshot,
-    Welcome, WireEvent, WireRejection,
+    Welcome, WireEvent, WireRejection, WireResult,
 };
 use arena_server::ticket::{Claims, TicketKey, from_hex};
 use arena_server::{Config, NewMatch, Running, start};
@@ -650,5 +650,60 @@ async fn only_allowed_pages_connect_and_each_address_holds_a_few_connections() {
         metrics.contains("arena_connections_refused_origin_total 1\n"),
         "{metrics}"
     );
+    running.shut_down(Duration::ZERO).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_round_that_reaches_the_time_limit_ends_in_a_time_limit_draw() {
+    // Server startup rejects out-of-range round limits instead of failing at join time.
+    for invalid in [0, arena_sim::arena::MAX_ROUND_TICKS + 1] {
+        let mut bad = config(true);
+        bad.round_ticks = invalid;
+        assert!(start(bad).await.is_err(), "round_ticks={invalid}");
+    }
+    let mut short = config(true);
+    short.round_ticks = 12;
+    short.limits.linger = 3;
+    let running = start(short).await.unwrap();
+    let addr = running.addr;
+    let created = new_match(addr, 1).await;
+    let (mut first, welcome_a) = Client::join(addr, &created.tickets[0]).await;
+    let (mut second, welcome_b) = Client::join(addr, &created.tickets[1]).await;
+    assert_eq!(welcome_a.round_ticks, 12);
+    assert_eq!(welcome_b.round_ticks, 12);
+
+    // Wait for both clients to observe the authoritative time-limit draw.
+    let done_a = first
+        .snapshot_until(|snapshot| snapshot.result.is_some())
+        .await;
+    let done_b = second
+        .snapshot_until(|snapshot| snapshot.result.is_some())
+        .await;
+    assert_eq!(done_a.tick, 12);
+    assert_eq!(done_b.tick, 12);
+    assert_eq!(done_a.result, Some(WireResult::TimeLimitDraw));
+    assert_eq!(done_b.result, Some(WireResult::TimeLimitDraw));
+    assert_eq!(done_a.hash, done_b.hash);
+    assert!(done_a.events.iter().any(|event| {
+        event.tick == 11 && event.event == WireEvent::Finished(WireResult::TimeLimitDraw)
+    }));
+    assert!(done_b.events.iter().any(|event| {
+        event.tick == 11 && event.event == WireEvent::Finished(WireResult::TimeLimitDraw)
+    }));
+
+    // After the linger window, both connections close with MatchOver.
+    assert_eq!(first.error().await, ErrorCode::MatchOver);
+    assert_eq!(second.error().await, ErrorCode::MatchOver);
+    assert!(running.drained(WAIT).await);
+
+    // Metrics record the time-limit draw and tickets cannot restart the match.
+    let (_, metrics) = http(addr, "GET", "/metrics").await;
+    assert!(
+        metrics.contains("arena_matches_finished_total{result=\"time_limit_draw\"} 1\n"),
+        "{metrics}"
+    );
+    let mut late = Client::open(addr).await;
+    late.hello(from_hex(&created.tickets[0]).unwrap()).await;
+    assert_eq!(late.error().await, ErrorCode::MatchOver);
     running.shut_down(Duration::ZERO).await.unwrap();
 }

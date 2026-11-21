@@ -70,6 +70,7 @@ fn server_samples() -> Vec<ServerMessage> {
             team_size: 3,
             tick: 1_234_567,
             tick_rate: 30,
+            round_ticks: MAX_ROUND_TICKS,
             rules: RULES_VERSION,
             map: u64::MAX,
         }),
@@ -117,14 +118,14 @@ fn ordinary_traffic_is_small() {
 #[test]
 fn the_wire_layout_is_pinned() {
     // Golden frames: changing them requires a PROTOCOL_VERSION bump.
-    assert_eq!(PROTOCOL_VERSION, 1);
+    assert_eq!(PROTOCOL_VERSION, 2);
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 1,
+            protocol: 2,
             ticket: vec![0xAB, 0xCD],
         }
         .encode(),
-        [0, 1, 2, 0xAB, 0xCD]
+        [0, 2, 2, 0xAB, 0xCD]
     );
     assert_eq!(
         ClientMessage::Input(input(300)).encode(),
@@ -218,6 +219,22 @@ fn malformed_frames_are_rejected_not_trusted() {
         ServerMessage::decode(&ServerMessage::Snapshot(noisy).encode()),
         Err(DecodeError::OverLimit)
     );
+    for invalid_round_ticks in [0, MAX_ROUND_TICKS + 1] {
+        let bad_welcome = ServerMessage::Welcome(Welcome {
+            protocol: PROTOCOL_VERSION,
+            actor: 0,
+            team_size: 1,
+            tick: 0,
+            tick_rate: 30,
+            round_ticks: invalid_round_ticks,
+            rules: RULES_VERSION,
+            map: 1,
+        });
+        assert_eq!(
+            ServerMessage::decode(&bad_welcome.encode()),
+            Err(DecodeError::OverLimit)
+        );
+    }
 }
 
 #[test]
@@ -380,6 +397,10 @@ fn recipients_see_only_their_own_rejections_and_no_movement_noise() {
         WireEvent::for_recipient(&ArenaEvent::Finished(RoundResult::Draw), 3),
         Some(WireEvent::Finished(WireResult::Draw))
     );
+    assert_eq!(
+        WireEvent::for_recipient(&ArenaEvent::Finished(RoundResult::TimeLimitDraw), 3),
+        Some(WireEvent::Finished(WireResult::TimeLimitDraw))
+    );
 }
 
 #[test]
@@ -414,7 +435,11 @@ fn snapshots_carry_the_authoritative_state_and_its_hash() {
         .map(FighterState::combatant)
         .collect();
     assert_eq!(fighters, arena.fighters());
-    for result in [RoundResult::Draw, RoundResult::Won { team: 1 }] {
+    for result in [
+        RoundResult::Draw,
+        RoundResult::TimeLimitDraw,
+        RoundResult::Won { team: 1 },
+    ] {
         assert_eq!(RoundResult::from(WireResult::from(result)), result);
     }
     for reason in [

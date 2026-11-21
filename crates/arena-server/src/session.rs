@@ -200,6 +200,7 @@ impl Session {
                 team_size,
                 tick: self.arena.tick(),
                 tick_rate: TICKS_PER_SECOND as u8,
+                round_ticks: self.arena.max_round_ticks(),
                 rules: RULES_VERSION,
                 map: self.map,
             }),
@@ -424,8 +425,9 @@ impl Session {
                 let tick = self.arena.tick();
                 let events = self.arena.advance(&inputs[..count]);
                 Metrics::add(&self.metrics.ticks, 1);
-                if self.arena.result().is_some() {
+                if let Some(result) = self.arena.result() {
                     self.phase = Phase::Finished { at: self.clock };
+                    self.metrics.record_result(result);
                 } else if self.seats.iter().all(|seat| {
                     seat.conn.is_none()
                         && seat

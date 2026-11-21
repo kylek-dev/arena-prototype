@@ -144,6 +144,14 @@ pub enum RoundResult {
     Won { team: usize },
     /// Both teams were eliminated on the same tick.
     Draw,
+    /// The round clock ran out while both teams still had standing fighters.
+    TimeLimitDraw,
+}
+impl RoundResult {
+    /// Whether the round ended without a winner (mutual elimination or time limit).
+    pub fn is_draw(self) -> bool {
+        matches!(self, Self::Draw | Self::TimeLimitDraw)
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArenaEvent {
@@ -171,6 +179,7 @@ pub enum ArenaEvent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Arena {
     tick: u64,
+    max_round_ticks: u64,
     layout: Layout,
     fighters: Vec<Combatant>,
     result: Option<RoundResult>,
@@ -202,6 +211,7 @@ impl Arena {
             .collect();
         Some(Self {
             tick: 0,
+            max_round_ticks: MAX_ROUND_TICKS,
             layout,
             fighters,
             result: None,
@@ -223,10 +233,25 @@ impl Arena {
         }
         Some(Self {
             tick,
+            max_round_ticks: MAX_ROUND_TICKS,
             layout,
             fighters,
             result,
         })
+    }
+    /// Sets this round's tick limit (`1..=MAX_ROUND_TICKS`), returning `None`
+    /// if the limit is out of bounds.
+    pub fn with_round_limit(mut self, max_round_ticks: u64) -> Option<Self> {
+        self.set_round_limit(max_round_ticks).then_some(self)
+    }
+    /// Updates this round's tick limit (`1..=MAX_ROUND_TICKS`) in place.
+    /// Returns `false` and leaves the arena unchanged if out of bounds.
+    pub fn set_round_limit(&mut self, max_round_ticks: u64) -> bool {
+        if max_round_ticks == 0 || max_round_ticks > MAX_ROUND_TICKS {
+            return false;
+        }
+        self.max_round_ticks = max_round_ticks;
+        true
     }
     /// Updates an arena's state without reallocating its layout or fighter
     /// buffer. Returns `false` and leaves the arena unchanged unless there
@@ -248,6 +273,14 @@ impl Arena {
     }
     pub fn tick(&self) -> u64 {
         self.tick
+    }
+    /// Total ticks allowed in this round before a [`RoundResult::TimeLimitDraw`].
+    pub fn max_round_ticks(&self) -> u64 {
+        self.max_round_ticks
+    }
+    /// Authoritative ticks remaining before the round clock expires.
+    pub fn remaining_ticks(&self) -> u64 {
+        self.max_round_ticks.saturating_sub(self.tick)
     }
     pub fn fighters(&self) -> &[Combatant] {
         &self.fighters
@@ -387,7 +420,7 @@ impl Arena {
                     reject(&mut events, actor, Rejection::MatchOver);
                 }
             }
-            self.tick += 1;
+            self.tick = self.tick.saturating_add(1);
             return events;
         }
 
@@ -464,7 +497,7 @@ impl Arena {
             }
             let damage = ATTACK_DAMAGE.min(self.fighters[target].health);
             incoming[target] = incoming[target].saturating_add(damage);
-            self.fighters[actor].ready_at = self.tick + ATTACK_COOLDOWN;
+            self.fighters[actor].ready_at = self.tick.saturating_add(ATTACK_COOLDOWN);
             events.push(ArenaEvent::Hit {
                 actor,
                 target,
@@ -482,7 +515,9 @@ impl Arena {
         };
         self.result = match (standing(0), standing(1)) {
             // Time is up after this tick: nobody won.
-            (true, true) if self.tick + 1 >= MAX_ROUND_TICKS => Some(RoundResult::Draw),
+            (true, true) if self.tick.saturating_add(1) >= self.max_round_ticks => {
+                Some(RoundResult::TimeLimitDraw)
+            }
             (true, true) => None,
             (true, false) => Some(RoundResult::Won { team: 0 }),
             (false, true) => Some(RoundResult::Won { team: 1 }),
@@ -490,7 +525,7 @@ impl Arena {
         };
         if let Some(result) = self.result {
             events.push(ArenaEvent::Finished(result));
-            self.tick += 1;
+            self.tick = self.tick.saturating_add(1);
             return events;
         }
 
@@ -505,7 +540,7 @@ impl Arena {
                 }
             }
         }
-        self.tick += 1;
+        self.tick = self.tick.saturating_add(1);
         events
     }
 
@@ -525,6 +560,7 @@ impl Arena {
             None => [0, 0],
             Some(RoundResult::Won { team }) => [1, team as u8],
             Some(RoundResult::Draw) => [2, 0],
+            Some(RoundResult::TimeLimitDraw) => [2, 1],
         });
         for fighter in fighters {
             for value in [
@@ -1439,6 +1475,7 @@ mod tests {
     fn state_hash_is_stable_and_covers_authoritative_state() {
         let mut arena = Arena {
             tick: 7,
+            max_round_ticks: MAX_ROUND_TICKS,
             layout: fixture(),
             fighters: vec![
                 Combatant {
@@ -1473,13 +1510,14 @@ mod tests {
         assert_eq!(arena.state_hash(), GOLDEN_STATE_HASH);
         assert_eq!(arena.clone().state_hash(), arena.state_hash());
         let mut seen = vec![arena.state_hash()];
-        let mutations: [fn(&mut Arena); 6] = [
+        let mutations: [fn(&mut Arena); 7] = [
             |a| a.fighters[0].facing = 1,
             |a| a.fighters[1].health -= 1,
             |a| a.fighters[0].position.x += 1,
             |a| a.fighters[1].ready_at += 1,
             |a| a.tick += 1,
             |a| a.result = Some(RoundResult::Draw),
+            |a| a.result = Some(RoundResult::TimeLimitDraw),
         ];
         for mutate in mutations {
             mutate(&mut arena);
@@ -1489,22 +1527,34 @@ mod tests {
         }
     }
     #[test]
-    fn a_round_still_running_after_twenty_minutes_is_a_draw() {
+    fn a_round_still_running_after_twenty_minutes_is_a_time_limit_draw() {
         assert_eq!(MAX_ROUND_TICKS, 36_000);
         let mut arena = close_quarters(1, 3_000);
+        assert_eq!(arena.max_round_ticks(), MAX_ROUND_TICKS);
+        assert_eq!(arena.remaining_ticks(), MAX_ROUND_TICKS);
         arena.tick = MAX_ROUND_TICKS - 2;
+        assert_eq!(arena.remaining_ticks(), 2);
         assert_eq!(arena.step(&[]), vec![]);
         assert_eq!(arena.result(), None);
-        // The last tick still resolves, then the round ends.
+        assert_eq!(arena.remaining_ticks(), 1);
+        // The last tick still resolves, then the round ends in a time-limit draw.
         assert_eq!(
             arena.step(&[forward()]),
             vec![
                 ArenaEvent::Moved { actor: 0 },
-                ArenaEvent::Finished(RoundResult::Draw)
+                ArenaEvent::Finished(RoundResult::TimeLimitDraw)
             ]
         );
-        assert_eq!(arena.result(), Some(RoundResult::Draw));
+        assert_eq!(arena.result(), Some(RoundResult::TimeLimitDraw));
+        assert!(arena.result().unwrap().is_draw());
         assert_eq!(arena.tick(), MAX_ROUND_TICKS);
+        assert_eq!(arena.remaining_ticks(), 0);
+        // Subsequent ticks reject all commands and remaining_ticks stays at 0.
+        assert_eq!(
+            arena.step(&[forward()]),
+            vec![rejected(0, Rejection::MatchOver)]
+        );
+        assert_eq!(arena.remaining_ticks(), 0);
         // An elimination on that last tick still wins.
         let mut arena = close_quarters(1, 3_000);
         arena.tick = MAX_ROUND_TICKS - 1;
@@ -1513,6 +1563,56 @@ mod tests {
             arena.step(&[ATTACK]).last(),
             Some(&ArenaEvent::Finished(RoundResult::Won { team: 0 }))
         );
+        // Simultaneous mutual elimination on that last tick is a Draw, not a TimeLimitDraw.
+        let mut mutual = close_quarters(1, 3_000);
+        mutual.tick = MAX_ROUND_TICKS - 1;
+        mutual.fighters[0].health = ATTACK_DAMAGE;
+        mutual.fighters[1].health = ATTACK_DAMAGE;
+        let events = mutual.step(&[
+            ATTACK,
+            ArenaCommand::Attack {
+                actor: 1,
+                target: 0,
+            },
+        ]);
+        assert_eq!(
+            events.last(),
+            Some(&ArenaEvent::Finished(RoundResult::Draw))
+        );
+        assert_eq!(mutual.result(), Some(RoundResult::Draw));
+        assert!(mutual.result().unwrap().is_draw());
+        // Shorter round limits are bounded to 1..=MAX_ROUND_TICKS and replay deterministically.
+        assert!(close_quarters(1, 3_000).with_round_limit(0).is_none());
+        assert!(
+            close_quarters(1, 3_000)
+                .with_round_limit(MAX_ROUND_TICKS + 1)
+                .is_none()
+        );
+        let mut short_a = close_quarters(1, 3_000).with_round_limit(3).unwrap();
+        let mut short_b = short_a.clone();
+        for expected_remaining in [2, 1, 0] {
+            assert_eq!(short_a.step(&[]), short_b.step(&[]));
+            assert_eq!(short_a.remaining_ticks(), expected_remaining);
+        }
+        assert_eq!(short_a.result(), Some(RoundResult::TimeLimitDraw));
+        assert_eq!(short_a, short_b);
+        // Tick and cooldown arithmetic near u64::MAX cannot overflow or panic.
+        let mut saturated =
+            Arena::restore(fixture(), u64::MAX, short_a.fighters().to_vec(), None).unwrap();
+        assert_eq!(saturated.remaining_ticks(), 0);
+        assert_eq!(
+            saturated.step(&[ATTACK]),
+            vec![
+                ArenaEvent::Hit {
+                    actor: 0,
+                    target: 1,
+                    damage: ATTACK_DAMAGE
+                },
+                ArenaEvent::Finished(RoundResult::TimeLimitDraw)
+            ]
+        );
+        assert_eq!(saturated.fighters()[0].ready_at, u64::MAX);
+        assert_eq!(saturated.tick(), u64::MAX);
     }
 
     #[test]
