@@ -252,6 +252,9 @@ pub type Waiting = [usize; 3];
 #[derive(Debug)]
 pub struct Matchmaker {
     queues: [VecDeque<u64>; 3],
+    /// Players currently searching or in a ready check per queue, maintained
+    /// incrementally so `waiting()` is O(1).
+    waiting: Waiting,
     parties: HashMap<u64, Party>,
     codes: HashMap<String, u64>,
     forming: HashMap<u64, Forming>,
@@ -270,6 +273,7 @@ impl Matchmaker {
     pub fn new(ready_timeout: Duration, random: fn(usize) -> usize) -> Self {
         Self {
             queues: Default::default(),
+            waiting: [0; 3],
             parties: HashMap::new(),
             codes: HashMap::new(),
             forming: HashMap::new(),
@@ -292,16 +296,7 @@ impl Matchmaker {
     }
 
     pub fn waiting(&self) -> Waiting {
-        let mut waiting = [0; 3];
-        for party in self.parties.values() {
-            let mode = match party.state {
-                State::Queued(mode) => mode,
-                State::Forming(id) => self.forming[&id].mode,
-                State::Idle => continue,
-            };
-            waiting[mode.index()] += party.members.len();
-        }
-        waiting
+        self.waiting
     }
 
     /// The expected wait for `mode`: the median of how long recent matches
@@ -311,24 +306,40 @@ impl Matchmaker {
         if recent.len() < MIN_WAITS {
             return None;
         }
-        let mut sorted: Vec<Duration> = recent.iter().copied().collect();
-        sorted.sort();
-        Some(sorted[sorted.len() / 2])
+        let mut sorted = [Duration::ZERO; RECENT_WAITS];
+        let len = recent.len().min(RECENT_WAITS);
+        for (slot, &wait) in sorted[..len].iter_mut().zip(recent.iter()) {
+            *slot = wait;
+        }
+        sorted[..len].sort_unstable();
+        Some(sorted[len / 2])
     }
 
     /// Connections searching (not in a ready check): their queue and when
     /// their search began.
     pub fn searching(&self) -> impl Iterator<Item = (QueueConn, Mode, Instant)> + '_ {
-        self.parties.values().flat_map(|party| {
-            let search = match (party.state, party.since) {
-                (State::Queued(mode), Some(since)) => Some((mode, since)),
-                _ => None,
-            };
-            party
-                .members
-                .iter()
-                .filter_map(move |member| search.map(|(mode, since)| (member.conn, mode, since)))
+        Mode::ALL.into_iter().flat_map(move |mode| {
+            self.queues[mode.index()].iter().flat_map(move |id| {
+                let party = &self.parties[id];
+                let since = party.since;
+                party
+                    .members
+                    .iter()
+                    .filter_map(move |member| since.map(|since| (member.conn, mode, since)))
+            })
         })
+    }
+
+    /// If `conn`'s party is currently searching (not in a ready check), returns
+    /// its queue, search start time, and member connections.
+    pub fn searching_party(&self, conn: QueueConn) -> Option<(Mode, Instant, Vec<QueueConn>)> {
+        let party = self.parties.get(self.of.get(&conn)?)?;
+        let State::Queued(mode) = party.state else {
+            return None;
+        };
+        let since = party.since?;
+        let members = party.members.iter().map(|member| member.conn).collect();
+        Some((mode, since, members))
     }
 
     fn view(&self, party: &Party, conn: QueueConn) -> PartyView {
@@ -448,7 +459,8 @@ impl Matchmaker {
         self.guests.remove(&member.guest);
         match party.state {
             State::Idle => {}
-            State::Queued(_) => {
+            State::Queued(mode) => {
+                self.waiting[mode.index()] -= 1;
                 self.unqueue(id);
                 for member in &self.parties[&id].members {
                     out.push(Out::Stopped {
@@ -459,6 +471,7 @@ impl Matchmaker {
             }
             State::Forming(check) => {
                 let forming = self.forming.get_mut(&check).expect("check exists");
+                self.waiting[forming.mode.index()] -= 1;
                 forming.accepted.remove(&conn);
                 forming.broken.insert(id);
                 out.extend(self.fail(check, now));
@@ -479,6 +492,7 @@ impl Matchmaker {
     fn unqueue(&mut self, id: u64) {
         let party = self.parties.get_mut(&id).expect("party exists");
         if let State::Queued(mode) = party.state {
+            self.waiting[mode.index()] -= party.members.len();
             self.queues[mode.index()].retain(|queued| *queued != id);
         }
         party.state = State::Idle;
@@ -607,6 +621,7 @@ impl Matchmaker {
         let party = self.parties.get_mut(&id).expect("exists");
         party.state = State::Queued(mode);
         party.since = Some(now);
+        self.waiting[mode.index()] += party.members.len();
         let mut out = Vec::new();
         self.announce(id, &mut out);
         out.extend(self.form(mode, now));
@@ -692,6 +707,7 @@ impl Matchmaker {
         let waits = &mut self.waits[forming.mode.index()];
         for id in &forming.parties {
             let party = self.parties.get_mut(id).expect("exists");
+            self.waiting[forming.mode.index()] -= party.members.len();
             if let Some(since) = party.since.take() {
                 waits.push_back(now.saturating_duration_since(since));
                 if waits.len() > RECENT_WAITS {
@@ -723,6 +739,9 @@ impl Matchmaker {
 
     /// Fails ready checks whose time is up.
     pub fn tick(&mut self, now: Instant) -> Vec<Out> {
+        if !self.forming.values().any(|forming| now >= forming.deadline) {
+            return Vec::new();
+        }
         let expired: Vec<u64> = self
             .forming
             .iter()
@@ -767,6 +786,7 @@ impl Matchmaker {
             }
             party.state = State::Idle;
             party.since = None;
+            self.waiting[mode.index()] -= party.members.len();
             let someone_declined = party
                 .members
                 .iter()
@@ -829,7 +849,14 @@ impl Matchmaker {
     fn form(&mut self, mode: Mode, now: Instant) -> Vec<Out> {
         let mut out = Vec::new();
         while let Some(teams) = self.pick(mode) {
-            let chosen: HashSet<u64> = teams.iter().flatten().copied().collect();
+            // At most 2 * MAX_PARTY (6) parties fill one match.
+            let mut chosen = [0u64; MAX_PARTY * 2];
+            let mut chosen_len = 0usize;
+            for id in teams.iter().flatten().copied() {
+                chosen[chosen_len] = id;
+                chosen_len += 1;
+            }
+            let chosen = &chosen[..chosen_len];
             let parties: Vec<u64> = self.queues[mode.index()]
                 .iter()
                 .copied()
@@ -894,6 +921,16 @@ impl Matchmaker {
                 assert!(matches!(self.parties[id].state, State::Queued(_)));
             }
         }
+        let mut expected_waiting = [0; 3];
+        for party in self.parties.values() {
+            let mode = match party.state {
+                State::Queued(mode) => mode,
+                State::Forming(id) => self.forming[&id].mode,
+                State::Idle => continue,
+            };
+            expected_waiting[mode.index()] += party.members.len();
+        }
+        assert_eq!(self.waiting, expected_waiting);
         for waits in &self.waits {
             assert!(waits.len() <= RECENT_WAITS);
         }
@@ -1277,8 +1314,9 @@ mod tests {
         mm.queue(2, Mode::Duel, start);
         mm.accept(1, start);
         mm.decline(2, start);
-        let searching: Vec<_> = mm.searching().collect();
-        assert_eq!(searching, [(1, Mode::Duel, start)]);
+        assert_eq!(mm.searching().collect::<Vec<_>>(), [(1, Mode::Duel, start)]);
+        assert_eq!(mm.searching_party(1), Some((Mode::Duel, start, vec![1])));
+        assert_eq!(mm.searching_party(2), None);
         mm.check();
     }
 
