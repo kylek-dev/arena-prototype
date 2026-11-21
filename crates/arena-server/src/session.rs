@@ -291,17 +291,7 @@ impl Session {
                 }
                 let hash = self.arena.state_hash();
                 let result = self.arena.result().map(WireResult::from);
-                let mut fighters = [FighterState {
-                    x: 0,
-                    z: 0,
-                    height: 0,
-                    vertical_velocity: 0,
-                    momentum: [0, 0],
-                    health: 0,
-                    ready_at: 0,
-                    facing: 0,
-                    connected: false,
-                }; MAX_FIGHTERS];
+                let mut fighters = [FighterState::default(); MAX_FIGHTERS];
                 let count = self.arena.fighters().len();
                 for (index, fighter) in self.arena.fighters().iter().enumerate() {
                     let connected = self.seats.get(index).is_some_and(|s| s.conn.is_some());

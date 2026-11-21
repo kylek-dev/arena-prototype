@@ -1,4 +1,11 @@
-import { newBar, MAX_BARS, MAX_SLOTS, type Bar } from "../action-bars/model";
+import {
+  ABILITY_IDS,
+  isAbilityId,
+  newBar,
+  MAX_BARS,
+  MAX_SLOTS,
+  type Bar,
+} from "../action-bars/model";
 import {
   actionList,
   defaults,
@@ -77,7 +84,7 @@ export function validateConfig(value: unknown): Config {
             sid = id(s.id);
           if (!sid || used.has(sid)) return [];
           used.add(sid);
-          return [{ id: sid, ability: s.ability === "pulse" ? ("pulse" as const) : null }];
+          return [{ id: sid, ability: isAbilityId(s.ability) ? s.ability : null }];
         });
       if (!slots.length) {
         let suffix = 1;
@@ -97,6 +104,38 @@ export function validateConfig(value: unknown): Config {
   const safeBars = bars.length ? bars : d.bars;
   const bindings = defaults(safeBars);
   const rawBindings = { ...record(r.bindings) };
+  // Additive migration for saved single-spell profiles: populate slots 2-4 with
+  // Rift Bolt, Quell, and Mend (and default Digit2-Digit4 if unbound/unused)
+  // when none of the new spells have been placed yet and slots 2-4 are empty.
+  const firstBar = safeBars[0];
+  const hasNewSpells = safeBars.some((bar) =>
+    bar.slots.some((slot) => slot.ability !== null && slot.ability !== "pulse"),
+  );
+  if (
+    !hasNewSpells &&
+    firstBar &&
+    firstBar.slots.length >= 4 &&
+    firstBar.slots[0].ability === "pulse" &&
+    firstBar.slots.slice(1, 4).every((slot) => slot.ability === null)
+  ) {
+    const taken = (candidate: Chord | null) =>
+      !!candidate &&
+      Object.values(rawBindings).some(
+        (pair) => Array.isArray(pair) && pair.some((c) => same(record(c) as Chord, candidate)),
+      );
+    for (let i = 1; i < ABILITY_IDS.length; i += 1) {
+      firstBar.slots[i].ability = ABILITY_IDS[i];
+      const action = `slot:${firstBar.slots[i].id}`;
+      const existing = rawBindings[action];
+      const emptyBinding =
+        !Array.isArray(existing) ||
+        existing.every((entry) => !entry || typeof record(entry).code !== "string");
+      const fallback = bindings[action]?.[0] ?? null;
+      if (emptyBinding && fallback && !taken(fallback)) {
+        rawBindings[action] = [fallback, null];
+      }
+    }
+  }
   // Newly introduced defaults must not steal existing custom chords.
   for (const action of ["toggleEnemyNameplates", "toggleFriendlyNameplates"]) {
     if (

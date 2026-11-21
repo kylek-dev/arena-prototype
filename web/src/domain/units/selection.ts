@@ -1,8 +1,17 @@
+import type { ActiveCast } from "../casting";
+
 export type Entity = {
   id: string;
   name: string;
   health: number;
   maxHealth: number;
+  /** Authoritative primary resource (`0..=maxResource`); absent from older clients. */
+  resource?: number;
+  maxResource?: number;
+  gcdRemaining?: number;
+  lockoutRemaining?: number;
+  /** Authoritative active timed cast; `null` when idle. */
+  cast?: ActiveCast | null;
   /** In a network match: the unit's player is not attached (it stands idle). */
   disconnected?: boolean;
 };

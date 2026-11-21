@@ -84,22 +84,25 @@ it("has an icon-only draggable spellbook with no assignment forms", () => {
   render(
     <Tooltip.Provider>
       <Spellbook />
-      <ActionSlot slot={{ id: "bar-1-s2", ability: null }} number={2} />
+      <ActionSlot slot={{ id: "bar-1-s5", ability: null }} number={5} />
     </Tooltip.Provider>,
   );
   const spell = screen.getByRole("button", { name: "Pulse spell" });
+  expect(screen.getByRole("button", { name: "Rift Bolt spell" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Quell spell" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Mend spell" })).toBeTruthy();
   expect(spell.getAttribute("data-spell-draggable")).toBe("true");
   expect(spell.classList.contains("action-slot")).toBe(true);
   expect(screen.queryByRole("combobox")).toBeNull();
   expect(screen.queryByRole("button", { name: "Place Pulse" })).toBeNull();
   const canvas = document.createElement("canvas");
   const stop = installSpellDragging(canvas);
-  hitTarget(screen.getByRole("button", { name: "Slot 2 empty" }));
+  hitTarget(screen.getByRole("button", { name: "Slot 5 empty" }));
   fireEvent.pointerDown(spell, { pointerId: 1, button: 0, clientX: 100, clientY: 100 });
   moveSpell();
   dropSpell();
   stop();
-  expect(preferences.get().profiles[0].config.bars[0].slots[1].ability).toBe("pulse");
+  expect(preferences.get().profiles[0].config.bars[0].slots[4].ability).toBe("pulse");
   expect(preferences.get().profiles[0].config.bars[0].slots[0].ability).toBe("pulse");
 });
 
@@ -107,11 +110,11 @@ it("shows keybindings without spell names or slot-number labels", () => {
   render(
     <Tooltip.Provider>
       <ActionSlot slot={{ id: "bar-1-s1", ability: "pulse" }} number={1} />
-      <ActionSlot slot={{ id: "bar-1-s2", ability: null }} number={2} />
+      <ActionSlot slot={{ id: "bar-1-s5", ability: null }} number={5} />
     </Tooltip.Provider>,
   );
   const assigned = screen.getByRole("button", { name: "Slot 1 Pulse" });
-  const empty = screen.getByRole("button", { name: "Slot 2 empty" });
+  const empty = screen.getByRole("button", { name: "Slot 5 empty" });
   expect(assigned.textContent).toBe("1ϟ");
   expect(assigned.querySelector("kbd")?.textContent).toBe("1");
   expect(assigned.querySelector("small")).toBeNull();

@@ -138,7 +138,58 @@ fn inputs_carry_this_seats_intent_with_targets_in_server_numbering() {
             facing: 0x8000,
             jump: true,
             // Local 1 (the enemy) is server actor 0.
-            attack: Some(0),
+            action: InputFrame::pulse(0),
+        }))
+    );
+    // Non-Pulse spells translate local target indices through seat ordering too.
+    let bolt = session
+        .input_action(
+            [0, 0],
+            0x4000,
+            false,
+            Some(arena_sim::arena::CastAction::Cast {
+                spell: SpellId::RiftBolt,
+                target: Some(1),
+            }),
+            0.01,
+        )
+        .unwrap();
+    assert_eq!(
+        ClientMessage::decode(&bolt),
+        Ok(ClientMessage::Input(InputFrame {
+            seq: 2,
+            movement: [0, 0],
+            facing: 0x4000,
+            jump: false,
+            action: arena_protocol::WireAction::Cast {
+                spell: arena_protocol::WireSpell::RiftBolt,
+                target: Some(0),
+            },
+        }))
+    );
+    let mend = session
+        .input_action(
+            [0, 0],
+            0x4000,
+            false,
+            Some(arena_sim::arena::CastAction::Cast {
+                spell: SpellId::Mend,
+                target: Some(0),
+            }),
+            0.02,
+        )
+        .unwrap();
+    assert_eq!(
+        ClientMessage::decode(&mend),
+        Ok(ClientMessage::Input(InputFrame {
+            seq: 3,
+            movement: [0, 0],
+            facing: 0x4000,
+            jump: false,
+            action: arena_protocol::WireAction::Cast {
+                spell: arena_protocol::WireSpell::Mend,
+                target: Some(1),
+            },
         }))
     );
     // An acknowledgement 0.1 s later measures input latency.
@@ -377,7 +428,7 @@ fn forward() -> ActorInput {
         movement: Some(Axes { x: 0, z: -1000 }),
         facing: Some(0),
         jump: false,
-        attack: None,
+        action: None,
     }
 }
 
@@ -466,7 +517,7 @@ fn nothing_is_predicted_while_waiting_and_a_new_socket_starts_over() {
         movement: [0, -1000],
         facing: 0,
         jump: false,
-        attack: None,
+        action: WireAction::None,
     }
     .merge_into(&mut slot);
     server.advance(&[slot]);
@@ -700,4 +751,68 @@ fn a_new_match_hands_over_the_servers_heading_once_per_seat() {
     );
     let heading = session.take_initial_heading().unwrap();
     assert!(heading.abs() < 1e-6, "{heading}");
+}
+
+#[test]
+fn cast_and_interrupt_events_and_active_cast_targets_translate_to_local_numbering() {
+    use arena_protocol::{WireInterruptReason, WireSpell};
+    use arena_sim::arena::{ActiveCastState, InterruptReason};
+    use arena_sim::spells::SpellId;
+
+    let mut server = Arena::practice(layout(), 1).unwrap();
+    let mut fighters = server.fighters().to_vec();
+    fighters[0].active_cast = Some(ActiveCastState {
+        spell: SpellId::RiftBolt,
+        target: Some(1),
+        remaining_ticks: 20,
+        total_ticks: 45,
+    });
+    server = Arena::restore(layout(), 1, fighters, None).unwrap();
+    // Join as seat 1: server actor 1 -> local 0, server actor 0 -> local 1.
+    let mut session = joined(1, 1);
+    let events = vec![
+        TickEvent {
+            tick: 0,
+            event: WireEvent::CastStarted {
+                actor: 0,
+                spell: WireSpell::RiftBolt,
+                target: Some(1),
+                duration_ticks: 45,
+            },
+        },
+        TickEvent {
+            tick: 0,
+            event: WireEvent::CastInterrupted {
+                actor: 0,
+                spell: WireSpell::RiftBolt,
+                reason: WireInterruptReason::Interrupted,
+                by: Some(1),
+            },
+        },
+    ];
+    session.receive(
+        &feed(1, vec![snapshot(&server, 0, events, &[true, true])]),
+        0.0,
+        &layout(),
+    );
+    let view = session.view(0.1, 0.1).unwrap();
+    // Server actor 0 is local 1; its active cast targeted server actor 1 (local 0).
+    assert_eq!(view.fighters[1].active_cast.unwrap().target, Some(0));
+    assert_eq!(
+        view.shown,
+        vec![
+            Shown::CastStarted {
+                actor: 1,
+                spell: SpellId::RiftBolt,
+                target: Some(0),
+                duration_ticks: 45,
+            },
+            Shown::CastInterrupted {
+                actor: 1,
+                spell: SpellId::RiftBolt,
+                reason: InterruptReason::Interrupted,
+                by: Some(0),
+            },
+        ]
+    );
 }

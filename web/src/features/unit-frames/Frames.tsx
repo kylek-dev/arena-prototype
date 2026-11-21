@@ -82,6 +82,8 @@ export function Frames() {
               name: role === "player" ? "Player" : "Enemy Bot",
               health: Math.round(maximum * 0.75),
               maxHealth: maximum,
+              resource: 100,
+              maxResource: 100,
             }
           : liveUnit;
         return (
@@ -108,6 +110,8 @@ export function Frames() {
               name: side === "team" ? `Teammate ${index + 1}` : `Enemy Bot ${index + 1}`,
               health: 75,
               maxHealth: 100,
+              resource: 100,
+              maxResource: 100,
             }))
           : state
             ? unitRoster(state, focused)[side].filter((unit) => unit.id !== state.player.id)

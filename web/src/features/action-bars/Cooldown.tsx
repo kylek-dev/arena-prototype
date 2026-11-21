@@ -1,7 +1,8 @@
 import { useLayoutEffect, useRef } from "react";
+import type { AbilityId } from "../../domain/action-bars/model";
 import { cooldownAnimator } from "../../runtime/cooldown-animation";
 
-export function Cooldown() {
+export function Cooldown({ ability = "pulse" }: { ability?: AbilityId }) {
   const element = useRef<HTMLSpanElement>(null);
 
   useLayoutEffect(
@@ -13,8 +14,8 @@ export function Cooldown() {
         node.style.setProperty("--cooldown-sweep", `${visual.sweep}deg`);
         // Avoid replacing text every frame when the tenth-second label is unchanged.
         if (node.textContent !== visual.label) node.textContent = visual.label;
-      }),
-    [],
+      }, ability),
+    [ability],
   );
 
   // Availability/tooltips expose authoritative text. Per-frame decorative

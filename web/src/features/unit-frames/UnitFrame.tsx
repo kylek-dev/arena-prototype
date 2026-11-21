@@ -1,3 +1,9 @@
+import {
+  castProgress,
+  castRemainingSeconds,
+  resourcePercent,
+  spellLabel,
+} from "../../domain/casting";
 import type { Entity } from "../../domain/units/selection";
 import type { FrameRole } from "../../domain/preferences/schema";
 export function UnitFrame({
@@ -7,6 +13,16 @@ export function UnitFrame({
   role: Exclude<FrameRole, "opponents" | "team" | "unitTooltip"> | "opponent" | "teammate";
   unit: Entity | null;
 }) {
+  const hasResource = unit !== null && typeof unit.resource === "number";
+  const maxResource = unit?.maxResource ?? 100;
+  const resourceValue = hasResource ? (unit.resource as number) : unit ? 100 : 0;
+  const resourceWidth = hasResource
+    ? resourcePercent(unit.resource as number, maxResource)
+    : unit
+      ? 100
+      : 0;
+  const lockedOut = !unit?.disconnected && (unit?.lockoutRemaining ?? 0) > 0;
+  const activeCast = unit?.cast ?? null;
   return (
     <section
       className={`unit-frame ${role}${unit?.disconnected ? " disconnected" : ""}`}
@@ -14,7 +30,11 @@ export function UnitFrame({
     >
       <div className="unit-heading">
         <strong>{unit?.name ?? "—"}</strong>
-        {unit?.disconnected && <span className="unit-status">Disconnected</span>}
+        {unit?.disconnected ? (
+          <span className="unit-status">Disconnected</span>
+        ) : lockedOut ? (
+          <span className="unit-status locked-out">Locked out</span>
+        ) : null}
       </div>
       <div
         className="health-track"
@@ -35,13 +55,33 @@ export function UnitFrame({
         role="meter"
         aria-label={`${role} resource`}
         aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={unit ? 100 : 0}
-        aria-valuetext="Placeholder · resources are not implemented"
+        aria-valuemax={maxResource}
+        aria-valuenow={resourceValue}
+        aria-valuetext={
+          hasResource
+            ? `${resourceValue}/${maxResource}`
+            : "Placeholder · resources are not implemented"
+        }
       >
-        <div className="resource-fill" style={{ width: unit ? "100%" : "0%" }} />
-        <span className="bar-value">{unit ? "100/100" : "—"}</span>
+        <div className="resource-fill" style={{ width: `${resourceWidth}%` }} />
+        <span className="bar-value">{unit ? `${resourceValue}/${maxResource}` : "—"}</span>
       </div>
+      {activeCast && (
+        <div
+          className="cast-track"
+          role="progressbar"
+          aria-label={`${role} casting ${spellLabel(activeCast.spell)}`}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(castProgress(activeCast) * 100)}
+        >
+          <div className="cast-fill" style={{ width: `${castProgress(activeCast) * 100}%` }} />
+          <span className="cast-label">
+            <span>{spellLabel(activeCast.spell)}</span>
+            <span>{castRemainingSeconds(activeCast).toFixed(1)}s</span>
+          </span>
+        </div>
+      )}
     </section>
   );
 }

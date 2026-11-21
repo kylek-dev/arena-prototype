@@ -91,7 +91,7 @@ it("opens Spells from the menu without taking gameplay focus", async () => {
   expect(screen.getByRole("dialog").classList.contains("window-area-left")).toBe(true);
   expect(screen.queryByRole("dialog", { name: "Spellbook" })).toBeNull();
   const spells = screen.getByRole("group", { name: "Known spells" });
-  expect(spells.querySelectorAll("button")).toHaveLength(1);
+  expect(spells.querySelectorAll("button")).toHaveLength(4);
   expect(spells.querySelector("small")).toBeNull();
   fireEvent.keyDown(document.activeElement!, { code: "KeyW", key: "w" });
   expect(router.sample()[1]).toBe(-1);

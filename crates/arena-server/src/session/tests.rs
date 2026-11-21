@@ -138,7 +138,7 @@ fn inputs_apply_one_per_tick_in_order_and_only_to_their_seat() {
         movement: [1000, 0],
         facing: 77,
         jump: true,
-        attack: None,
+        action: arena_protocol::WireAction::None,
     };
     session.receive(0, conn(0), frame(1));
     session.receive(0, conn(0), second);
@@ -301,7 +301,7 @@ fn rejections_reach_only_the_actor_that_was_refused() {
         conn(1),
         InputFrame {
             seq: 1,
-            attack: Some(0),
+            action: InputFrame::pulse(0),
             ..InputFrame::default()
         },
     );
@@ -326,7 +326,7 @@ fn finished_matches_report_the_result_linger_then_close() {
         conn(0),
         InputFrame {
             seq: 1,
-            attack: Some(1),
+            action: InputFrame::pulse(1),
             ..InputFrame::default()
         },
     );
@@ -712,7 +712,7 @@ fn tick_encoded_matches_tick_wire_bytes_including_per_seat_rejections() {
                     conn(1),
                     InputFrame {
                         seq: 1,
-                        attack: Some(0),
+                        action: InputFrame::pulse(0),
                         ..InputFrame::default()
                     },
                 );
@@ -809,4 +809,118 @@ fn round_clock_expiry_finishes_session_as_time_limit_draw_lingers_and_closes() {
         ]
     );
     assert!(session.is_ended());
+}
+
+#[test]
+fn session_enforces_authoritative_casts_interrupts_lockout_and_reconnect_preservation() {
+    use arena_protocol::{WireAction, WireInterruptReason, WireSpell};
+    use arena_sim::arena::{Combatant, Position};
+    use arena_sim::spells::{
+        INTERRUPT_LOCKOUT_TICKS, MAX_RESOURCE, RIFT_BOLT_CAST_TICKS, RIFT_BOLT_COST,
+    };
+
+    let layout = arena_map::colosseum().layout;
+    let fighters = vec![
+        Combatant::new(Position { x: 0, z: 2_500 }, 0),
+        Combatant::new(Position { x: 0, z: -2_500 }, arena_sim::arena::HALF_TURN),
+    ];
+    let close = Arena::restore(layout, 0, fighters, None).unwrap();
+    let mut session = running(close);
+
+    // Seat 0 starts Rift Bolt; both seats see CastStarted and active_cast in snapshots.
+    session.receive(
+        0,
+        conn(0),
+        InputFrame {
+            seq: 1,
+            action: WireAction::Cast {
+                spell: WireSpell::RiftBolt,
+                target: Some(1),
+            },
+            ..InputFrame::default()
+        },
+    );
+    let out = session.tick();
+    let snap0 = snapshot(&out, conn(0)).unwrap();
+    let snap1 = snapshot(&out, conn(1)).unwrap();
+    assert_eq!(snap0.hash, snap1.hash);
+    assert_eq!(snap0.fighters[0].resource, MAX_RESOURCE - RIFT_BOLT_COST);
+    assert_eq!(
+        snap0.fighters[0].active_cast.unwrap().remaining_ticks,
+        RIFT_BOLT_CAST_TICKS
+    );
+    assert!(snap1.events.iter().any(|e| matches!(
+        e.event,
+        WireEvent::CastStarted {
+            actor: 0,
+            spell: WireSpell::RiftBolt,
+            target: Some(1),
+            duration_ticks: RIFT_BOLT_CAST_TICKS,
+        }
+    )));
+
+    // Seat 1 interrupts with Quell; Seat 0 gets locked out.
+    session.receive(
+        1,
+        conn(1),
+        InputFrame {
+            seq: 1,
+            action: WireAction::Cast {
+                spell: WireSpell::Quell,
+                target: Some(0),
+            },
+            ..InputFrame::default()
+        },
+    );
+    let out = session.tick();
+    let snap0 = snapshot(&out, conn(0)).unwrap();
+    assert_eq!(snap0.fighters[0].active_cast, None);
+    assert_eq!(
+        snap0.fighters[0].lockout_remaining,
+        INTERRUPT_LOCKOUT_TICKS - 1
+    );
+    assert!(snap0.events.iter().any(|e| {
+        e.event
+            == WireEvent::CastInterrupted {
+                actor: 0,
+                spell: WireSpell::RiftBolt,
+                reason: WireInterruptReason::Interrupted,
+                by: Some(1),
+            }
+    }));
+
+    // Reconnecting Seat 0 preserves lockout, resource and cooldowns verbatim.
+    let reconnect = session.attach(0, 900);
+    let restored = snapshot(&reconnect, 900).unwrap();
+    assert_eq!(
+        restored.fighters[0].lockout_remaining,
+        INTERRUPT_LOCKOUT_TICKS - 1
+    );
+    assert_eq!(restored.fighters[0].resource, MAX_RESOURCE - RIFT_BOLT_COST);
+
+    // Attempting to cast while locked out returns Silenced to Seat 0 ONLY.
+    session.receive(
+        0,
+        900,
+        InputFrame {
+            seq: 1,
+            action: InputFrame::pulse(1),
+            ..InputFrame::default()
+        },
+    );
+    let out = session.tick();
+    assert!(
+        snapshot(&out, 900)
+            .unwrap()
+            .events
+            .iter()
+            .any(|e| e.event == WireEvent::Rejected(WireRejection::Silenced))
+    );
+    assert!(
+        !snapshot(&out, conn(1))
+            .unwrap()
+            .events
+            .iter()
+            .any(|e| matches!(e.event, WireEvent::Rejected(_)))
+    );
 }

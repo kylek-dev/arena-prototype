@@ -2,6 +2,7 @@
 use std::time::Duration;
 
 use arena_sim::arena::{Combatant, GRAVITY, JUMP_SPEED};
+use arena_sim::spells::SpellId;
 use bevy::prelude::*;
 
 /// Indices are fixed by scripts/prepare_character.py, not source export order.
@@ -77,6 +78,7 @@ impl Timing {
 }
 
 const CAST_SPEED: f32 = 1.5;
+const CHANNEL_SPEED: f32 = 0.55;
 /// Share of rule flight that plays the complete authored takeoff, so it hands
 /// over to the airborne loop exactly on that loop's first pose.
 const TAKEOFF_SHARE: f32 = 0.70;
@@ -93,8 +95,9 @@ pub(crate) struct Controller {
     timing: Timing,
     previous: Option<Vec3>,
     tick: u64,
-    ready_at: u64,
+    pulse_cd: u32,
     cast_remaining: f32,
+    was_channeling: bool,
     current: Option<Clip>,
     locomotion: Option<Clip>,
     was_airborne: bool,
@@ -180,8 +183,9 @@ impl Controller {
             timing,
             previous: None,
             tick: 0,
-            ready_at: 0,
+            pulse_cd: 0,
             cast_remaining: 0.0,
+            was_channeling: false,
             current: None,
             locomotion: None,
             was_airborne: false,
@@ -199,17 +203,24 @@ impl Controller {
             || sample.tick < self.tick
             || !(0.0..=0.1).contains(&sample.dt)
             || delta.xz().length() > 1.0;
-        let cast_started = !reset && sample.fighter.ready_at > self.ready_at;
+        let pulse_cd = sample.fighter.cooldown_remaining(SpellId::Pulse);
+        let pulse_started = !reset && pulse_cd > self.pulse_cd;
+        let channeling = !reset && sample.fighter.active_cast.is_some();
+        let channel_started = channeling && !self.was_channeling;
+        let cast_started = pulse_started || channel_started;
         self.previous = Some(sample.position);
         self.tick = sample.tick;
-        self.ready_at = sample.fighter.ready_at;
+        self.pulse_cd = pulse_cd;
         self.cast_remaining = if reset {
             0.0
-        } else if cast_started {
+        } else if pulse_started {
             (self.timing.cast.1 - self.timing.cast.0) / CAST_SPEED
+        } else if !channeling && self.was_channeling {
+            0.0
         } else {
             (self.cast_remaining - sample.dt).max(0.0)
         };
+        self.was_channeling = channeling;
         let velocity = if reset || sample.dt <= 0.0 {
             Vec2::ZERO
         } else {
@@ -244,9 +255,9 @@ impl Controller {
             } else {
                 Clip::Jump
             }
-        } else if self.cast_remaining > 0.0 {
-            // Pulse is the only current ability. Play its cosmetic release only
-            // after a successful rule-owned cooldown edge, never on rejected input.
+        } else if self.cast_remaining > 0.0 || channeling {
+            // Play the cast clip on a rule-owned Pulse cooldown edge or while
+            // channeling an authoritative timed cast, never on rejected input.
             Clip::Cast
         } else if self.timing.jump_edges.is_some() && self.land_remaining > 0.0 {
             Clip::JumpLand
@@ -258,7 +269,13 @@ impl Controller {
             clip,
             speed: match clip {
                 Clip::Jump | Clip::JumpStart | Clip::JumpLand => 0.0,
-                Clip::Cast => CAST_SPEED,
+                Clip::Cast => {
+                    if channeling && self.cast_remaining <= 0.0 {
+                        CHANNEL_SPEED
+                    } else {
+                        CAST_SPEED
+                    }
+                }
                 Clip::Idle => 1.0,
                 _ => (velocity.length() / 2.4).clamp(0.65, 2.0),
             },
@@ -411,13 +428,13 @@ mod tests {
         controller.step(sample(Vec3::ZERO, 0));
         assert_eq!(controller.step(sample(Vec3::ZERO, 1)).clip, Clip::Idle);
         let mut accepted = sample(Vec3::ZERO, 2);
-        accepted.fighter.ready_at = 32;
+        accepted.fighter.cooldowns[SpellId::Pulse.index()] = 29;
         let playback = controller.step(accepted);
         assert_eq!(playback.clip, Clip::Cast);
         assert!(playback.cast_started);
         for tick in 3..80 {
             let mut unchanged = sample(Vec3::ZERO, tick);
-            unchanged.fighter.ready_at = 32;
+            unchanged.fighter.cooldowns[SpellId::Pulse.index()] = 32u32.saturating_sub(tick as u32);
             assert!(!controller.step(unchanged).cast_started);
         }
         assert_eq!(controller.cast_remaining, 0.0);
@@ -430,7 +447,7 @@ mod tests {
             let mut controller = controller();
             controller.step(sample(Vec3::ZERO, 20));
             let mut accepted = sample(Vec3::ZERO, 21);
-            accepted.fighter.ready_at = 51;
+            accepted.fighter.cooldowns[SpellId::Pulse.index()] = 29;
             assert_eq!(controller.step(accepted).clip, Clip::Cast);
             let mut reset = sample(Vec3::ZERO, 22);
             if mode == 0 {
@@ -703,7 +720,7 @@ mod tests {
         jump_again.fighter.vertical_velocity = JUMP_SPEED - GRAVITY;
         assert_eq!(controller.step(jump_again).clip, Clip::JumpStart);
         let mut successful_cast = sample(Vec3::ZERO, 14);
-        successful_cast.fighter.ready_at = 44;
+        successful_cast.fighter.cooldowns[SpellId::Pulse.index()] = 29;
         assert_eq!(controller.step(successful_cast).clip, Clip::Cast);
         // A reset discards both the cast and any pending landing recovery.
         assert_eq!(controller.step(sample(Vec3::ZERO, 0)).clip, Clip::Idle);
@@ -726,7 +743,7 @@ mod tests {
             let mut controller = Controller::new(timing);
             controller.step(sample(Vec3::ZERO, 0));
             let mut accepted = sample(Vec3::ZERO, 1);
-            accepted.fighter.ready_at = 31;
+            accepted.fighter.cooldowns[SpellId::Pulse.index()] = 29;
             let playback = controller.step(accepted);
             assert_eq!(playback.clip, Clip::Cast);
             assert_eq!(playback.seek, Some(timing.cast.0));
@@ -740,9 +757,39 @@ mod tests {
     #[test]
     fn late_asset_loading_does_not_replay_an_old_cast() {
         let mut first = sample(Vec3::ZERO, 100);
-        first.fighter.ready_at = 110;
+        first.fighter.cooldowns[SpellId::Pulse.index()] = 10;
         let playback = controller().step(first);
         assert!(playback.reset);
         assert_eq!(playback.clip, Clip::Idle);
+    }
+
+    #[test]
+    fn timed_cast_plays_cast_clip_and_clears_on_interrupt() {
+        use arena_sim::arena::ActiveCastState;
+        let mut controller = controller();
+        controller.step(sample(Vec3::ZERO, 0));
+        let mut channeling = sample(Vec3::ZERO, 1);
+        channeling.fighter.active_cast = Some(ActiveCastState {
+            spell: SpellId::RiftBolt,
+            target: Some(1),
+            remaining_ticks: 44,
+            total_ticks: 45,
+        });
+        let started = controller.step(channeling);
+        assert_eq!(started.clip, Clip::Cast);
+        assert!(started.cast_started);
+        assert_eq!(started.speed, CHANNEL_SPEED);
+        let mut continuing = sample(Vec3::ZERO, 2);
+        continuing.fighter.active_cast = Some(ActiveCastState {
+            spell: SpellId::RiftBolt,
+            target: Some(1),
+            remaining_ticks: 43,
+            total_ticks: 45,
+        });
+        let held = controller.step(continuing);
+        assert_eq!(held.clip, Clip::Cast);
+        assert!(!held.cast_started);
+        let interrupted = controller.step(sample(Vec3::ZERO, 3));
+        assert_eq!(interrupted.clip, Clip::Idle);
     }
 }

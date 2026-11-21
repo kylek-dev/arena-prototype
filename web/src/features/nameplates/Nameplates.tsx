@@ -1,4 +1,5 @@
 import { useRef } from "react";
+import { castProgress, spellLabel } from "../../domain/casting";
 import { visibleNameplates } from "../../domain/units/nameplates";
 import { useConfigSelector } from "../../state/config";
 import { draggingSpell, error, interaction, nameplateScene } from "../../state/session";
@@ -28,39 +29,57 @@ export function Nameplates() {
   return (
     <div className="nameplates" aria-label="World health bars">
       {visibleNameplates(scene.nameplates ?? [], roster, preferences).map(
-        ({ tag, unit, x, y, friendly }) => (
-          <button
-            key={tag}
-            type="button"
-            className={`nameplate ${friendly ? "friendly" : "enemy"}${unit.disconnected ? " disconnected" : ""}`}
-            style={{ left: `${x * 100}%`, top: `${y * 100}%` }}
-            aria-label={`${unit.name}${unit.disconnected ? " (disconnected)" : ""} health ${unit.health}/${unit.maxHealth}. Target; right-click to focus`}
-            aria-pressed={unit.id === selectedId}
-            onMouseDown={(e) => {
-              press.current = { x: e.clientX, y: e.clientY };
-            }}
-            onClick={(e) => {
-              if (
-                !press.current ||
-                Math.hypot(e.clientX - press.current.x, e.clientY - press.current.y) < 4
-              )
-                interactUnit(tag, "target");
-              press.current = null;
-            }}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              interactUnit(tag, "focus");
-            }}
-          >
-            <span
-              className="nameplate-fill"
-              style={{ width: `${(unit.health / unit.maxHealth) * 100}%` }}
-            />
-            <span className="nameplate-name" aria-hidden="true">
-              {unit.disconnected ? `${unit.name} · Disconnected` : unit.name}
-            </span>
-          </button>
-        ),
+        ({ tag, unit, x, y, friendly }) => {
+          const activeCast = unit.cast ?? null;
+          const lockedOut = !unit.disconnected && !activeCast && (unit.lockoutRemaining ?? 0) > 0;
+          return (
+            <button
+              key={tag}
+              type="button"
+              className={`nameplate ${friendly ? "friendly" : "enemy"}${unit.disconnected ? " disconnected" : ""}`}
+              style={{ left: `${x * 100}%`, top: `${y * 100}%` }}
+              aria-label={`${unit.name}${unit.disconnected ? " (disconnected)" : ""} health ${unit.health}/${unit.maxHealth}${activeCast ? `, casting ${spellLabel(activeCast.spell)}` : ""}. Target; right-click to focus`}
+              aria-pressed={unit.id === selectedId}
+              onMouseDown={(e) => {
+                press.current = { x: e.clientX, y: e.clientY };
+              }}
+              onClick={(e) => {
+                if (
+                  !press.current ||
+                  Math.hypot(e.clientX - press.current.x, e.clientY - press.current.y) < 4
+                )
+                  interactUnit(tag, "target");
+                press.current = null;
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                interactUnit(tag, "focus");
+              }}
+            >
+              <span
+                className="nameplate-fill"
+                style={{ width: `${(unit.health / unit.maxHealth) * 100}%` }}
+              />
+              <span className="nameplate-name" aria-hidden="true">
+                {unit.disconnected ? `${unit.name} · Disconnected` : unit.name}
+              </span>
+              {activeCast && (
+                <span className="nameplate-cast" aria-hidden="true">
+                  <span
+                    className="nameplate-cast-fill"
+                    style={{ width: `${castProgress(activeCast) * 100}%` }}
+                  />
+                  <span className="nameplate-cast-label">{spellLabel(activeCast.spell)}</span>
+                </span>
+              )}
+              {lockedOut && (
+                <span className="nameplate-lockout" aria-hidden="true">
+                  Locked
+                </span>
+              )}
+            </button>
+          );
+        },
       )}
     </div>
   );

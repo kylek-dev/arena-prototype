@@ -3,23 +3,35 @@
 //!
 //! Each tick takes one [`ActorInput`] slot per actor. The slot index is the
 //! actor, so an input cannot act for someone else, and one slot carries at
-//! most one movement, one facing, one jump and one attack (the per-tick
-//! budget). Slots resolve in phases, never in caller order (ADR 0044):
+//! most one movement, one facing, one jump and one combat action (the per-tick
+//! budget). Slots resolve in phases, never in caller order (ADR 0044, ADR 0048):
 //!
 //! 1. airborne momentum carries every jumping body;
 //! 2. ground movement, then facing, for every actor;
 //! 3. jumps for every actor;
-//! 4. attacks: every attack is validated against the same post-movement
-//!    state and their damage lands together, so swapping actor order never
-//!    changes the outcome and two lethal hits on the same tick both land
-//!    (when both teams fall, the round is a draw);
-//! 5. vertical motion.
+//! 4. combat: explicit cancellations and active timed casts resolve against one
+//!    shared post-movement state (re-checking range, line of sight and target
+//!    life at completion), new spell intents validate through `casting` and
+//!    `combat_state` against that pre-damage state, and interrupts, damage,
+//!    healing, death-interrupts and round completion land together;
+//! 5. vertical motion;
+//! 6. end-of-tick GCD, cooldown and lockout decay plus passive resource regen.
 //!
 //! Movement and jumps never depend on another actor (bodies do not collide
 //! with each other), so phases 2 and 3 are order independent too.
 
+use std::collections::BTreeMap;
+
 use crate::TICKS_PER_SECOND;
+use crate::casting::{CastError, CasterContext, CastingState, PreparedCast, TargetContext};
+use crate::combat_state::{ActiveCast, CastStateError, CombatState};
+use crate::effects;
 use crate::map::{Layout, MAX_TEAM};
+use crate::specs::Specialisation;
+use crate::spells::{
+    ARENA_CLASS, ARENA_RESOURCE, MAX_RESOURCE, PULSE_COOLDOWN_TICKS, PULSE_DAMAGE, PULSE_RANGE,
+    RESOURCE_REGEN_AMOUNT, RESOURCE_REGEN_INTERVAL, SpellEffect, SpellId,
+};
 
 /// 7.2 m/s at 30 Hz.
 pub const MOVE_PER_TICK: i32 = 240;
@@ -27,9 +39,9 @@ pub const MOVE_PER_TICK: i32 = 240;
 pub const JUMP_SPEED: i32 = 220;
 pub const GRAVITY: i32 = 20;
 pub const BODY_RADIUS: i32 = 450;
-pub const ATTACK_RANGE: i32 = 6_000;
-pub const ATTACK_COOLDOWN: u64 = TICKS_PER_SECOND;
-pub const ATTACK_DAMAGE: u16 = 25;
+pub const ATTACK_RANGE: i32 = PULSE_RANGE as i32;
+pub const ATTACK_COOLDOWN: u64 = PULSE_COOLDOWN_TICKS as u64;
+pub const ATTACK_DAMAGE: u16 = PULSE_DAMAGE;
 pub const MAX_HEALTH: u16 = 100;
 /// Longest a round may last: twenty minutes of ticks. A round still running
 /// at its last tick ends in a draw, so passive play cannot hold a match (and
@@ -39,6 +51,11 @@ pub const MAX_ROUND_TICKS: u64 = 20 * 60 * TICKS_PER_SECOND;
 pub const AXIS_LIMIT: i16 = 1000;
 /// Binary angle of team 1's spawn heading: half a turn from team 0.
 pub const HALF_TURN: u16 = 0x8000;
+/// Equalized starter haste percentage used for normal GCD calculation (29 ticks at 23%).
+pub const ARENA_HASTE_PERCENTAGE: u32 = Specialisation::Toxicologist.stat_template().haste() as u32;
+pub use crate::spells::{
+    INTERRUPT_LOCKOUT_TICKS as LOCKOUT_TICKS, MAX_RESOURCE as ARENA_MAX_RESOURCE,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Position {
@@ -53,6 +70,15 @@ impl Position {
     }
 }
 
+/// Authoritative in-progress timed cast on a [`Combatant`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActiveCastState {
+    pub spell: SpellId,
+    pub target: Option<usize>,
+    pub remaining_ticks: u32,
+    pub total_ticks: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Combatant {
     pub position: Position,
@@ -61,12 +87,72 @@ pub struct Combatant {
     /// Actual ground displacement at takeoff; no air steering or speed stacking.
     pub momentum: Position,
     pub health: u16,
-    pub ready_at: u64,
+    /// Current primary resource (`0..=MAX_RESOURCE`).
+    pub resource: u16,
+    /// Remaining ticks on the global cooldown.
+    pub gcd_remaining: u32,
+    /// Remaining ticks of interrupt lockout (blocks all spell casts).
+    pub lockout_remaining: u32,
+    /// Remaining personal cooldown ticks indexed by [`SpellId::index`].
+    pub cooldowns: [u32; SpellId::COUNT],
+    /// In-progress timed cast, if any.
+    pub active_cast: Option<ActiveCastState>,
     /// Heading as a binary angle: 65536 units per turn, 0 faces −Z and
     /// angles grow counter-clockwise seen from above (a yaw about +Y). Every
     /// value is valid; no rule reads it yet, but it is authoritative state
     /// that snapshots relay to other players.
     pub facing: u16,
+}
+impl Combatant {
+    /// A fresh standing fighter at `position` with full health and resources.
+    pub const fn new(position: Position, facing: u16) -> Self {
+        Self {
+            position,
+            height: 0,
+            vertical_velocity: 0,
+            momentum: Position { x: 0, z: 0 },
+            health: MAX_HEALTH,
+            resource: MAX_RESOURCE,
+            gcd_remaining: 0,
+            lockout_remaining: 0,
+            cooldowns: [0; SpellId::COUNT],
+            active_cast: None,
+            facing,
+        }
+    }
+
+    pub const fn cooldown_remaining(&self, spell: SpellId) -> u32 {
+        self.cooldowns[spell.index()]
+    }
+
+    pub const fn is_casting(&self) -> bool {
+        self.active_cast.is_some()
+    }
+
+    pub const fn is_locked_out(&self) -> bool {
+        self.lockout_remaining > 0
+    }
+
+    /// Canonical combatant state invariant check shared by `Arena::restore`
+    /// and wire-protocol snapshot decoding.
+    pub fn is_valid(&self, roster_len: usize) -> bool {
+        if self.health > MAX_HEALTH || self.resource > MAX_RESOURCE {
+            return false;
+        }
+        if let Some(cast) = self.active_cast {
+            let def = cast.spell.definition();
+            if self.health == 0
+                || def.cast_ticks == 0
+                || cast.total_ticks == 0
+                || cast.remaining_ticks == 0
+                || cast.remaining_ticks > cast.total_ticks
+                || cast.target.is_some_and(|t| t >= roster_len)
+            {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 /// Planar movement intent. Each axis must lie in
@@ -77,18 +163,36 @@ pub struct Axes {
     pub z: i16,
 }
 
+/// One actor's combat intent for one tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CastAction {
+    Cast {
+        spell: SpellId,
+        target: Option<usize>,
+    },
+    Cancel,
+}
+
 /// One actor's intent for one tick. `None`/`false` fields are idle.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ActorInput {
     pub movement: Option<Axes>,
     pub facing: Option<u16>,
     pub jump: bool,
-    /// Attack this actor index.
-    pub attack: Option<usize>,
+    /// Spell cast or cast cancellation for this tick.
+    pub action: Option<CastAction>,
 }
 impl ActorInput {
     pub fn is_idle(&self) -> bool {
         *self == Self::default()
+    }
+
+    /// Convenience helper for the default Pulse attack against `target`.
+    pub const fn pulse(target: usize) -> Option<CastAction> {
+        Some(CastAction::Cast {
+            spell: SpellId::Pulse,
+            target: Some(target),
+        })
     }
 }
 
@@ -107,9 +211,18 @@ pub enum ArenaCommand {
         actor: usize,
         facing: u16,
     },
+    /// Shorthand for `Cast { actor, spell: SpellId::Pulse, target: Some(target) }`.
     Attack {
         actor: usize,
         target: usize,
+    },
+    Cast {
+        actor: usize,
+        spell: SpellId,
+        target: Option<usize>,
+    },
+    CancelCast {
+        actor: usize,
     },
     Jump {
         actor: usize,
@@ -121,6 +234,8 @@ impl ArenaCommand {
             Self::Move { actor, .. }
             | Self::Face { actor, .. }
             | Self::Attack { actor, .. }
+            | Self::Cast { actor, .. }
+            | Self::CancelCast { actor }
             | Self::Jump { actor } => actor,
         }
     }
@@ -135,8 +250,25 @@ pub enum Rejection {
     Airborne,
     MatchOver,
     Cooldown,
+    GlobalCooldown,
+    AlreadyCasting,
+    NotEnoughResource,
+    Moving,
+    Silenced,
+    NotCasting,
     OutOfRange,
     LineOfSight,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InterruptReason {
+    Cancelled,
+    Moved,
+    Interrupted,
+    Silenced,
+    OutOfRange,
+    LineOfSight,
+    TargetDead,
+    CasterDead,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RoundResult {
@@ -161,12 +293,34 @@ pub enum ArenaEvent {
     Moved {
         actor: usize,
     },
+    CastStarted {
+        actor: usize,
+        spell: SpellId,
+        target: Option<usize>,
+        duration_ticks: u32,
+    },
+    CastCompleted {
+        actor: usize,
+        spell: SpellId,
+        target: Option<usize>,
+    },
+    CastInterrupted {
+        actor: usize,
+        spell: SpellId,
+        reason: InterruptReason,
+        by: Option<usize>,
+    },
     /// `damage` is this hit's own amount against the target's health before
-    /// the attack phase; simultaneous hits never see each other.
+    /// the combat phase; simultaneous hits never see each other.
     Hit {
         actor: usize,
         target: usize,
         damage: u16,
+    },
+    Healed {
+        actor: usize,
+        target: usize,
+        amount: u16,
     },
     Finished(RoundResult),
     /// `actor` is the slot (or the actor a scripted command named) whose
@@ -198,15 +352,10 @@ impl Arena {
             return None;
         }
         let fighters = (0..team_size * 2)
-            .map(|index| Combatant {
-                position: spawns[index % 2][index / 2],
-                health: MAX_HEALTH,
-                ready_at: 0,
-                height: 0,
-                vertical_velocity: 0,
-                momentum: Position { x: 0, z: 0 },
+            .map(|index| {
                 // Team 0's rooms lie toward +Z, so it faces −Z (angle 0).
-                facing: if index % 2 == 0 { 0 } else { HALF_TURN },
+                let facing = if index % 2 == 0 { 0 } else { HALF_TURN };
+                Combatant::new(spawns[index % 2][index / 2], facing)
             })
             .collect();
         Some(Self {
@@ -221,14 +370,14 @@ impl Arena {
 impl Arena {
     /// Rebuilds an arena from authoritative state, as a client presenting a
     /// server's snapshot does. `None` unless there are 2–6 fighters in
-    /// teams of equal size.
+    /// teams of equal size with valid health, resource, and cast invariants.
     pub fn restore(
         layout: Layout,
         tick: u64,
         fighters: Vec<Combatant>,
         result: Option<RoundResult>,
     ) -> Option<Self> {
-        if !(2..=MAX_TEAM * 2).contains(&fighters.len()) || !fighters.len().is_multiple_of(2) {
+        if !valid_fighters(&fighters) {
             return None;
         }
         Some(Self {
@@ -255,14 +404,14 @@ impl Arena {
     }
     /// Updates an arena's state without reallocating its layout or fighter
     /// buffer. Returns `false` and leaves the arena unchanged unless there
-    /// are 2–6 fighters in teams of equal size.
+    /// are 2–6 fighters in teams of equal size with valid invariants.
     pub fn restore_in_place(
         &mut self,
         tick: u64,
         fighters: &[Combatant],
         result: Option<RoundResult>,
     ) -> bool {
-        if !(2..=MAX_TEAM * 2).contains(&fighters.len()) || !fighters.len().is_multiple_of(2) {
+        if !valid_fighters(fighters) {
             return false;
         }
         self.tick = tick;
@@ -306,35 +455,44 @@ impl Arena {
     pub fn result(&self) -> Option<RoundResult> {
         self.result
     }
-    pub fn can_attack(&self, actor: usize, target: usize) -> Result<(), Rejection> {
+    /// Read-only validation of `actor` casting `spell` at `target` (standing still).
+    pub fn can_cast(
+        &self,
+        actor: usize,
+        spell: SpellId,
+        target: Option<usize>,
+    ) -> Result<(), Rejection> {
         if self.result.is_some() {
             return Err(Rejection::MatchOver);
         }
-        let Some(attacker) = self.fighters.get(actor) else {
+        let Some(&fighter) = self.fighters.get(actor) else {
             return Err(Rejection::InvalidActor);
         };
-        let Some(defender) = self.fighters.get(target) else {
-            return Err(Rejection::InvalidTarget);
+        let def = spell.definition();
+        let (combat, casting) = hydrate_casting(&fighter, actor);
+        let mut health = fighter.health;
+        let mut resources = BTreeMap::from([(ARENA_RESOURCE, fighter.resource)]);
+        let caster = CasterContext {
+            id: actor,
+            class: ARENA_CLASS,
+            health: &mut health,
+            max_health: MAX_HEALTH,
+            resources: &mut resources,
+            known_spells: &SpellId::ALL,
+            active_effects: &[],
+            is_stunned: false,
+            silence_blocks_spell: fighter.lockout_remaining > 0,
+            is_moving: fighter.height > 0,
         };
-        if attacker.health == 0 {
-            return Err(Rejection::InvalidActor);
-        }
-        if actor % 2 == target % 2 || defender.health == 0 {
-            return Err(Rejection::InvalidTarget);
-        }
-        if self.tick < attacker.ready_at {
-            return Err(Rejection::Cooldown);
-        }
-        if attacker.position.distance_squared(defender.position) > i64::from(ATTACK_RANGE).pow(2) {
-            return Err(Rejection::OutOfRange);
-        }
-        if !self
-            .layout
-            .line_of_sight(attacker.position, defender.position)
-        {
-            return Err(Rejection::LineOfSight);
-        }
-        Ok(())
+        let target_ctx =
+            target.and_then(|t| target_context(&self.fighters, &self.layout, actor, t));
+        casting
+            .can_cast(&combat, &caster, &def, target_ctx.as_ref())
+            .map(|_| ())
+            .map_err(rejection_from)
+    }
+    pub fn can_attack(&self, actor: usize, target: usize) -> Result<(), Rejection> {
+        self.can_cast(actor, SpellId::Pulse, Some(target))
     }
 
     /// Bins a scripted command list into per-actor slots, then advances one
@@ -375,8 +533,20 @@ impl Arena {
                     }
                 }
                 ArenaCommand::Attack { target, .. } => {
-                    slot.attack.is_none() && {
-                        slot.attack = Some(target);
+                    slot.action.is_none() && {
+                        slot.action = ActorInput::pulse(target);
+                        true
+                    }
+                }
+                ArenaCommand::Cast { spell, target, .. } => {
+                    slot.action.is_none() && {
+                        slot.action = Some(CastAction::Cast { spell, target });
+                        true
+                    }
+                }
+                ArenaCommand::CancelCast { .. } => {
+                    slot.action.is_none() && {
+                        slot.action = Some(CastAction::Cancel);
                         true
                     }
                 }
@@ -415,7 +585,7 @@ impl Arena {
                 let commands = usize::from(input.movement.is_some())
                     + usize::from(input.facing.is_some())
                     + usize::from(input.jump)
-                    + usize::from(input.attack.is_some());
+                    + usize::from(input.action.is_some());
                 for _ in 0..commands {
                     reject(&mut events, actor, Rejection::MatchOver);
                 }
@@ -424,11 +594,14 @@ impl Arena {
             return events;
         }
 
+        let mut moving = [false; MAX_TEAM * 2];
+
         // 1. Existing airborne momentum resolves first. Ground momentum
         // expires without a Move, preventing stale running jumps.
-        for fighter in &mut self.fighters {
+        for (actor, fighter) in self.fighters.iter_mut().enumerate() {
             if fighter.height > 0 {
                 fighter.position = self.layout.slide(fighter.position, fighter.momentum);
+                moving[actor] = true;
             } else {
                 fighter.momentum = Position { x: 0, z: 0 };
             }
@@ -457,6 +630,9 @@ impl Arena {
                         x: fighter.position.x - before.x,
                         z: fighter.position.z - before.z,
                     };
+                    if x != 0 || z != 0 || fighter.position != before {
+                        moving[actor] = true;
+                    }
                     events.push(ArenaEvent::Moved { actor });
                 }
             }
@@ -481,32 +657,239 @@ impl Arena {
                 reject(&mut events, actor, Rejection::Airborne);
             } else {
                 fighter.vertical_velocity = JUMP_SPEED;
+                moving[actor] = true;
                 events.push(ArenaEvent::Jumped { actor });
             }
         }
 
-        // 4. Attacks, validated against one shared state and applied together.
-        let mut incoming = [0u16; MAX_TEAM * 2];
-        for (actor, input) in inputs.iter().enumerate() {
-            let Some(target) = input.attack else {
-                continue;
-            };
-            if let Err(reason) = self.can_attack(actor, target) {
-                reject(&mut events, actor, reason);
+        // 4. Combat, validated against one shared post-movement state and
+        // applied together so actor order never breaks ties.
+        let mut pre_combat = [Combatant::new(Position { x: 0, z: 0 }, 0); MAX_TEAM * 2];
+        pre_combat[..count].copy_from_slice(&self.fighters);
+        let pre_combat = &pre_combat[..count];
+
+        let mut incoming_damage = [0u16; MAX_TEAM * 2];
+        let mut heals = [(0usize, 0usize, 0u16); MAX_TEAM * 4];
+        let mut heal_count = 0usize;
+        let mut still_casting_after_4a = [false; MAX_TEAM * 2];
+        let mut interrupts = [None::<(usize, u32)>; MAX_TEAM * 2];
+
+        // 4a. Explicit cancellations and in-progress timed casts.
+        // Collect completed casts first so `still_casting_after_4a` is finalized
+        // across every actor before any completion effects are queued.
+        let mut completed_casts: Vec<(usize, PreparedCast)> = Vec::new();
+        for actor in 0..count {
+            if inputs
+                .get(actor)
+                .is_some_and(|input| matches!(input.action, Some(CastAction::Cancel)))
+            {
+                if self.fighters[actor].health == 0 {
+                    reject(&mut events, actor, Rejection::InvalidActor);
+                } else if let Some(active) = self.fighters[actor].active_cast.take() {
+                    events.push(ArenaEvent::CastInterrupted {
+                        actor,
+                        spell: active.spell,
+                        reason: InterruptReason::Cancelled,
+                        by: None,
+                    });
+                } else {
+                    reject(&mut events, actor, Rejection::NotCasting);
+                }
                 continue;
             }
-            let damage = ATTACK_DAMAGE.min(self.fighters[target].health);
-            incoming[target] = incoming[target].saturating_add(damage);
-            self.fighters[actor].ready_at = self.tick.saturating_add(ATTACK_COOLDOWN);
-            events.push(ArenaEvent::Hit {
-                actor,
-                target,
-                damage,
-            });
+
+            let Some(active) = self.fighters[actor].active_cast else {
+                continue;
+            };
+            let (mut combat, mut casting) = hydrate_casting(&self.fighters[actor], actor);
+            let mut health = self.fighters[actor].health;
+            let mut resources = BTreeMap::from([(ARENA_RESOURCE, self.fighters[actor].resource)]);
+            let caster = CasterContext {
+                id: actor,
+                class: ARENA_CLASS,
+                health: &mut health,
+                max_health: MAX_HEALTH,
+                resources: &mut resources,
+                known_spells: &SpellId::ALL,
+                active_effects: &[],
+                is_stunned: false,
+                silence_blocks_spell: self.fighters[actor].lockout_remaining > 0,
+                is_moving: moving[actor],
+            };
+            let target_ctx = active
+                .target
+                .and_then(|t| target_context(pre_combat, &self.layout, actor, t));
+            match casting.tick(&mut combat, &caster, target_ctx.as_ref()) {
+                Ok(Some(prepared)) => {
+                    self.fighters[actor].active_cast = None;
+                    self.fighters[actor].cooldowns[active.spell.index()] =
+                        combat.cooldown_remaining(active.spell);
+                    events.push(ArenaEvent::CastCompleted {
+                        actor,
+                        spell: active.spell,
+                        target: prepared.target_id,
+                    });
+                    completed_casts.push((actor, prepared));
+                }
+                Ok(None) => {
+                    if let Some(updated) = combat.active_cast() {
+                        self.fighters[actor].active_cast = Some(ActiveCastState {
+                            spell: active.spell,
+                            target: active.target,
+                            remaining_ticks: updated.remaining_ticks,
+                            total_ticks: updated.total_ticks,
+                        });
+                        still_casting_after_4a[actor] = true;
+                    } else {
+                        self.fighters[actor].active_cast = None;
+                    }
+                }
+                Err(error) => {
+                    self.fighters[actor].active_cast = None;
+                    events.push(ArenaEvent::CastInterrupted {
+                        actor,
+                        spell: active.spell,
+                        reason: interrupt_reason_from(error),
+                        by: None,
+                    });
+                }
+            }
         }
-        for (fighter, &damage) in self.fighters.iter_mut().zip(&incoming[..count]) {
+        for (actor, prepared) in &completed_casts {
+            queue_spell_effects(
+                *actor,
+                prepared,
+                pre_combat,
+                &mut incoming_damage,
+                &mut heals,
+                &mut heal_count,
+                &mut interrupts,
+                &still_casting_after_4a,
+                &mut events,
+            );
+        }
+
+        // 4b. New spell intents.
+        for (actor, input) in inputs.iter().enumerate() {
+            let Some(CastAction::Cast { spell, target }) = input.action else {
+                continue;
+            };
+            let def = spell.definition();
+            let (mut combat, mut casting) = hydrate_casting(&self.fighters[actor], actor);
+            let mut health = self.fighters[actor].health;
+            let mut resources = BTreeMap::from([(ARENA_RESOURCE, self.fighters[actor].resource)]);
+            let mut caster = CasterContext {
+                id: actor,
+                class: ARENA_CLASS,
+                health: &mut health,
+                max_health: MAX_HEALTH,
+                resources: &mut resources,
+                known_spells: &SpellId::ALL,
+                active_effects: &[],
+                is_stunned: false,
+                silence_blocks_spell: self.fighters[actor].lockout_remaining > 0,
+                is_moving: moving[actor],
+            };
+            let target_ctx =
+                target.and_then(|t| target_context(pre_combat, &self.layout, actor, t));
+            match casting.try_cast(&mut combat, &mut caster, &def, target_ctx.as_ref()) {
+                Err(error) => {
+                    reject(&mut events, actor, rejection_from(error));
+                }
+                Ok(None) => {
+                    let pending_target = casting.pending_target_id();
+                    let active = combat.active_cast().copied().expect("timed cast started");
+                    let fighter = &mut self.fighters[actor];
+                    fighter.health = health;
+                    fighter.resource = resources.get(&ARENA_RESOURCE).copied().unwrap_or(0);
+                    fighter.gcd_remaining = combat.gcd_remaining();
+                    fighter.active_cast = Some(ActiveCastState {
+                        spell,
+                        target: pending_target,
+                        remaining_ticks: active.remaining_ticks,
+                        total_ticks: active.total_ticks,
+                    });
+                    events.push(ArenaEvent::CastStarted {
+                        actor,
+                        spell,
+                        target: pending_target,
+                        duration_ticks: active.total_ticks,
+                    });
+                }
+                Ok(Some(prepared)) => {
+                    let fighter = &mut self.fighters[actor];
+                    fighter.health = health;
+                    fighter.resource = resources.get(&ARENA_RESOURCE).copied().unwrap_or(0);
+                    fighter.gcd_remaining = combat.gcd_remaining();
+                    fighter.cooldowns[spell.index()] = combat.cooldown_remaining(spell);
+                    if def
+                        .effects
+                        .iter()
+                        .any(|effect| matches!(effect, SpellEffect::Interrupt { .. }))
+                    {
+                        events.push(ArenaEvent::CastCompleted {
+                            actor,
+                            spell,
+                            target: prepared.target_id,
+                        });
+                    }
+                    queue_spell_effects(
+                        actor,
+                        &prepared,
+                        pre_combat,
+                        &mut incoming_damage,
+                        &mut heals,
+                        &mut heal_count,
+                        &mut interrupts,
+                        &still_casting_after_4a,
+                        &mut events,
+                    );
+                }
+            }
+        }
+
+        // 4c. Apply interrupts, damage, healing, death interrupts, and check round end.
+        for (target, pending) in interrupts[..count].iter().enumerate() {
+            if let Some((by, lockout_ticks)) = *pending
+                && let Some(active) = self.fighters[target].active_cast.take()
+            {
+                let fighter = &mut self.fighters[target];
+                fighter.lockout_remaining = fighter.lockout_remaining.max(lockout_ticks);
+                events.push(ArenaEvent::CastInterrupted {
+                    actor: target,
+                    spell: active.spell,
+                    reason: InterruptReason::Interrupted,
+                    by: Some(by),
+                });
+            }
+        }
+        for (fighter, &damage) in self.fighters.iter_mut().zip(&incoming_damage[..count]) {
             fighter.health = fighter.health.saturating_sub(damage);
         }
+        for &(actor, target, amount) in &heals[..heal_count] {
+            let restored =
+                effects::apply_heal(&mut self.fighters[target].health, MAX_HEALTH, amount);
+            if restored > 0 {
+                events.push(ArenaEvent::Healed {
+                    actor,
+                    target,
+                    amount: restored,
+                });
+            }
+        }
+        for (actor, fighter) in self.fighters.iter_mut().enumerate() {
+            if fighter.health == 0
+                && let Some(active) = fighter.active_cast.take()
+            {
+                events.push(ArenaEvent::CastInterrupted {
+                    actor,
+                    spell: active.spell,
+                    reason: InterruptReason::CasterDead,
+                    by: None,
+                });
+            }
+        }
+
         let standing = |team: usize| {
             self.fighters
                 .iter()
@@ -540,7 +923,21 @@ impl Arena {
                 }
             }
         }
-        self.tick = self.tick.saturating_add(1);
+
+        // 6. End-of-tick timer decay and passive resource regeneration.
+        let next_tick = self.tick.saturating_add(1);
+        let regen = next_tick.is_multiple_of(RESOURCE_REGEN_INTERVAL);
+        for fighter in &mut self.fighters {
+            fighter.gcd_remaining = fighter.gcd_remaining.saturating_sub(1);
+            fighter.lockout_remaining = fighter.lockout_remaining.saturating_sub(1);
+            for cd in &mut fighter.cooldowns {
+                *cd = cd.saturating_sub(1);
+            }
+            if regen && fighter.health > 0 {
+                effects::gain_resource(&mut fighter.resource, MAX_RESOURCE, RESOURCE_REGEN_AMOUNT);
+            }
+        }
+        self.tick = next_tick;
         events
     }
 
@@ -574,10 +971,176 @@ impl Arena {
                 hash.write(&value.to_le_bytes());
             }
             hash.write(&fighter.health.to_le_bytes());
-            hash.write(&fighter.ready_at.to_le_bytes());
+            hash.write(&fighter.resource.to_le_bytes());
+            hash.write(&fighter.gcd_remaining.to_le_bytes());
+            hash.write(&fighter.lockout_remaining.to_le_bytes());
+            for cd in fighter.cooldowns {
+                hash.write(&cd.to_le_bytes());
+            }
+            match fighter.active_cast {
+                None => hash.write(&[0]),
+                Some(cast) => {
+                    hash.write(&[1, cast.spell as u8]);
+                    match cast.target {
+                        None => hash.write(&[0]),
+                        Some(target) => hash.write(&[1, target as u8]),
+                    }
+                    hash.write(&cast.remaining_ticks.to_le_bytes());
+                    hash.write(&cast.total_ticks.to_le_bytes());
+                }
+            }
             hash.write(&fighter.facing.to_le_bytes());
         }
         hash.0
+    }
+}
+
+fn valid_fighters(fighters: &[Combatant]) -> bool {
+    if !(2..=MAX_TEAM * 2).contains(&fighters.len()) || !fighters.len().is_multiple_of(2) {
+        return false;
+    }
+    fighters
+        .iter()
+        .all(|fighter| fighter.is_valid(fighters.len()))
+}
+
+fn hydrate_casting(fighter: &Combatant, actor: usize) -> (CombatState, CastingState) {
+    let mut cooldowns = BTreeMap::new();
+    for spell in SpellId::ALL {
+        let remaining = fighter.cooldown_remaining(spell);
+        if remaining > 0 {
+            cooldowns.insert(spell, remaining);
+        }
+    }
+    let (active_cast, pending) = match fighter.active_cast {
+        Some(cast) => {
+            let def = cast.spell.definition();
+            (
+                Some(ActiveCast::new(
+                    cast.spell,
+                    cast.remaining_ticks,
+                    cast.total_ticks,
+                    def.cooldown_ticks,
+                )),
+                Some(PreparedCast {
+                    spell: def,
+                    caster_id: actor,
+                    target_id: cast.target,
+                }),
+            )
+        }
+        None => (None, None),
+    };
+    let combat = CombatState::from_parts(
+        fighter.gcd_remaining,
+        cooldowns,
+        active_cast,
+        ARENA_HASTE_PERCENTAGE,
+        100,
+    );
+    (combat, CastingState::from_pending(pending))
+}
+
+fn target_context(
+    fighters: &[Combatant],
+    layout: &Layout,
+    actor: usize,
+    target: usize,
+) -> Option<TargetContext<'static>> {
+    let attacker = fighters.get(actor)?;
+    let defender = fighters.get(target)?;
+    Some(TargetContext {
+        id: target,
+        is_friendly: actor % 2 == target % 2,
+        health: defender.health,
+        max_health: MAX_HEALTH,
+        distance_squared: attacker.position.distance_squared(defender.position) as u64,
+        has_line_of_sight: actor == target
+            || layout.line_of_sight(attacker.position, defender.position),
+        is_stunned: false,
+        active_effects: &[],
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn queue_spell_effects(
+    actor: usize,
+    prepared: &PreparedCast,
+    pre_combat: &[Combatant],
+    incoming_damage: &mut [u16; MAX_TEAM * 2],
+    heals: &mut [(usize, usize, u16); MAX_TEAM * 4],
+    heal_count: &mut usize,
+    interrupts: &mut [Option<(usize, u32)>; MAX_TEAM * 2],
+    still_casting_after_4a: &[bool; MAX_TEAM * 2],
+    events: &mut Vec<ArenaEvent>,
+) {
+    let Some(target) = prepared.target_id else {
+        return;
+    };
+    for effect in &prepared.spell.effects {
+        match *effect {
+            SpellEffect::Damage { amount, .. } => {
+                let damage = amount.min(pre_combat[target].health);
+                incoming_damage[target] = incoming_damage[target].saturating_add(damage);
+                events.push(ArenaEvent::Hit {
+                    actor,
+                    target,
+                    damage,
+                });
+            }
+            SpellEffect::Heal { amount } => {
+                if *heal_count < heals.len() {
+                    heals[*heal_count] = (actor, target, amount);
+                    *heal_count += 1;
+                }
+            }
+            SpellEffect::Interrupt { lockout_ticks } if still_casting_after_4a[target] => {
+                match &mut interrupts[target] {
+                    Some((_, existing)) => {
+                        *existing = (*existing).max(lockout_ticks);
+                    }
+                    slot @ None => {
+                        *slot = Some((actor, lockout_ticks));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn rejection_from(error: CastError) -> Rejection {
+    match error {
+        CastError::CasterDead | CastError::InvalidHealth | CastError::WrongClass => {
+            Rejection::InvalidActor
+        }
+        CastError::InvalidTarget | CastError::TargetDead | CastError::UnknownSpell => {
+            Rejection::InvalidTarget
+        }
+        CastError::Timing(CastStateError::AlreadyCasting) => Rejection::AlreadyCasting,
+        CastError::Timing(CastStateError::SpellCooldown { .. }) => Rejection::Cooldown,
+        CastError::Timing(CastStateError::GlobalCooldown { .. }) => Rejection::GlobalCooldown,
+        CastError::Timing(CastStateError::PassiveSpell) => Rejection::InvalidTarget,
+        CastError::Silenced | CastError::Stunned => Rejection::Silenced,
+        CastError::Moving => Rejection::Moving,
+        CastError::OutOfRange => Rejection::OutOfRange,
+        CastError::NoLineOfSight => Rejection::LineOfSight,
+        CastError::NotEnoughResource(_)
+        | CastError::InvalidResourceCost
+        | CastError::NotEnoughHealth => Rejection::NotEnoughResource,
+        CastError::ConditionNotMet | CastError::StateMismatch => Rejection::InvalidTarget,
+    }
+}
+
+fn interrupt_reason_from(error: CastError) -> InterruptReason {
+    match error {
+        CastError::Moving => InterruptReason::Moved,
+        CastError::Silenced | CastError::Stunned => InterruptReason::Silenced,
+        CastError::OutOfRange => InterruptReason::OutOfRange,
+        CastError::NoLineOfSight => InterruptReason::LineOfSight,
+        CastError::TargetDead | CastError::InvalidTarget => InterruptReason::TargetDead,
+        CastError::CasterDead | CastError::InvalidHealth => InterruptReason::CasterDead,
+        _ => InterruptReason::Cancelled,
     }
 }
 
@@ -656,7 +1219,7 @@ mod tests {
             }
             for target in (1..size * 2).step_by(2) {
                 for _ in 0..4 {
-                    while arena.tick() < arena.fighters[0].ready_at {
+                    while arena.fighters[0].cooldown_remaining(SpellId::Pulse) > 0 {
                         commands.push(Vec::new());
                         arena.step(&[]);
                     }
@@ -877,15 +1440,18 @@ mod tests {
         }
         arena.step(&[ATTACK]);
         assert_eq!(arena.fighters()[1].health, 75);
-        let ready = arena.fighters()[0].ready_at;
-        while arena.tick() < ready {
+        assert_eq!(
+            arena.fighters()[0].cooldown_remaining(SpellId::Pulse),
+            PULSE_COOLDOWN_TICKS - 1
+        );
+        while arena.fighters()[0].cooldown_remaining(SpellId::Pulse) > 0 {
             assert_eq!(
                 arena.step(&[ATTACK]),
                 vec![rejected(0, Rejection::Cooldown)]
             );
         }
         for _ in 0..3 {
-            while arena.tick() < arena.fighters()[0].ready_at {
+            while arena.fighters()[0].cooldown_remaining(SpellId::Pulse) > 0 {
                 arena.step(&[]);
             }
             arena.step(&[ATTACK]);
@@ -1303,11 +1869,9 @@ mod tests {
         assert_eq!(arena.fighters[0].health, 0);
         assert_eq!(arena.fighters[1].health, MAX_HEALTH - ATTACK_DAMAGE);
         assert_eq!(arena.result(), None, "actor 2 still stands for team 0");
-        assert!(
-            [0, 1, 3]
-                .iter()
-                .all(|&actor| arena.fighters[actor].ready_at == arena.tick() - 1 + ATTACK_COOLDOWN)
-        );
+        assert!([0, 1, 3].iter().all(|&actor| {
+            arena.fighters[actor].cooldown_remaining(SpellId::Pulse) == PULSE_COOLDOWN_TICKS - 1
+        }));
         // Last enemy of team 0 falls: team 1 wins.
         arena.fighters[2].health = 10;
         while arena.can_attack(1, 2).is_err() {
@@ -1447,7 +2011,7 @@ mod tests {
             movement: Some(Axes { x: 300, z: -1000 }),
             facing: Some(42),
             jump: true,
-            attack: Some(1),
+            action: ActorInput::pulse(1),
         };
         assert_eq!(
             a.advance(&[input]),
@@ -1487,7 +2051,11 @@ mod tests {
                     vertical_velocity: 0,
                     momentum: Position { x: 0, z: 0 },
                     health: MAX_HEALTH,
-                    ready_at: 0,
+                    resource: MAX_RESOURCE,
+                    gcd_remaining: 0,
+                    lockout_remaining: 0,
+                    cooldowns: [0; SpellId::COUNT],
+                    active_cast: None,
                     facing: 0,
                 },
                 Combatant {
@@ -1499,7 +2067,16 @@ mod tests {
                     vertical_velocity: 200,
                     momentum: Position { x: 240, z: 0 },
                     health: 75,
-                    ready_at: 30,
+                    resource: 65,
+                    gcd_remaining: 12,
+                    lockout_remaining: 0,
+                    cooldowns: [30, 0, 120, 0],
+                    active_cast: Some(ActiveCastState {
+                        spell: SpellId::RiftBolt,
+                        target: Some(0),
+                        remaining_ticks: 20,
+                        total_ticks: 45,
+                    }),
                     facing: HALF_TURN,
                 },
             ],
@@ -1510,11 +2087,16 @@ mod tests {
         assert_eq!(arena.state_hash(), GOLDEN_STATE_HASH);
         assert_eq!(arena.clone().state_hash(), arena.state_hash());
         let mut seen = vec![arena.state_hash()];
-        let mutations: [fn(&mut Arena); 7] = [
+        let mutations: [fn(&mut Arena); 12] = [
             |a| a.fighters[0].facing = 1,
             |a| a.fighters[1].health -= 1,
             |a| a.fighters[0].position.x += 1,
-            |a| a.fighters[1].ready_at += 1,
+            |a| a.fighters[1].resource -= 1,
+            |a| a.fighters[1].gcd_remaining += 1,
+            |a| a.fighters[1].lockout_remaining += 1,
+            |a| a.fighters[1].cooldowns[SpellId::Pulse.index()] += 1,
+            |a| a.fighters[1].active_cast.as_mut().unwrap().remaining_ticks -= 1,
+            |a| a.fighters[1].active_cast = None,
             |a| a.tick += 1,
             |a| a.result = Some(RoundResult::Draw),
             |a| a.result = Some(RoundResult::TimeLimitDraw),
@@ -1611,7 +2193,10 @@ mod tests {
                 ArenaEvent::Finished(RoundResult::TimeLimitDraw)
             ]
         );
-        assert_eq!(saturated.fighters()[0].ready_at, u64::MAX);
+        assert_eq!(
+            saturated.fighters()[0].cooldown_remaining(SpellId::Pulse),
+            PULSE_COOLDOWN_TICKS
+        );
         assert_eq!(saturated.tick(), u64::MAX);
     }
 
@@ -1651,5 +2236,591 @@ mod tests {
             assert_eq!(reusable, original);
         }
     }
-    const GOLDEN_STATE_HASH: u64 = 395_746_746_345_043_275;
+
+    #[test]
+    fn timed_casts_enforce_gcd_per_spell_cooldowns_resources_and_completion_rechecks() {
+        use crate::spells::{
+            MEND_CAST_TICKS, MEND_COOLDOWN_TICKS, MEND_COST, MEND_HEAL, PULSE_COST,
+            RIFT_BOLT_CAST_TICKS, RIFT_BOLT_COOLDOWN_TICKS, RIFT_BOLT_COST, RIFT_BOLT_DAMAGE,
+        };
+
+        // Start Rift Bolt at 10 m (within 12 m Rift Bolt range, outside 6 m Pulse range).
+        let mut arena = close_quarters(1, 10_000);
+        let cast_bolt = ArenaCommand::Cast {
+            actor: 0,
+            spell: SpellId::RiftBolt,
+            target: Some(1),
+        };
+        assert_eq!(
+            arena.step(&[cast_bolt]),
+            vec![ArenaEvent::CastStarted {
+                actor: 0,
+                spell: SpellId::RiftBolt,
+                target: Some(1),
+                duration_ticks: RIFT_BOLT_CAST_TICKS,
+            }]
+        );
+        // Resource deducted immediately; GCD started (29 - 1 = 28 after tick 0); personal CD not started yet.
+        assert_eq!(arena.fighters()[0].resource, MAX_RESOURCE - RIFT_BOLT_COST);
+        assert_eq!(arena.fighters()[0].gcd_remaining, 28);
+        assert_eq!(arena.fighters()[0].cooldown_remaining(SpellId::RiftBolt), 0);
+        assert_eq!(
+            arena.fighters()[0].active_cast,
+            Some(ActiveCastState {
+                spell: SpellId::RiftBolt,
+                target: Some(1),
+                remaining_ticks: RIFT_BOLT_CAST_TICKS,
+                total_ticks: RIFT_BOLT_CAST_TICKS,
+            })
+        );
+
+        // Cannot start another spell (even off-GCD Quell) while already casting.
+        assert_eq!(
+            arena.step(&[ArenaCommand::Cast {
+                actor: 0,
+                spell: SpellId::Quell,
+                target: Some(1),
+            }]),
+            vec![rejected(0, Rejection::AlreadyCasting)]
+        );
+        assert_eq!(
+            arena.fighters()[0].active_cast.unwrap().remaining_ticks,
+            RIFT_BOLT_CAST_TICKS - 1
+        );
+
+        // Stand still until the completion tick (tick 45): Rift Bolt completes and hits for 40.
+        for _ in 2..RIFT_BOLT_CAST_TICKS {
+            assert_eq!(arena.step(&[]), vec![]);
+        }
+        assert_eq!(arena.fighters()[1].health, MAX_HEALTH);
+        assert_eq!(
+            arena.step(&[]),
+            vec![
+                ArenaEvent::CastCompleted {
+                    actor: 0,
+                    spell: SpellId::RiftBolt,
+                    target: Some(1),
+                },
+                ArenaEvent::Hit {
+                    actor: 0,
+                    target: 1,
+                    damage: RIFT_BOLT_DAMAGE,
+                },
+            ]
+        );
+        assert_eq!(arena.fighters()[1].health, MAX_HEALTH - RIFT_BOLT_DAMAGE);
+        assert_eq!(arena.fighters()[0].active_cast, None);
+        assert_eq!(
+            arena.fighters()[0].cooldown_remaining(SpellId::RiftBolt),
+            RIFT_BOLT_COOLDOWN_TICKS - 1
+        );
+        // Passive regen restored +15 over 45 ticks (10/s).
+        assert_eq!(
+            arena.fighters()[0].resource,
+            MAX_RESOURCE - RIFT_BOLT_COST + 15
+        );
+
+        // Re-check range on completion tick: enemy walks past 12 m just before completion.
+        let mut range_loss = close_quarters(1, 11_900);
+        range_loss.step(&[cast_bolt]);
+        for _ in 1..RIFT_BOLT_CAST_TICKS {
+            assert_eq!(range_loss.step(&[]), vec![]);
+        }
+        let events = range_loss.step(&[ArenaCommand::Move {
+            actor: 1,
+            x: 1000,
+            z: 0,
+        }]);
+        assert!(events.contains(&ArenaEvent::CastInterrupted {
+            actor: 0,
+            spell: SpellId::RiftBolt,
+            reason: InterruptReason::OutOfRange,
+            by: None,
+        }));
+        assert_eq!(range_loss.fighters()[1].health, MAX_HEALTH);
+        assert_eq!(
+            range_loss.fighters()[0].cooldown_remaining(SpellId::RiftBolt),
+            0,
+            "interrupted cast does not start personal cooldown"
+        );
+
+        // Re-check line of sight on completion tick: enemy ducks behind a pillar while staying in 12 m range.
+        let pillar = pillars()[0];
+        let mut los_loss = default_arena();
+        los_loss.fighters[0].position = Position {
+            x: pillar.center.x - pillar.half_x - 500,
+            z: pillar.center.z + pillar.half_z + 200,
+        };
+        los_loss.fighters[1].position = Position {
+            x: pillar.center.x + pillar.half_x + 500,
+            z: pillar.center.z + pillar.half_z + 200,
+        };
+        assert_eq!(
+            los_loss.step(&[cast_bolt]),
+            vec![ArenaEvent::CastStarted {
+                actor: 0,
+                spell: SpellId::RiftBolt,
+                target: Some(1),
+                duration_ticks: RIFT_BOLT_CAST_TICKS,
+            }]
+        );
+        for _ in 1..RIFT_BOLT_CAST_TICKS {
+            // Enemy steps behind the pillar mid-cast; cast continues until completion re-check.
+            if los_loss.tick() == 10 {
+                los_loss.fighters[1].position.z = pillar.center.z;
+            }
+            assert_eq!(los_loss.step(&[]), vec![]);
+        }
+        assert_eq!(
+            los_loss.step(&[]),
+            vec![ArenaEvent::CastInterrupted {
+                actor: 0,
+                spell: SpellId::RiftBolt,
+                reason: InterruptReason::LineOfSight,
+                by: None,
+            }]
+        );
+        assert_eq!(los_loss.fighters()[1].health, MAX_HEALTH);
+
+        // Friendly heal (Mend) heals self or teammate up to MAX_HEALTH, never enemy.
+        let mut heal_arena = close_quarters(2, 2_000);
+        heal_arena.fighters[2].health = 50;
+        assert_eq!(
+            heal_arena.step(&[ArenaCommand::Cast {
+                actor: 0,
+                spell: SpellId::Mend,
+                target: Some(1),
+            }]),
+            vec![rejected(0, Rejection::InvalidTarget)]
+        );
+        assert_eq!(
+            heal_arena.step(&[ArenaCommand::Cast {
+                actor: 0,
+                spell: SpellId::Mend,
+                target: Some(2),
+            }]),
+            vec![ArenaEvent::CastStarted {
+                actor: 0,
+                spell: SpellId::Mend,
+                target: Some(2),
+                duration_ticks: MEND_CAST_TICKS,
+            }]
+        );
+        assert_eq!(heal_arena.fighters()[0].resource, MAX_RESOURCE - MEND_COST);
+        for _ in 1..MEND_CAST_TICKS {
+            heal_arena.step(&[]);
+        }
+        assert_eq!(
+            heal_arena.step(&[]),
+            vec![
+                ArenaEvent::CastCompleted {
+                    actor: 0,
+                    spell: SpellId::Mend,
+                    target: Some(2),
+                },
+                ArenaEvent::Healed {
+                    actor: 0,
+                    target: 2,
+                    amount: MEND_HEAL,
+                },
+            ]
+        );
+        assert_eq!(heal_arena.fighters()[2].health, 50 + MEND_HEAL);
+        assert_eq!(
+            heal_arena.fighters()[0].cooldown_remaining(SpellId::Mend),
+            MEND_COOLDOWN_TICKS - 1
+        );
+
+        // Insufficient resource rejects cleanly without starting cooldown or GCD.
+        let mut oom = close_quarters(1, 3_000);
+        oom.fighters[0].resource = PULSE_COST - 1;
+        assert_eq!(
+            oom.step(&[ATTACK]),
+            vec![rejected(0, Rejection::NotEnoughResource)]
+        );
+        assert_eq!(oom.fighters()[0].gcd_remaining, 0);
+        assert_eq!(oom.fighters()[0].cooldown_remaining(SpellId::Pulse), 0);
+    }
+
+    #[test]
+    fn interrupts_off_gcd_lockout_movement_cancel_and_fake_casting_work_authoritatively() {
+        use crate::spells::{
+            INTERRUPT_LOCKOUT_TICKS, QUELL_COOLDOWN_TICKS, QUELL_COST, RIFT_BOLT_COST,
+        };
+
+        let mut arena = close_quarters(1, 5_000);
+        // Actor 1 fires Pulse (starts GCD = 29), Actor 0 starts Rift Bolt on tick 0.
+        let events = arena.step(&[
+            ArenaCommand::Cast {
+                actor: 0,
+                spell: SpellId::RiftBolt,
+                target: Some(1),
+            },
+            ArenaCommand::Attack {
+                actor: 1,
+                target: 0,
+            },
+        ]);
+        assert!(events.contains(&ArenaEvent::CastStarted {
+            actor: 0,
+            spell: SpellId::RiftBolt,
+            target: Some(1),
+            duration_ticks: crate::spells::RIFT_BOLT_CAST_TICKS,
+        }));
+        assert!(events.contains(&ArenaEvent::Hit {
+            actor: 1,
+            target: 0,
+            damage: ATTACK_DAMAGE,
+        }));
+        // Actor 1 is on GCD (28 ticks left) and cannot cast Rift Bolt,
+        // but CAN cast off-GCD Quell to interrupt Actor 0!
+        assert_eq!(
+            arena.can_cast(1, SpellId::RiftBolt, Some(0)),
+            Err(Rejection::GlobalCooldown)
+        );
+        assert_eq!(arena.can_cast(1, SpellId::Quell, Some(0)), Ok(()));
+        let events = arena.step(&[ArenaCommand::Cast {
+            actor: 1,
+            spell: SpellId::Quell,
+            target: Some(0),
+        }]);
+        assert_eq!(
+            events,
+            vec![
+                ArenaEvent::CastCompleted {
+                    actor: 1,
+                    spell: SpellId::Quell,
+                    target: Some(0),
+                },
+                ArenaEvent::CastInterrupted {
+                    actor: 0,
+                    spell: SpellId::RiftBolt,
+                    reason: InterruptReason::Interrupted,
+                    by: Some(1),
+                },
+            ]
+        );
+        assert_eq!(arena.fighters()[0].active_cast, None);
+        assert_eq!(
+            arena.fighters()[0].lockout_remaining,
+            INTERRUPT_LOCKOUT_TICKS - 1
+        );
+        // Resource was NOT refunded and personal cooldown did NOT start.
+        assert_eq!(arena.fighters()[0].resource, MAX_RESOURCE - RIFT_BOLT_COST);
+        assert_eq!(arena.fighters()[0].cooldown_remaining(SpellId::RiftBolt), 0);
+        // Quell spent its cost and started its 6 s cooldown without resetting Actor 1's GCD.
+        assert_eq!(
+            arena.fighters()[1].cooldown_remaining(SpellId::Quell),
+            QUELL_COOLDOWN_TICKS - 1
+        );
+        assert_eq!(
+            arena.fighters()[1].resource,
+            MAX_RESOURCE - crate::spells::PULSE_COST - QUELL_COST
+        );
+        // During lockout, Actor 0 cannot cast any spell.
+        assert_eq!(
+            arena.step(&[ATTACK]),
+            vec![rejected(0, Rejection::Silenced)]
+        );
+        for _ in 0..INTERRUPT_LOCKOUT_TICKS {
+            arena.step(&[]);
+        }
+        assert_eq!(arena.fighters()[0].lockout_remaining, 0);
+        assert_eq!(arena.can_attack(0, 1), Ok(()));
+
+        // Fake-casting (juke): cancelling via movement or CancelCast on the same tick
+        // as an enemy Quell makes Quell whiff with no lockout!
+        for juke_by_move in [false, true] {
+            let mut juke = close_quarters(1, 5_000);
+            juke.step(&[ArenaCommand::Cast {
+                actor: 0,
+                spell: SpellId::RiftBolt,
+                target: Some(1),
+            }]);
+            let mut commands = vec![ArenaCommand::Cast {
+                actor: 1,
+                spell: SpellId::Quell,
+                target: Some(0),
+            }];
+            if juke_by_move {
+                commands.push(forward());
+            } else {
+                commands.push(ArenaCommand::CancelCast { actor: 0 });
+            }
+            let mut swapped = juke.clone();
+            let events = juke.step(&commands);
+            commands.reverse();
+            assert_eq!(swapped.step(&commands), events, "order independent");
+            assert_eq!(juke, swapped);
+            assert_eq!(juke.fighters()[0].lockout_remaining, 0);
+            assert_eq!(
+                juke.fighters()[1].cooldown_remaining(SpellId::Quell),
+                QUELL_COOLDOWN_TICKS - 1,
+                "baited interrupt still enters cooldown"
+            );
+            assert!(events.contains(&ArenaEvent::CastInterrupted {
+                actor: 0,
+                spell: SpellId::RiftBolt,
+                reason: if juke_by_move {
+                    InterruptReason::Moved
+                } else {
+                    InterruptReason::Cancelled
+                },
+                by: None,
+            }));
+        }
+
+        // Cannot start a stationary cast while moving; CancelCast while idle rejects.
+        let mut move_start = close_quarters(1, 5_000);
+        assert_eq!(
+            move_start.step(&[
+                forward(),
+                ArenaCommand::Cast {
+                    actor: 0,
+                    spell: SpellId::RiftBolt,
+                    target: Some(1),
+                },
+            ]),
+            vec![
+                ArenaEvent::Moved { actor: 0 },
+                rejected(0, Rejection::Moving),
+            ]
+        );
+        assert_eq!(move_start.fighters()[0].resource, MAX_RESOURCE);
+        assert_eq!(
+            move_start.step(&[ArenaCommand::CancelCast { actor: 0 }]),
+            vec![rejected(0, Rejection::NotCasting)]
+        );
+
+        // A lethal hit interrupts an in-progress cast as CasterDead and never leaves a dead caster casting.
+        let mut lethal = close_quarters(1, 5_000);
+        lethal.fighters[0].health = ATTACK_DAMAGE;
+        lethal.step(&[ArenaCommand::Cast {
+            actor: 0,
+            spell: SpellId::RiftBolt,
+            target: Some(1),
+        }]);
+        let events = lethal.step(&[ArenaCommand::Attack {
+            actor: 1,
+            target: 0,
+        }]);
+        assert!(events.contains(&ArenaEvent::CastInterrupted {
+            actor: 0,
+            spell: SpellId::RiftBolt,
+            reason: InterruptReason::CasterDead,
+            by: None,
+        }));
+        assert_eq!(lethal.fighters()[0].active_cast, None);
+    }
+
+    #[test]
+    fn restore_rejects_corrupted_combat_and_cast_invariants() {
+        let base = close_quarters(1, 3_000);
+        let valid = base.fighters().to_vec();
+        let bad_cases: Vec<Vec<Combatant>> = vec![
+            {
+                let mut f = valid.clone();
+                f[0].health = MAX_HEALTH + 1;
+                f
+            },
+            {
+                let mut f = valid.clone();
+                f[0].resource = MAX_RESOURCE + 1;
+                f
+            },
+            {
+                let mut f = valid.clone();
+                f[0].active_cast = Some(ActiveCastState {
+                    spell: SpellId::Pulse, // instant spell cannot be active cast
+                    target: Some(1),
+                    remaining_ticks: 1,
+                    total_ticks: 1,
+                });
+                f
+            },
+            {
+                let mut f = valid.clone();
+                f[0].active_cast = Some(ActiveCastState {
+                    spell: SpellId::RiftBolt,
+                    target: Some(1),
+                    remaining_ticks: 0,
+                    total_ticks: 45,
+                });
+                f
+            },
+            {
+                let mut f = valid.clone();
+                f[0].active_cast = Some(ActiveCastState {
+                    spell: SpellId::RiftBolt,
+                    target: Some(1),
+                    remaining_ticks: 46,
+                    total_ticks: 45,
+                });
+                f
+            },
+            {
+                let mut f = valid.clone();
+                f[0].active_cast = Some(ActiveCastState {
+                    spell: SpellId::RiftBolt,
+                    target: Some(2), // out of bounds target
+                    remaining_ticks: 10,
+                    total_ticks: 45,
+                });
+                f
+            },
+            {
+                let mut f = valid.clone();
+                f[0].health = 0;
+                f[0].active_cast = Some(ActiveCastState {
+                    spell: SpellId::RiftBolt,
+                    target: Some(1),
+                    remaining_ticks: 10,
+                    total_ticks: 45,
+                });
+                f
+            },
+        ];
+        for fighters in bad_cases {
+            assert!(Arena::restore(fixture(), 1, fighters, None).is_none());
+        }
+    }
+
+    #[test]
+    fn simultaneous_combat_boundaries_stay_order_independent_and_respect_movement() {
+        use crate::spells::{MEND_CAST_TICKS, QUELL_COOLDOWN_TICKS, RIFT_BOLT_CAST_TICKS};
+
+        // 1. Simultaneous lethal damage + Mend completion on the same tick never revives a dead target.
+        let mut lethal_heal = close_quarters(2, 2_000);
+        lethal_heal.fighters[0].health = ATTACK_DAMAGE;
+        lethal_heal.step(&[ArenaCommand::Cast {
+            actor: 2,
+            spell: SpellId::Mend,
+            target: Some(0),
+        }]);
+        for _ in 1..MEND_CAST_TICKS {
+            lethal_heal.step(&[]);
+        }
+        let mut swapped = lethal_heal.clone();
+        let cmds = [
+            ArenaCommand::Attack {
+                actor: 1,
+                target: 0,
+            },
+            ArenaCommand::Face {
+                actor: 2,
+                facing: 123,
+            },
+        ];
+        let events = lethal_heal.step(&cmds);
+        let mut rev = cmds;
+        rev.reverse();
+        assert_eq!(swapped.step(&rev), events);
+        assert_eq!(lethal_heal, swapped);
+        assert_eq!(lethal_heal.fighters()[0].health, 0);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, ArenaEvent::Healed { .. }))
+        );
+
+        // 2. Target dying before completion tick interrupts the cast as TargetDead without personal CD.
+        let mut target_dead = close_quarters(2, 2_000);
+        target_dead.fighters[1].health = ATTACK_DAMAGE;
+        target_dead.step(&[ArenaCommand::Cast {
+            actor: 0,
+            spell: SpellId::RiftBolt,
+            target: Some(1),
+        }]);
+        // Teammate kills actor 1 mid-cast; round continues because actor 3 still stands.
+        target_dead.step(&[ArenaCommand::Attack {
+            actor: 2,
+            target: 1,
+        }]);
+        assert_eq!(target_dead.fighters()[1].health, 0);
+        for _ in 2..RIFT_BOLT_CAST_TICKS {
+            assert_eq!(target_dead.step(&[]), vec![]);
+        }
+        assert_eq!(
+            target_dead.step(&[]),
+            vec![ArenaEvent::CastInterrupted {
+                actor: 0,
+                spell: SpellId::RiftBolt,
+                reason: InterruptReason::TargetDead,
+                by: None,
+            }]
+        );
+        assert_eq!(
+            target_dead.fighters()[0].cooldown_remaining(SpellId::RiftBolt),
+            0
+        );
+
+        // 3. Same-tick CastStarted (RiftBolt) + enemy Quell whiffs regardless of command order.
+        let mut same_tick = close_quarters(1, 5_000);
+        let mut same_tick_rev = same_tick.clone();
+        let pair = [
+            ArenaCommand::Cast {
+                actor: 0,
+                spell: SpellId::RiftBolt,
+                target: Some(1),
+            },
+            ArenaCommand::Cast {
+                actor: 1,
+                spell: SpellId::Quell,
+                target: Some(0),
+            },
+        ];
+        let events = same_tick.step(&pair);
+        let mut pair_rev = pair;
+        pair_rev.reverse();
+        assert_eq!(same_tick_rev.step(&pair_rev), events);
+        assert_eq!(same_tick, same_tick_rev);
+        assert_eq!(same_tick.fighters()[0].lockout_remaining, 0);
+        assert!(same_tick.fighters()[0].active_cast.is_some());
+        assert_eq!(
+            same_tick.fighters()[1].cooldown_remaining(SpellId::Quell),
+            QUELL_COOLDOWN_TICKS - 1
+        );
+
+        // 4. Zero-vector Move { x: 0, z: 0 } keeps stationary casts running; jumping interrupts/blocks them.
+        let mut idle_move = close_quarters(1, 5_000);
+        idle_move.step(&[ArenaCommand::Cast {
+            actor: 0,
+            spell: SpellId::RiftBolt,
+            target: Some(1),
+        }]);
+        let events = idle_move.step(&[ArenaCommand::Move {
+            actor: 0,
+            x: 0,
+            z: 0,
+        }]);
+        assert_eq!(events, vec![ArenaEvent::Moved { actor: 0 }]);
+        assert!(idle_move.fighters()[0].active_cast.is_some());
+
+        // Jumping mid-cast interrupts the stationary cast as Moved.
+        let events = idle_move.step(&[JUMP]);
+        assert_eq!(
+            events,
+            vec![
+                ArenaEvent::Jumped { actor: 0 },
+                ArenaEvent::CastInterrupted {
+                    actor: 0,
+                    spell: SpellId::RiftBolt,
+                    reason: InterruptReason::Moved,
+                    by: None,
+                },
+            ]
+        );
+        // While airborne (`height > 0`), starting a stationary cast is rejected as Moving.
+        assert!(idle_move.fighters()[0].height > 0);
+        idle_move.fighters[0].gcd_remaining = 0;
+        assert_eq!(
+            idle_move.step(&[ArenaCommand::Cast {
+                actor: 0,
+                spell: SpellId::RiftBolt,
+                target: Some(1),
+            }]),
+            vec![rejected(0, Rejection::Moving)]
+        );
+    }
+    const GOLDEN_STATE_HASH: u64 = 2_147_620_522_866_943_910;
 }

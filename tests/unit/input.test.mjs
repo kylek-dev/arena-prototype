@@ -327,8 +327,19 @@ test('the Rust bridge input array keeps its positional contract and drains delta
   input.wheel(-30);
   down(input, 2, 2);
   move(input, 2, 10, 5);
-  assert.deepEqual(input.readInput(), [0, -1, 1, 1, 0, 0, 10, 5, 120, -1, -1, 1, 0, 0, 0, -1, -1, -1, 0]);
-  assert.deepEqual(input.readInput(), [0, -1, 0, 0, 0, 0, 0, 0, 0, -1, -1, 1, 0, 0, 0, -1, -1, -1, 0]);
+  assert.deepEqual(input.readInput(), [0, -1, 1, 1, 0, 0, 10, 5, 120, -1, -1, 1, 0, 0, 0, -1, -1, -1, 0, 1]);
+  assert.deepEqual(input.readInput(), [0, -1, 0, 0, 0, 0, 0, 0, 0, -1, -1, 1, 0, 0, 0, -1, -1, -1, 0, 0]);
+});
+
+test('requestCast encodes each arena spell in the appended bridge field and drains once', () => {
+  const input = new InputState();
+  for (const [spell, code] of [['pulse', 1], ['rift_bolt', 2], ['quell', 3], ['mend', 4]]) {
+    input.requestCast(spell);
+    const frame = input.readInput();
+    assert.equal(frame[19], code);
+    assert.equal(frame[2], spell === 'pulse' ? 1 : 0);
+    assert.equal(input.readInput()[19], 0);
+  }
 });
 
 test('self selection uses the appended bridge field and drains or cancels once', () => {

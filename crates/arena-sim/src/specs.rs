@@ -54,3 +54,27 @@ impl Specialisation {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn specialisations_map_to_expected_classes_and_roles() {
+        let healers = [
+            Specialisation::PlagueSurgeon,
+            Specialisation::BloodHealer,
+            Specialisation::NatureGuardian,
+        ];
+        for spec in healers {
+            assert_eq!(spec.role(), Role::Healer);
+        }
+        assert_eq!(Specialisation::Toxicologist.classe(), Class::PlagueDoctor);
+        assert_eq!(Specialisation::Toxicologist.role(), Role::DPS);
+        assert_eq!(Specialisation::Lich.classe(), Class::Necromancer);
+        assert_eq!(Specialisation::Duelist.classe(), Class::Gladiator);
+        assert_eq!(Specialisation::Assassin.classe(), Class::Nightblade);
+        assert_eq!(Specialisation::Hemomancer.classe(), Class::Bloodbinder);
+        assert_eq!(Specialisation::Beastmaster.classe(), Class::Wildkeeper);
+    }
+}
