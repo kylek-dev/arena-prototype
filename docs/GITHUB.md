@@ -6,9 +6,9 @@ Code, design records, research, wiki sources and issue definitions belong in the
 
 ## Local-only default
 
-Develop and verify locally. Ordinary edits, intermediate milestones and local commits do not require a push or pull request. Keep work local until it is complete and the user requests publication; permission to edit or commit locally is not permission to publish.
+Develop and verify locally. Ordinary edits, intermediate milestones and local commits do not require a push or pull request. Keep ordinary work local until it is complete and the user requests publication; permission to edit or commit locally is not permission to publish. Exception: completed, verified iterations run via the autonomous iteration skill (`.agents/skills/iterate-game/SKILL.md` on `auto/*` branches) are authorized to push their `auto/*` branch and open a pull request targeting `main` (or a parent `auto/*` branch for stacked PRs).
 
-When pushing completed work, always push to a new working branch and open a pull request targeting `main`, including for documentation and configuration changes. A request to push completed work authorizes this branch-and-PR workflow. Never push directly to `main` or bypass required reviews, status checks or branch protections.
+When pushing completed work, always push to a new working branch and open a pull request targeting `main` (or a stacked parent branch when building a PR stack), including for documentation and configuration changes. A request to push completed work (or completion of an autonomous `auto/*` iteration) authorizes this branch-and-PR workflow. Never push directly to `main` or bypass required reviews, status checks or branch protections.
 
 Publishing the wiki, changing issues/projects and manually triggering remote workflows require separate user authorization. The commands below are reference procedures, not standing authorization to run them.
 
