@@ -7,12 +7,17 @@ fn layout() -> Layout {
 }
 
 fn welcome(actor: u8, team_size: u8) -> Vec<u8> {
+    welcome_with_limit(actor, team_size, arena_sim::arena::MAX_ROUND_TICKS)
+}
+
+fn welcome_with_limit(actor: u8, team_size: u8, round_ticks: u64) -> Vec<u8> {
     ServerMessage::Welcome(Welcome {
         protocol: PROTOCOL_VERSION,
         actor,
         team_size,
         tick: 0,
         tick_rate: 30,
+        round_ticks,
         rules: arena_protocol::RULES_VERSION,
         map: 7,
     })
@@ -104,7 +109,7 @@ fn snapshots_are_shown_from_this_seats_side_and_checked_against_their_hash() {
     assert!((view.facings[0] - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
     assert_eq!(session.stats.hash_mismatches, 0);
     assert_eq!(
-        snapshot_state_hash(server.tick(), server.fighters(), server.result()),
+        Arena::hash_state(server.tick(), server.fighters(), server.result()),
         server.state_hash()
     );
     // A snapshot whose state does not match its hash is counted.
@@ -246,18 +251,18 @@ fn events_show_when_the_view_reaches_them_and_rejections_at_once() {
 fn results_and_errors_are_reported_from_this_players_side() {
     let mut server = Arena::practice(layout(), 1).unwrap();
     server.step(&[]);
-    let finished = |team| {
+    let finished = |result: RoundResult| {
         let mut session = joined(1, 1);
         let arena = Arena::restore(
             layout(),
             server.tick(),
             server.fighters().to_vec(),
-            Some(RoundResult::Won { team }),
+            Some(result),
         )
         .unwrap();
         let events = vec![TickEvent {
             tick: 0,
-            event: WireEvent::Finished(WireResult::Won { team: team as u8 }),
+            event: WireEvent::Finished(WireResult::from(result)),
         }];
         session.receive(
             &feed(1, vec![snapshot(&arena, 0, events, &[true, true])]),
@@ -265,10 +270,64 @@ fn results_and_errors_are_reported_from_this_players_side() {
             &layout(),
         );
         assert_eq!(session.phase, Phase::Finished);
-        session.view(1.0, 1.0).unwrap().shown
+        let view = session.view(1.0, 1.0).unwrap();
+        (view.result, view.shown)
     };
-    assert_eq!(finished(1), vec![Shown::Finished { won: Some(true) }]);
-    assert_eq!(finished(0), vec![Shown::Finished { won: Some(false) }]);
+    assert_eq!(
+        finished(RoundResult::Won { team: 1 }),
+        (
+            Some(RoundResult::Won { team: 0 }),
+            vec![Shown::Finished {
+                outcome: Outcome::Won
+            }]
+        )
+    );
+    assert_eq!(
+        finished(RoundResult::Won { team: 0 }),
+        (
+            Some(RoundResult::Won { team: 1 }),
+            vec![Shown::Finished {
+                outcome: Outcome::Lost
+            }]
+        )
+    );
+    assert_eq!(
+        finished(RoundResult::Draw),
+        (
+            Some(RoundResult::Draw),
+            vec![Shown::Finished {
+                outcome: Outcome::Draw
+            }]
+        )
+    );
+    assert_eq!(
+        finished(RoundResult::TimeLimitDraw),
+        (
+            Some(RoundResult::TimeLimitDraw),
+            vec![Shown::Finished {
+                outcome: Outcome::TimeLimitDraw
+            }]
+        )
+    );
+    // Custom round limits announced in Welcome are retained by the session.
+    let mut custom = Session::default();
+    assert_eq!(custom.round_ticks(), arena_sim::arena::MAX_ROUND_TICKS);
+    custom.receive(
+        &feed(1, vec![welcome_with_limit(0, 1, 900)]),
+        0.0,
+        &layout(),
+    );
+    assert_eq!(custom.round_ticks(), 900);
+    // Out-of-range round limits in Welcome close the session as Malformed.
+    for invalid in [0, arena_sim::arena::MAX_ROUND_TICKS + 1] {
+        let mut rejected = Session::default();
+        rejected.receive(
+            &feed(1, vec![welcome_with_limit(0, 1, invalid)]),
+            0.0,
+            &layout(),
+        );
+        assert_eq!(rejected.phase, Phase::Closed(ErrorCode::Malformed));
+    }
 
     let mut session = joined(0, 1);
     session.receive(

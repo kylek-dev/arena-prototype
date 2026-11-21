@@ -4,6 +4,7 @@ use std::fmt::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use arena_protocol::ErrorCode;
+use arena_sim::arena::RoundResult;
 
 const CODES: [ErrorCode; 9] = [
     ErrorCode::VersionMismatch,
@@ -21,6 +22,8 @@ const CODES: [ErrorCode; 9] = [
 pub struct Metrics {
     pub matches_active: AtomicU64,
     pub matches_created: AtomicU64,
+    /// Matches that reached a rules result: won, draw, time_limit_draw.
+    matches_finished: [AtomicU64; 3],
     pub connections_open: AtomicU64,
     /// Separate hot-path counters onto distinct cache lines to avoid cross-core
     /// false sharing under concurrent matches.
@@ -64,6 +67,22 @@ impl Metrics {
     }
     pub fn get(counter: &AtomicU64) -> u64 {
         counter.load(Ordering::Relaxed)
+    }
+    pub fn record_result(&self, result: RoundResult) {
+        let index = match result {
+            RoundResult::Won { .. } => 0,
+            RoundResult::Draw => 1,
+            RoundResult::TimeLimitDraw => 2,
+        };
+        Self::add(&self.matches_finished[index], 1);
+    }
+    pub fn finished(&self, result: RoundResult) -> u64 {
+        let index = match result {
+            RoundResult::Won { .. } => 0,
+            RoundResult::Draw => 1,
+            RoundResult::TimeLimitDraw => 2,
+        };
+        Self::get(&self.matches_finished[index])
     }
     pub fn record_error(&self, code: ErrorCode) {
         let index = CODES.iter().position(|known| *known == code).unwrap_or(0);
@@ -197,6 +216,21 @@ impl Metrics {
         );
         let _ = writeln!(
             text,
+            "# HELP arena_matches_finished_total Matches that reached a rules result, by outcome."
+        );
+        let _ = writeln!(text, "# TYPE arena_matches_finished_total counter");
+        for (label, counter) in ["won", "draw", "time_limit_draw"]
+            .iter()
+            .zip(&self.matches_finished)
+        {
+            let _ = writeln!(
+                text,
+                "arena_matches_finished_total{{result=\"{label}\"}} {}",
+                get(counter)
+            );
+        }
+        let _ = writeln!(
+            text,
             "# HELP arena_input_arrivals_total Ticks by inputs a connected seat received since the last tick."
         );
         let _ = writeln!(text, "# TYPE arena_input_arrivals_total counter");
@@ -232,14 +266,21 @@ mod tests {
         let metrics = Metrics::default();
         Metrics::add(&metrics.inputs, 3);
         metrics.record_error(ErrorCode::RateLimited);
+        metrics.record_result(RoundResult::Won { team: 0 });
+        metrics.record_result(RoundResult::TimeLimitDraw);
         metrics.record_tick(40_000, 33_333);
         metrics.record_tick(10, 33_333);
         let text = metrics.render();
         assert!(text.contains("arena_inputs_total 3\n"));
+        assert!(text.contains("arena_matches_finished_total{result=\"won\"} 1\n"));
+        assert!(text.contains("arena_matches_finished_total{result=\"draw\"} 0\n"));
+        assert!(text.contains("arena_matches_finished_total{result=\"time_limit_draw\"} 1\n"));
         assert!(text.contains("arena_errors_total{code=\"RateLimited\"} 1\n"));
         assert!(text.contains("arena_tick_overruns_total 1\n"));
         assert!(text.contains("arena_tick_max_microseconds 40000\n"));
         assert_eq!(metrics.errors(ErrorCode::RateLimited), 1);
         assert_eq!(metrics.errors(ErrorCode::BadTicket), 0);
+        assert_eq!(metrics.finished(RoundResult::TimeLimitDraw), 1);
+        assert_eq!(metrics.finished(RoundResult::Draw), 0);
     }
 }

@@ -11,7 +11,7 @@ use arena_protocol::prediction::Predictor;
 use arena_protocol::{
     ClientMessage, ErrorCode, FighterState, InputFrame, PROTOCOL_VERSION, ServerMessage, Snapshot,
 };
-use arena_sim::arena::{ATTACK_RANGE, ActorInput};
+use arena_sim::arena::{ATTACK_RANGE, ActorInput, MAX_ROUND_TICKS};
 use arena_sim::map::Layout;
 use futures_util::{SinkExt, StreamExt};
 use tokio::time::{Instant, MissedTickBehavior};
@@ -180,6 +180,7 @@ async fn session(
     });
 
     let mut tick_rate = 30u32;
+    let mut round_ticks = MAX_ROUND_TICKS;
     let mut latest: Option<Snapshot> = None;
     let mut last_snapshot_at: Option<Instant> = None;
     let mut seq = 0u32;
@@ -208,6 +209,8 @@ async fn session(
                 match message {
                     ServerMessage::Welcome(welcome) => {
                         welcomed = true;
+                        round_ticks = welcome.round_ticks;
+                        predictor.set_round_limit(round_ticks);
                         if rejoining {
                             stats.rejoins_succeeded += 1;
                         }
@@ -235,7 +238,12 @@ async fn session(
                             seat.shared.check_hash(seat.match_id, snapshot.tick, snapshot.hash);
                         }
                         if let Some(result) = snapshot.result
-                            && !result_matches(result, &snapshot.fighters)
+                            && !result_matches(
+                                result,
+                                &snapshot.fighters,
+                                snapshot.tick,
+                                round_ticks,
+                            )
                         {
                             stats.wrong_results += 1;
                         }
@@ -319,11 +327,16 @@ async fn session(
     end
 }
 
-/// Chooses an input from the bot's (delayed) view: walk toward the nearest
-/// Whether a round result agrees with the fighters' health: a win needs the
-/// whole losing team down, and a draw with nobody beaten is only the time
-/// limit.
-pub fn result_matches(result: arena_protocol::WireResult, fighters: &[FighterState]) -> bool {
+/// Whether a round result agrees with the fighters' health and authoritative
+/// round clock: a win needs the whole losing team down, a mutual-elimination
+/// draw needs every fighter down, and a time-limit draw needs both teams
+/// standing at or past `round_ticks`.
+pub fn result_matches(
+    result: arena_protocol::WireResult,
+    fighters: &[FighterState],
+    tick: u64,
+    round_ticks: u64,
+) -> bool {
     let standing = |team: usize| {
         fighters
             .iter()
@@ -332,10 +345,16 @@ pub fn result_matches(result: arena_protocol::WireResult, fighters: &[FighterSta
     };
     match result {
         arena_protocol::WireResult::Won { team } => {
-            let loser = 1 - usize::from(team.min(1));
-            standing(usize::from(team)) && !standing(loser)
+            if team > 1 {
+                return false;
+            }
+            let winner = usize::from(team);
+            standing(winner) && !standing(1 - winner)
         }
-        arena_protocol::WireResult::Draw => true,
+        arena_protocol::WireResult::Draw => !standing(0) && !standing(1),
+        arena_protocol::WireResult::TimeLimitDraw => {
+            standing(0) && standing(1) && tick >= round_ticks
+        }
     }
 }
 
@@ -449,5 +468,67 @@ mod tests {
         let alone = snapshot(vec![fighter(0, 0, 100), fighter(9, 9, 0)]);
         assert_eq!(decide(0, &alone, &mut rng), InputFrame::default());
         assert_eq!(decide(7, &alone, &mut rng), InputFrame::default());
+    }
+
+    #[test]
+    fn result_matches_verifies_wins_mutual_draws_and_time_limit_draws() {
+        use arena_protocol::WireResult;
+        let both_alive = vec![fighter(0, 0, 100), fighter(1, 0, 50)];
+        let team0_only = vec![fighter(0, 0, 100), fighter(1, 0, 0)];
+        let both_down = vec![fighter(0, 0, 0), fighter(1, 0, 0)];
+
+        assert!(result_matches(
+            WireResult::Won { team: 0 },
+            &team0_only,
+            5,
+            100
+        ));
+        assert!(!result_matches(
+            WireResult::Won { team: 1 },
+            &team0_only,
+            5,
+            100
+        ));
+        assert!(!result_matches(
+            WireResult::Won { team: 2 },
+            &team0_only,
+            5,
+            100
+        ));
+        assert!(!result_matches(
+            WireResult::Won { team: 0 },
+            &both_alive,
+            5,
+            100
+        ));
+
+        assert!(result_matches(WireResult::Draw, &both_down, 5, 100));
+        assert!(!result_matches(WireResult::Draw, &both_alive, 100, 100));
+        assert!(!result_matches(WireResult::Draw, &team0_only, 5, 100));
+
+        assert!(result_matches(
+            WireResult::TimeLimitDraw,
+            &both_alive,
+            100,
+            100
+        ));
+        assert!(!result_matches(
+            WireResult::TimeLimitDraw,
+            &both_alive,
+            99,
+            100
+        ));
+        assert!(!result_matches(
+            WireResult::TimeLimitDraw,
+            &both_down,
+            100,
+            100
+        ));
+        assert!(!result_matches(
+            WireResult::TimeLimitDraw,
+            &team0_only,
+            100,
+            100
+        ));
     }
 }

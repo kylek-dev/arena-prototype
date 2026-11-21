@@ -25,7 +25,7 @@ use arena_protocol::{
     ClientMessage, ErrorCode, InputFrame, PROTOCOL_VERSION, ServerMessage, peek_hello_protocol,
 };
 use arena_sim::TICKS_PER_SECOND;
-use arena_sim::arena::Arena;
+use arena_sim::arena::{Arena, MAX_ROUND_TICKS};
 use arena_sim::map::Layout;
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -65,6 +65,8 @@ pub struct Config {
     /// Open connections one client address may hold; 0 is unlimited.
     pub connections_per_address: u32,
     pub limits: Limits,
+    /// Total ticks in a round before a time-limit draw (`1..=MAX_ROUND_TICKS`).
+    pub round_ticks: u64,
     pub key: TicketKey,
 }
 impl Config {
@@ -82,6 +84,7 @@ impl Config {
             // A household of six players, each with a spare tab.
             connections_per_address: 12,
             limits: Limits::default(),
+            round_ticks: MAX_ROUND_TICKS,
             key,
         }
     }
@@ -197,7 +200,9 @@ impl App {
             return Err(ErrorCode::ServerShutdown);
         }
         let team_size = usize::from(claims.team_size);
-        let arena = Arena::practice(self.layout.clone(), team_size).ok_or(ErrorCode::BadTicket)?;
+        let arena = Arena::practice(self.layout.clone(), team_size)
+            .and_then(|arena| arena.with_round_limit(self.config.round_ticks))
+            .ok_or(ErrorCode::BadTicket)?;
         let (sender, receiver) = mpsc::channel(COMMAND_QUEUE);
         matches.live.insert(claims.match_id, sender.clone());
         drop(matches);
@@ -732,6 +737,12 @@ pub async fn start(config: Config) -> io::Result<Running> {
             "development match creation requires a loopback bind address",
         ));
     }
+    if config.round_ticks == 0 || config.round_ticks > MAX_ROUND_TICKS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("round_ticks must be between 1 and {MAX_ROUND_TICKS}"),
+        ));
+    }
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     let addr = listener.local_addr()?;
     // Snapshots and pongs are small and frequent; Nagle's algorithm would
@@ -838,7 +849,12 @@ mod tests {
             Err(ErrorCode::Malformed)
         );
         assert_eq!(read_hello(&[]), Err(ErrorCode::Malformed));
-        assert_eq!(read_hello(&[0, 1, 9]), Err(ErrorCode::Malformed));
+        // An older protocol version is reported as VersionMismatch, not Malformed.
+        assert_eq!(read_hello(&[0, 1, 9]), Err(ErrorCode::VersionMismatch));
+        assert_eq!(
+            read_hello(&[0, PROTOCOL_VERSION as u8, 9]),
+            Err(ErrorCode::Malformed)
+        );
     }
 
     #[test]

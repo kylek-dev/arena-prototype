@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { adaptSnapshot } from "../../web/src/bridge/snapshot";
+import { adaptSnapshot, needsImmediateDelivery } from "../../web/src/bridge/snapshot";
 import { availability, canActivate } from "../../web/src/domain/abilities/catalog";
 import { snapshot, teamSnapshot } from "../ui/fixtures";
 import { defaultConfig, validateConfig } from "../../web/src/domain/preferences/schema";
@@ -34,6 +34,41 @@ describe("engine snapshot boundary", () => {
     expect(adapted.player.maxHealth).toBe(150);
     expect(adapted.pulse).toEqual(raw.pulse);
     expect(adapted.cooldown).toBe(raw.cooldown);
+  });
+
+  it("validates round clock metadata and roundResult consistency", () => {
+    const running = adaptSnapshot({
+      ...snapshot(),
+      maxHealth: 100,
+      maxRoundTicks: 36_000,
+      tickRate: 30,
+      roundResult: null,
+    });
+    expect(running.maxRoundTicks).toBe(36_000);
+    expect(running.tickRate).toBe(30);
+    expect(running.roundResult).toBeNull();
+    const timedOut = adaptSnapshot({
+      ...snapshot({ won: true }),
+      maxHealth: 100,
+      maxRoundTicks: 36_000,
+      tickRate: 30,
+      roundResult: "time_limit_draw",
+    });
+    expect(timedOut.roundResult).toBe("time_limit_draw");
+    expect(needsImmediateDelivery(running, timedOut)).toBe(true);
+    expect(needsImmediateDelivery(running, { ...running, maxRoundTicks: 900 })).toBe(true);
+    for (const invalid of [
+      { ...snapshot(), maxHealth: 100, maxRoundTicks: 0 },
+      { ...snapshot(), maxHealth: 100, maxRoundTicks: 1.5 },
+      { ...snapshot(), maxHealth: 100, maxRoundTicks: 1e30 },
+      { ...snapshot(), maxHealth: 100, tickRate: 0 },
+      { ...snapshot(), maxHealth: 100, tickRate: 1e30 },
+      { ...snapshot(), maxHealth: 100, roundResult: "forfeit" },
+      { ...snapshot({ won: false }), maxHealth: 100, roundResult: "time_limit_draw" },
+      { ...snapshot({ won: true }), maxHealth: 100, roundResult: null },
+    ]) {
+      expect(() => adaptSnapshot(invalid)).toThrow();
+    }
   });
 
   it.each([

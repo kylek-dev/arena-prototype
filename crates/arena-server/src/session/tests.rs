@@ -1,6 +1,6 @@
 use super::*;
 use arena_protocol::{FighterState, WireRejection};
-use arena_sim::arena::{ATTACK_COOLDOWN, ArenaCommand};
+use arena_sim::arena::{ATTACK_COOLDOWN, ArenaCommand, MAX_ROUND_TICKS};
 
 const LIMITS: Limits = Limits {
     queue: 3,
@@ -92,9 +92,10 @@ fn matches_wait_for_every_seat_before_the_rules_advance() {
             welcome.team_size,
             welcome.tick,
             welcome.tick_rate,
+            welcome.round_ticks,
             welcome.map
         ),
-        (0, 1, 0, 30, 42)
+        (0, 1, 0, 30, MAX_ROUND_TICKS, 42)
     );
     assert!(snapshot(&out, conn(0)).is_some());
     let before = session.arena().clone();
@@ -746,4 +747,66 @@ fn tick_encoded_matches_tick_wire_bytes_including_per_seat_rejections() {
         });
         assert_eq!(actual, expected, "step {step}");
     }
+}
+
+#[test]
+fn round_clock_expiry_finishes_session_as_time_limit_draw_lingers_and_closes() {
+    let limited = arena(1).with_round_limit(4).unwrap();
+    let mut session = session_with(limited);
+    let out = session.attach(0, conn(0));
+    let Out::Send {
+        message: ServerMessage::Welcome(welcome),
+        ..
+    } = &out[0]
+    else {
+        panic!("{out:?}");
+    };
+    assert_eq!(welcome.round_ticks, 4);
+    session.attach(1, conn(1));
+    // Transition Waiting -> Running on tick 0; the round clock has not ticked yet.
+    session.tick();
+    assert_eq!(session.phase(), Phase::Running);
+    assert_eq!(session.arena().remaining_ticks(), 4);
+    for expected_tick in 1..=3u64 {
+        let out = session.tick();
+        assert_eq!(session.phase(), Phase::Running);
+        let seen = snapshot(&out, conn(0)).unwrap();
+        assert_eq!(seen.tick, expected_tick);
+        assert_eq!(seen.result, None);
+    }
+    // Tick 4 reaches the round limit: both seats receive TimeLimitDraw and Finished event.
+    let out = session.tick();
+    assert!(matches!(session.phase(), Phase::Finished { .. }));
+    assert_eq!(
+        session
+            .metrics
+            .finished(arena_sim::arena::RoundResult::TimeLimitDraw),
+        1
+    );
+    for seat in 0..2 {
+        let seen = snapshot(&out, conn(seat)).unwrap();
+        assert_eq!(seen.tick, 4);
+        assert_eq!(seen.result, Some(WireResult::TimeLimitDraw));
+        assert!(seen.events.iter().any(|event| {
+            event.tick == 3 && event.event == WireEvent::Finished(WireResult::TimeLimitDraw)
+        }));
+    }
+    // Lingers before closing with MatchOver.
+    for _ in 1..LIMITS.linger {
+        assert_eq!(session.tick(), vec![]);
+    }
+    assert_eq!(
+        session.tick(),
+        vec![
+            Out::Close {
+                conn: conn(0),
+                error: Some(ErrorCode::MatchOver),
+            },
+            Out::Close {
+                conn: conn(1),
+                error: Some(ErrorCode::MatchOver),
+            },
+        ]
+    );
+    assert!(session.is_ended());
 }

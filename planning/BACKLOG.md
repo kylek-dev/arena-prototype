@@ -20,7 +20,6 @@ Source roadmap and full issue definitions remain in [ROADMAP.md](ROADMAP.md) and
 
 Ordered from [ROADMAP.md](ROADMAP.md) and automated critic opportunities:
 
-- [ ] **Round clock & time-limit result (Lane A)** ([round-clock](issues/round-clock.md)) — authoritative `arena-sim` round-limit draw, protocol clock metadata, server limit & match-result metrics, bot verification, and pure TS round-clock domain helpers.
 - [ ] **Server-authoritative casting, cooldowns, resources & interrupts** ([server-casting-resources](issues/server-casting-resources.md)) — `arena-sim`, `arena-protocol`, `arena-server`, `arena-bot` tests.
 - [ ] **Netcode stress & exploit hardening** ([netcode-hardening](issues/netcode-hardening.md)) — expand `arena-bot` jitter/drop/reconnect matrices and `arena-protocol` malformed-packet fuzz tests.
 - [ ] **Headless combat telemetry** — extend `arena-headless` / `arena-bot` to emit structured JSON match metrics (duration, draw rate, LOS blocks, tick compute time) for objective balance tracking.
@@ -29,6 +28,7 @@ Ordered from [ROADMAP.md](ROADMAP.md) and automated critic opportunities:
 
 Agent implements on a branch, runs automated checks + WASM build, and appends a `pending human review` entry to [docs/UI-REVIEW.md](../docs/UI-REVIEW.md):
 
+- [ ] **Round clock HUD timer & time-limit result banner** ([round-clock](issues/round-clock.md)) — render remaining `MM:SS` countdown and `"Time's up · draw"` outcome using `web/src/domain/round-clock.ts` and `Snapshot.{maxRoundTicks,tickRate,roundResult}`.
 - [ ] **Networked character appearance** ([networked-appearance](issues/networked-appearance.md))
 - [ ] **End-of-match scoreboard** ([scoreboard](issues/scoreboard.md))
 - [ ] **Private custom matches** ([custom-matches](issues/custom-matches.md))
@@ -36,4 +36,4 @@ Agent implements on a branch, runs automated checks + WASM build, and appends a 
 
 ## Completed by Loop
 
-*(None yet.)*
+- [x] **Round clock & time-limit result (Lane A)** ([round-clock](issues/round-clock.md)) — branch `auto/round-clock` (stacked on `auto/iterate-game-skill`), commit `c6ddc7a` (sim `RoundResult::TimeLimitDraw` + configurable `1..=MAX_ROUND_TICKS` limit & `remaining_ticks()`, protocol v2 `Welcome.round_ticks` & `WireResult::TimeLimitDraw`, server `--round-seconds` + `arena_matches_finished_total` metrics + WS e2e test, bot strict `result_matches`, client local-parity result translation & snapshot clock metadata, and pure TS `web/src/domain/round-clock.ts`).

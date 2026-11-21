@@ -10,17 +10,20 @@
 pub mod prediction;
 
 use arena_sim::arena::{
-    ActorInput, Arena, ArenaEvent, Axes, Combatant, Position, Rejection, RoundResult,
+    ActorInput, Arena, ArenaEvent, Axes, Combatant, MAX_ROUND_TICKS, Position, Rejection,
+    RoundResult,
 };
 use serde::{Deserialize, Serialize};
 
 /// Bumped on any incompatible change to a message layout. `Hello` stays
 /// variant 0 with `protocol` as its first field forever, so a server can
 /// always read the version of a client it no longer understands.
-pub const PROTOCOL_VERSION: u16 = 1;
+/// 2: `Welcome.round_ticks` and `WireResult::TimeLimitDraw`.
+pub const PROTOCOL_VERSION: u16 = 2;
 /// Bumped whenever a rules change could alter a replayed outcome.
 /// 2: rounds end in a draw after twenty minutes (`MAX_ROUND_TICKS`).
-pub const RULES_VERSION: u32 = 2;
+/// 3: time-limit draws are distinct from mutual-elimination draws and round limits are explicit.
+pub const RULES_VERSION: u32 = 3;
 /// Largest frame a client may send.
 pub const MAX_CLIENT_FRAME: usize = 1024;
 /// Largest frame the server sends; a full 3v3 snapshot is far smaller.
@@ -97,6 +100,8 @@ pub struct Welcome {
     pub team_size: u8,
     pub tick: u64,
     pub tick_rate: u8,
+    /// Total ticks in the round before a time-limit draw (`1..=MAX_ROUND_TICKS`).
+    pub round_ticks: u64,
     pub rules: u32,
     /// Digest of the match layout.
     pub map: u64,
@@ -199,6 +204,7 @@ impl FighterState {
 pub enum WireResult {
     Won { team: u8 },
     Draw,
+    TimeLimitDraw,
 }
 impl From<WireResult> for RoundResult {
     fn from(result: WireResult) -> Self {
@@ -207,6 +213,7 @@ impl From<WireResult> for RoundResult {
                 team: usize::from(team),
             },
             WireResult::Draw => Self::Draw,
+            WireResult::TimeLimitDraw => Self::TimeLimitDraw,
         }
     }
 }
@@ -215,6 +222,7 @@ impl From<RoundResult> for WireResult {
         match result {
             RoundResult::Won { team } => Self::Won { team: team as u8 },
             RoundResult::Draw => Self::Draw,
+            RoundResult::TimeLimitDraw => Self::TimeLimitDraw,
         }
     }
 }
@@ -331,7 +339,7 @@ pub enum DecodeError {
     Oversized,
     /// Undecodable, truncated, an unknown variant, or trailing bytes.
     Malformed,
-    /// Well formed but over a field limit (ticket, fighters or events).
+    /// Well formed but over a field limit (ticket, round_ticks, fighters or events).
     OverLimit,
 }
 
@@ -358,6 +366,11 @@ impl ServerMessage {
     pub fn decode(frame: &[u8]) -> Result<Self, DecodeError> {
         let message: Self = decode(frame, MAX_SERVER_FRAME)?;
         match &message {
+            Self::Welcome(welcome)
+                if welcome.round_ticks == 0 || welcome.round_ticks > MAX_ROUND_TICKS =>
+            {
+                Err(DecodeError::OverLimit)
+            }
             Self::Snapshot(snapshot)
                 if snapshot.fighters.len() > MAX_FIGHTERS || snapshot.events.len() > MAX_EVENTS =>
             {
