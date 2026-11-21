@@ -387,9 +387,71 @@ pub fn peek_hello_protocol(frame: &[u8]) -> Option<u16> {
         .map(|(protocol, _)| protocol)
 }
 
+/// Pre-encoded common fields of one tick's [`Snapshot`] (`hash`, `result`,
+/// `fighters`, and optionally shared `events`) so a server encodes them once
+/// per tick instead of once per connected seat.
+#[derive(Clone, Debug)]
+pub struct EncodedSnapshotBody {
+    tick: u64,
+    /// Postcard bytes for `(hash, result, fighters)` or
+    /// `(hash, result, fighters, events)` when `includes_events` is true.
+    tail: Vec<u8>,
+    includes_events: bool,
+}
+
+impl EncodedSnapshotBody {
+    /// Encodes the seat-independent fields of a tick's snapshot once.
+    /// Pass `shared_events = Some(events)` when every seat receives the exact
+    /// same event slice (e.g. when no per-seat rejection occurred).
+    pub fn new(
+        tick: u64,
+        hash: u64,
+        result: Option<WireResult>,
+        fighters: &[FighterState],
+        shared_events: Option<&[TickEvent]>,
+    ) -> Self {
+        let mut tail = Vec::with_capacity(
+            16 + fighters.len() * 24 + shared_events.map_or(0, |e| e.len() * 8 + 1),
+        );
+        tail = postcard::to_extend(&(hash, result, fighters), tail)
+            .expect("snapshot body always encodes");
+        let includes_events = if let Some(events) = shared_events {
+            tail = postcard::to_extend(events, tail).expect("snapshot events always encode");
+            true
+        } else {
+            false
+        };
+        Self {
+            tick,
+            tail,
+            includes_events,
+        }
+    }
+
+    /// Produces the exact wire frame of `ServerMessage::Snapshot` for one seat.
+    /// When [`Self::new`] already encoded shared events, `events` is ignored.
+    pub fn encode_for_seat(&self, ack: u32, queued: u8, events: &[TickEvent]) -> Vec<u8> {
+        let extra = if self.includes_events {
+            0
+        } else {
+            events.len() * 8 + 2
+        };
+        let mut frame = Vec::with_capacity(18 + self.tail.len() + extra);
+        // ServerMessage::Snapshot is variant 1, followed by tick, ack, queued.
+        frame = postcard::to_extend(&(1u32, self.tick, ack, queued), frame)
+            .expect("snapshot header always encodes");
+        frame.extend_from_slice(&self.tail);
+        if !self.includes_events {
+            frame = postcard::to_extend(events, frame).expect("snapshot events always encode");
+        }
+        frame
+    }
+}
+
 fn encode<T: Serialize>(message: &T) -> Vec<u8> {
     // Only allocation failure can fail here: every type is plain data.
-    postcard::to_allocvec(message).expect("protocol messages always encode")
+    // Pre-sizing avoids repeated small reallocations on common frames.
+    postcard::to_extend(message, Vec::with_capacity(32)).expect("protocol messages always encode")
 }
 
 fn decode<'a, T: Deserialize<'a>>(frame: &'a [u8], limit: usize) -> Result<T, DecodeError> {

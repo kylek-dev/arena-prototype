@@ -14,11 +14,11 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use arena_protocol::{
-    ErrorCode, InputFrame, PROTOCOL_VERSION, RULES_VERSION, ServerMessage, Snapshot, TickEvent,
-    Welcome, WireEvent,
+    EncodedSnapshotBody, ErrorCode, FighterState, InputFrame, MAX_FIGHTERS, PROTOCOL_VERSION,
+    RULES_VERSION, ServerMessage, Snapshot, TickEvent, Welcome, WireEvent, WireResult,
 };
 use arena_sim::TICKS_PER_SECOND;
-use arena_sim::arena::{ActorInput, Arena};
+use arena_sim::arena::{ActorInput, Arena, ArenaEvent};
 
 use crate::metrics::Metrics;
 
@@ -264,6 +264,90 @@ impl Session {
     }
 
     pub fn tick(&mut self) -> Vec<Out> {
+        match self.advance_tick() {
+            TickOutcome::None => Vec::new(),
+            TickOutcome::Snapshots { tick, events } => self.snapshots(&events, tick),
+            TickOutcome::Close(out) => out,
+        }
+    }
+
+    /// Advances one tick and delivers pre-encoded snapshot frames directly,
+    /// encoding the shared fighter state once per tick rather than once per
+    /// connected seat.
+    pub(crate) fn tick_encoded(&mut self, mut emit: impl FnMut(EncodedOut)) {
+        match self.advance_tick() {
+            TickOutcome::None => {}
+            TickOutcome::Close(out) => {
+                for item in out {
+                    if let Out::Close { conn, error } = item {
+                        emit(EncodedOut::Close { conn, error });
+                    }
+                }
+            }
+            TickOutcome::Snapshots { tick, events } => {
+                if self.seats.iter().all(|seat| seat.conn.is_none()) {
+                    return;
+                }
+                let hash = self.arena.state_hash();
+                let result = self.arena.result().map(WireResult::from);
+                let mut fighters = [FighterState {
+                    x: 0,
+                    z: 0,
+                    height: 0,
+                    vertical_velocity: 0,
+                    momentum: [0, 0],
+                    health: 0,
+                    ready_at: 0,
+                    facing: 0,
+                    connected: false,
+                }; MAX_FIGHTERS];
+                let count = self.arena.fighters().len();
+                for (index, fighter) in self.arena.fighters().iter().enumerate() {
+                    let connected = self.seats.get(index).is_some_and(|s| s.conn.is_some());
+                    fighters[index] = FighterState::new(fighter, connected);
+                }
+                let has_rejections = events
+                    .iter()
+                    .any(|event| matches!(event, ArenaEvent::Rejected { .. }));
+                let shared_events: Vec<TickEvent> = if has_rejections {
+                    Vec::new()
+                } else {
+                    events
+                        .iter()
+                        .filter_map(|event| WireEvent::for_recipient(event, 0))
+                        .map(|event| TickEvent { tick, event })
+                        .collect()
+                };
+                let body = EncodedSnapshotBody::new(
+                    self.arena.tick(),
+                    hash,
+                    result,
+                    &fighters[..count],
+                    (!has_rejections).then_some(shared_events.as_slice()),
+                );
+                let mut seat_events = Vec::new();
+                for (index, seat) in self.seats.iter().enumerate() {
+                    let Some(conn) = seat.conn else {
+                        continue;
+                    };
+                    let queued = u8::try_from(seat.pending.len()).unwrap_or(u8::MAX);
+                    if has_rejections {
+                        seat_events.clear();
+                        seat_events.extend(
+                            events
+                                .iter()
+                                .filter_map(|event| WireEvent::for_recipient(event, index))
+                                .map(|event| TickEvent { tick, event }),
+                        );
+                    }
+                    let frame = body.encode_for_seat(seat.ack, queued, &seat_events);
+                    emit(EncodedOut::Frame { conn, frame });
+                }
+            }
+        }
+    }
+
+    fn advance_tick(&mut self) -> TickOutcome {
         self.clock += 1;
         match self.phase {
             Phase::Waiting => {
@@ -276,64 +360,70 @@ impl Session {
                 if self.seats.iter().all(|seat| seat.joined) {
                     self.phase = Phase::Running;
                 } else if self.clock >= self.limits.start_timeout {
-                    return self.end(Some(ErrorCode::MatchOver));
+                    return TickOutcome::Close(self.end(Some(ErrorCode::MatchOver)));
                 }
-                self.snapshots(&[], 0)
+                TickOutcome::Snapshots {
+                    tick: 0,
+                    events: Vec::new(),
+                }
             }
             Phase::Running => {
-                let metrics = &self.metrics;
                 let clock = self.clock;
-                let inputs: Vec<ActorInput> = self
-                    .seats
-                    .iter_mut()
-                    .map(|seat| {
-                        // One input per tick, in order, so a client can
-                        // predict its own movement exactly: input `n` is one
-                        // tick of rules. Nothing waiting means an idle tick.
-                        let mut slot = ActorInput::default();
-                        if let Some(frame) = seat.pending.pop_front() {
-                            frame.merge_into(&mut slot);
-                            seat.ack = frame.seq;
-                            seat.window.applied += 1;
-                        } else if seat.conn.is_some() {
-                            Metrics::add(&metrics.inputs_starved, 1);
-                            seat.window.starved += 1;
-                        }
-                        // A queue that stays long only adds delay: after a
-                        // second above the backlog, fold the excess into this
-                        // tick. Shorter clumps drain on their own.
-                        if seat.pending.len() > MAX_BACKLOG {
-                            let since = *seat.over_backlog_since.get_or_insert(clock);
-                            if clock - since >= FOLD_AFTER {
-                                while seat.pending.len() > MAX_BACKLOG {
-                                    let frame = seat.pending.pop_front().expect("over the backlog");
-                                    frame.merge_into(&mut slot);
-                                    seat.ack = frame.seq;
-                                    Metrics::add(&metrics.inputs_folded, 1);
-                                    seat.window.folded += 1;
-                                }
-                                seat.over_backlog_since = None;
+                let count = self.seats.len();
+                let mut inputs = [ActorInput::default(); MAX_FIGHTERS];
+                let mut starved = 0u64;
+                let mut folded = 0u64;
+                let mut arrivals = [0u64; 5];
+                for (seat, slot) in self.seats.iter_mut().zip(&mut inputs[..count]) {
+                    // One input per tick, in order, so a client can
+                    // predict its own movement exactly: input `n` is one
+                    // tick of rules. Nothing waiting means an idle tick.
+                    if let Some(frame) = seat.pending.pop_front() {
+                        frame.merge_into(slot);
+                        seat.ack = frame.seq;
+                        seat.window.applied += 1;
+                    } else if seat.conn.is_some() {
+                        starved += 1;
+                        seat.window.starved += 1;
+                    }
+                    // A queue that stays long only adds delay: after a
+                    // second above the backlog, fold the excess into this
+                    // tick. Shorter clumps drain on their own.
+                    if seat.pending.len() > MAX_BACKLOG {
+                        let since = *seat.over_backlog_since.get_or_insert(clock);
+                        if clock - since >= FOLD_AFTER {
+                            while seat.pending.len() > MAX_BACKLOG {
+                                let frame = seat.pending.pop_front().expect("over the backlog");
+                                frame.merge_into(slot);
+                                seat.ack = frame.seq;
+                                folded += 1;
+                                seat.window.folded += 1;
                             }
-                        } else {
                             seat.over_backlog_since = None;
                         }
-                        if seat.conn.is_some() {
-                            metrics.record_arrivals(seat.arrived);
-                            let window = &mut seat.window;
-                            window.ticks += 1;
-                            let queued = seat.pending.len();
-                            window.queue_min =
-                                Some(window.queue_min.map_or(queued, |m| m.min(queued)));
-                            window.queue_max = window.queue_max.max(queued);
-                        }
-                        seat.arrived = 0;
-                        slot
-                    })
-                    .collect();
+                    } else {
+                        seat.over_backlog_since = None;
+                    }
+                    if seat.conn.is_some() {
+                        arrivals[(seat.arrived as usize).min(4)] += 1;
+                        let window = &mut seat.window;
+                        window.ticks += 1;
+                        let queued = seat.pending.len();
+                        window.queue_min = Some(window.queue_min.map_or(queued, |m| m.min(queued)));
+                        window.queue_max = window.queue_max.max(queued);
+                    }
+                    seat.arrived = 0;
+                }
+                if starved > 0 {
+                    Metrics::add(&self.metrics.inputs_starved, starved);
+                }
+                if folded > 0 {
+                    Metrics::add(&self.metrics.inputs_folded, folded);
+                }
+                self.metrics.record_arrivals_batch(arrivals);
                 let tick = self.arena.tick();
-                let events = self.arena.advance(&inputs);
+                let events = self.arena.advance(&inputs[..count]);
                 Metrics::add(&self.metrics.ticks, 1);
-                let out = self.snapshots(&events, tick);
                 if self.arena.result().is_some() {
                     self.phase = Phase::Finished { at: self.clock };
                 } else if self.seats.iter().all(|seat| {
@@ -342,21 +432,21 @@ impl Session {
                             .absent_since
                             .is_some_and(|since| self.clock - since >= self.limits.grace)
                 }) {
-                    return self.end(None);
+                    return TickOutcome::Close(self.end(None));
                 }
-                out
+                TickOutcome::Snapshots { tick, events }
             }
             Phase::Finished { at } => {
                 for seat in &mut self.seats {
                     seat.pending.clear();
                 }
                 if self.clock - at >= self.limits.linger {
-                    self.end(Some(ErrorCode::MatchOver))
+                    TickOutcome::Close(self.end(Some(ErrorCode::MatchOver)))
                 } else {
-                    Vec::new()
+                    TickOutcome::None
                 }
             }
-            Phase::Ended => Vec::new(),
+            Phase::Ended => TickOutcome::None,
         }
     }
 
@@ -374,27 +464,83 @@ impl Session {
             .collect()
     }
 
-    fn snapshots(&self, events: &[arena_sim::arena::ArenaEvent], tick: u64) -> Vec<Out> {
-        let connected = self.connected();
+    fn snapshots(&self, events: &[ArenaEvent], tick: u64) -> Vec<Out> {
+        if self.seats.iter().all(|seat| seat.conn.is_none()) {
+            return Vec::new();
+        }
+        let hash = self.arena.state_hash();
+        let result = self.arena.result().map(WireResult::from);
+        let fighters: Vec<FighterState> = self
+            .arena
+            .fighters()
+            .iter()
+            .enumerate()
+            .map(|(index, fighter)| {
+                FighterState::new(
+                    fighter,
+                    self.seats.get(index).is_some_and(|s| s.conn.is_some()),
+                )
+            })
+            .collect();
+        let has_rejections = events
+            .iter()
+            .any(|event| matches!(event, ArenaEvent::Rejected { .. }));
+        let shared_events: Vec<TickEvent> = if has_rejections {
+            Vec::new()
+        } else {
+            events
+                .iter()
+                .filter_map(|event| WireEvent::for_recipient(event, 0))
+                .map(|event| TickEvent { tick, event })
+                .collect()
+        };
+        let arena_tick = self.arena.tick();
         self.seats
             .iter()
             .enumerate()
             .filter_map(|(index, seat)| {
                 let conn = seat.conn?;
-                let events = events
-                    .iter()
-                    .filter_map(|event| WireEvent::for_recipient(event, index))
-                    .map(|event| TickEvent { tick, event })
-                    .collect();
-                let mut snapshot = Snapshot::capture(&self.arena, seat.ack, events, &connected);
-                snapshot.queued = u8::try_from(seat.pending.len()).unwrap_or(u8::MAX);
+                let events = if has_rejections {
+                    events
+                        .iter()
+                        .filter_map(|event| WireEvent::for_recipient(event, index))
+                        .map(|event| TickEvent { tick, event })
+                        .collect()
+                } else {
+                    shared_events.clone()
+                };
                 Some(Out::Send {
                     conn,
-                    message: ServerMessage::Snapshot(snapshot),
+                    message: ServerMessage::Snapshot(Snapshot {
+                        tick: arena_tick,
+                        ack: seat.ack,
+                        queued: u8::try_from(seat.pending.len()).unwrap_or(u8::MAX),
+                        hash,
+                        result,
+                        fighters: fighters.clone(),
+                        events,
+                    }),
                 })
             })
             .collect()
     }
+}
+
+pub(crate) enum EncodedOut {
+    Frame {
+        conn: ConnId,
+        frame: Vec<u8>,
+    },
+    Close {
+        conn: ConnId,
+        error: Option<ErrorCode>,
+    },
+}
+
+enum TickOutcome {
+    None,
+    Snapshots { tick: u64, events: Vec<ArenaEvent> },
+    Close(Vec<Out>),
 }
 
 #[cfg(test)]
