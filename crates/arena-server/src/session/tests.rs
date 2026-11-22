@@ -2123,3 +2123,32 @@ fn session_spectator_tick_encoded_drains_when_empty_refuses_stale_finished_and_h
     let next = live_session.tick();
     assert_eq!(snapshot(&next, 601).unwrap().tick, 2);
 }
+
+#[test]
+fn idle_seats_keep_regenerating_on_the_servers_clock() {
+    use arena_sim::arena::{Combatant, Position};
+    use arena_sim::spells::{RESOURCE_REGEN_AMOUNT, RESOURCE_REGEN_INTERVAL};
+
+    // Online play never depends on a client's frames: a seat whose browser
+    // tab is hidden sends nothing, yet its pool refills with the server's
+    // ticks (ADR 0051 contrasts this with practice mode).
+    let layout = arena_map::colosseum().layout;
+    let mut idle = Combatant::new(Position { x: 0, z: 2_500 }, 0);
+    idle.resource = 40;
+    let fighters = vec![
+        idle,
+        Combatant::new(Position { x: 0, z: -2_500 }, arena_sim::arena::HALF_TURN),
+    ];
+    let mut session = running(Arena::restore(layout, 0, fighters, None).unwrap());
+    let start = session.arena.tick();
+    let start_resource = session.arena.fighters()[0].resource;
+    let ticks = 30 * RESOURCE_REGEN_INTERVAL;
+    let mut last = None;
+    for _ in 0..ticks {
+        last = snapshot(&session.tick(), conn(0)).cloned().or(last);
+    }
+    assert_eq!(session.arena.tick(), start + ticks);
+    let expected = start_resource + 30 * RESOURCE_REGEN_AMOUNT;
+    assert_eq!(session.arena.fighters()[0].resource, expected);
+    assert_eq!(last.unwrap().fighters[0].resource, expected);
+}

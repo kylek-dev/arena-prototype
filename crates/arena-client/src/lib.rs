@@ -60,6 +60,8 @@ struct Practice {
     connected: Option<Vec<bool>>,
     /// In a network match: authoritative per-seat end-of-match totals in local actor order.
     scoreboard: Option<Vec<arena_protocol::FighterScore>>,
+    /// Practice time the fixed-step loop lost while the tab was hidden.
+    catch_up: CatchUp,
 }
 impl Default for Practice {
     fn default() -> Self {
@@ -72,12 +74,7 @@ impl Practice {
         let arena =
             Arena::practice(map.layout.clone(), size).expect("validated map and practice size");
         let facings = spawn_facings(arena.fighters());
-        let previous = arena
-            .fighters()
-            .iter()
-            .copied()
-            .map(fighter_world)
-            .collect();
+        let previous = fighter_positions(&arena);
         Self {
             arena,
             previous,
@@ -94,6 +91,7 @@ impl Practice {
             remote: None,
             connected: None,
             scoreboard: None,
+            catch_up: CatchUp::default(),
         }
     }
 
@@ -246,6 +244,9 @@ pub fn run() {
                 weapons::read_selection.pipe(weapons::apply),
                 (
                     appearance::read,
+                    // Before `network_receive`, so a frame that ends a match
+                    // never replays a hidden gap into the fresh practice round.
+                    practice_catch_up,
                     network_receive,
                     apply_map_edits,
                     read_controls,
@@ -755,13 +756,7 @@ fn simulate(mut practice: ResMut<Practice>, mut net: ResMut<Net>) {
         }
         return;
     }
-    practice.previous = practice
-        .arena
-        .fighters()
-        .iter()
-        .copied()
-        .map(fighter_world)
-        .collect();
+    practice.previous = fighter_positions(&practice.arena);
     // Slot 0 is the local player's whole intent for this tick; the other
     // practice actors stay idle.
     let mut input = ActorInput {
@@ -784,7 +779,103 @@ fn simulate(mut practice: ResMut<Practice>, mut net: ResMut<Net>) {
             practice.feedback = "Select a target first";
         }
     }
-    for event in practice.arena.advance(&[input]) {
+    let events = practice.arena.advance(&[input]);
+    apply_practice_events(&mut practice, events);
+}
+
+/// Most practice ticks replayed at once after the tab was hidden: one minute
+/// (ADR 0051). Lost time beyond this is dropped.
+const PRACTICE_CATCH_UP_MAX_TICKS: u32 = 60 * TICKS_PER_SECOND as u32;
+
+/// Real time the practice round lost to `Time<Virtual>`'s per-frame clamp
+/// (browsers stop or throttle frames in hidden tabs), not yet replayed.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct CatchUp {
+    debt_secs: f64,
+}
+impl CatchUp {
+    /// Adds `lost_secs` of unsimulated real time and returns how many whole
+    /// `tick_secs` ticks to replay now, at most [`PRACTICE_CATCH_UP_MAX_TICKS`].
+    /// The sub-tick remainder is kept; debt beyond the cap is dropped.
+    fn take_ticks(&mut self, lost_secs: f64, tick_secs: f64) -> u32 {
+        if lost_secs.is_finite() && lost_secs > 0.0 {
+            self.debt_secs += lost_secs;
+        }
+        if !(tick_secs.is_finite() && tick_secs > 0.0) {
+            self.debt_secs = 0.0;
+            return 0;
+        }
+        let whole = (self.debt_secs / tick_secs).floor();
+        if whole < 1.0 {
+            return 0;
+        }
+        let cap = f64::from(PRACTICE_CATCH_UP_MAX_TICKS);
+        if whole >= cap {
+            self.debt_secs = 0.0;
+            return PRACTICE_CATCH_UP_MAX_TICKS;
+        }
+        self.debt_secs -= whole * tick_secs;
+        whole as u32
+    }
+}
+
+/// Keeps the practice round on real time when the browser withheld frames
+/// (ADR 0051): replays the ticks `FixedUpdate` could not run, with the local
+/// player idle, so resource and cooldowns recover as they would online.
+fn practice_catch_up(
+    mut practice: ResMut<Practice>,
+    net: Res<Net>,
+    real: Res<Time<Real>>,
+    virt: Res<Time<Virtual>>,
+    fixed: Res<Time<Fixed>>,
+    startup: Option<Res<startup::State>>,
+) {
+    // The server owns the clock in a match; slow loading frames behind the
+    // startup overlay are not time the player spent away.
+    if net.session.is_some() || startup.is_some_and(|state| !state.ready()) {
+        practice.catch_up = CatchUp::default();
+        return;
+    }
+    if virt.was_paused() {
+        return;
+    }
+    // `effective_speed` already includes the clamp, so compare against the
+    // requested speed: the difference is real time the fixed loop never saw.
+    let lost = real.delta_secs_f64() * virt.relative_speed_f64() - virt.delta_secs_f64();
+    let ticks = practice
+        .catch_up
+        .take_ticks(lost, fixed.timestep().as_secs_f64());
+    if ticks == 0 {
+        return;
+    }
+    let idle = ActorInput {
+        facing: Some(binary_angle(practice.facing)),
+        ..default()
+    };
+    for _ in 0..ticks {
+        if practice.arena.result().is_some() {
+            break;
+        }
+        let events = practice.arena.advance(&[idle]);
+        apply_practice_events(&mut practice, events);
+    }
+    // Draw from where the round now stands rather than sliding from before.
+    practice.previous = fighter_positions(&practice.arena);
+}
+
+/// Every fighter's world position, for fixed-step interpolation.
+fn fighter_positions(arena: &Arena) -> Vec<Vec3> {
+    arena
+        .fighters()
+        .iter()
+        .copied()
+        .map(fighter_world)
+        .collect()
+}
+
+/// Turns one practice tick's events into combat text, bolts and feedback.
+fn apply_practice_events(practice: &mut Practice, events: Vec<ArenaEvent>) {
+    for event in events {
         match event {
             ArenaEvent::Hit {
                 actor,
@@ -1838,6 +1929,96 @@ fn focus_cursor(x: f32, y: f32) -> Option<Vec2> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catch_up_repays_whole_ticks_keeps_the_remainder_and_caps_long_gaps() {
+        let tick = 1.0 / TICKS_PER_SECOND as f64;
+        let mut debt = CatchUp::default();
+        // Normal frames lose nothing.
+        assert_eq!(debt.take_ticks(0.0, tick), 0);
+        // Half a tick waits; the next half completes it.
+        assert_eq!(debt.take_ticks(tick * 0.5, tick), 0);
+        assert_eq!(debt.take_ticks(tick * 0.6, tick), 1);
+        assert!(debt.debt_secs > 0.0 && debt.debt_secs < tick);
+        // Ten seconds hidden: 300 ticks.
+        let mut debt = CatchUp::default();
+        assert_eq!(debt.take_ticks(10.0 + tick * 0.01, tick), 300);
+        // An hour hidden is capped at one minute and leaves no debt behind.
+        let mut debt = CatchUp::default();
+        assert_eq!(debt.take_ticks(3_600.0, tick), PRACTICE_CATCH_UP_MAX_TICKS);
+        assert_eq!(debt.debt_secs, 0.0);
+        // Nonsense inputs never schedule work.
+        let mut debt = CatchUp::default();
+        assert_eq!(debt.take_ticks(f64::NAN, tick), 0);
+        assert_eq!(debt.take_ticks(-5.0, tick), 0);
+        assert_eq!(debt.take_ticks(f64::INFINITY, tick), 0);
+        assert_eq!(debt.take_ticks(1.0, 0.0), 0);
+        assert_eq!(debt.debt_secs, 0.0);
+    }
+
+    #[test]
+    fn practice_regenerates_through_a_hidden_tab_gap_but_matches_do_not_catch_up() {
+        use bevy::time::TimeUpdateStrategy;
+        use std::time::Duration;
+        let build = || {
+            let mut app = App::new();
+            app.add_plugins(MinimalPlugins)
+                .init_resource::<Practice>()
+                .init_resource::<Net>()
+                .insert_resource(Time::<Fixed>::from_hz(TICKS_PER_SECOND as f64))
+                .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+                    20,
+                )))
+                .add_systems(PreUpdate, practice_catch_up)
+                .add_systems(FixedUpdate, simulate);
+            {
+                let mut practice = app.world_mut().resource_mut::<Practice>();
+                let mut fighters = practice.arena.fighters().to_vec();
+                fighters[0].resource = 0;
+                let layout = practice.arena.layout().clone();
+                practice.arena = Arena::restore(layout, 0, fighters, None).unwrap();
+            }
+            app.update();
+            app
+        };
+
+        let mut app = build();
+        let before = app.world().resource::<Practice>().arena.tick();
+        // The browser withholds frames for ten seconds, then resumes.
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs(10)));
+        app.update();
+        let practice = app.world().resource::<Practice>();
+        let advanced = practice.arena.tick() - before;
+        // 9.75 s replayed by catch-up plus 0.25 s through the clamped fixed loop.
+        assert!(
+            (TICKS_PER_SECOND * 10 - 1..=TICKS_PER_SECOND * 10).contains(&advanced),
+            "{advanced}"
+        );
+        // +1 every 3 ticks: about 100 over ten seconds.
+        assert!(practice.arena.fighters()[0].resource >= 95);
+        assert!(practice.catch_up.debt_secs < 1.0 / TICKS_PER_SECOND as f64);
+
+        // Slow frames behind the loading overlay are not time away.
+        let mut app = build();
+        app.init_resource::<startup::State>();
+        let before = app.world().resource::<Practice>().arena.tick();
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs(10)));
+        app.update();
+        let advanced = app.world().resource::<Practice>().arena.tick() - before;
+        assert!(advanced <= 8, "only the clamped 250 ms ran: {advanced}");
+        assert_eq!(
+            app.world().resource::<Practice>().catch_up,
+            CatchUp::default()
+        );
+
+        // A match's clock belongs to the server: nothing is replayed locally.
+        let mut app = build();
+        app.world_mut().resource_mut::<Net>().session = Some(network::Session::default());
+        let before = app.world().resource::<Practice>().arena.tick();
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs(10)));
+        app.update();
+        assert_eq!(app.world().resource::<Practice>().arena.tick(), before);
+    }
     use arena_sim::arena::ArenaCommand;
 
     #[test]
