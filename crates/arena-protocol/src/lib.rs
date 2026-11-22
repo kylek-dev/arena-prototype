@@ -36,6 +36,7 @@ pub const MAX_SERVER_FRAME: usize = 16 * 1024;
 pub const MAX_TICKET: usize = 512;
 /// Most fighters a snapshot may describe (3v3).
 pub const MAX_FIGHTERS: usize = 6;
+const _: () = assert!(MAX_FIGHTERS == arena_sim::map::MAX_TEAM * 2);
 /// Most events one snapshot may carry; the server sends more snapshots
 /// rather than exceed it.
 pub const MAX_EVENTS: usize = 256;
@@ -566,7 +567,7 @@ pub enum DecodeError {
     Oversized,
     /// Undecodable, truncated, an unknown variant, or trailing bytes.
     Malformed,
-    /// Well formed but over a field limit (ticket, round_ticks, fighters, events, or combat invariants).
+    /// Well formed but over a field limit (ticket, welcome fields, fighters, events, result team, or combat invariants).
     OverLimit,
 }
 
@@ -586,18 +587,38 @@ impl ClientMessage {
     }
 }
 
+fn valid_welcome(welcome: &Welcome) -> bool {
+    let team_size = usize::from(welcome.team_size);
+    (1..=MAX_FIGHTERS / 2).contains(&team_size)
+        && usize::from(welcome.actor) < team_size * 2
+        && welcome.tick_rate > 0
+        && welcome.round_ticks > 0
+        && welcome.round_ticks <= MAX_ROUND_TICKS
+}
+
+fn valid_result(result: WireResult) -> bool {
+    match result {
+        WireResult::Won { team } => team <= 1,
+        WireResult::Draw | WireResult::TimeLimitDraw => true,
+    }
+}
+
 fn valid_snapshot(snapshot: &Snapshot) -> bool {
-    if snapshot.fighters.len() > MAX_FIGHTERS || snapshot.events.len() > MAX_EVENTS {
+    let count = snapshot.fighters.len();
+    if !(2..=MAX_FIGHTERS).contains(&count)
+        || !count.is_multiple_of(2)
+        || snapshot.events.len() > MAX_EVENTS
+        || !snapshot.result.is_none_or(valid_result)
+    {
         return false;
     }
-    let count = snapshot.fighters.len();
     for fighter in &snapshot.fighters {
         if !fighter.combatant().is_valid(count) {
             return false;
         }
     }
+    let valid_actor = |a: u8| usize::from(a) < count;
     for item in &snapshot.events {
-        let valid_actor = |a: u8| usize::from(a) < MAX_FIGHTERS;
         let ok = match item.event {
             WireEvent::Jumped { actor } => valid_actor(actor),
             WireEvent::CastStarted {
@@ -614,13 +635,18 @@ fn valid_snapshot(snapshot: &Snapshot) -> bool {
             WireEvent::CastCompleted { actor, target, .. } => {
                 valid_actor(actor) && target.is_none_or(valid_actor)
             }
-            WireEvent::CastInterrupted { actor, by, .. } => {
-                valid_actor(actor) && by.is_none_or(valid_actor)
+            WireEvent::CastInterrupted {
+                actor, spell, by, ..
+            } => {
+                valid_actor(actor)
+                    && by.is_none_or(valid_actor)
+                    && SpellId::from(spell).definition().cast_ticks > 0
             }
             WireEvent::Hit { actor, target, .. } | WireEvent::Healed { actor, target, .. } => {
                 valid_actor(actor) && valid_actor(target)
             }
-            WireEvent::Finished(_) | WireEvent::Rejected(_) => true,
+            WireEvent::Finished(result) => valid_result(result),
+            WireEvent::Rejected(_) => true,
         };
         if !ok {
             return false;
@@ -636,11 +662,7 @@ impl ServerMessage {
     pub fn decode(frame: &[u8]) -> Result<Self, DecodeError> {
         let message: Self = decode(frame, MAX_SERVER_FRAME)?;
         match &message {
-            Self::Welcome(welcome)
-                if welcome.round_ticks == 0 || welcome.round_ticks > MAX_ROUND_TICKS =>
-            {
-                Err(DecodeError::OverLimit)
-            }
+            Self::Welcome(welcome) if !valid_welcome(welcome) => Err(DecodeError::OverLimit),
             Self::Snapshot(snapshot) if !valid_snapshot(snapshot) => Err(DecodeError::OverLimit),
             _ => Ok(message),
         }

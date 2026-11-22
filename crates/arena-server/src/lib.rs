@@ -547,11 +547,11 @@ impl RateWindow {
     }
     /// Counts one message; `false` once the window's budget is exceeded.
     pub fn allow(&mut self, now: Instant) -> bool {
-        if now.duration_since(self.started) >= Duration::from_secs(1) {
+        if now.saturating_duration_since(self.started) >= Duration::from_secs(1) {
             self.started = now;
             self.count = 0;
         }
-        self.count += 1;
+        self.count = self.count.saturating_add(1);
         self.count <= self.limit
     }
 }
@@ -603,13 +603,19 @@ async fn connection(mut socket: WebSocket, app: Arc<App>, _slot: OpenSlot) {
     Metrics::add(&app.metrics.connections_open, 1);
     let _open = OpenConnection(&app.metrics);
     let conn = app.next_conn.fetch_add(1, Ordering::Relaxed);
+    let mut rate = RateWindow::new(app.config.messages_per_second, Instant::now());
 
     let first = tokio::time::timeout(app.config.hello_timeout, async {
         loop {
             match socket.recv().await {
                 Some(Ok(Message::Binary(frame))) => return Some(Ok(frame)),
                 Some(Ok(Message::Text(_))) => return Some(Err(ErrorCode::Malformed)),
-                Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {
+                    if !rate.allow(Instant::now()) {
+                        return Some(Err(ErrorCode::RateLimited));
+                    }
+                    continue;
+                }
                 _ => return None,
             }
         }
@@ -653,13 +659,18 @@ async fn connection(mut socket: WebSocket, app: Arc<App>, _slot: OpenSlot) {
         return reject(&mut socket, &app, ErrorCode::MatchOver).await;
     }
 
-    let mut rate = RateWindow::new(app.config.messages_per_second, Instant::now());
     loop {
         tokio::select! {
             incoming = socket.recv() => {
                 let frame = match incoming {
                     Some(Ok(Message::Binary(frame))) => frame,
-                    Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
+                    Some(Ok(Message::Ping(_) | Message::Pong(_))) => {
+                        if !rate.allow(Instant::now()) {
+                            reject(&mut socket, &app, ErrorCode::RateLimited).await;
+                            break;
+                        }
+                        continue;
+                    }
                     Some(Ok(Message::Text(_))) => {
                         reject(&mut socket, &app, ErrorCode::Malformed).await;
                         break;
@@ -863,7 +874,13 @@ mod tests {
         let mut window = RateWindow::new(3, start);
         assert!((0..3).all(|_| window.allow(start)));
         assert!(!window.allow(start + Duration::from_millis(999)));
+        // Repeated rejections stay refused without overflow, and timestamps
+        // earlier than `started` saturate cleanly within the current window.
+        assert!(!window.allow(start));
         assert!(window.allow(start + Duration::from_secs(1)));
+        assert!(window.allow(start));
+        let mut zero = RateWindow::new(0, start);
+        assert!(!zero.allow(start));
     }
 
     #[test]

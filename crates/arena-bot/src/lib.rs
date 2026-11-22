@@ -40,6 +40,8 @@ pub struct Scenario {
     pub team_size: usize,
     pub duration: Duration,
     pub link: Link,
+    /// Use browser-parity `Pacer` + `TickRate` adaptive input pacing.
+    pub paced: bool,
     pub reconnect_every: Option<Duration>,
     /// How long a dropped seat stays away before rejoining.
     pub away: Duration,
@@ -94,6 +96,8 @@ pub struct ServerMetrics {
     pub frames_dropped_total: u64,
     pub inputs_overflow_total: u64,
     pub inputs_stale_total: u64,
+    pub inputs_folded_total: u64,
+    pub inputs_starved_total: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -107,6 +111,9 @@ pub struct Report {
     pub seconds: f64,
     pub rtt_ms: f64,
     pub jitter_ms: f64,
+    pub loss_pct: f64,
+    pub clump_ms: f64,
+    pub paced: bool,
     pub reconnect_every_s: Option<f64>,
     pub rounds_started: u64,
     pub rounds_finished: u64,
@@ -291,6 +298,9 @@ pub async fn run(mut scenario: Scenario) -> Result<Report, String> {
         seconds,
         rtt_ms: (scenario.link.one_way * 2).as_secs_f64() * 1000.0,
         jitter_ms: scenario.link.jitter.as_secs_f64() * 1000.0,
+        loss_pct: scenario.link.loss_rate * 100.0,
+        clump_ms: scenario.link.clump.as_secs_f64() * 1000.0,
+        paced: scenario.paced,
         reconnect_every_s: scenario.reconnect_every.map(|every| every.as_secs_f64()),
         rounds_started: totals.rounds_started,
         rounds_finished: totals.rounds_finished,
@@ -348,6 +358,7 @@ async fn run_group(
                     actor,
                     ticket: from_hex(ticket).unwrap_or_default(),
                     link: scenario.link,
+                    paced: scenario.paced,
                     seed: rng.next_u64(),
                     reconnect_every: scenario.reconnect_every,
                     away: scenario.away,
@@ -425,6 +436,8 @@ fn parse_metrics(text: &str) -> ServerMetrics {
         frames_dropped_total: value("arena_frames_dropped_total"),
         inputs_overflow_total: value("arena_inputs_overflow_total"),
         inputs_stale_total: value("arena_inputs_stale_total"),
+        inputs_folded_total: value("arena_inputs_folded_total"),
+        inputs_starved_total: value("arena_inputs_starved_total"),
     }
 }
 
@@ -466,15 +479,23 @@ impl fmt::Display for Report {
                 self.seconds
             )?,
         }
+        let mut link_notes = String::new();
+        if self.loss_pct > 0.0 {
+            link_notes.push_str(&format!(", loss {:.1}% (TCP HoL)", self.loss_pct));
+        }
+        if self.clump_ms > 0.0 {
+            link_notes.push_str(&format!(", clump {:.0} ms", self.clump_ms));
+        }
+        if !self.paced {
+            link_notes.push_str(", unpaced");
+        }
+        if let Some(every) = self.reconnect_every_s {
+            link_notes.push_str(&format!(", rejoin every {every:.0} s"));
+        }
         writeln!(
             f,
-            "link           base RTT {:.0} ms, jitter up to {:.0} ms per direction{}",
-            self.rtt_ms,
-            self.jitter_ms,
-            self.reconnect_every_s
-                .map_or(String::new(), |every| format!(
-                    ", rejoin every {every:.0} s"
-                ))
+            "link           base RTT {:.0} ms, jitter up to {:.0} ms per direction{link_notes}",
+            self.rtt_ms, self.jitter_ms
         )?;
         writeln!(
             f,
@@ -521,12 +542,14 @@ impl fmt::Display for Report {
         if let Some(server) = &self.server_metrics {
             writeln!(
                 f,
-                "server         {} ticks, {} overruns, slowest tick {} µs, {} frames dropped, {} inputs overflowed",
+                "server         {} ticks, {} overruns, slowest tick {} µs, {} frames dropped, {} inputs overflowed, {} folded, {} starved",
                 server.ticks_total,
                 server.tick_overruns_total,
                 server.tick_max_microseconds,
                 server.frames_dropped_total,
-                server.inputs_overflow_total
+                server.inputs_overflow_total,
+                server.inputs_folded_total,
+                server.inputs_starved_total
             )?;
         }
         if let Some(cores) = self.server_cpu_cores {
@@ -557,15 +580,17 @@ mod tests {
 
     #[test]
     fn metrics_text_is_parsed_by_exact_name() {
-        let text = "# HELP arena_ticks_total x\narena_ticks_total 12\narena_tick_overruns_total 3\narena_tick_max_microseconds 450\n";
+        let text = "# HELP arena_ticks_total x\narena_ticks_total 12\narena_tick_overruns_total 3\narena_tick_max_microseconds 450\narena_inputs_folded_total 7\narena_inputs_starved_total 11\n";
         let metrics = parse_metrics(text);
         assert_eq!(
             (
                 metrics.ticks_total,
                 metrics.tick_overruns_total,
-                metrics.tick_max_microseconds
+                metrics.tick_max_microseconds,
+                metrics.inputs_folded_total,
+                metrics.inputs_starved_total,
             ),
-            (12, 3, 450)
+            (12, 3, 450, 7, 11)
         );
         assert_eq!(metrics.frames_dropped_total, 0);
         assert_eq!(from_hex("0aff"), Some(vec![10, 255]));

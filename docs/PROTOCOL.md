@@ -84,11 +84,11 @@ These are message sizes, not network measurements.
 | --- | --- | --- |
 | Client frame size | 1 KiB | The WebSocket layer closes the connection without an `Error` |
 | Inputs queued per seat | 32 (about a second) | Drop the oldest and count it |
-| Messages (inputs and pings) per connection per fixed 1 s window | 2 × tick rate (60) | Close with `RateLimited` |
+| Messages (inputs, pings, and WebSocket control pings/pongs) per connection per fixed 1 s window | 2 × tick rate (60) | Close with `RateLimited` |
 | Outgoing frames queued per connection | 64 | Drop the frame and count it (snapshots carry full state) |
 | `Hello` deadline | 5 s | Close |
 | Undecodable message (truncated, unknown variant, invalid tag, trailing bytes) | — | Close with `Malformed` |
-| Over a field limit (ticket, `round_ticks`, fighters, events, or combat/cast invariants) | — | Close with `Malformed` |
+| Over a field limit (ticket, `Welcome` team/seat/rate/`round_ticks`, fighters, events, result team, or combat/cast invariants) | — | Close with `Malformed` |
 
 ## Versioning
 

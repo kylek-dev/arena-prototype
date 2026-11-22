@@ -138,6 +138,7 @@ pub(crate) async fn run_bot(
             actor: found.seat,
             ticket: found.ticket,
             link: scenario.link,
+            paced: scenario.paced,
             seed: rng.next_u64(),
             reconnect_every: scenario.reconnect_every,
             away: scenario.away,

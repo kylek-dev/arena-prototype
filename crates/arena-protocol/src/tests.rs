@@ -746,3 +746,410 @@ fn encoded_snapshot_body_matches_full_server_message_bytes() {
         );
     }
 }
+
+#[test]
+fn welcome_and_snapshot_bounds_reject_invalid_teams_actors_and_results() {
+    let base_welcome = Welcome {
+        protocol: PROTOCOL_VERSION,
+        actor: 0,
+        team_size: 1,
+        tick: 0,
+        tick_rate: 30,
+        round_ticks: MAX_ROUND_TICKS,
+        rules: RULES_VERSION,
+        map: 1,
+    };
+    let bad_welcomes = [
+        Welcome {
+            team_size: 0,
+            ..base_welcome
+        },
+        Welcome {
+            team_size: (MAX_FIGHTERS / 2) as u8 + 1,
+            ..base_welcome
+        },
+        Welcome {
+            actor: 2,
+            team_size: 1,
+            ..base_welcome
+        },
+        Welcome {
+            actor: 6,
+            team_size: 3,
+            ..base_welcome
+        },
+        Welcome {
+            tick_rate: 0,
+            ..base_welcome
+        },
+        Welcome {
+            round_ticks: 0,
+            ..base_welcome
+        },
+        Welcome {
+            round_ticks: MAX_ROUND_TICKS + 1,
+            ..base_welcome
+        },
+    ];
+    for welcome in bad_welcomes {
+        assert_eq!(
+            ServerMessage::decode(&ServerMessage::Welcome(welcome).encode()),
+            Err(DecodeError::OverLimit),
+            "{welcome:?}"
+        );
+    }
+
+    let base_snap = Snapshot::capture(&colosseum(1), 0, Vec::new(), &[true, true]);
+    let bad_snapshots = vec![
+        // Empty or odd fighter rosters cannot represent a valid team match.
+        Snapshot {
+            fighters: Vec::new(),
+            ..base_snap.clone()
+        },
+        Snapshot {
+            fighters: vec![base_snap.fighters[0]],
+            ..base_snap.clone()
+        },
+        Snapshot {
+            fighters: vec![base_snap.fighters[0]; 3],
+            ..base_snap.clone()
+        },
+        // Invalid team index in snapshot result or Finished event.
+        Snapshot {
+            result: Some(WireResult::Won { team: 2 }),
+            ..base_snap.clone()
+        },
+        Snapshot {
+            events: vec![TickEvent {
+                tick: 1,
+                event: WireEvent::Finished(WireResult::Won { team: 2 }),
+            }],
+            ..base_snap.clone()
+        },
+        // Out-of-roster actor indices for a 1v1 (2-fighter) snapshot.
+        Snapshot {
+            events: vec![TickEvent {
+                tick: 1,
+                event: WireEvent::Jumped { actor: 2 },
+            }],
+            ..base_snap.clone()
+        },
+        Snapshot {
+            events: vec![TickEvent {
+                tick: 1,
+                event: WireEvent::Hit {
+                    actor: 0,
+                    target: 3,
+                    damage: 10,
+                },
+            }],
+            ..base_snap.clone()
+        },
+        Snapshot {
+            events: vec![TickEvent {
+                tick: 1,
+                event: WireEvent::Healed {
+                    actor: 2,
+                    target: 0,
+                    amount: 10,
+                },
+            }],
+            ..base_snap.clone()
+        },
+        Snapshot {
+            events: vec![TickEvent {
+                tick: 1,
+                event: WireEvent::CastCompleted {
+                    actor: 0,
+                    spell: WireSpell::RiftBolt,
+                    target: Some(2),
+                },
+            }],
+            ..base_snap.clone()
+        },
+        Snapshot {
+            events: vec![TickEvent {
+                tick: 1,
+                event: WireEvent::CastInterrupted {
+                    actor: 0,
+                    spell: WireSpell::RiftBolt,
+                    reason: WireInterruptReason::Interrupted,
+                    by: Some(2),
+                },
+            }],
+            ..base_snap.clone()
+        },
+        // Instant spells cannot produce CastInterrupted.
+        Snapshot {
+            events: vec![TickEvent {
+                tick: 1,
+                event: WireEvent::CastInterrupted {
+                    actor: 0,
+                    spell: WireSpell::Pulse,
+                    reason: WireInterruptReason::Interrupted,
+                    by: Some(1),
+                },
+            }],
+            ..base_snap.clone()
+        },
+        Snapshot {
+            events: vec![TickEvent {
+                tick: 1,
+                event: WireEvent::CastInterrupted {
+                    actor: 0,
+                    spell: WireSpell::Quell,
+                    reason: WireInterruptReason::Cancelled,
+                    by: None,
+                },
+            }],
+            ..base_snap.clone()
+        },
+    ];
+    for snap in bad_snapshots {
+        assert_eq!(
+            ServerMessage::decode(&ServerMessage::Snapshot(snap.clone()).encode()),
+            Err(DecodeError::OverLimit),
+            "{snap:?}"
+        );
+    }
+
+    assert_eq!(ServerMessage::decode(&[]), Err(DecodeError::Empty));
+    assert_eq!(
+        ServerMessage::decode(&vec![0; MAX_SERVER_FRAME + 1]),
+        Err(DecodeError::Oversized)
+    );
+}
+
+#[test]
+fn adversarial_postcard_wire_corpus_never_panics_or_ooms() {
+    // Overlong varint continuation chains must fail fast as Malformed.
+    let mut overlong_variant = vec![0x80; 16];
+    overlong_variant.push(0x01);
+    assert_eq!(
+        ClientMessage::decode(&overlong_variant),
+        Err(DecodeError::Malformed)
+    );
+    assert_eq!(
+        ServerMessage::decode(&overlong_variant),
+        Err(DecodeError::Malformed)
+    );
+    assert_eq!(peek_hello_protocol(&overlong_variant), None);
+
+    // Huge Vec length prefixes claiming gigabytes in a tiny frame must not allocate or panic.
+    let huge_len_varint: [u8; 10] = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01];
+    let mut huge_ticket = vec![0, PROTOCOL_VERSION as u8];
+    huge_ticket.extend_from_slice(&huge_len_varint);
+    assert_eq!(
+        ClientMessage::decode(&huge_ticket),
+        Err(DecodeError::Malformed)
+    );
+    // Snapshot variant 1, tick 0, ack 0, queued 0, hash 0, result None (0), fighters len = u64::MAX.
+    let mut huge_fighters = vec![1, 0, 0, 0, 0, 0];
+    huge_fighters.extend_from_slice(&huge_len_varint);
+    assert_eq!(
+        ServerMessage::decode(&huge_fighters),
+        Err(DecodeError::Malformed)
+    );
+    // Snapshot with 2 valid fighters, then events len = u64::MAX.
+    let mut huge_events = ServerMessage::Snapshot(Snapshot::capture(
+        &colosseum(1),
+        0,
+        Vec::new(),
+        &[true, true],
+    ))
+    .encode();
+    // Replace trailing 0-length events varint with huge length prefix.
+    assert_eq!(huge_events.pop(), Some(0));
+    huge_events.extend_from_slice(&huge_len_varint);
+    assert_eq!(
+        ServerMessage::decode(&huge_events),
+        Err(DecodeError::Malformed)
+    );
+
+    // Invalid ServerMessage and ErrorCode discriminants.
+    assert_eq!(ServerMessage::decode(&[4]), Err(DecodeError::Malformed));
+    assert_eq!(ServerMessage::decode(&[3, 9]), Err(DecodeError::Malformed));
+    assert_eq!(
+        ServerMessage::decode(&[3, 0xFF, 0x01]),
+        Err(DecodeError::Malformed)
+    );
+
+    // peek_hello_protocol boundaries: oversized frame, truncated protocol varint, overlong protocol.
+    let mut oversized_hello = vec![0, PROTOCOL_VERSION as u8];
+    oversized_hello.resize(MAX_CLIENT_FRAME + 1, 0);
+    assert_eq!(peek_hello_protocol(&oversized_hello), None);
+    assert_eq!(peek_hello_protocol(&[0, 0x80]), None);
+    let mut overlong_proto = vec![0];
+    overlong_proto.extend_from_slice(&[0x80; 12]);
+    overlong_proto.push(0x01);
+    assert_eq!(peek_hello_protocol(&overlong_proto), None);
+}
+
+#[test]
+fn fuzz_client_and_server_frames_preserve_all_wire_invariants() {
+    let mut state = 0xD1B5_4A32_D192_ED03_u64;
+    let mut next = || {
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    };
+    let client_seeds: Vec<Vec<u8>> = client_samples().iter().map(ClientMessage::encode).collect();
+    let server_seeds: Vec<Vec<u8>> = server_samples().iter().map(ServerMessage::encode).collect();
+
+    let mutate =
+        |seeds: &[Vec<u8>], max_len: usize, round: usize, next: &mut dyn FnMut() -> u64| {
+            match round % 7 {
+                // Pure random bytes (short and near-limit).
+                0 => {
+                    let len = if round.is_multiple_of(49) {
+                        max_len.saturating_sub(16) + (next() as usize % 33)
+                    } else {
+                        next() as usize % 96
+                    };
+                    (0..len).map(|_| next() as u8).collect()
+                }
+                // Single bit flip in a valid seed.
+                1 => {
+                    let mut frame = seeds[(next() as usize) % seeds.len()].clone();
+                    let at = (next() as usize) % frame.len();
+                    frame[at] ^= 1 << (next() % 8);
+                    frame
+                }
+                // Multi-byte overwrite in a valid seed.
+                2 => {
+                    let mut frame = seeds[(next() as usize) % seeds.len()].clone();
+                    for _ in 0..=next() % 3 {
+                        let at = (next() as usize) % frame.len();
+                        frame[at] = next() as u8;
+                    }
+                    frame
+                }
+                // Truncation at a random offset.
+                3 => {
+                    let mut frame = seeds[(next() as usize) % seeds.len()].clone();
+                    let cut = (next() as usize) % frame.len();
+                    frame.truncate(cut);
+                    frame
+                }
+                // Byte insertion or trailing append.
+                4 => {
+                    let mut frame = seeds[(next() as usize) % seeds.len()].clone();
+                    let at = (next() as usize) % (frame.len() + 1);
+                    frame.insert(at, next() as u8);
+                    frame
+                }
+                // Byte deletion.
+                5 => {
+                    let mut frame = seeds[(next() as usize) % seeds.len()].clone();
+                    let at = (next() as usize) % frame.len();
+                    frame.remove(at);
+                    frame
+                }
+                // Cross-frame splice between two valid seeds.
+                _ => {
+                    let a = &seeds[(next() as usize) % seeds.len()];
+                    let b = &seeds[(next() as usize) % seeds.len()];
+                    let cut_a = (next() as usize) % (a.len() + 1);
+                    let cut_b = (next() as usize) % (b.len() + 1);
+                    let mut frame = Vec::with_capacity(cut_a + (b.len() - cut_b));
+                    frame.extend_from_slice(&a[..cut_a]);
+                    frame.extend_from_slice(&b[cut_b..]);
+                    frame
+                }
+            }
+        };
+
+    for round in 0..12_000 {
+        let frame = mutate(&client_seeds, MAX_CLIENT_FRAME, round, &mut next);
+        let peeked = peek_hello_protocol(&frame);
+        if let Ok(message) = ClientMessage::decode(&frame) {
+            assert!(frame.len() <= MAX_CLIENT_FRAME);
+            match &message {
+                ClientMessage::Hello { protocol, ticket } => {
+                    assert!(ticket.len() <= MAX_TICKET);
+                    assert_eq!(peeked, Some(*protocol));
+                }
+                _ => assert_eq!(peeked, None),
+            }
+            let reencoded = message.encode();
+            assert_eq!(ClientMessage::decode(&reencoded), Ok(message.clone()));
+            assert!(serde_json::from_str::<serde_json::Value>(&message.to_debug_json()).is_ok());
+        }
+    }
+
+    for round in 0..12_000 {
+        let frame = mutate(&server_seeds, MAX_SERVER_FRAME, round, &mut next);
+        if let Ok(message) = ServerMessage::decode(&frame) {
+            assert!(frame.len() <= MAX_SERVER_FRAME);
+            match &message {
+                ServerMessage::Welcome(welcome) => {
+                    assert!((1..=MAX_FIGHTERS / 2).contains(&usize::from(welcome.team_size)));
+                    assert!(usize::from(welcome.actor) < usize::from(welcome.team_size) * 2);
+                    assert!(welcome.tick_rate > 0);
+                    assert!((1..=MAX_ROUND_TICKS).contains(&welcome.round_ticks));
+                }
+                ServerMessage::Snapshot(snapshot) => {
+                    let count = snapshot.fighters.len();
+                    assert!((2..=MAX_FIGHTERS).contains(&count) && count.is_multiple_of(2));
+                    assert!(snapshot.events.len() <= MAX_EVENTS);
+                    if let Some(WireResult::Won { team }) = snapshot.result {
+                        assert!(team <= 1);
+                    }
+                    for fighter in &snapshot.fighters {
+                        assert!(fighter.combatant().is_valid(count));
+                    }
+                    for item in &snapshot.events {
+                        match item.event {
+                            WireEvent::Jumped { actor } => assert!(usize::from(actor) < count),
+                            WireEvent::CastStarted {
+                                actor,
+                                spell,
+                                target,
+                                duration_ticks,
+                            } => {
+                                assert!(usize::from(actor) < count);
+                                assert!(target.is_none_or(|t| usize::from(t) < count));
+                                assert!(SpellId::from(spell).definition().cast_ticks > 0);
+                                assert!(duration_ticks > 0);
+                            }
+                            WireEvent::CastCompleted { actor, target, .. } => {
+                                assert!(usize::from(actor) < count);
+                                assert!(target.is_none_or(|t| usize::from(t) < count));
+                            }
+                            WireEvent::CastInterrupted {
+                                actor, spell, by, ..
+                            } => {
+                                assert!(usize::from(actor) < count);
+                                assert!(by.is_none_or(|b| usize::from(b) < count));
+                                assert!(SpellId::from(spell).definition().cast_ticks > 0);
+                            }
+                            WireEvent::Hit { actor, target, .. }
+                            | WireEvent::Healed { actor, target, .. } => {
+                                assert!(usize::from(actor) < count);
+                                assert!(usize::from(target) < count);
+                            }
+                            WireEvent::Finished(WireResult::Won { team }) => assert!(team <= 1),
+                            WireEvent::Finished(_) | WireEvent::Rejected(_) => {}
+                        }
+                    }
+                    let body = EncodedSnapshotBody::new(
+                        snapshot.tick,
+                        snapshot.hash,
+                        snapshot.result,
+                        &snapshot.fighters,
+                        Some(&snapshot.events),
+                    );
+                    assert_eq!(
+                        body.encode_for_seat(snapshot.ack, snapshot.queued, &[]),
+                        message.encode()
+                    );
+                }
+                ServerMessage::Pong { .. } | ServerMessage::Error(_) => {}
+            }
+            let reencoded = message.encode();
+            assert_eq!(ServerMessage::decode(&reencoded), Ok(message.clone()));
+            assert!(serde_json::from_str::<serde_json::Value>(&message.to_debug_json()).is_ok());
+        }
+    }
+}

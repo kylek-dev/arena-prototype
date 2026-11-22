@@ -22,6 +22,7 @@ async fn scenario(rtt_ms: u64, jitter_ms: u64) -> (arena_server::Running, Scenar
             Duration::from_millis(rtt_ms),
             Duration::from_millis(jitter_ms),
         ),
+        paced: true,
         reconnect_every: None,
         away: Duration::from_millis(200),
         seed: 7,
@@ -113,5 +114,77 @@ async fn bots_queue_through_the_front_door_accept_and_play_what_it_forms() {
     assert!(report.hash_checks > 0);
     assert_eq!(report.hash_mismatches, 0);
     door.stop().await.unwrap();
+    running.shut_down(Duration::ZERO).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bots_play_consistently_through_high_jitter_and_team_combat() {
+    let (running, mut scenario) = scenario(180, 50).await;
+    scenario.matches = 2;
+    scenario.team_size = 3;
+    scenario.duration = Duration::from_secs(2);
+    let report = run(scenario).await.unwrap();
+    println!("{report}");
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.unexpected_closes, 0);
+    assert_eq!(report.wrong_results, 0);
+    assert!(report.hash_checks > 50, "{}", report.hash_checks);
+    assert_eq!(report.hash_mismatches, 0);
+    assert!(report.rtt.p50_ms >= 180.0, "{}", report.rtt);
+    let server = report.server_metrics.as_ref().unwrap();
+    assert_eq!(server.frames_dropped_total, 0);
+    assert_eq!(server.inputs_overflow_total, 0);
+    running.shut_down(Duration::ZERO).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bots_survive_tcp_packet_loss_and_relay_clumps_with_pacing() {
+    let (running, mut scenario) = scenario(80, 20).await;
+    scenario.matches = 2;
+    scenario.team_size = 2;
+    scenario.duration = Duration::from_secs(2);
+    scenario.link = scenario
+        .link
+        .with_loss(0.05)
+        .with_clump(Duration::from_millis(45));
+    scenario.paced = true;
+    let report = run(scenario).await.unwrap();
+    println!("{report}");
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.unexpected_closes, 0);
+    assert_eq!(report.wrong_results, 0);
+    assert!(report.hash_checks > 40, "{}", report.hash_checks);
+    assert_eq!(report.hash_mismatches, 0);
+    assert!(report.loss_pct > 4.9 && report.clump_ms >= 45.0);
+    assert!(report.paced);
+    let server = report.server_metrics.as_ref().unwrap();
+    assert!(server.ticks_total > 0);
+    assert_eq!(server.frames_dropped_total, 0);
+    assert_eq!(server.inputs_overflow_total, 0);
+    running.shut_down(Duration::ZERO).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bots_recover_across_aggressive_reconnect_jitter_and_loss_matrix() {
+    let (running, mut scenario) = scenario(100, 30).await;
+    scenario.matches = 2;
+    scenario.team_size = 2;
+    scenario.duration = Duration::from_millis(2500);
+    scenario.link = scenario.link.with_loss(0.03);
+    scenario.reconnect_every = Some(Duration::from_millis(550));
+    scenario.away = Duration::from_millis(180);
+    let report = run(scenario).await.unwrap();
+    println!("{report}");
+    assert!(report.rejoins_attempted > 0);
+    assert_eq!(
+        report.rejoins_succeeded + report.rejoins_too_late,
+        report.rejoins_attempted
+    );
+    assert!(report.rejoins_succeeded > 0);
+    assert!(report.snapshots_showing_disconnected > 0);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.unexpected_closes, 0);
+    assert_eq!(report.wrong_results, 0);
+    assert_eq!(report.hash_mismatches, 0);
     running.shut_down(Duration::ZERO).await.unwrap();
 }
