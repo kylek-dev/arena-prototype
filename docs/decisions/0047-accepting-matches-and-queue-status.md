@@ -1,8 +1,8 @@
 # ADR 0047: Accepting found matches, one queue per size, and queue status
 
 Date: 2026-11-17. **Status: accepted and implemented**, with automated
-tests. Human browser review of the queue bar and the match-ready window is
-pending ([UI review](../UI-REVIEW.md)).
+tests. Human browser review of the queue bar and the match-ready window was
+marked complete by the user on 2026-11-21 ([UI review](../UI-REVIEW.md)).
 
 Amends [ADR 0046](0046-queues-parties-and-home-screen.md): it replaces the
 solo 2v2 and solo 3v3 queues and the automatic ready check.

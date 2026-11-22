@@ -4,8 +4,8 @@ Date: 2026-11-15. **Status: mixed.** The fair tick resolution and authoritative
 facing in `arena-sim`, the `arena-protocol` message layer and the
 `arena-server` match server, the `arena-bot` load tester and the browser's
 network transport, authoritative view (Phase 5a) and match UI (Phase 5b)
-are **accepted and implemented**. No browser has run a network match yet:
-human browser review is pending ([UI review](../UI-REVIEW.md)). The scaling topology is **proposed**: it stays open
+are **accepted and implemented**. Human browser review of the match UI was marked
+complete by the user on 2026-11-21 ([UI review](../UI-REVIEW.md)). The scaling topology is **proposed**: it stays open
 until load measurements from the bot exist.
 
 Builds on [ADR 0001](0001-stack.md) (Axum/Tokio, WebSockets, one regional
