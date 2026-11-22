@@ -110,6 +110,20 @@ export function roundClockView(
   return roundClockFromSeconds(seconds, snapshot.won, snapshot.roundResult);
 }
 
+/** Visual tone for an authoritative round outcome. */
+export function roundResultTone(result: RoundResult): RoundResultTone {
+  switch (result) {
+    case "won":
+      return "victory";
+    case "lost":
+      return "defeat";
+    case "time_limit_draw":
+      return "time-limit";
+    case "draw":
+      return "draw";
+  }
+}
+
 /** Derives the HUD round-result banner content and visual tone from an authoritative outcome. */
 export function roundResultBanner(
   result: RoundResult | null | undefined,
@@ -117,14 +131,7 @@ export function roundResultBanner(
 ): RoundResultBanner | null {
   const label = roundResultLabel(result);
   if (!label || !result) return null;
-  const tone: RoundResultTone =
-    result === "won"
-      ? "victory"
-      : result === "lost"
-        ? "defeat"
-        : result === "time_limit_draw"
-          ? "time-limit"
-          : "draw";
+  const tone = roundResultTone(result);
   const detail =
     result === "time_limit_draw"
       ? networked

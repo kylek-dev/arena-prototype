@@ -245,6 +245,12 @@ it("tells the player about connecting, waiting, reconnecting, the end and a rejo
   );
   fireEvent.click(screen.getByRole("button", { name: "Play here" }));
   expect(link.state.get().phase).toBe("connecting");
+  // Leaving a finished match forgets it, so no stale Rejoin prompt appears.
+  fake.open();
+  fake.report("finished");
+  act(() => link.leave());
+  expect(screen.queryByRole("status")).toBeNull();
+  expect(link.remembered()).toBeNull();
 });
 
 it("offers leaving in the menu during a match and hides practice-only controls", () => {

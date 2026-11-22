@@ -33,11 +33,14 @@ export const customizing = createStore(false);
 // The start screen before the first round: the player may customize, then
 // enters the arena. Gameplay waits until then.
 export const prematch = createStore(false);
+// Post-match scoreboard modal retained locally after the match ends.
+export const scoreboardVisible = createStore(false);
 export function blocksGameplay() {
   const mode = interaction.get();
   return (
     customizing.get() ||
     prematch.get() ||
+    scoreboardVisible.get() ||
     !!mode.capture ||
     mode.quick ||
     mode.layout ||

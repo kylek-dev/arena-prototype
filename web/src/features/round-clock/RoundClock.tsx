@@ -8,7 +8,7 @@ import {
 } from "../../domain/round-clock";
 import { dispatch } from "../../runtime/commands";
 import { matchQueue, networkLink } from "../../state/network";
-import { engine, error, interaction } from "../../state/session";
+import { engine, error, interaction, scoreboardVisible } from "../../state/session";
 import { createStore, useStore } from "../../state/store";
 
 const NO_QUEUE = createStore(IDLE_QUEUE);
@@ -25,13 +25,15 @@ export function RoundClock() {
     interaction,
     (m) => m.layout || m.quick || !!m.capture || m.panel === "menu" || m.panel === "settings",
   );
+  const scoreboardOpen = useStore(scoreboardVisible, (v) => v);
+  const hasScoreboard = useStore(engine, (s) => Boolean(s?.networked && s.won && s.scoreboard));
   const failed = useStore(error, Boolean);
   const queue = useStore(matchQueue, (q) => q);
   const queueVisible = useStore(queue?.state ?? NO_QUEUE, isQueueBarVisible);
   const link = useStore(networkLink, (l) => l);
   const linkState = useStore(link?.state ?? NO_LINK, (s) => s);
 
-  if (suppressed || failed) return null;
+  if (suppressed || scoreboardOpen || failed) return null;
 
   const remembered =
     link && (linkState.phase === "idle" || linkState.phase === "ended") ? link.remembered() : null;
@@ -39,7 +41,8 @@ export function RoundClock() {
 
   const clock =
     remainingSeconds !== null ? roundClockFromSeconds(remainingSeconds, won, roundResult) : null;
-  const banner = matchBannerVisible ? null : roundResultBanner(roundResult, networked);
+  const banner =
+    matchBannerVisible || hasScoreboard ? null : roundResultBanner(roundResult, networked);
   if (!clock && !banner) return null;
 
   const queueOffset = queueVisible ? " below-queue" : "";

@@ -6,6 +6,8 @@ import {
   formatMatchDuration,
   isValidScoreboardEntry,
   SCOREBOARD_COLUMNS,
+  scoreboardQueueMode,
+  scoreboardTone,
   sortScoreboardRows,
   sumTeamTotals,
   toggleScoreboardSort,
@@ -207,5 +209,37 @@ describe("scoreboard domain", () => {
     expect(formatMatchDuration(36_000, 30)).toBe("20:00");
     expect(formatMatchDuration(-5, 30)).toBe("00:00");
     expect(formatMatchDuration(100, 0)).toBe("00:00");
+
+    const board = buildMatchScoreboard({
+      tick: 900,
+      roundResult: "won",
+      scoreboard: sample2v2Entries(),
+    })!;
+    expect(scoreboardQueueMode(board)).toBe("2v2");
+    expect(
+      scoreboardQueueMode({
+        ...board,
+        allies: board.allies.slice(0, 1),
+        opponents: board.opponents.slice(0, 1),
+      }),
+    ).toBe("1v1");
+    expect(
+      scoreboardQueueMode({
+        ...board,
+        allies: [...board.allies, board.allies[0]],
+        opponents: [...board.opponents, board.opponents[0]],
+      }),
+    ).toBe("3v3");
+    expect(
+      scoreboardQueueMode({
+        ...board,
+        allies: board.allies.slice(0, 1),
+        opponents: board.opponents,
+      }),
+    ).toBeNull();
+    expect(scoreboardTone("won")).toBe("victory");
+    expect(scoreboardTone("lost")).toBe("defeat");
+    expect(scoreboardTone("draw")).toBe("draw");
+    expect(scoreboardTone("time_limit_draw")).toBe("time-limit");
   });
 });

@@ -5,13 +5,14 @@ import { IDLE_QUEUE, isQueueBarVisible } from "../../domain/matchmaking";
 import { matchMessage } from "../../domain/network";
 import type { Link } from "../../runtime/network";
 import { matchQueue, networkLink } from "../../state/network";
-import { engine } from "../../state/session";
+import { engine, scoreboardVisible } from "../../state/session";
 import { createStore, useStore } from "../../state/store";
 
 const NO_QUEUE = createStore(IDLE_QUEUE);
 
 function LinkStatus({ link }: { link: Link }) {
   const state = useStore(link.state, (s) => s);
+  const scoreboardOpen = useStore(scoreboardVisible, (v) => v);
   const queue = useStore(matchQueue, (q) => q);
   const queueVisible = useStore(queue?.state ?? NO_QUEUE, isQueueBarVisible);
   const joined = useStore(engine, (s) =>
@@ -48,7 +49,9 @@ function LinkStatus({ link }: { link: Link }) {
     joined !== null && seats !== null ? { joined, seats, seat: state.status?.seat ?? null } : null,
     effectiveResult,
   );
-  if (!message) return null;
+  if (!message || (scoreboardOpen && state.phase === "ended" && state.ended === "MatchOver")) {
+    return null;
+  }
   return (
     <div
       className={`match-status ${message.tone}${queueVisible ? " below-queue" : ""}`}
