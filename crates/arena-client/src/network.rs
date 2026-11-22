@@ -26,7 +26,8 @@ use std::sync::OnceLock;
 
 use arena_protocol::prediction::{InterpDelay, Pacer, Predictor, TickRate};
 use arena_protocol::{
-    ClientMessage, ErrorCode, FighterState, InputFrame, ServerMessage, WireAction, WireEvent,
+    ClientMessage, ErrorCode, FighterScore, FighterState, InputFrame, ServerMessage, WireAction,
+    WireEvent,
 };
 use arena_sim::arena::{
     ActorInput, Arena, Axes, CastAction, Combatant, InterruptReason, MAX_ROUND_TICKS, Rejection,
@@ -128,6 +129,8 @@ struct Received {
     fighters: Vec<Combatant>,
     connected: Vec<bool>,
     result: Option<RoundResult>,
+    /// Local order; `Some` only on a finished match's final snapshot.
+    scoreboard: Option<Vec<FighterScore>>,
 }
 
 /// Measured connection quality, for the debug overlay.
@@ -187,6 +190,8 @@ pub struct View {
     pub fighters: Vec<Combatant>,
     pub connected: Vec<bool>,
     pub result: Option<RoundResult>,
+    /// Authoritative end-of-match per-seat totals in local actor order.
+    pub scoreboard: Option<Vec<FighterScore>>,
     /// World positions in metres, interpolated toward the next snapshot.
     pub positions: Vec<Vec3>,
     /// Headings in radians, interpolated the short way round.
@@ -320,12 +325,11 @@ impl Session {
                     }
                     if self.seat != Some(seat)
                         || self.order.len() != count
-                        || self
-                            .snapshots
-                            .back()
-                            .is_some_and(|newest| newest.tick > welcome.tick)
+                        || self.snapshots.back().is_some_and(|newest| {
+                            newest.tick > welcome.tick || newest.result.is_some()
+                        })
                     {
-                        // A different seat, match, or tick rewind: nothing buffered applies.
+                        // A different seat, match, finished round, or tick rewind: nothing buffered applies.
                         self.snapshots.clear();
                         self.events.clear();
                         self.view_tick = None;
@@ -391,6 +395,11 @@ impl Session {
                         .iter()
                         .map(|&actor| snapshot.fighters[actor].connected)
                         .collect();
+                    let scoreboard = snapshot
+                        .scoreboard
+                        .as_ref()
+                        .filter(|scores| scores.len() == self.order.len())
+                        .map(|scores| self.order.iter().map(|&actor| scores[actor]).collect());
                     let my_team = self.seat.map_or(0, |seat| seat % 2);
                     // Translate result team parity into local numbering (local 0 is my team).
                     let local_result = result.map(|result| match result {
@@ -442,6 +451,7 @@ impl Session {
                         fighters,
                         connected,
                         result: local_result,
+                        scoreboard,
                     });
                     self.newest_at = now;
                     while self.snapshots.len() > BUFFER {
@@ -850,6 +860,7 @@ impl Session {
             fighters: a.fighters.clone(),
             connected: a.connected.clone(),
             result: a.result,
+            scoreboard: a.scoreboard.clone(),
             positions,
             facings,
             shown,

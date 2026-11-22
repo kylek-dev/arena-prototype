@@ -1,4 +1,10 @@
 import { isValidActiveCast, type ActiveCast, type SpellKey } from "../domain/casting";
+import {
+  expectedActorTag,
+  isNonNegativeSafeInt,
+  isValidScoreboardEntry,
+  type ScoreboardEntry,
+} from "../domain/scoreboard";
 import type { Entity } from "../domain/units/selection";
 import type { UnitTag } from "../domain/units/tags";
 export type RosterEntry = Entity & { actor: number; tag: UnitTag };
@@ -37,6 +43,8 @@ export type Snapshot = {
   won: boolean;
   /** Authoritative outcome from this player's side; absent from older clients. */
   roundResult?: RoundResult | null;
+  /** Authoritative end-of-match per-seat totals in local actor order; null while running or in local practice. */
+  scoreboard?: ScoreboardEntry[] | null;
   /** Total authoritative ticks in the round before a time-limit draw. */
   maxRoundTicks?: number;
   /** Authoritative simulation ticks per second. */
@@ -80,10 +88,6 @@ function validStartup(value: unknown): value is StartupState {
     s.pending >= 0 &&
     typeof s.timedOut === "boolean"
   );
-}
-
-function isNonNegativeSafeInt(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 function validateCombatFields(
@@ -201,6 +205,7 @@ export function needsImmediateDelivery(previous: Snapshot | null, next: Snapshot
     next.selectedActor !== previous.selectedActor ||
     next.won !== previous.won ||
     next.roundResult !== previous.roundResult ||
+    Boolean(next.scoreboard) !== Boolean(previous.scoreboard) ||
     next.maxRoundTicks !== previous.maxRoundTicks ||
     next.startup?.ready !== previous.startup?.ready ||
     next.hoveredUnit !== previous.hoveredUnit ||
@@ -336,12 +341,7 @@ export function adaptSnapshot(raw: unknown): Snapshot {
     roster = new Array<RosterEntry>(r.roster.length);
     for (let actor = 0; actor < r.roster.length; actor += 1) {
       const unit = r.roster[actor];
-      const tag =
-        actor === 0
-          ? "Player"
-          : actor % 2 === 0
-            ? `Team${actor / 2}`
-            : `Opponent${Math.floor(actor / 2) + 1}`;
+      const tag = expectedActorTag(actor);
       if (
         unit.actor !== actor ||
         unit.tag !== tag ||
@@ -393,6 +393,38 @@ export function adaptSnapshot(raw: unknown): Snapshot {
   ) {
     throw new Error("Invalid engine rule metadata");
   }
+  let scoreboard: ScoreboardEntry[] | null | undefined;
+  if (r.scoreboard !== undefined) {
+    if (r.scoreboard === null) {
+      scoreboard = null;
+    } else {
+      if (
+        !r.won ||
+        !Array.isArray(r.scoreboard) ||
+        (r.scoreboard.length !== 2 && r.scoreboard.length !== 4 && r.scoreboard.length !== 6) ||
+        (roster !== undefined && r.scoreboard.length !== roster.length)
+      ) {
+        throw new Error("Invalid scoreboard");
+      }
+      scoreboard = new Array<ScoreboardEntry>(r.scoreboard.length);
+      for (let actor = 0; actor < r.scoreboard.length; actor += 1) {
+        const entry = r.scoreboard[actor];
+        const tag = expectedActorTag(actor);
+        if (!isValidScoreboardEntry(entry, actor, tag)) {
+          throw new Error("Invalid scoreboard entry");
+        }
+        scoreboard[actor] = {
+          actor,
+          tag,
+          damageDone: entry.damageDone,
+          damageTaken: entry.damageTaken,
+          healingDone: entry.healingDone,
+          healingReceived: entry.healingReceived,
+          killingBlows: entry.killingBlows,
+        };
+      }
+    }
+  }
   const playerCombat = validateCombatFields(r.player, maxResource);
   const targetCombat = validateCombatFields(r.target, maxResource);
   const spells = r.spells !== undefined ? validateSpells(r.spells) : undefined;
@@ -401,6 +433,7 @@ export function adaptSnapshot(raw: unknown): Snapshot {
     ...r,
     ...(maxResource !== undefined ? { maxResource } : {}),
     ...(spells !== undefined ? { spells } : {}),
+    ...(scoreboard !== undefined ? { scoreboard } : {}),
     roster,
     networked,
     player: { ...r.player, ...playerCombat, maxHealth, id: "practice-player", name: "Player" },

@@ -937,3 +937,89 @@ fn waiting_frames_do_not_bump_interp_delay_and_rematch_resets_stale_view_tick() 
         match2.tick()
     );
 }
+
+#[test]
+fn finished_scoreboard_is_renumbered_into_local_order_and_cleared_on_rematch() {
+    use arena_protocol::FighterScore;
+
+    // 3v3 match observed from seat 3 (team 1):
+    // seat_order(3, 6) == [3, 0, 1, 2, 5, 4]
+    // local 0 = seat 3 (Player), local 2 = seat 1 (Team1), local 4 = seat 5 (Team2),
+    // local 1 = seat 0 (Opponent1), local 3 = seat 2 (Opponent2), local 5 = seat 4 (Opponent3).
+    let mut server = Arena::practice(layout(), 3).unwrap();
+    let mut session = joined(3, 3);
+
+    // Running tick has no scoreboard.
+    server.step(&[]);
+    session.receive(
+        &feed(1, vec![snapshot(&server, 0, vec![], &[true; 6])]),
+        0.0,
+        &layout(),
+    );
+    let running_view = session.view(0.0, 0.0).unwrap();
+    assert_eq!(running_view.scoreboard, None);
+
+    // Build a finished snapshot with distinct per-seat server scores.
+    let server_scores: Vec<FighterScore> = (0..6u32)
+        .map(|seat| FighterScore {
+            damage_done: (seat + 1) * 100,
+            damage_taken: (seat + 1) * 50,
+            healing_done: (seat + 1) * 10,
+            healing_received: (seat + 1) * 5,
+            killing_blows: (seat % 2) as u16,
+        })
+        .collect();
+    let mut finished = Snapshot::capture(&server, 0, vec![], &[true; 6]);
+    finished.tick = 2;
+    finished.result = Some(WireResult::Won { team: 1 });
+    finished.scoreboard = Some(server_scores.clone());
+    session.receive(
+        &feed(1, vec![ServerMessage::Snapshot(finished).encode()]),
+        0.2,
+        &layout(),
+    );
+    assert_eq!(session.phase, Phase::Finished);
+
+    // Advance view clock past the interpolation delay so the finished snapshot is shown.
+    let final_view = session.view(1.0, 1.2).unwrap();
+    assert_eq!(final_view.result, Some(RoundResult::Won { team: 0 }));
+    let local_scores = final_view
+        .scoreboard
+        .expect("finished view carries local-ordered scoreboard");
+    let order = seat_order(3, 6);
+    assert_eq!(local_scores.len(), 6);
+    for (local_idx, &server_actor) in order.iter().enumerate() {
+        assert_eq!(
+            local_scores[local_idx], server_scores[server_actor],
+            "local {local_idx} maps to server actor {server_actor}"
+        );
+    }
+
+    // Starting a new match on the same seat clears the previous scoreboard cleanly,
+    // even if the new match's Welcome tick is >= the previous finished tick.
+    let rematch_welcome = ServerMessage::Welcome(Welcome {
+        protocol: PROTOCOL_VERSION,
+        actor: 3,
+        team_size: 3,
+        tick: 10,
+        tick_rate: 30,
+        round_ticks: arena_sim::arena::MAX_ROUND_TICKS,
+        rules: arena_protocol::RULES_VERSION,
+        map: 7,
+    })
+    .encode();
+    session.receive(&feed(2, vec![rematch_welcome]), 2.0, &layout());
+    assert!(session.view(0.016, 2.016).is_none());
+    let mut fresh = Arena::practice(layout(), 3).unwrap();
+    for _ in 0..10 {
+        fresh.step(&[]);
+    }
+    session.receive(
+        &feed(2, vec![snapshot(&fresh, 0, vec![], &[true; 6])]),
+        2.05,
+        &layout(),
+    );
+    let fresh_view = session.view(0.016, 2.066).unwrap();
+    assert_eq!(fresh_view.result, None);
+    assert_eq!(fresh_view.scoreboard, None);
+}

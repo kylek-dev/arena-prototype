@@ -71,6 +71,102 @@ describe("engine snapshot boundary", () => {
     }
   });
 
+  it("validates authoritative end-of-match scoreboard entries and immediate delivery", () => {
+    const base = { ...teamSnapshot(1), maxHealth: 100 };
+    const running = adaptSnapshot({ ...base, won: false, roundResult: null, scoreboard: null });
+    expect(running.scoreboard).toBeNull();
+
+    const validScores = [
+      {
+        actor: 0,
+        tag: "Player",
+        damageDone: 125,
+        damageTaken: 50,
+        healingDone: 30,
+        healingReceived: 30,
+        killingBlows: 1,
+      },
+      {
+        actor: 1,
+        tag: "Opponent1",
+        damageDone: 50,
+        damageTaken: 125,
+        healingDone: 0,
+        healingReceived: 0,
+        killingBlows: 0,
+      },
+    ];
+    const finished = adaptSnapshot({
+      ...base,
+      won: true,
+      roundResult: "won",
+      scoreboard: validScores,
+    });
+    expect(finished.scoreboard).toEqual(validScores);
+    expect(needsImmediateDelivery(running, finished)).toBe(true);
+    const finishedNoBoard = adaptSnapshot({
+      ...base,
+      won: true,
+      roundResult: "won",
+      scoreboard: null,
+    });
+    expect(needsImmediateDelivery(finishedNoBoard, finished)).toBe(true);
+
+    for (const invalid of [
+      // Scoreboard present while round is not finished.
+      { ...base, won: false, roundResult: null, scoreboard: validScores },
+      // Wrong length or mismatch against roster.
+      { ...base, won: true, roundResult: "won", scoreboard: [] },
+      { ...base, won: true, roundResult: "won", scoreboard: [validScores[0]] },
+      {
+        ...base,
+        won: true,
+        roundResult: "won",
+        scoreboard: [...validScores, ...validScores],
+      },
+      // Wrong actor index or unit tag.
+      {
+        ...base,
+        won: true,
+        roundResult: "won",
+        scoreboard: [validScores[0], { ...validScores[1], actor: 2 }],
+      },
+      {
+        ...base,
+        won: true,
+        roundResult: "won",
+        scoreboard: [validScores[0], { ...validScores[1], tag: "Team1" }],
+      },
+      // Negative, float, or unsafe integer stats.
+      {
+        ...base,
+        won: true,
+        roundResult: "won",
+        scoreboard: [{ ...validScores[0], damageDone: -1 }, validScores[1]],
+      },
+      {
+        ...base,
+        won: true,
+        roundResult: "won",
+        scoreboard: [{ ...validScores[0], healingDone: 12.5 }, validScores[1]],
+      },
+      {
+        ...base,
+        won: true,
+        roundResult: "won",
+        scoreboard: [{ ...validScores[0], damageTaken: 1e30 }, validScores[1]],
+      },
+      {
+        ...base,
+        won: true,
+        roundResult: "won",
+        scoreboard: [{ ...validScores[0], killingBlows: Number.NaN }, validScores[1]],
+      },
+    ]) {
+      expect(() => adaptSnapshot(invalid)).toThrow();
+    }
+  });
+
   it("validates authoritative resources, GCD, lockout, and active cast metadata", () => {
     const base = {
       ...teamSnapshot(1),

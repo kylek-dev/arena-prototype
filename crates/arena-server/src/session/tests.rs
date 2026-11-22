@@ -332,12 +332,29 @@ fn finished_matches_report_the_result_linger_then_close() {
         },
     );
     let out = session.tick();
+    let expected_board = vec![
+        FighterScore {
+            damage_done: 25,
+            damage_taken: 0,
+            healing_done: 0,
+            healing_received: 0,
+            killing_blows: 1,
+        },
+        FighterScore {
+            damage_done: 0,
+            damage_taken: 25,
+            healing_done: 0,
+            healing_received: 0,
+            killing_blows: 0,
+        },
+    ];
     for seat in 0..2 {
         let final_state = snapshot(&out, conn(seat)).unwrap();
         assert_eq!(
             final_state.result,
             Some(arena_protocol::WireResult::Won { team: 0 })
         );
+        assert_eq!(final_state.scoreboard.as_ref(), Some(&expected_board));
         assert!(final_state.events.iter().any(|event| matches!(
             event.event,
             WireEvent::Finished(arena_protocol::WireResult::Won { team: 0 })
@@ -1280,4 +1297,467 @@ fn session_view_tick_zero_cap_and_backlog_folding_preserve_lag_comp_boundaries()
             } if damage == ATTACK_DAMAGE
         )
     }));
+}
+
+#[test]
+fn scoreboard_tracks_damage_effective_healing_killing_blows_and_reconnects() {
+    use arena_protocol::WireSpell;
+    use arena_sim::arena::{Combatant, Position};
+    use arena_sim::spells::MEND_CAST_TICKS;
+
+    let layout = arena_map::colosseum().layout;
+    let fighters = vec![
+        Combatant::new(Position { x: 0, z: 0 }, 0),
+        Combatant::new(Position { x: 3_000, z: 0 }, 0),
+    ];
+    let restored = Arena::restore(layout, 0, fighters, None).unwrap();
+    let mut session = running(restored);
+    let mut seq = [0u32; 2];
+
+    let mut observed_damage_done = [0u32; 2];
+    let mut observed_damage_taken = [0u32; 2];
+    let mut observed_healing_done = [0u32; 2];
+    let mut observed_healing_received = [0u32; 2];
+
+    let observe = |out: &[Out],
+                   dmg_done: &mut [u32; 2],
+                   dmg_taken: &mut [u32; 2],
+                   heal_done: &mut [u32; 2],
+                   heal_recv: &mut [u32; 2]| {
+        let snap = snapshot(out, conn(0))
+            .or_else(|| snapshot(out, conn(1)))
+            .or_else(|| {
+                out.iter().find_map(|o| match o {
+                    Out::Send {
+                        message: ServerMessage::Snapshot(s),
+                        ..
+                    } => Some(s),
+                    _ => None,
+                })
+            })
+            .unwrap();
+        if snap.result.is_none() {
+            assert_eq!(snap.scoreboard, None, "running snapshots omit scoreboard");
+        }
+        for tick_event in &snap.events {
+            match tick_event.event {
+                WireEvent::Hit {
+                    actor,
+                    target,
+                    damage,
+                } => {
+                    dmg_done[usize::from(actor)] += u32::from(damage);
+                    dmg_taken[usize::from(target)] += u32::from(damage);
+                }
+                WireEvent::Healed {
+                    actor,
+                    target,
+                    amount,
+                } => {
+                    heal_done[usize::from(actor)] += u32::from(amount);
+                    heal_recv[usize::from(target)] += u32::from(amount);
+                }
+                _ => {}
+            }
+        }
+    };
+
+    // Seat 0 hits seat 1 with Pulse (25 dmg -> 75 HP).
+    seq[0] += 1;
+    session.receive(
+        0,
+        conn(0),
+        InputFrame {
+            seq: seq[0],
+            action: InputFrame::pulse(1),
+            ..InputFrame::default()
+        },
+    );
+    let out = session.tick();
+    observe(
+        &out,
+        &mut observed_damage_done,
+        &mut observed_damage_taken,
+        &mut observed_healing_done,
+        &mut observed_healing_received,
+    );
+
+    // Seat 1 casts Mend on self (30 heal, capped to 25 missing HP -> effective 25!).
+    // Also seat 0 casts Mend on self at full HP (100 HP -> 0 effective healing!).
+    seq[1] += 1;
+    session.receive(
+        1,
+        conn(1),
+        InputFrame {
+            seq: seq[1],
+            action: WireAction::Cast {
+                spell: WireSpell::Mend,
+                target: Some(1),
+            },
+            ..InputFrame::default()
+        },
+    );
+    // 1 tick to start the timed cast in Phase 4b, plus MEND_CAST_TICKS in Phase 4a to complete.
+    for _ in 0..=MEND_CAST_TICKS {
+        let out = session.tick();
+        observe(
+            &out,
+            &mut observed_damage_done,
+            &mut observed_damage_taken,
+            &mut observed_healing_done,
+            &mut observed_healing_received,
+        );
+    }
+    assert_eq!(session.arena().fighters()[1].health, 100);
+    assert_eq!(observed_healing_done[1], 25, "overheal is excluded");
+
+    // Seat 0 casts Mend at full health (0 effective healing).
+    seq[0] += 1;
+    session.receive(
+        0,
+        conn(0),
+        InputFrame {
+            seq: seq[0],
+            action: WireAction::Cast {
+                spell: WireSpell::Mend,
+                target: Some(0),
+            },
+            ..InputFrame::default()
+        },
+    );
+    for _ in 0..=MEND_CAST_TICKS {
+        let out = session.tick();
+        observe(
+            &out,
+            &mut observed_damage_done,
+            &mut observed_damage_taken,
+            &mut observed_healing_done,
+            &mut observed_healing_received,
+        );
+    }
+    assert_eq!(observed_healing_done[0], 0);
+
+    // Seat 0 disconnects and reconnects on a new connection id: accumulated stats survive!
+    session.detach(0, conn(0));
+    let reconnect_conn = 777;
+    let attach_out = session.attach(0, reconnect_conn);
+    assert_eq!(
+        snapshot(&attach_out, reconnect_conn).unwrap().scoreboard,
+        None
+    );
+    seq[0] = 0;
+
+    // Seat 1 hits seat 0 once (25 dmg) and seat 0 finishes seat 1 with 4 Pulses (100 dmg).
+    seq[1] += 1;
+    session.receive(
+        1,
+        conn(1),
+        InputFrame {
+            seq: seq[1],
+            action: InputFrame::pulse(0),
+            ..InputFrame::default()
+        },
+    );
+    let mut final_out = Vec::new();
+    for round in 0..4 {
+        seq[0] += 1;
+        session.receive(
+            0,
+            reconnect_conn,
+            InputFrame {
+                seq: seq[0],
+                action: InputFrame::pulse(1),
+                ..InputFrame::default()
+            },
+        );
+        let out = session.tick();
+        observe(
+            &out,
+            &mut observed_damage_done,
+            &mut observed_damage_taken,
+            &mut observed_healing_done,
+            &mut observed_healing_received,
+        );
+        if round == 3 {
+            final_out = out;
+            break;
+        }
+        for _ in 0..ATTACK_COOLDOWN {
+            let out = session.tick();
+            observe(
+                &out,
+                &mut observed_damage_done,
+                &mut observed_damage_taken,
+                &mut observed_healing_done,
+                &mut observed_healing_received,
+            );
+        }
+    }
+
+    let s0 = snapshot(&final_out, reconnect_conn).unwrap();
+    let s1 = snapshot(&final_out, conn(1)).unwrap();
+    assert_eq!(
+        s0.scoreboard, s1.scoreboard,
+        "every seat sees identical totals"
+    );
+    let board = s0
+        .scoreboard
+        .as_ref()
+        .expect("final snapshot carries scoreboard");
+    assert_eq!(
+        board,
+        &vec![
+            FighterScore {
+                damage_done: 125,
+                damage_taken: 25,
+                healing_done: 0,
+                healing_received: 0,
+                killing_blows: 1,
+            },
+            FighterScore {
+                damage_done: 25,
+                damage_taken: 125,
+                healing_done: 25,
+                healing_received: 25,
+                killing_blows: 0,
+            },
+        ]
+    );
+    for seat in 0..2 {
+        assert_eq!(board[seat].damage_done, observed_damage_done[seat]);
+        assert_eq!(board[seat].damage_taken, observed_damage_taken[seat]);
+        assert_eq!(board[seat].healing_done, observed_healing_done[seat]);
+        assert_eq!(
+            board[seat].healing_received,
+            observed_healing_received[seat]
+        );
+    }
+}
+
+#[test]
+fn killing_blows_handle_simultaneous_team_kills_overkill_mutual_draws_and_time_limit() {
+    use arena_sim::arena::{Combatant, Position};
+
+    let layout = arena_map::colosseum().layout;
+
+    // 1. 2v2 combined lethal hits: enemy 1 has 40 HP; seat 0 (25) + seat 2 (25) both hit
+    // on the same tick. Seat 2 brings remaining HP from 15 -> 0 and gets the single KB.
+    let mut fighters = vec![
+        Combatant::new(Position { x: 0, z: 0 }, 0),
+        Combatant::new(Position { x: 2_000, z: 0 }, 0),
+        Combatant::new(Position { x: 4_000, z: 0 }, 0),
+        Combatant::new(Position { x: 20_000, z: 0 }, 0),
+    ];
+    fighters[1].health = 40;
+    fighters[3].health = 0;
+    let mut combined = running(Arena::restore(layout.clone(), 0, fighters, None).unwrap());
+    for seat in [0, 2] {
+        combined.receive(
+            seat,
+            conn(seat),
+            InputFrame {
+                seq: 1,
+                action: InputFrame::pulse(1),
+                ..InputFrame::default()
+            },
+        );
+    }
+    let out = combined.tick();
+    let board = snapshot(&out, conn(0))
+        .unwrap()
+        .scoreboard
+        .as_ref()
+        .unwrap();
+    assert_eq!(board[0].killing_blows, 0);
+    assert_eq!(board[2].killing_blows, 1);
+    assert_eq!(board[0].damage_done, 25);
+    assert_eq!(board[2].damage_done, 25);
+    assert_eq!(board[1].damage_taken, 50);
+    assert_eq!(board.iter().map(|s| s.killing_blows).sum::<u16>(), 1);
+
+    // 2. Simultaneous overkill hits: enemy 1 has 20 HP; both seat 0 and seat 2 hit for 20.
+    // Exactly one KB is credited (no double-counting a single death).
+    let mut fighters = vec![
+        Combatant::new(Position { x: 0, z: 0 }, 0),
+        Combatant::new(Position { x: 2_000, z: 0 }, 0),
+        Combatant::new(Position { x: 4_000, z: 0 }, 0),
+        Combatant::new(Position { x: 20_000, z: 0 }, 0),
+    ];
+    fighters[1].health = 20;
+    fighters[3].health = 0;
+    let mut overkill = running(Arena::restore(layout.clone(), 0, fighters, None).unwrap());
+    for seat in [0, 2] {
+        overkill.receive(
+            seat,
+            conn(seat),
+            InputFrame {
+                seq: 1,
+                action: InputFrame::pulse(1),
+                ..InputFrame::default()
+            },
+        );
+    }
+    let out = overkill.tick();
+    let board = snapshot(&out, conn(0))
+        .unwrap()
+        .scoreboard
+        .as_ref()
+        .unwrap();
+    assert_eq!(board[0].killing_blows, 1);
+    assert_eq!(board[2].killing_blows, 0);
+    assert_eq!(board.iter().map(|s| s.killing_blows).sum::<u16>(), 1);
+
+    // 3. 1v1 mutual elimination draw: both fighters at 25 HP strike each other on the same tick.
+    let mut fighters = vec![
+        Combatant::new(Position { x: 0, z: 0 }, 0),
+        Combatant::new(Position { x: 2_000, z: 0 }, 0),
+    ];
+    fighters[0].health = 25;
+    fighters[1].health = 25;
+    let mut mutual = running(Arena::restore(layout.clone(), 0, fighters, None).unwrap());
+    mutual.receive(
+        0,
+        conn(0),
+        InputFrame {
+            seq: 1,
+            action: InputFrame::pulse(1),
+            ..InputFrame::default()
+        },
+    );
+    mutual.receive(
+        1,
+        conn(1),
+        InputFrame {
+            seq: 1,
+            action: InputFrame::pulse(0),
+            ..InputFrame::default()
+        },
+    );
+    let out = mutual.tick();
+    let snap = snapshot(&out, conn(0)).unwrap();
+    assert_eq!(snap.result, Some(WireResult::Draw));
+    let board = snap.scoreboard.as_ref().unwrap();
+    assert_eq!((board[0].killing_blows, board[1].killing_blows), (1, 1));
+
+    // 4. Time-limit draw with zero combat still delivers an all-zero scoreboard.
+    let timed = Arena::practice(layout.clone(), 1)
+        .unwrap()
+        .with_round_limit(2)
+        .unwrap();
+    let mut session = running(timed);
+    assert_eq!(snapshot(&session.tick(), conn(0)).unwrap().scoreboard, None);
+    let out = session.tick();
+    let snap = snapshot(&out, conn(0)).unwrap();
+    assert_eq!(snap.result, Some(WireResult::TimeLimitDraw));
+    assert_eq!(snap.scoreboard, Some(vec![FighterScore::default(); 2]));
+
+    // 5. Teammate healing (`actor != target`) credits `healing_done` to the caster (seat 0)
+    // and `healing_received` to the recipient (seat 2) without swapping or duplicating.
+    let mut fighters = vec![
+        Combatant::new(Position { x: 0, z: 0 }, 0),
+        Combatant::new(Position { x: 2_000, z: 0 }, 0),
+        Combatant::new(Position { x: 4_000, z: 0 }, 0),
+        Combatant::new(Position { x: 20_000, z: 0 }, 0),
+    ];
+    fighters[1].health = 25;
+    fighters[2].health = 60;
+    fighters[3].health = 0;
+    let mut team_heal = running(Arena::restore(layout, 0, fighters, None).unwrap());
+    team_heal.receive(
+        0,
+        conn(0),
+        InputFrame {
+            seq: 1,
+            action: WireAction::Cast {
+                spell: arena_protocol::WireSpell::Mend,
+                target: Some(2),
+            },
+            ..InputFrame::default()
+        },
+    );
+    for _ in 0..=arena_sim::spells::MEND_CAST_TICKS {
+        team_heal.tick();
+    }
+    assert_eq!(team_heal.arena().fighters()[2].health, 90);
+    // Seat 2 finishes enemy 1 to end the match and inspect the final scoreboard.
+    team_heal.receive(
+        2,
+        conn(2),
+        InputFrame {
+            seq: 1,
+            action: InputFrame::pulse(1),
+            ..InputFrame::default()
+        },
+    );
+    let out = team_heal.tick();
+    let board = snapshot(&out, conn(0))
+        .unwrap()
+        .scoreboard
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        (board[0].healing_done, board[0].healing_received),
+        (30, 0),
+        "healer gets healing_done only"
+    );
+    assert_eq!(
+        (board[2].healing_done, board[2].healing_received),
+        (0, 30),
+        "recipient gets healing_received only"
+    );
+    assert_eq!(board[2].killing_blows, 1);
+}
+
+#[test]
+fn tick_encoded_matches_tick_bytes_on_finished_scoreboard_with_and_without_rejections() {
+    for with_rejection in [false, true] {
+        let mut plain = running(one_hit_from_victory());
+        let mut encoded = running(one_hit_from_victory());
+        for s in [&mut plain, &mut encoded] {
+            s.receive(
+                0,
+                conn(0),
+                InputFrame {
+                    seq: 1,
+                    action: InputFrame::pulse(1),
+                    ..InputFrame::default()
+                },
+            );
+            if with_rejection {
+                // Seat 1 attempts an invalid movement axis so seat 1 gets a private rejection
+                // on the exact final tick while seat 0 does not.
+                s.receive(
+                    1,
+                    conn(1),
+                    InputFrame {
+                        seq: 1,
+                        movement: [2_000, 0],
+                        ..InputFrame::default()
+                    },
+                );
+            }
+        }
+        let plain_frames: Vec<(ConnId, Vec<u8>)> = plain
+            .tick()
+            .into_iter()
+            .filter_map(|out| match out {
+                Out::Send { conn, message } => Some((conn, message.encode())),
+                Out::Close { .. } => None,
+            })
+            .collect();
+        let mut fast_frames = Vec::new();
+        encoded.tick_encoded(|out| {
+            if let EncodedOut::Frame { conn, frame } = out {
+                fast_frames.push((conn, frame));
+            }
+        });
+        assert_eq!(fast_frames, plain_frames, "with_rejection={with_rejection}");
+        for (_, frame) in &fast_frames {
+            let Ok(ServerMessage::Snapshot(snap)) = ServerMessage::decode(frame) else {
+                panic!("expected decodable final snapshot");
+            };
+            assert!(snap.result.is_some());
+            assert_eq!(snap.scoreboard.as_ref().map(Vec::len), Some(2));
+        }
+    }
 }

@@ -1093,3 +1093,161 @@ async fn live_ws_view_tick_round_trips_and_enforces_bounded_lag_comp() {
 
     running.shut_down(Duration::ZERO).await.unwrap();
 }
+
+#[tokio::test]
+async fn live_ws_finished_match_delivers_identical_authoritative_scoreboard_matching_events() {
+    use arena_protocol::{WireAction, WireSpell};
+
+    let mut cfg = config(true);
+    cfg.limits.linger = 4;
+    // Test ticks run at 5 ms (200 Hz); raise the real-clock ingress cap proportionally.
+    cfg.messages_per_second = 500;
+    let running = start(cfg).await.unwrap();
+    let addr = running.addr;
+    let created = new_match(addr, 1).await;
+    let (mut a, _) = Client::join(addr, &created.tickets[0]).await;
+    let (mut b, _) = Client::join(addr, &created.tickets[1]).await;
+
+    // Both seats walk toward center until within Pulse range (6 m).
+    let mut snap_a = a.snapshot_until(|s| s.tick >= 1).await;
+    while (i64::from(snap_a.fighters[0].z) - i64::from(snap_a.fighters[1].z)).abs() > 5_000 {
+        a.input(forward()).await;
+        b.input(InputFrame {
+            movement: [0, 1000],
+            ..InputFrame::default()
+        })
+        .await;
+        let seq = a.seq;
+        snap_a = a.snapshot_until(|s| s.ack == seq).await;
+        assert_eq!(
+            snap_a.scoreboard, None,
+            "running snapshots have no scoreboard"
+        );
+    }
+
+    // Tally every Hit/Healed event observed by seat 0 on the wire from here to finish.
+    let mut observed_done = [0u32; 2];
+    let mut observed_taken = [0u32; 2];
+    let mut observed_heal_done = [0u32; 2];
+    let mut observed_heal_recv = [0u32; 2];
+
+    // Seat 0 hits seat 1 once (25 dmg), then seat 1 hits seat 0 once (25 dmg) and casts Mend
+    // on itself (restoring 25 effective HP, capping 5 overheal), then seat 0 finishes seat 1.
+    a.input(InputFrame {
+        action: InputFrame::pulse(1),
+        ..InputFrame::default()
+    })
+    .await;
+    b.input(InputFrame {
+        action: InputFrame::pulse(0),
+        ..InputFrame::default()
+    })
+    .await;
+    // Wait until both opening hits land and seat 1's GCD clears, then seat 1 casts Mend.
+    let mut mend_started = false;
+    let mut mend_healed = false;
+    let mut final_a = None;
+    let mut last_attack_seq = a.seq;
+    while final_a.is_none() {
+        let Some(msg) = a.next().await else {
+            panic!("seat 0 closed before match finished");
+        };
+        let ServerMessage::Snapshot(snap) = msg else {
+            continue;
+        };
+        for item in &snap.events {
+            match item.event {
+                WireEvent::Hit {
+                    actor,
+                    target,
+                    damage,
+                } => {
+                    observed_done[usize::from(actor)] += u32::from(damage);
+                    observed_taken[usize::from(target)] += u32::from(damage);
+                }
+                WireEvent::Healed {
+                    actor,
+                    target,
+                    amount,
+                } => {
+                    observed_heal_done[usize::from(actor)] += u32::from(amount);
+                    observed_heal_recv[usize::from(target)] += u32::from(amount);
+                }
+                _ => {}
+            }
+        }
+        if snap.result.is_some() {
+            final_a = Some(snap);
+            break;
+        }
+        assert_eq!(snap.scoreboard, None);
+        if !mend_started
+            && snap.fighters[0].health < 100
+            && snap.fighters[1].health < 100
+            && snap.fighters[1].gcd_remaining == 0
+        {
+            mend_started = true;
+            b.input(InputFrame {
+                action: WireAction::Cast {
+                    spell: WireSpell::Mend,
+                    target: Some(1),
+                },
+                ..InputFrame::default()
+            })
+            .await;
+            continue;
+        }
+        if mend_started && !mend_healed {
+            if observed_heal_done[1] > 0 {
+                mend_healed = true;
+            } else {
+                continue;
+            }
+        }
+        if mend_healed
+            && snap.ack >= last_attack_seq
+            && snap.fighters[0].cooldowns[0] == 0
+            && snap.fighters[0].gcd_remaining == 0
+        {
+            a.input(InputFrame {
+                action: InputFrame::pulse(1),
+                ..InputFrame::default()
+            })
+            .await;
+            last_attack_seq = a.seq;
+        }
+    }
+
+    let final_a = final_a.unwrap();
+    let final_b = b.snapshot_until(|s| s.result.is_some()).await;
+    assert_eq!(final_a.result, Some(WireResult::Won { team: 0 }));
+    assert_eq!(final_b.result, final_a.result);
+    assert_eq!(
+        final_a.scoreboard, final_b.scoreboard,
+        "both players receive identical authoritative scoreboards"
+    );
+    let board = final_a
+        .scoreboard
+        .as_ref()
+        .expect("final snapshot carries scoreboard");
+    assert_eq!(board.len(), 2);
+    assert_eq!(board[0].damage_done, 125);
+    assert_eq!(board[0].damage_taken, 25);
+    assert_eq!(board[0].killing_blows, 1);
+    assert_eq!(board[1].damage_done, 25);
+    assert_eq!(board[1].damage_taken, 125);
+    assert_eq!(board[1].healing_done, 25);
+    assert_eq!(board[1].healing_received, 25);
+    assert_eq!(board[1].killing_blows, 0);
+    for seat in 0..2 {
+        assert_eq!(board[seat].damage_done, observed_done[seat]);
+        assert_eq!(board[seat].damage_taken, observed_taken[seat]);
+        assert_eq!(board[seat].healing_done, observed_heal_done[seat]);
+        assert_eq!(board[seat].healing_received, observed_heal_recv[seat]);
+    }
+    // After the linger window, both connections close cleanly with MatchOver.
+    assert_eq!(a.error().await, ErrorCode::MatchOver);
+    assert_eq!(b.error().await, ErrorCode::MatchOver);
+
+    running.shut_down(Duration::ZERO).await.unwrap();
+}

@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use arena_headless::telemetry::{CombatMetrics, DurationSummary, OutcomeSummary};
-use arena_protocol::{Snapshot, WireEvent};
+use arena_protocol::{FighterScore, Snapshot, WireEvent};
 use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::RoundResult;
 use serde::{Deserialize, Serialize};
@@ -83,6 +83,8 @@ struct SharedState {
     public_combat: CombatMetrics,
     /// Finished match outcomes deduplicated per `match_id`: `(result, duration_ticks, tick_rate)`.
     finished_matches: HashMap<u64, (RoundResult, u64, u32)>,
+    /// Final authoritative scoreboards observed per `match_id`, cross-checked across seats.
+    scoreboards: HashMap<u64, Option<Vec<FighterScore>>>,
 }
 
 /// State hashes and deduplicated combat telemetry seen per match and tick,
@@ -189,6 +191,19 @@ impl Shared {
                 snapshot.tick,
                 tick_rate.max(1),
             ));
+            match state.scoreboards.get(&match_id) {
+                Some(seen) => {
+                    self.checks.fetch_add(1, Ordering::Relaxed);
+                    if seen != &snapshot.scoreboard {
+                        self.mismatches.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                None => {
+                    state
+                        .scoreboards
+                        .insert(match_id, snapshot.scoreboard.clone());
+                }
+            }
         }
     }
 
@@ -1028,6 +1043,7 @@ mod tests {
             hash: 0x1234,
             result: Some(WireResult::TimeLimitDraw),
             fighters: Vec::new(),
+            scoreboard: Some(vec![FighterScore::default(); 2]),
             events: vec![
                 TickEvent {
                     tick: 44,
@@ -1055,8 +1071,20 @@ mod tests {
         // Both seats observe the same tick and finish snapshot.
         shared.observe_snapshot(7, 30, &snap);
         shared.observe_snapshot(7, 30, &snap);
-        assert_eq!(shared.checks.load(Ordering::Relaxed), 1);
+        assert_eq!(shared.checks.load(Ordering::Relaxed), 2);
         assert_eq!(shared.mismatches.load(Ordering::Relaxed), 0);
+
+        // Divergent scoreboard between seats for the same finished match counts as a mismatch.
+        let mut divergent = snap.clone();
+        divergent.scoreboard = Some(vec![
+            FighterScore {
+                damage_done: 99,
+                ..FighterScore::default()
+            },
+            FighterScore::default(),
+        ]);
+        shared.observe_snapshot(7, 30, &divergent);
+        assert_eq!(shared.mismatches.load(Ordering::Relaxed), 1);
 
         let (outcomes, duration, combat) = shared.telemetry_summary();
         assert_eq!(outcomes.matches_finished, 1);
@@ -1080,6 +1108,7 @@ mod tests {
             hash: 0x5678,
             result: None,
             fighters: Vec::new(),
+            scoreboard: None,
             events: Vec::new(),
         };
         let regular_snap = Snapshot {
@@ -1089,6 +1118,7 @@ mod tests {
             hash: 0x5678,
             result: None,
             fighters: Vec::new(),
+            scoreboard: None,
             events: vec![TickEvent {
                 tick: 45,
                 event: WireEvent::Hit {
@@ -1101,7 +1131,7 @@ mod tests {
         shared.observe_snapshot(8, 30, &attach_snap);
         shared.observe_snapshot(8, 30, &regular_snap);
         shared.observe_snapshot(8, 30, &regular_snap);
-        assert_eq!(shared.mismatches.load(Ordering::Relaxed), 0);
+        assert_eq!(shared.mismatches.load(Ordering::Relaxed), 1);
         let (_, _, combat_after_attach) = shared.telemetry_summary();
         assert_eq!(combat_after_attach.hits, 2);
         assert_eq!(combat_after_attach.total_damage, 55);
@@ -1115,6 +1145,7 @@ mod tests {
                 hash: tick,
                 result: None,
                 fighters: Vec::new(),
+                scoreboard: None,
                 events: Vec::new(),
             };
             shared.observe_snapshot(9, 30, &s);
@@ -1126,6 +1157,7 @@ mod tests {
             hash: 1,
             result: None,
             fighters: Vec::new(),
+            scoreboard: None,
             events: vec![TickEvent {
                 tick: 0,
                 event: WireEvent::Hit {

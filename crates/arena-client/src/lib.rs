@@ -58,6 +58,8 @@ struct Practice {
     remote: Option<Vec<Vec3>>,
     /// In a network match: whether each local actor's player is attached.
     connected: Option<Vec<bool>>,
+    /// In a network match: authoritative per-seat end-of-match totals in local actor order.
+    scoreboard: Option<Vec<arena_protocol::FighterScore>>,
 }
 impl Default for Practice {
     fn default() -> Self {
@@ -91,6 +93,7 @@ impl Practice {
             combat_text: default(),
             remote: None,
             connected: None,
+            scoreboard: None,
         }
     }
 
@@ -907,6 +910,7 @@ fn network_receive(
         practice.previous = view.positions.clone();
         practice.remote = Some(view.positions);
         practice.connected = Some(view.connected);
+        practice.scoreboard = view.scoreboard;
         for shown in view.shown {
             match shown {
                 network::Shown::Hit {
@@ -1241,7 +1245,7 @@ fn publish(
     }
     let _ = write!(
         json,
-        r#","distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"roundResult":{},"maxRoundTicks":{},"tickRate":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":true}},"maxHealth":{},"maxResource":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}},"spells":{{"#,
+        r#","distance":{:.2},"range":{},"cooldown":{:.3},"attackStatus":"{}","feedback":"{}","won":{},"roundResult":{},"scoreboard":"#,
         distance,
         ATTACK_RANGE / 1000,
         cooldown,
@@ -1249,6 +1253,11 @@ fn publish(
         practice.feedback,
         practice.arena.result().is_some(),
         round_result_json(practice.arena.result()),
+    );
+    write_scoreboard_json(&mut json, practice.scoreboard.as_deref());
+    let _ = write!(
+        json,
+        r#","maxRoundTicks":{},"tickRate":{},"camera":{{"yaw":{},"pitch":{},"distance":{}}},"character":{{"status":"{}","meshes":{},"animated":true}},"maxHealth":{},"maxResource":{},"pulse":{{"damage":{},"range":{},"cooldown":{}}},"spells":{{"#,
         practice.arena.max_round_ticks(),
         TICKS_PER_SECOND,
         orbit.yaw,
@@ -1327,6 +1336,32 @@ fn round_result_json(result: Option<arena_sim::arena::RoundResult>) -> &'static 
         Some(arena_sim::arena::RoundResult::Draw) => "\"draw\"",
         Some(arena_sim::arena::RoundResult::TimeLimitDraw) => "\"time_limit_draw\"",
     }
+}
+
+fn write_scoreboard_json(json: &mut String, scoreboard: Option<&[arena_protocol::FighterScore]>) {
+    use std::fmt::Write;
+    let Some(scores) = scoreboard else {
+        json.push_str("null");
+        return;
+    };
+    json.push('[');
+    for (actor, score) in scores.iter().enumerate() {
+        if actor > 0 {
+            json.push(',');
+        }
+        let _ = write!(
+            json,
+            r#"{{"actor":{},"tag":"{}","damageDone":{},"damageTaken":{},"healingDone":{},"healingReceived":{},"killingBlows":{}}}"#,
+            actor,
+            unit_tag_str(actor),
+            score.damage_done,
+            score.damage_taken,
+            score.healing_done,
+            score.healing_received,
+            score.killing_blows,
+        );
+    }
+    json.push(']');
 }
 
 fn spell_key_str(spell: SpellId) -> &'static str {
@@ -1885,8 +1920,44 @@ mod tests {
         let practice = app.world().resource::<Practice>();
         assert!(app.world().resource::<Net>().session.is_none());
         assert_eq!(
-            (practice.arena.tick(), practice.remote.is_none()),
-            (0, true)
+            (
+                practice.arena.tick(),
+                practice.remote.is_none(),
+                practice.scoreboard.is_none()
+            ),
+            (0, true, true)
+        );
+    }
+
+    #[test]
+    fn scoreboard_json_serializes_null_and_local_actor_entries() {
+        use arena_protocol::FighterScore;
+
+        let mut none_json = String::new();
+        write_scoreboard_json(&mut none_json, None);
+        assert_eq!(none_json, "null");
+
+        let scores = [
+            FighterScore {
+                damage_done: 140,
+                damage_taken: 50,
+                healing_done: 30,
+                healing_received: 30,
+                killing_blows: 1,
+            },
+            FighterScore {
+                damage_done: 50,
+                damage_taken: 140,
+                healing_done: 0,
+                healing_received: 0,
+                killing_blows: 0,
+            },
+        ];
+        let mut json = String::new();
+        write_scoreboard_json(&mut json, Some(&scores));
+        assert_eq!(
+            json,
+            r#"[{"actor":0,"tag":"Player","damageDone":140,"damageTaken":50,"healingDone":30,"healingReceived":30,"killingBlows":1},{"actor":1,"tag":"Opponent1","damageDone":50,"damageTaken":140,"healingDone":0,"healingReceived":0,"killingBlows":0}]"#
         );
     }
 

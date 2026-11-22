@@ -24,7 +24,8 @@ use serde::{Deserialize, Serialize};
 /// 3: `InputFrame.action` (`WireAction`), casting/resource fields on `FighterState`,
 ///    and cast/interrupt/heal events & rejections.
 /// 4: `InputFrame.view_tick` for bounded server-side targeting lag compensation (ADR 0049).
-pub const PROTOCOL_VERSION: u16 = 4;
+/// 5: `FighterScore` and `Snapshot.scoreboard` for server-authoritative end-of-match totals.
+pub const PROTOCOL_VERSION: u16 = 5;
 /// Bumped whenever a rules change could alter a replayed outcome.
 /// 2: rounds end in a draw after twenty minutes (`MAX_ROUND_TICKS`).
 /// 3: time-limit draws are distinct from mutual-elimination draws and round limits are explicit.
@@ -179,6 +180,17 @@ pub struct Welcome {
     pub map: u64,
 }
 
+/// Authoritative per-seat combat totals delivered in a finished match's final
+/// [`Snapshot`] (in server actor order). Not part of `Arena::state_hash()`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FighterScore {
+    pub damage_done: u32,
+    pub damage_taken: u32,
+    pub healing_done: u32,
+    pub healing_received: u32,
+    pub killing_blows: u16,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     /// The tick this state follows (`Arena::tick()` after advancing).
@@ -194,6 +206,10 @@ pub struct Snapshot {
     /// Every fighter in actor order, with enough state to rebuild the
     /// arena for prediction and to check `hash`.
     pub fighters: Vec<FighterState>,
+    /// Authoritative end-of-match per-seat totals in server actor order.
+    /// Always `None` while the match is running; populated on the final
+    /// snapshot (`result.is_some()`). Not part of `hash`.
+    pub scoreboard: Option<Vec<FighterScore>>,
     pub events: Vec<TickEvent>,
 }
 
@@ -217,8 +233,15 @@ impl Snapshot {
                     FighterState::new(fighter, connected.get(index).copied().unwrap_or(false))
                 })
                 .collect(),
+            scoreboard: None,
             events,
         }
+    }
+
+    /// Attaches authoritative per-seat end-of-match totals to this snapshot.
+    pub fn with_scoreboard(mut self, scoreboard: Vec<FighterScore>) -> Self {
+        self.scoreboard = Some(scoreboard);
+        self
     }
 }
 
@@ -621,6 +644,11 @@ fn valid_snapshot(snapshot: &Snapshot) -> bool {
     {
         return false;
     }
+    if let Some(scores) = &snapshot.scoreboard
+        && (snapshot.result.is_none() || scores.len() != count)
+    {
+        return false;
+    }
     for fighter in &snapshot.fighters {
         if !fighter.combatant().is_valid(count) {
             return false;
@@ -698,13 +726,13 @@ pub fn peek_hello_protocol(frame: &[u8]) -> Option<u16> {
 }
 
 /// Pre-encoded common fields of one tick's [`Snapshot`] (`hash`, `result`,
-/// `fighters`, and optionally shared `events`) so a server encodes them once
-/// per tick instead of once per connected seat.
+/// `fighters`, `scoreboard`, and optionally shared `events`) so a server
+/// encodes them once per tick instead of once per connected seat.
 #[derive(Clone, Debug)]
 pub struct EncodedSnapshotBody {
     tick: u64,
-    /// Postcard bytes for `(hash, result, fighters)` or
-    /// `(hash, result, fighters, events)` when `includes_events` is true.
+    /// Postcard bytes for `(hash, result, fighters, scoreboard)` or
+    /// `(hash, result, fighters, scoreboard, events)` when `includes_events` is true.
     tail: Vec<u8>,
     includes_events: bool,
 }
@@ -718,12 +746,15 @@ impl EncodedSnapshotBody {
         hash: u64,
         result: Option<WireResult>,
         fighters: &[FighterState],
+        scoreboard: Option<&[FighterScore]>,
         shared_events: Option<&[TickEvent]>,
     ) -> Self {
         let mut tail = Vec::with_capacity(
-            16 + fighters.len() * 32 + shared_events.map_or(0, |e| e.len() * 10 + 1),
+            18 + fighters.len() * 32
+                + scoreboard.map_or(0, |s| s.len() * 12 + 2)
+                + shared_events.map_or(0, |e| e.len() * 10 + 1),
         );
-        tail = postcard::to_extend(&(hash, result, fighters), tail)
+        tail = postcard::to_extend(&(hash, result, fighters, scoreboard), tail)
             .expect("snapshot body always encodes");
         let includes_events = if let Some(events) = shared_events {
             tail = postcard::to_extend(events, tail).expect("snapshot events always encode");

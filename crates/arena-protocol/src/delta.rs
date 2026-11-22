@@ -10,8 +10,8 @@ use arena_sim::spells::SpellId;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    DecodeError, FighterState, MAX_EVENTS, MAX_FIGHTERS, MAX_SERVER_FRAME, Snapshot, TickEvent,
-    WireCast, WireResult, valid_snapshot,
+    DecodeError, FighterScore, FighterState, MAX_EVENTS, MAX_FIGHTERS, MAX_SERVER_FRAME, Snapshot,
+    TickEvent, WireCast, WireResult, valid_snapshot,
 };
 
 /// Bitmask flags for [`FighterDelta`]. Most frequently changing fields occupy
@@ -105,6 +105,7 @@ pub struct SnapshotDelta {
     pub queued: u8,
     pub hash: u64,
     pub result_changed: Option<Option<WireResult>>,
+    pub scoreboard_changed: Option<Option<Vec<FighterScore>>>,
     pub fighters: Vec<FighterDelta>,
     pub events: Vec<TickEvent>,
 }
@@ -171,6 +172,8 @@ impl SnapshotDelta {
         let tick_delta = curr.tick - prev.tick;
         let ack_delta = curr.ack.wrapping_sub(prev.ack);
         let result_changed = (curr.result != prev.result).then_some(curr.result);
+        let scoreboard_changed =
+            (curr.scoreboard != prev.scoreboard).then(|| curr.scoreboard.clone());
 
         let mut counts = FieldChangeCounts::default();
         let mut fighters = Vec::with_capacity(curr.fighters.len());
@@ -283,6 +286,7 @@ impl SnapshotDelta {
                 queued: curr.queued,
                 hash: curr.hash,
                 result_changed,
+                scoreboard_changed,
                 fighters,
                 events: curr.events.clone(),
             },
@@ -302,6 +306,7 @@ impl SnapshotDelta {
                 self.queued,
                 self.hash,
                 self.result_changed,
+                &self.scoreboard_changed,
                 self.fighters.len() as u8,
             ),
             out,
@@ -364,6 +369,7 @@ impl SnapshotDelta {
             self.queued,
             self.hash,
             self.result_changed,
+            &self.scoreboard_changed,
             self.fighters.len() as u8,
         ));
         let hash_bytes = postcard_len(&self.hash);
@@ -429,11 +435,29 @@ impl SnapshotDelta {
         if frame.len() > MAX_SERVER_FRAME {
             return Err(DecodeError::Oversized);
         }
-        let ((variant, tick_delta, ack_delta, queued, hash, result_changed, count), mut rest) =
-            postcard::take_from_bytes::<(u32, u64, u32, u8, u64, Option<Option<WireResult>>, u8)>(
-                frame,
-            )
-            .map_err(|_| DecodeError::Malformed)?;
+        let (
+            (
+                variant,
+                tick_delta,
+                ack_delta,
+                queued,
+                hash,
+                result_changed,
+                scoreboard_changed,
+                count,
+            ),
+            mut rest,
+        ) = postcard::take_from_bytes::<(
+            u32,
+            u64,
+            u32,
+            u8,
+            u64,
+            Option<Option<WireResult>>,
+            Option<Option<Vec<FighterScore>>>,
+            u8,
+        )>(frame)
+        .map_err(|_| DecodeError::Malformed)?;
         if variant != 1 {
             return Err(DecodeError::Malformed);
         }
@@ -447,6 +471,7 @@ impl SnapshotDelta {
             .ok_or(DecodeError::OverLimit)?;
         let ack = prev.ack.wrapping_add(ack_delta);
         let result = result_changed.unwrap_or(prev.result);
+        let scoreboard = scoreboard_changed.unwrap_or_else(|| prev.scoreboard.clone());
 
         let mut fighters = Vec::with_capacity(count);
         for base in &prev.fighters {
@@ -573,6 +598,7 @@ impl SnapshotDelta {
             hash,
             result,
             fighters,
+            scoreboard,
             events,
         };
         if !valid_snapshot(&snapshot) {
@@ -870,5 +896,38 @@ mod tests {
             SnapshotDelta::apply(&s1, &invalid_hp.encode()),
             Err(DecodeError::OverLimit)
         );
+    }
+
+    #[test]
+    fn delta_round_trips_finished_snapshot_with_scoreboard() {
+        let layout = arena_map::colosseum().layout;
+        let arena = Arena::practice(layout, 1).unwrap();
+        let prev = Snapshot::capture(&arena, 1, Vec::new(), &[true, true]);
+        let mut finished = prev.clone();
+        finished.tick = 42;
+        finished.ack = 40;
+        finished.result = Some(WireResult::Won { team: 0 });
+        finished.fighters[1].health = 0;
+        finished.scoreboard = Some(vec![
+            FighterScore {
+                damage_done: 100,
+                damage_taken: 25,
+                healing_done: 30,
+                healing_received: 30,
+                killing_blows: 1,
+            },
+            FighterScore {
+                damage_done: 25,
+                damage_taken: 100,
+                healing_done: 0,
+                healing_received: 0,
+                killing_blows: 0,
+            },
+        ]);
+
+        let (delta, _) = SnapshotDelta::from_pair(&prev, &finished).unwrap();
+        let bytes = delta.encode();
+        assert_eq!(delta.encoded_size().total_bytes, bytes.len());
+        assert_eq!(SnapshotDelta::apply(&prev, &bytes), Ok(finished));
     }
 }
