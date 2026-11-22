@@ -20,7 +20,9 @@ Source roadmap and full issue definitions remain in [ROADMAP.md](ROADMAP.md) and
 
 Ordered from [ROADMAP.md](ROADMAP.md) and automated critic opportunities:
 
-*(Empty — run a Critic Audit pass or slice the next Lane A item from [ROADMAP.md](ROADMAP.md).)*
+- [ ] **Observability Phase 1 — Structured logging, tick histograms, `arena-door` `/metrics` & local Grafana LGTM** ([observability-telemetry](issues/observability-telemetry.md)) — replace `eprintln!` in `arena-server` and `arena-door` with `tracing` (`pretty` locally, `json` in Docker with `match_id`/`seat`/`conn_id` and no secret/ticket leakage), add lock-free fixed-bucket `arena_tick_duration_microseconds` histogram to `crates/arena-server/src/metrics.rs`, expose `/metrics` on `arena-door`, and add an opt-in `obs` Compose profile in `deploy/compose.yaml` running `grafana/otel-lgtm` bound to `127.0.0.1` with provisioned dashboards (keep `arena-sim` dependency-free).
+- [ ] **Observability Phase 2 — OpenTelemetry OTLP tracing, log/metric shipping & alerts** ([observability-telemetry](issues/observability-telemetry.md)) — wire opt-in `tracing-opentelemetry` + `opentelemetry-otlp` (`OTEL_EXPORTER_OTLP_ENDPOINT`) + `tower-http` across `arena-door` and `arena-server` control-plane flows and anomaly events (never per-tick/per-input), inject `trace_id`/`span_id` into JSON logs, add Grafana Alloy / OTel Collector config + provisioned alert rules, and document self-hosted production topology in `docs/DEPLOYMENT.md`.
+- [ ] **Observability Phase 3 — Scrubbed browser telemetry (RUM) & continuous profiling** ([observability-telemetry](issues/observability-telemetry.md)) — add scrubbed browser error, WASM panic, WebGL context-loss, startup warmup, and once-per-match network/perf summary reporting (with unit tests enforcing URL hash/ticket stripping) plus opt-in Pyroscope CPU profiling for `arena-server`.
 
 ## Lane B — Human-Reviewed Queue (Visual / UI / Feel)
 

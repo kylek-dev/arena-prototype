@@ -30,6 +30,7 @@ In recommended order (2026-11-15):
 | done | Host private custom matches with invites, teams, versioned settings, spectator slots and rematch (browser review pending) | 4 | [custom-matches](issues/custom-matches.md) |
 | done | Make cast times, cooldowns, resources and interrupts server-authoritative ([ADR 0048](../docs/decisions/0048-server-authoritative-casting-and-resources.md)) | 3 | [server-casting-resources](issues/server-casting-resources.md) |
 | done | Spectate matches live (optional configurable delay), free/follow camera and watch-only HUD ([ADR 0050](../docs/decisions/0050-spectating-and-anti-ghosting-delay.md); browser review follow-up pending) | 4 | [spectating](issues/spectating.md) |
+| 2 | Production-grade observability: OpenTelemetry logs, metrics, tracing & self-hosted Grafana LGTM stack (local and prod) | 2 / 5 | [observability-telemetry](issues/observability-telemetry.md) |
 | ongoing | Review the network match experience across browsers (manual, by the user) | 2 | [network-ui-review](issues/network-ui-review.md) |
 | ongoing | Measure and harden netcode on real networks | ongoing | [netcode-hardening](issues/netcode-hardening.md) |
 
@@ -39,4 +40,5 @@ Why this order:
 - **The round clock right after.** It is small, and players who meet through a queue should see the time limit coming.
 - **Custom matches after parties.** They can reuse the party invites and lobby state.
 - **Server-authoritative casting before spectating.** Spectator views then show cast bars and resources from the start instead of adding them twice.
+- **Observability (OpenTelemetry + self-hosted Grafana LGTM).** Can be pulled forward alongside remote playtests: Phase 1 (structured `tracing` logs, lock-free tick histograms, `arena-door` `/metrics`, and an opt-in local `grafana/otel-lgtm` Compose profile) immediately helps diagnose real WAN playtests, while Phase 2 (OTLP distributed tracing, Alloy log/metric shipping, alerts) and Phase 3 (scrubbed browser RUM + Pyroscope profiling) harden production operations with $0 software cost.
 - **Note on stages.** This pulls part of Stage 4 (lobby and queueing) ahead of the Stage 3 combat slice because remote playtests need it. The stages still describe the exit evidence for each milestone.
