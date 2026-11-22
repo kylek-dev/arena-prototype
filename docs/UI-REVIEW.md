@@ -136,7 +136,7 @@ Automated checks passed locally (`./scripts/check.sh`, `cargo run -p arena-headl
 
 ### 2026-11-22 — Playtest follow-up tweaks (`auto/spectating`) — pending human re-check
 
-User tested all 4 stacked Lane B features locally in a browser ("all worked") and requested two tweaks, applied on `auto/spectating`:
+User tested all 4 stacked Lane B features locally in a browser ("all worked") and requested two tweaks:
 
-- **Scoreboard modal width (`web/src/features/scoreboard/scoreboard.css`):** Widened `.scoreboard` from `min(760px, calc(100vw - 32px))` to `min(940px, calc(100vw - 32px))` and raised the compact column-header breakpoint from `720px` to `880px` so all 6 columns display without a horizontal scrollbar on desktop or narrow viewports.
+- **Scoreboard horizontal scrollbar:** Fixed on `auto/scoreboard-ui` (PR #75) and merged up the stack: the modal is widened to `940px` and stat headers wrap instead of forcing a horizontal scrollbar; see the scoreboard entry above.
 - **Real-time default spectating (`crates/arena-server/src/session.rs`, `web/src/features/spectator/SpectatorHud.tsx`, `web/src/features/custom-lobby/CustomLobby.tsx`):** Set `DEFAULT_SPECTATOR_DELAY = 0` (live/real-time by default, keeping `--spectator-delay-seconds 0..=60` optional), delivered immediate live snapshots on mid-match spectator joins when delay is `0`, and removed `"5s delay"` labels from the spectator toolbar and custom lobby selector.
