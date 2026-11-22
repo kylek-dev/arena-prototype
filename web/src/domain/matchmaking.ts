@@ -260,6 +260,24 @@ export function noticeText(code: string | null) {
   return code ? (NOTICES[code] ?? null) : null;
 }
 
+/** Why the party left the queue: worth telling wherever the player is. */
+export const LEFT_QUEUE_NOTICES: ReadonlySet<string> = new Set([
+  "member_left",
+  "declined",
+  "not_accepted",
+  "member_declined",
+  "member_not_accepted",
+]);
+
+/** Whether the floating queue status bar occupies the top-center slot. */
+export function isQueueBarVisible(state: QueueState): boolean {
+  return (
+    state.connection === "ended" ||
+    (state.phase === "queued" && !!state.mode) ||
+    (state.phase === "idle" && !!state.notice && LEFT_QUEUE_NOTICES.has(state.notice))
+  );
+}
+
 /** What the queue bar shows while searching, or `null` when not. */
 export function queueStatus(state: QueueState, now: number) {
   if (state.phase !== "queued" || !state.mode) return null;

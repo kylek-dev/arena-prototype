@@ -1,5 +1,12 @@
 import { Button } from "@radix-ui/themes";
-import { IDLE_QUEUE, endedText, noticeText, queueStatus } from "../../domain/matchmaking";
+import {
+  IDLE_QUEUE,
+  LEFT_QUEUE_NOTICES,
+  endedText,
+  isQueueBarVisible,
+  noticeText,
+  queueStatus,
+} from "../../domain/matchmaking";
 import type { Queue } from "../../runtime/matchmaking";
 import { matchQueue } from "../../state/network";
 import { createStore, useStore } from "../../state/store";
@@ -7,14 +14,6 @@ import { useClock } from "./useClock";
 import "./queue.css";
 
 const NO_QUEUE = createStore(IDLE_QUEUE);
-/** Why the party left the queue: worth telling wherever the player is. */
-const LEFT_QUEUE = new Set([
-  "member_left",
-  "declined",
-  "not_accepted",
-  "member_declined",
-  "member_not_accepted",
-]);
 
 function Bar({ queue }: { queue: Queue }) {
   const state = useStore(queue.state, (s) => s);
@@ -53,7 +52,7 @@ function Bar({ queue }: { queue: Queue }) {
         </Button>
       </div>
     );
-  if (state.phase === "idle" && state.notice && LEFT_QUEUE.has(state.notice))
+  if (state.phase === "idle" && state.notice && LEFT_QUEUE_NOTICES.has(state.notice))
     return (
       <div className="queue-bar warning" role="status">
         <span className="queue-bar-text">{noticeText(state.notice)}</span>
@@ -70,8 +69,6 @@ function Bar({ queue }: { queue: Queue }) {
  * screen and in the arena alike. */
 export function QueueBar() {
   const queue = useStore(matchQueue, (q) => q);
-  const visible = useStore(queue?.state ?? NO_QUEUE, (s) =>
-    s.connection === "ended" ? 1 : s.phase === "queued" ? 2 : s.notice ? 3 : 0,
-  );
+  const visible = useStore(queue?.state ?? NO_QUEUE, isQueueBarVisible);
   return queue && visible ? <Bar queue={queue} /> : null;
 }

@@ -76,3 +76,13 @@ This closes all outstanding human UI/rendered-interaction review gates recorded 
 **Evidence:** the user's confirmation in this conversation (following local 1v1 and 2v2 browser playtests), not an agent-run browser session. This dated approval supersedes earlier pending human UI-review statements in `docs/UI-REVIEW.md`, `docs/BROWSER.md`, `docs/ARCHITECTURE.md`, and ADRs 0022–0048; earlier pending entries remain as historical record.
 
 Browser/version, device/OS/GPU, viewport, individual scenario logs, and console results were not supplied. Do not invent them or treat this as a measured performance benchmark, exhaustive cross-browser/accessibility certification, hosted CI result, binary-asset license approval, or authorization to publish/merge. Future UI changes still require their own human review.
+
+## Subsequent changes (after 2026-11-21)
+
+2026-11-22: **pending human review.** Round clock HUD timer & time-limit result banner ([round-clock](../planning/issues/round-clock.md)):
+
+- **Round clock timer (`features/round-clock`):** Centered top HUD `MM:SS` countdown derived strictly from authoritative `Snapshot.{tick,maxRoundTicks,tickRate}` with final-minute warning highlight (`<= 01:00` while active) and expired styling (`00:00` / `time_limit_draw`), hidden during exclusive modes (`menu`, `settings`, `layout`, `quick`, `capture`, `customizer`, `StartScreen`, and fatal engine `error`) while remaining visible alongside the non-modal Spellbook.
+- **Round outcome banner & `MatchOver` continuity:** Centered outcome banner displaying `"Time's up · draw"`, `"Victory"`, `"Defeat"`, or `"Draw"` (with a **Reset practice** button in local practice and `"match closing shortly"` during networked finish linger), yielding immediately to `MatchStatus` on `MatchOver` while `MatchStatus` preserves the final round outcome (`"Time's up · draw · The match is over."`) until dismissed or joining a new match.
+- **Top-center HUD stacking:** 3-tier vertical spacing across `RoundClock`, `CombatErrors`, and `MatchStatus` / `.round-result` with coordinated `below-queue` offsets when `QueueBar` is visible; review layout and legibility at 800×600 and 1920×1080 in a real browser.
+
+Automated checks passed locally (`./scripts/check.sh`, `cargo run -p arena-headless --locked`, `npm run build`, `cargo clippy -p arena-client --target wasm32-unknown-unknown --locked -- -D warnings`, and `./scripts/build-web.sh`); no browser was launched and no rendered, visual, or networked pass is claimed.

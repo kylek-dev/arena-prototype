@@ -14,6 +14,7 @@ import { BindingConflict } from "../features/keybindings/BindingsEditor";
 import { LayoutToolbar } from "../features/layout-editor/LayoutSettings";
 import { CombatErrors } from "../features/combat-errors/CombatErrors";
 import { MatchStatus } from "../features/match-status/MatchStatus";
+import { RoundClock } from "../features/round-clock/RoundClock";
 import { MatchReady } from "../features/queue/MatchReady";
 import { QueueBar } from "../features/queue/QueueBar";
 import { Loading } from "../features/loading/Loading";
@@ -72,6 +73,7 @@ export function App() {
             <ActionBars />
             <SpellDragPreview />
             <CombatErrors />
+            <RoundClock />
             <MatchStatus />
             <QuickBinding />
             <LayoutToolbar />

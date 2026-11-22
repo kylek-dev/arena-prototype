@@ -1,5 +1,7 @@
 // Network match identity and connection policy (ADR 0044, Phase 5).
 // Pure functions only: the socket lives in runtime/network.ts.
+import type { RoundResult } from "../bridge/snapshot";
+import { roundResultLabel } from "./round-clock";
 
 /** A seat in one match: where to connect and the bearer ticket for it. */
 export type MatchTicket = {
@@ -74,6 +76,7 @@ export function matchMessage(
   state: LinkState,
   rememberedMatch: boolean,
   attendance: Attendance | null = null,
+  lastResult: RoundResult | null = null,
 ): MatchMessage | null {
   switch (state.phase) {
     case "idle":
@@ -92,15 +95,19 @@ export function matchMessage(
         tone: "warning",
         action: null,
       };
-    case "ended":
+    case "ended": {
+      const outcome = state.ended === "MatchOver" ? roundResultLabel(lastResult) : null;
       return {
-        text: ENDED[state.ended ?? ""] ?? "You left the match.",
-        tone: "info",
+        text: outcome
+          ? `${outcome} · ${ENDED.MatchOver}`
+          : (ENDED[state.ended ?? ""] ?? "You left the match."),
+        tone: state.ended === "MatchOver" && lastResult === "time_limit_draw" ? "warning" : "info",
         action:
           state.ended === "Replaced" && rememberedMatch
             ? { kind: "rejoin", label: "Play here" }
             : { kind: "dismiss", label: "Dismiss" },
       };
+    }
     case "open":
       if (!state.status || state.status.phase === "connecting")
         return { text: "Joining the match…", tone: "info", action: null };

@@ -1,5 +1,20 @@
 // Authoritative round-clock formatting and result labels (no wall clock or DOM).
-import type { RoundResult } from "../bridge/snapshot";
+import type { RoundResult, Snapshot } from "../bridge/snapshot";
+
+export type RoundClockView = {
+  text: string;
+  seconds: number;
+  warning: boolean;
+  expired: boolean;
+};
+
+export type RoundResultTone = "victory" | "defeat" | "draw" | "time-limit";
+
+export type RoundResultBanner = {
+  label: string;
+  detail: string;
+  tone: RoundResultTone;
+};
 
 /** Remaining whole seconds from the authoritative tick and round limit.
  * Rounds up so 20:00 displays at tick 0, 00:01 holds through the last second,
@@ -49,4 +64,74 @@ export function roundResultLabel(result: RoundResult | null | undefined): string
     default:
       return null;
   }
+}
+
+/** Remaining whole seconds from an engine snapshot, or `null` when clock metadata is absent. */
+export function snapshotRemainingSeconds(
+  snapshot: Pick<Snapshot, "tick" | "maxRoundTicks" | "tickRate"> | null,
+): number | null {
+  if (
+    !snapshot ||
+    snapshot.maxRoundTicks === undefined ||
+    snapshot.tickRate === undefined ||
+    !Number.isFinite(snapshot.maxRoundTicks) ||
+    !Number.isFinite(snapshot.tickRate) ||
+    snapshot.maxRoundTicks <= 0 ||
+    snapshot.tickRate <= 0
+  ) {
+    return null;
+  }
+  return remainingRoundSeconds(snapshot.tick, snapshot.maxRoundTicks, snapshot.tickRate);
+}
+
+/** Derives HUD clock presentation from pre-computed remaining seconds and round outcome. */
+export function roundClockFromSeconds(
+  seconds: number,
+  won: boolean,
+  roundResult: RoundResult | null | undefined,
+): RoundClockView {
+  const clamped = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
+  const expired = roundResult === "time_limit_draw" || (!won && clamped <= 0);
+  return {
+    text: formatRoundClock(clamped),
+    seconds: clamped,
+    warning: !won && !expired && isRoundClockWarning(clamped),
+    expired,
+  };
+}
+
+/** Derives the HUD round clock presentation from authoritative snapshot fields.
+ * Returns `null` when snapshot metadata is absent (older client builds). */
+export function roundClockView(
+  snapshot: Pick<Snapshot, "tick" | "maxRoundTicks" | "tickRate" | "won" | "roundResult"> | null,
+): RoundClockView | null {
+  const seconds = snapshotRemainingSeconds(snapshot);
+  if (seconds === null || !snapshot) return null;
+  return roundClockFromSeconds(seconds, snapshot.won, snapshot.roundResult);
+}
+
+/** Derives the HUD round-result banner content and visual tone from an authoritative outcome. */
+export function roundResultBanner(
+  result: RoundResult | null | undefined,
+  networked: boolean,
+): RoundResultBanner | null {
+  const label = roundResultLabel(result);
+  if (!label || !result) return null;
+  const tone: RoundResultTone =
+    result === "won"
+      ? "victory"
+      : result === "lost"
+        ? "defeat"
+        : result === "time_limit_draw"
+          ? "time-limit"
+          : "draw";
+  const detail =
+    result === "time_limit_draw"
+      ? networked
+        ? "Round time limit reached · match closing shortly"
+        : "Round time limit reached"
+      : networked
+        ? "Match closing shortly"
+        : "Round complete";
+  return { label, detail, tone };
 }

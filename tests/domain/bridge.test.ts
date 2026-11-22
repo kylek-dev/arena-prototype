@@ -57,6 +57,16 @@ describe("engine snapshot boundary", () => {
     expect(timedOut.roundResult).toBe("time_limit_draw");
     expect(needsImmediateDelivery(running, timedOut)).toBe(true);
     expect(needsImmediateDelivery(running, { ...running, maxRoundTicks: 900 })).toBe(true);
+    expect(needsImmediateDelivery(running, { ...running, tickRate: 60 })).toBe(true);
+    // Whole-second countdown transitions bypass HUD throttling; sub-second ticks stay throttled.
+    expect(needsImmediateDelivery({ ...running, tick: 29 }, { ...running, tick: 30 })).toBe(true);
+    expect(needsImmediateDelivery({ ...running, tick: 30 }, { ...running, tick: 31 })).toBe(false);
+    expect(needsImmediateDelivery({ ...running, tick: 35_999 }, { ...running, tick: 36_000 })).toBe(
+      true,
+    );
+    // Older snapshots omitting round-clock metadata stay throttled across tick boundaries.
+    const legacy = adaptSnapshot({ ...snapshot({ tick: 29 }), maxHealth: 100 });
+    expect(needsImmediateDelivery(legacy, { ...legacy, tick: 30 })).toBe(false);
     for (const invalid of [
       { ...snapshot(), maxHealth: 100, maxRoundTicks: 0 },
       { ...snapshot(), maxHealth: 100, maxRoundTicks: 1.5 },
