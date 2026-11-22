@@ -1,0 +1,18 @@
+Let players talk to each other and run commands from a chat box.
+
+Acceptance criteria:
+
+- **Channels:**
+  - Team chat (your team in a match, or your party/lobby), match-wide chat, and a public channel.
+  - Spectators can only post to a spectator channel. Players never see it, so spectators can't feed information to players (ghosting).
+  - Whispers to friends once `social-identity` friends land.
+- **Server rules:**
+  - Messages go through the server (front door or social service, not `arena-sim`). The server sets the sender's name and channel; the client only sends text and the channel it wants.
+  - Length cap, per-connection rate limit, basic blocked-word filter, and mute/ignore per player. Tests for floods, oversized text and spoofed senders.
+- **System messages:** a separate, styled channel for system events, such as a player joining or leaving, disconnecting or reconnecting, match found, round start and result, being kicked, made host, or a friend coming online. Only the server or client can send them; players can't fake one.
+- **Chat UI:** a movable chat box that works with the layout editor. Enter opens it. While typing, keys go to the chat box, not to combat. Unread markers for each channel.
+- **Commands:**
+  - Slash commands handled by a client-side registry. `/help` lists every command with a short description, built from the same registry so it can't fall out of date.
+  - Every existing panel can be opened by command (for example `/spellbook`, `/keybinds`, `/settings`, `/customize`, `/layout`, `/queue`, `/lobby`, `/scoreboard`, `/diagnostics`).
+  - Admin-only commands (such as `/mapeditor`) are listed only for admins and also checked on the server.
+  - Unit tests for parsing, unknown commands and the help output.

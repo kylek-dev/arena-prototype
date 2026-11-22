@@ -14,7 +14,28 @@ Source roadmap and full issue definitions remain in [ROADMAP.md](ROADMAP.md) and
 - [ ] (Lane A) Reconnecting twice within 5s leaves opponent nameplate stuck greyed out.
 -->
 
-*(Empty — drop notes here anytime you playtest.)*
+- [ ] **(Lane A) Spend the resource when a cast finishes, not when it starts.** Right now `CastingState::try_cast` (`crates/arena-sim/src/casting.rs`) takes the cost at cast start and never refunds it, as recorded in [ADR 0048](../docs/decisions/0048-server-authoritative-casting-and-resources.md).
+  - Change: check the cost at start, check it again and charge it at completion. An interrupt, cancel, movement or failed range/line-of-sight check spends nothing. Instant spells are unchanged.
+  - Amend ADR 0048, bump `RULES_VERSION`, update the sim/server/bot tests and the client's local-parity code.
+  - Also check whether health costs should follow the same rule.
+- [ ] **(Lane A, investigate first) Resource regeneration stops while the tab is hidden.** Seen in practice mode only; online wasn't tested.
+  - Likely cause: the practice sim advances on browser animation frames, and browsers pause those in hidden tabs. The online server keeps its own clock.
+  - Confirm online keeps regenerating. Then decide whether practice should catch up on missed ticks (capped) or stay paused on purpose, and record the choice.
+- [ ] **(Lane B) Make cast bars smooth.** Bars jump, even the player's own. `UnitFrame.tsx` sets the fill width from snapshot progress that arrives in throttled HUD updates.
+  - Fix: animate each frame from the cast's start tick and duration (rAF or a CSS transition keyed to the cast), and snap only on cast start, end or interrupt.
+  - Apply the same fix to target, focus, nameplate and spectator cast bars.
+- [ ] **(Lane B) Add a "Stop casting" keybind, and make Esc stop casting.** `ArenaCommand::CancelCast` / `WireAction::CancelCast` already exist end to end.
+  - Add a rebindable "Stop casting" action to the keybindings panel.
+  - Esc order: stop the current cast first; if not casting, keep Esc's current behaviour (close the top panel, then open the menu).
+  - Unit-test the Esc order in `tests/unit`.
+- [ ] **(Lane B) Make the player's cast bar its own movable frame.** Default position: centre of the screen, just above the action bars.
+  - Movable and resizable in the layout editor.
+  - A setting (off by default) attaches it to the player frame instead.
+  - Target, focus and nameplate cast bars stay where they are.
+- [ ] **(Lane B) Fix overlapping buttons and buttons that don't look clickable.** First case: the custom lobby slot actions **Spectate**, **Make host** and **Remove** overlap and look like plain text (`web/src/features/custom-lobby/`).
+  - Give them one shared button style (border or fill, hover/focus/pressed states, minimum hit size), wrap or collapse them into a per-slot menu at narrow widths, and make sure nothing overlaps at 1280×720 and at phone width.
+  - Then check the other panels (play online, party, scoreboard, settings, keybindings, customizer, map editor, spectator HUD) for the same problems and fix them in the same PR where they're small.
+  - Add a pending entry to `docs/UI-REVIEW.md`.
 
 ## Lane A — Autonomous Queue (Machine-Verified)
 
@@ -23,12 +44,18 @@ Ordered from [ROADMAP.md](ROADMAP.md) and automated critic opportunities:
 - [ ] **Observability Phase 1 — Structured logging, tick histograms, `arena-door` `/metrics` & local Grafana LGTM** ([observability-telemetry](issues/observability-telemetry.md)) — replace `eprintln!` in `arena-server` and `arena-door` with `tracing` (`pretty` locally, `json` in Docker with `match_id`/`seat`/`conn_id` and no secret/ticket leakage), add lock-free fixed-bucket `arena_tick_duration_microseconds` histogram to `crates/arena-server/src/metrics.rs`, expose `/metrics` on `arena-door`, and add an opt-in `obs` Compose profile in `deploy/compose.yaml` running `grafana/otel-lgtm` bound to `127.0.0.1` with provisioned dashboards (keep `arena-sim` dependency-free).
 - [ ] **Observability Phase 2 — OpenTelemetry OTLP tracing, log/metric shipping & alerts** ([observability-telemetry](issues/observability-telemetry.md)) — wire opt-in `tracing-opentelemetry` + `opentelemetry-otlp` (`OTEL_EXPORTER_OTLP_ENDPOINT`) + `tower-http` across `arena-door` and `arena-server` control-plane flows and anomaly events (never per-tick/per-input), inject `trace_id`/`span_id` into JSON logs, add Grafana Alloy / OTel Collector config + provisioned alert rules, and document self-hosted production topology in `docs/DEPLOYMENT.md`.
 - [ ] **Observability Phase 3 — Scrubbed browser telemetry (RUM) & continuous profiling** ([observability-telemetry](issues/observability-telemetry.md)) — add scrubbed browser error, WASM panic, WebGL context-loss, startup warmup, and once-per-match network/perf summary reporting (with unit tests enforcing URL hash/ticket stripping) plus opt-in Pyroscope CPU profiling for `arena-server`.
+- [ ] **Accounts research & login decision** ([social-identity](issues/social-identity.md)) — compare OAuth/OIDC with an outside provider, hosted auth services and self-hosted options on cost at playtest scale and at growth; write a dated `docs/research/` note and a `Proposed` ADR. Must land before the items below that need accounts.
+- [ ] **Identity service & signed account ids** ([social-identity](issues/social-identity.md)) — social layer beside `arena-door`, tickets carry the account id, guest fallback.
+- [ ] **`Name#1234` display names** ([social-identity](issues/social-identity.md)) — server-assigned number, validation and rename limits, protocol bump; can start with guest handles before login ships. Queue the Lane B display follow-up (nameplates, frames, scoreboard, lobby, spectator HUD) when this lands.
+- [ ] **Friends & friend invites** ([social-identity](issues/social-identity.md)) — requests, presence, one-click invites to parties and custom lobbies; codes and links stay as a fallback. Queue the Lane B UI follow-up when this lands.
+- [ ] **Admin role & tag** ([social-identity](issues/social-identity.md)) — granted by deploy config, never hard-coded; checked on the server; gates the map editor first.
+- [ ] **Chat server** ([chat](issues/chat.md)) — team, match, public and spectator channels; server-set senders; rate limits, mute and filter. Queue the Lane B chat box follow-up when this lands.
 
 ## Lane B — Human-Reviewed Queue (Visual / UI / Feel)
 
 Agent implements on a branch, runs automated checks + WASM build, and appends a `pending human review` entry to [docs/UI-REVIEW.md](../docs/UI-REVIEW.md):
 
-*(Empty — all planned Lane B items are implemented and awaiting human browser review.)*
+- [ ] **System messages & slash commands** ([chat](issues/chat.md)) — system-event channel; `/help` built from the command registry; every existing panel opens by command; admin commands checked on the server. Depends on the chat server and chat box.
 
 ## Completed by Loop
 

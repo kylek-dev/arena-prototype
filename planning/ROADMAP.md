@@ -31,6 +31,8 @@ In recommended order (2026-11-15):
 | done | Make cast times, cooldowns, resources and interrupts server-authoritative ([ADR 0048](../docs/decisions/0048-server-authoritative-casting-and-resources.md)) | 3 | [server-casting-resources](issues/server-casting-resources.md) |
 | done | Spectate matches live (optional configurable delay), free/follow camera and watch-only HUD ([ADR 0050](../docs/decisions/0050-spectating-and-anti-ghosting-delay.md); browser review follow-up pending) | 4 | [spectating](issues/spectating.md) |
 | 2 | Production-grade observability: OpenTelemetry logs, metrics, tracing & self-hosted Grafana LGTM stack (local and prod) | 2 / 5 | [observability-telemetry](issues/observability-telemetry.md) |
+| 3 | Accounts (researched login choice), `Name#1234` handles, friends and friend invites, admin role (added by the user 2026-11-22) | 5 | [social-identity](issues/social-identity.md) |
+| 4 | Team, match and public chat with system messages and slash commands (`/help`, commands to open panels) (added by the user 2026-11-22) | 4 / 5 | [chat](issues/chat.md) |
 | ongoing | Review the network match experience across browsers (manual, by the user) | 2 | [network-ui-review](issues/network-ui-review.md) |
 | ongoing | Measure and harden netcode on real networks | ongoing | [netcode-hardening](issues/netcode-hardening.md) |
 
