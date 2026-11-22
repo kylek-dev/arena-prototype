@@ -16,9 +16,11 @@ import {
   customLobbyVisible,
 } from "../state/session";
 import { isEngineReady } from "../domain/abilities/catalog";
-import { dispatch, input } from "./commands";
+import { escapeStopsCast } from "../domain/bindings/escape";
+import { dispatch, input, isCasting, stopCasting, stopRecentlyRequested } from "./commands";
 import { installFocusPolicy, isTextEntry } from "./focus";
-// Precedence: conflict > capture > quick bind > modal/typing > layout > gameplay.
+// Precedence: conflict > capture > quick bind > text entry > Escape stops a cast >
+// modal/typing > layout > gameplay (see domain/bindings/escape.ts).
 export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void) {
   const resolver = new BindingResolver();
   const syncHeldSlots = () => {
@@ -94,6 +96,26 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
   function keydown(e: KeyboardEvent) {
     if (draggingSpell.get() || pressingSpell.get()) return;
     const mode = interaction.get();
+    // A plain Escape stops the current cast before it closes or opens anything.
+    if (
+      e.code === "Escape" &&
+      !e.shiftKey &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !e.metaKey &&
+      escapeStopsCast({
+        capturing: !!pendingBinding.get() || !!mode.capture || mode.quick,
+        textEntry: isTextEntry(document.activeElement),
+        // Right after a stop, a second Escape goes on to the panels/menu
+        // even before the server's snapshot confirms the cast ended.
+        casting: !error.get() && isCasting() && !stopRecentlyRequested(),
+      })
+    ) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (!e.repeat) stopCasting();
+      return;
+    }
     if (pendingBinding.get()) {
       if (e.code === "Escape") {
         pendingBinding.set(null);

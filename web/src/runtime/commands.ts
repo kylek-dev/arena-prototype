@@ -93,6 +93,27 @@ export function activateSlot(id: string) {
   beginCast(state, slot.ability);
   input.requestCast(slot.ability);
 }
+/** Whether the local player has an active cast (never while spectating). */
+export function isCasting(s: Snapshot | null = engine.get()) {
+  return !!s && !s.spectating && isEngineReady(s) && !!s.player.cast;
+}
+
+/** How long after a stop request Escape stops intercepting (about one round trip). */
+export const STOP_CAST_GRACE_MS = 500;
+let lastStopAt = Number.NEGATIVE_INFINITY;
+
+/** Whether a stop was requested within {@link STOP_CAST_GRACE_MS}. */
+export function stopRecentlyRequested(now = performance.now()) {
+  return now - lastStopAt < STOP_CAST_GRACE_MS;
+}
+
+/** Cancels the local player's active cast on the next tick (a no-op when idle). */
+export function stopCasting() {
+  if (!isCasting()) return;
+  input.requestStopCast();
+  lastStopAt = performance.now();
+}
+
 export function dispatch(action: string) {
   const interfaceAction = ["menu", "settings", "spellbook", "quickBind", "layout"].includes(action);
   if (!interfaceAction && (draggingSpell.get() || error.get() || blocksGameplay())) return;
@@ -137,6 +158,9 @@ export function dispatch(action: string) {
     }
     case "jump":
       input.jump = true;
+      break;
+    case "stopCasting":
+      stopCasting();
       break;
     case "autorun":
       input.autorun = !input.autorun;

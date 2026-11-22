@@ -37,6 +37,8 @@ export class InputState {
     this.castSpell = code;
     if (spell === 'pulse') this.attack = true;
   }
+  /** Cancels the local player's active cast on the next tick (ABI field 21). */
+  requestStopCast() { this.stopCast = true; }
   requestReset() { this.cancel(); this.reset = true; }
   requestSpectatorCamera(target) {
     if (target === 'free') {
@@ -107,6 +109,7 @@ export class InputState {
     this.teamSize = 0;
     this.castSpell = 0;
     this.spectatorCmd = -2;
+    this.stopCast = false;
   }
 
   readInput() {
@@ -119,6 +122,8 @@ export class InputState {
     input.push(this.selectActor, this.teamSize);
     input.push(this.castSpell);
     input.push(this.spectatorCmd);
+    input.push(Number(this.stopCast));
+    this.stopCast = false;
     this.spectatorCmd = -2;
     this.castSpell = 0;
     this.selectActor = -1;

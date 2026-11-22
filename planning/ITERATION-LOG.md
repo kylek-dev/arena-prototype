@@ -351,7 +351,7 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 
 ## 2026-11-22 — Smooth cast bars (Lane B, playtest inbox)
 - **Branch / Commit:** `auto/smooth-cast-bars`
-- **Base / PR:** `auto/practice-hidden-tab-regen` (stacked on PR #83)
+- **Base / PR:** `auto/practice-hidden-tab-regen` — https://github.com/kylek-dev/arena-prototype/pull/84 (stacked on PR #83)
 - **Lane:** B (pending human browser review in `docs/UI-REVIEW.md`)
 - **Task:** Playtest Inbox — "Make cast bars smooth"
 - **Changes:**
@@ -368,3 +368,22 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fresh-Eyes Review:** No Critical or Important findings. Addressed Minors: key `CastBar` by unit id, sleep the loop when settled, pull forward to samples ahead of the bar, removed unused export, required `label` for the frame variant, docs, loop and unit-switch tests. Not done (optional): sharing the `FrameClock` type with the cooldown animator, `transform`-based fill.
 - **Learnings:** `combatEdgesDiffer` in `web/src/bridge/snapshot.ts` already delivers cast start/end without the 80 ms HUD throttle, so presentation only has to animate between edges.
 - **Next Recommended Slice:** Playtest inbox — "Stop casting" keybind and Esc stops casting.
+
+## 2026-11-22 — Stop casting keybind and Esc stops casting (Lane B, playtest inbox)
+- **Branch / Commit:** `auto/stop-casting`
+- **Base / PR:** `auto/smooth-cast-bars` (stacked on PR #84)
+- **Lane:** B (pending human browser review in `docs/UI-REVIEW.md`)
+- **Task:** Playtest Inbox — "Add a 'Stop casting' keybind, and make Esc stop casting"
+- **Changes:**
+  - Found that no client path produced `CastAction::Cancel`. `web/input.js` appends ABI field 21 (`requestStopCast`, drained once, cleared by `cancel()`); `arena-client` decodes it (older shells read as no stop), keeps it through the character close-up, and `take_stop_cast` turns it into `CastAction::Cancel` for practice and network ticks (a same-tick spell press wins).
+  - Web: rebindable `stopCasting` action (unbound, "Stop casting", movement group); `isCasting`/`stopCasting`/`stopRecentlyRequested` in `runtime/commands.ts`; the input router intercepts plain Escape while casting (after binding capture/text entry, before panels/menu) via `escapeStopsCast`, with a 500 ms grace so a fast second Escape continues to the panel/menu.
+  - Tests: `tests/unit/escape-order.test.mjs` (Esc order + ABI field 21), `tests/ui/menu.test.tsx` (real router: stop before menu, double Escape, settings open mid-cast, idle order, bound key), Rust `stop_casting_cancels_the_active_cast_and_is_harmless_when_idle`; updated two tests that pin the ABI length. Docs: `docs/BROWSER.md` controls + scenario 12, `docs/FRONTEND.md` defaults.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/smooth-cast-bars` (`smoke=false web_build=true wasm=true`): pass
+    - `./scripts/check.sh`: pass (403 Rust tests, 1 pre-existing ignored; 52 Python; 46 Node; 41 Vitest files / 306 tests).
+    - `cargo run -p arena-headless --locked`: pass. `npm run build`: pass (370 modules). WASM clippy: pass.
+    - Server smoke: not applicable (only `arena-client` among crates changed).
+  - `./scripts/build-web.sh`: pass (55 static resources; no browser launched).
+- **Fresh-Eyes Review:** No Critical or Important findings. Addressed Minors: stop survives the customizer close-up, narrowed the pure helper to `escapeStopsCast` (the full close/open order is exercised by the UI test), double-Escape grace, binding group, docs (rebuild WASM and frontend together).
+- **Learnings:** Node 24 (CI and local) imports erasable-syntax `.ts` modules from `tests/unit/*.mjs` directly, so pure web helpers without imports can be unit-tested there. Input ABI changes break `tests/unit/input.test.mjs` and `tests/ui/team-frames.test.tsx`, which pin the array.
+- **Next Recommended Slice:** Playtest inbox — the player's cast bar as its own movable frame.
