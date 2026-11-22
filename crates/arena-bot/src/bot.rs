@@ -107,6 +107,102 @@ enum End {
     Lost(&'static str),
 }
 
+/// One watch-only spectator bot: sends only `Hello` and `Ping`, never `Input`,
+/// and measures received snapshot volume while checking hashes and privacy.
+#[derive(Clone)]
+pub struct Spectator {
+    pub server: String,
+    pub match_id: u64,
+    pub ticket: Vec<u8>,
+    pub shared: Arc<Shared>,
+}
+
+#[derive(Debug, Default)]
+pub struct SpectatorStats {
+    pub snapshots: u64,
+    pub bytes_in: u64,
+    pub private_events_seen: u64,
+    pub errors: HashMap<String, u64>,
+    pub unexpected_closes: u64,
+}
+
+/// Connects as a watch-only spectator until `deadline` or `MatchOver`.
+pub async fn spectate(spec: Spectator, deadline: Instant) -> SpectatorStats {
+    let mut stats = SpectatorStats::default();
+    let url = format!("ws://{}/play", spec.server);
+    let Ok((mut socket, _)) = connect_async_with_config(&url, None, true).await else {
+        stats.unexpected_closes += 1;
+        return stats;
+    };
+    let hello = ClientMessage::Hello {
+        protocol: PROTOCOL_VERSION,
+        ticket: spec.ticket,
+        appearance: None,
+    }
+    .encode();
+    if socket.send(Message::binary(hello)).await.is_err() {
+        stats.unexpected_closes += 1;
+        return stats;
+    }
+    let mut welcomed = false;
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            let _ = socket.close(None).await;
+            break;
+        }
+        match tokio::time::timeout(deadline.saturating_duration_since(now), socket.next()).await {
+            Err(_) => {
+                let _ = socket.close(None).await;
+                break;
+            }
+            Ok(Some(Ok(Message::Binary(frame)))) => {
+                stats.bytes_in += frame.len() as u64;
+                let Ok(message) = ServerMessage::decode(&frame) else {
+                    stats.unexpected_closes += 1;
+                    break;
+                };
+                match message {
+                    ServerMessage::Welcome(welcome) => {
+                        if !welcome.spectator {
+                            *stats.errors.entry("NotSpectator".into()).or_default() += 1;
+                            break;
+                        }
+                        welcomed = true;
+                    }
+                    ServerMessage::Snapshot(snapshot) if welcomed => {
+                        stats.snapshots += 1;
+                        if snapshot
+                            .events
+                            .iter()
+                            .any(|e| matches!(e.event, WireEvent::Rejected(_)))
+                        {
+                            stats.private_events_seen += 1;
+                        }
+                        if snapshot.tick > 0 {
+                            spec.shared
+                                .check_hash(spec.match_id, snapshot.tick, snapshot.hash);
+                        }
+                    }
+                    ServerMessage::Error(ErrorCode::MatchOver) => break,
+                    ServerMessage::Error(code) => {
+                        *stats.errors.entry(format!("{code:?}")).or_default() += 1;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Some(Ok(Message::Close(_))) | None) => break,
+            Ok(Some(Ok(_))) => {}
+            Ok(Some(Err(_))) => {
+                stats.unexpected_closes += 1;
+                break;
+            }
+        }
+    }
+    stats
+}
+
 /// Plays until `deadline`, the match ending, or an error.
 pub async fn play(seat: Seat, deadline: Instant) -> SeatStats {
     let mut stats = SeatStats::default();

@@ -727,19 +727,21 @@ mod queue {
             }
         }
 
-        // Start match 1: seated players get match tickets, spectator gets lobby_started.
+        // Start match 1: seated players get seat tickets, spectator gets signed spectator ticket!
         host.say(r#"{"type":"start_lobby"}"#).await;
         let (first_match_id, host_ticket, server_url) = match host.next_event().await {
             Some(QueueMessage::Match {
                 mode,
                 match_id,
                 seat,
+                spectator,
                 server,
                 ticket,
                 ..
             }) => {
                 assert_eq!(mode, "1v1");
                 assert_eq!(seat, 0);
+                assert!(!spectator);
                 (match_id, ticket, server)
             }
             other => panic!("expected match for host, got {other:?}"),
@@ -748,24 +750,35 @@ mod queue {
             Some(QueueMessage::Match {
                 match_id,
                 seat,
+                spectator,
                 ticket,
                 ..
             }) => {
                 assert_eq!(match_id, first_match_id);
                 assert_eq!(seat, 1);
+                assert!(!spectator);
                 ticket
             }
             other => panic!("expected match for guest, got {other:?}"),
         };
-        assert_eq!(
-            spec.next_event().await,
-            Some(QueueMessage::LobbyStarted {
-                mode: "1v1".into(),
-                match_id: first_match_id.clone(),
-            })
-        );
+        let spec_ticket = match spec.next_event().await {
+            Some(QueueMessage::Match {
+                mode,
+                match_id,
+                spectator,
+                ticket,
+                ..
+            }) => {
+                assert_eq!(mode, "1v1");
+                assert_eq!(match_id, first_match_id);
+                assert!(spectator);
+                ticket
+            }
+            other => panic!("expected spectator match ticket, got {other:?}"),
+        };
 
-        // Connecting to the real match server verifies the signed custom round time limit!
+        // Connecting to the real match server verifies the signed custom round time limit
+        // AND accepts the signed spectator ticket as watch-only!
         let mut live_sockets = Vec::new();
         for (seat, ticket) in [(0u8, host_ticket), (1u8, guest_ticket)] {
             let (mut socket, _) = connect_async(&server_url).await.unwrap();
@@ -783,6 +796,7 @@ mod queue {
             match ServerMessage::decode(&welcome.into_data()).unwrap() {
                 ServerMessage::Welcome(welcome) => {
                     assert_eq!(welcome.actor, seat);
+                    assert!(!welcome.spectator);
                     assert_eq!(
                         welcome.round_ticks,
                         300 * arena_sim::TICKS_PER_SECOND,
@@ -792,6 +806,32 @@ mod queue {
                 other => panic!("expected Welcome, got {other:?}"),
             }
             live_sockets.push(socket);
+        }
+        {
+            let (mut spec_socket, _) = connect_async(&server_url).await.unwrap();
+            let hello = ClientMessage::Hello {
+                protocol: PROTOCOL_VERSION,
+                ticket: from_hex(&spec_ticket).unwrap(),
+                appearance: None,
+            };
+            spec_socket
+                .send(Message::binary(hello.encode()))
+                .await
+                .unwrap();
+            let welcome = tokio::time::timeout(WAIT, spec_socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            match ServerMessage::decode(&welcome.into_data()).unwrap() {
+                ServerMessage::Welcome(welcome) => {
+                    assert!(welcome.spectator);
+                    assert_eq!(welcome.actor, 0);
+                    assert_eq!(welcome.round_ticks, 300 * arena_sim::TICKS_PER_SECOND);
+                }
+                other => panic!("expected spectator Welcome, got {other:?}"),
+            }
+            live_sockets.push(spec_socket);
         }
         drop(live_sockets);
 
@@ -826,28 +866,43 @@ mod queue {
             Some(QueueMessage::Match { match_id, .. }) => assert_eq!(match_id, second_match_id),
             other => panic!("expected rematch ticket for guest, got {other:?}"),
         }
-        assert_eq!(
-            spec.next_event().await,
-            Some(QueueMessage::LobbyStarted {
-                mode: "1v1".into(),
-                match_id: second_match_id,
-            })
-        );
+        match spec.next_event().await {
+            Some(QueueMessage::Match {
+                mode,
+                match_id,
+                spectator,
+                ..
+            }) => {
+                assert_eq!(mode, "1v1");
+                assert_eq!(match_id, second_match_id);
+                assert!(spectator);
+            }
+            other => panic!("expected spectator rematch ticket, got {other:?}"),
+        }
 
         // Per-address match creation rate limit applies to start_lobby too (default burst = 5).
         for _ in 0..3 {
             host.say(r#"{"type":"start_lobby"}"#).await;
             assert!(matches!(
                 host.next_event().await,
-                Some(QueueMessage::Match { .. })
+                Some(QueueMessage::Match {
+                    spectator: false,
+                    ..
+                })
             ));
             assert!(matches!(
                 guest.next_event().await,
-                Some(QueueMessage::Match { .. })
+                Some(QueueMessage::Match {
+                    spectator: false,
+                    ..
+                })
             ));
             assert!(matches!(
                 spec.next_event().await,
-                Some(QueueMessage::LobbyStarted { .. })
+                Some(QueueMessage::Match {
+                    spectator: true,
+                    ..
+                })
             ));
         }
         host.say(r#"{"type":"start_lobby"}"#).await;

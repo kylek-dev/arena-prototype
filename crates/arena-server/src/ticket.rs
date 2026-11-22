@@ -53,6 +53,12 @@ pub struct MatchSettings {
     pub map: MapId,
     /// Round time limit in seconds; must be in [`ALLOWED_ROUND_SECONDS`].
     pub round_seconds: u16,
+    /// Whether spectators may join this match (defaults to `true`).
+    #[serde(default = "default_allow_spectators")]
+    pub allow_spectators: bool,
+}
+fn default_allow_spectators() -> bool {
+    true
 }
 impl Default for MatchSettings {
     fn default() -> Self {
@@ -60,6 +66,7 @@ impl Default for MatchSettings {
             version: MATCH_SETTINGS_VERSION,
             map: MapId::Colosseum,
             round_seconds: DEFAULT_ROUND_SECONDS,
+            allow_spectators: true,
         }
     }
 }
@@ -76,11 +83,19 @@ impl MatchSettings {
     }
 }
 
+/// The connection's signed role inside a match. Player seat tickets and
+/// spectator tickets are distinct variants and never interchangeable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Role {
+    Player { seat: u8 },
+    Spectator,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Claims {
     pub match_id: u64,
     pub player: u64,
-    pub seat: u8,
+    pub role: Role,
     /// Players per team; the match has `2 * team_size` seats.
     pub team_size: u8,
     /// Unix seconds after which the ticket is refused.
@@ -89,21 +104,46 @@ pub struct Claims {
     pub settings: Option<MatchSettings>,
 }
 impl Claims {
-    /// Whether the claims describe a seat in a match the rules can run.
+    /// The seat this ticket grants, or `None` for a spectator ticket.
+    pub fn seat(&self) -> Option<usize> {
+        match self.role {
+            Role::Player { seat } => Some(usize::from(seat)),
+            Role::Spectator => None,
+        }
+    }
+    /// Whether this ticket grants a watch-only spectator role.
+    pub fn is_spectator(&self) -> bool {
+        matches!(self.role, Role::Spectator)
+    }
+    /// Whether the claims describe a valid seat or spectator role for a match
+    /// the rules can run (and respect `settings.allow_spectators`).
+    pub fn is_valid(&self) -> bool {
+        if !(1..=MAX_TEAM).contains(&usize::from(self.team_size))
+            || !self.settings.is_none_or(MatchSettings::is_valid)
+        {
+            return false;
+        }
+        match self.role {
+            Role::Player { seat } => seat < 2 * self.team_size,
+            Role::Spectator => self.settings.is_none_or(|s| s.allow_spectators),
+        }
+    }
+    /// Whether the claims describe a playable seat (never true for spectators).
     pub fn is_playable(&self) -> bool {
-        (1..=MAX_TEAM).contains(&usize::from(self.team_size))
-            && self.seat < 2 * self.team_size
-            && self.settings.is_none_or(MatchSettings::is_valid)
+        !self.is_spectator() && self.is_valid()
     }
 }
 
-/// Join tickets for every seat of one new match.
+/// Join tickets for every seat (and optional spectator slots) of one new match.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NewMatch {
     pub match_id: u64,
     pub team_size: usize,
     /// Hex-encoded join tickets, one per seat in actor order.
     pub tickets: Vec<String>,
+    /// Hex-encoded watch-only spectator tickets (empty when none requested).
+    #[serde(default)]
+    pub spectator_tickets: Vec<String>,
     /// Unix seconds after which the tickets are refused.
     pub expires: u64,
 }
@@ -112,7 +152,18 @@ pub struct NewMatch {
 /// match server knows about it until the first ticket connects. `None`
 /// when the team size is outside `1..=MAX_TEAM`.
 pub fn issue_match(key: &TicketKey, team_size: usize, expires: u64) -> Option<NewMatch> {
-    issue_match_with_settings(key, team_size, None, expires)
+    issue_match_full(key, team_size, None, 0, expires)
+}
+
+/// Issues seat tickets plus `spectators` watch-only spectator tickets for a
+/// new match (used by `--dev` and bot load benchmarks).
+pub fn issue_match_with_spectators(
+    key: &TicketKey,
+    team_size: usize,
+    spectators: usize,
+    expires: u64,
+) -> Option<NewMatch> {
+    issue_match_full(key, team_size, None, spectators, expires)
 }
 
 /// Issues a ticket per seat for a custom match with validated versioned
@@ -123,16 +174,30 @@ pub fn issue_custom_match(
     settings: MatchSettings,
     expires: u64,
 ) -> Option<NewMatch> {
-    if !settings.is_valid() {
-        return None;
-    }
-    issue_match_with_settings(key, team_size, Some(settings), expires)
+    issue_custom_match_with_spectators(key, team_size, settings, 0, expires)
 }
 
-fn issue_match_with_settings(
+/// Issues seat tickets and optional spectator tickets for a custom match.
+/// Returns `None` when `team_size` or `settings` is invalid, or when
+/// `spectators > 0` while `settings.allow_spectators` is `false`.
+pub fn issue_custom_match_with_spectators(
+    key: &TicketKey,
+    team_size: usize,
+    settings: MatchSettings,
+    spectators: usize,
+    expires: u64,
+) -> Option<NewMatch> {
+    if !settings.is_valid() || (spectators > 0 && !settings.allow_spectators) {
+        return None;
+    }
+    issue_match_full(key, team_size, Some(settings), spectators, expires)
+}
+
+fn issue_match_full(
     key: &TicketKey,
     team_size: usize,
     settings: Option<MatchSettings>,
+    spectators: usize,
     expires: u64,
 ) -> Option<NewMatch> {
     if !(1..=MAX_TEAM).contains(&team_size) {
@@ -144,7 +209,19 @@ fn issue_match_with_settings(
             to_hex(&key.issue(&Claims {
                 match_id,
                 player: random_u64(),
-                seat: seat as u8,
+                role: Role::Player { seat: seat as u8 },
+                team_size: team_size as u8,
+                expires,
+                settings,
+            }))
+        })
+        .collect();
+    let spectator_tickets = (0..spectators)
+        .map(|_| {
+            to_hex(&key.issue(&Claims {
+                match_id,
+                player: random_u64(),
+                role: Role::Spectator,
                 team_size: team_size as u8,
                 expires,
                 settings,
@@ -155,6 +232,7 @@ fn issue_match_with_settings(
         match_id,
         team_size,
         tickets,
+        spectator_tickets,
         expires,
     })
 }
@@ -261,7 +339,7 @@ mod tests {
     const CLAIMS: Claims = Claims {
         match_id: 9,
         player: 77,
-        seat: 3,
+        role: Role::Player { seat: 3 },
         team_size: 2,
         expires: 1_000,
         settings: None,
@@ -313,8 +391,8 @@ mod tests {
             let claims = key(1).verify(&from_hex(ticket).unwrap(), 0).unwrap();
             assert_eq!(claims.match_id, created.match_id);
             assert_eq!(
-                (claims.seat, claims.team_size, claims.expires),
-                (seat as u8, 3, 10)
+                (claims.seat(), claims.team_size, claims.expires),
+                (Some(seat), 3, 10)
             );
             assert!(claims.is_playable());
         }
@@ -323,7 +401,7 @@ mod tests {
             issue_match(&key(1), 3, 10).unwrap().match_id
         );
         let claims = |seat, team_size| Claims {
-            seat,
+            role: Role::Player { seat },
             team_size,
             ..CLAIMS
         };
@@ -358,6 +436,7 @@ mod tests {
             version: MATCH_SETTINGS_VERSION,
             map: MapId::Colosseum,
             round_seconds: 600,
+            allow_spectators: true,
         };
         assert!(valid.is_valid());
         assert_eq!(valid.round_ticks(), 600 * TICKS_PER_SECOND);
@@ -372,21 +451,46 @@ mod tests {
             round_seconds: 123,
             ..valid
         };
+        let no_specs = MatchSettings {
+            allow_spectators: false,
+            ..valid
+        };
         assert!(!bad_version.is_valid());
         assert!(!bad_seconds.is_valid());
         assert!(issue_custom_match(&key(1), 2, bad_version, 100).is_none());
         assert!(issue_custom_match(&key(1), 2, bad_seconds, 100).is_none());
+        assert!(issue_custom_match_with_spectators(&key(1), 2, no_specs, 1, 100).is_none());
 
-        let created = issue_custom_match(&key(1), 2, valid, 100).unwrap();
+        let created = issue_custom_match_with_spectators(&key(1), 2, valid, 2, 100).unwrap();
         assert_eq!(created.tickets.len(), 4);
+        assert_eq!(created.spectator_tickets.len(), 2);
         for (seat, ticket) in created.tickets.iter().enumerate() {
             let bytes = from_hex(ticket).unwrap();
             assert!(bytes.len() <= MAX_TICKET);
             let claims = key(1).verify(&bytes, 0).unwrap();
-            assert_eq!(claims.seat, seat as u8);
+            assert_eq!(claims.seat(), Some(seat));
+            assert!(!claims.is_spectator());
             assert_eq!(claims.settings, Some(valid));
             assert!(claims.is_playable());
         }
+        for spec_ticket in &created.spectator_tickets {
+            let bytes = from_hex(spec_ticket).unwrap();
+            assert!(bytes.len() <= MAX_TICKET);
+            let claims = key(1).verify(&bytes, 0).unwrap();
+            assert_eq!(claims.seat(), None);
+            assert!(claims.is_spectator());
+            assert!(claims.is_valid());
+            assert!(!claims.is_playable(), "spectator ticket is never playable");
+        }
+        assert!(
+            !Claims {
+                role: Role::Spectator,
+                settings: Some(no_specs),
+                ..CLAIMS
+            }
+            .is_valid(),
+            "spectator ticket invalid when match forbids spectators"
+        );
         assert!(
             !Claims {
                 settings: Some(bad_seconds),

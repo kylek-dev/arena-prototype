@@ -131,6 +131,53 @@ impl Default for Orbit {
         }
     }
 }
+
+/// Free-camera and follow-a-player view state while spectating a match.
+#[derive(Resource, Clone, Debug)]
+struct SpectatorCamera {
+    /// `None` = free camera; `Some(actor)` = orbit-follow fighter `actor`.
+    follow: Option<usize>,
+    /// Free-camera eye position in world metres.
+    position: Vec3,
+    yaw: f32,
+    pitch: f32,
+}
+impl Default for SpectatorCamera {
+    fn default() -> Self {
+        Self {
+            follow: None,
+            position: Vec3::new(0.0, 12.0, 18.0),
+            yaw: 0.0,
+            pitch: 0.52,
+        }
+    }
+}
+impl SpectatorCamera {
+    fn look_direction(&self) -> Vec3 {
+        let forward = Vec3::new(0.0, -self.pitch.sin(), -self.pitch.cos());
+        (Quat::from_rotation_y(self.yaw) * forward).normalize_or_zero()
+    }
+    fn fly(&mut self, x: f32, z: f32, rise: bool, zoom: f32, dt: f32, map: &MapFile) {
+        let look = self.look_direction();
+        let right = look.cross(Vec3::Y).normalize_or_zero();
+        let speed = 16.0;
+        let forward_input = (-z) - zoom * 0.06;
+        let mut delta = look * forward_input + right * x;
+        if rise {
+            delta.y += 1.0;
+        }
+        if delta.length_squared() > 1e-6 {
+            self.position += delta.clamp_length_max(1.5) * speed * dt;
+        }
+        let reach = map.venue.stands_depth();
+        let max_x = (map.layout.half_x as f32 / 1000.0) + reach;
+        let max_z = (map.layout.half_z as f32 / 1000.0) + reach;
+        let max_y = (map.venue.outer_wall_height - 1.5).max(12.0);
+        self.position.x = self.position.x.clamp(-max_x, max_x);
+        self.position.z = self.position.z.clamp(-max_z, max_z);
+        self.position.y = self.position.y.clamp(1.0, max_y);
+    }
+}
 /// The map in play. Replacing it rebuilds the venue and starts a fresh round.
 #[derive(Resource)]
 struct ActiveMap(MapFile);
@@ -163,6 +210,7 @@ pub fn run() {
         .init_resource::<Practice>()
         .init_resource::<Net>()
         .init_resource::<Orbit>()
+        .init_resource::<SpectatorCamera>()
         .init_resource::<animation::Settings>()
         .init_resource::<appearance::Desired>()
         .init_resource::<appearance::Preview>()
@@ -503,7 +551,9 @@ fn restart(practice: &mut Practice, orbit: &mut Orbit, map: &MapFile, size: usiz
 fn read_controls(
     mut practice: ResMut<Practice>,
     mut orbit: ResMut<Orbit>,
+    mut spec_cam: ResMut<SpectatorCamera>,
     map: Res<ActiveMap>,
+    time: Res<Time>,
     cameras: Query<(&Camera, &GlobalTransform)>,
     visuals: Query<(&FighterVisual, &GlobalTransform)>,
     preview: Res<appearance::Preview>,
@@ -511,11 +561,57 @@ fn read_controls(
     mut cached_blockers: Local<Option<Vec<prism::Prism>>>,
 ) {
     let mut input = platform::read_input();
+    let spectating = net
+        .session
+        .as_ref()
+        .is_some_and(network::Session::is_spectator);
     // The server owns the round in a network match: no local reset or
     // practice size change.
     if net.session.is_some() {
         input.reset = false;
         input.team_size = None;
+    }
+    if spectating {
+        let actor_count = practice.arena.fighters().len();
+        if let Some(cmd) = input.spectator_cmd {
+            if cmd < 0 {
+                if spec_cam.follow.is_some()
+                    && let Some(eye) = orbit.eye
+                {
+                    spec_cam.position = eye;
+                    spec_cam.yaw = orbit.yaw;
+                    spec_cam.pitch = orbit.pitch;
+                }
+                spec_cam.follow = None;
+            } else if (cmd as usize) < actor_count {
+                spec_cam.follow = Some(cmd as usize);
+                orbit.eye = None;
+            }
+        }
+        if spec_cam.follow.is_some_and(|actor| actor >= actor_count) {
+            spec_cam.follow = None;
+        }
+        if spec_cam.follow.is_some() {
+            orbit.yaw -= input.orbit_x * 0.005;
+            orbit.pitch = camera::pitch(orbit.pitch, input.orbit_y * 0.004);
+            orbit.distance = camera::zoom(orbit.distance, input.zoom * 0.01);
+        } else {
+            spec_cam.yaw -= input.orbit_x * 0.005;
+            spec_cam.pitch = camera::pitch(spec_cam.pitch, input.orbit_y * 0.004);
+            spec_cam.fly(
+                input.x,
+                input.z,
+                input.jump,
+                input.zoom,
+                time.delta_secs(),
+                &map.0,
+            );
+        }
+        practice.selected = None;
+        practice.cast = None;
+        practice.jump = false;
+        practice.movement = Vec2::ZERO;
+        return;
     }
     if preview.open {
         // The character stands still for the close-up; only a reset or mode
@@ -825,6 +921,7 @@ fn network_receive(
     mut net: ResMut<Net>,
     mut practice: ResMut<Practice>,
     mut orbit: ResMut<Orbit>,
+    mut spec_cam: ResMut<SpectatorCamera>,
     mut map: ResMut<ActiveMap>,
     time: Res<Time<Real>>,
     mut fixed: ResMut<Time<Fixed>>,
@@ -848,6 +945,7 @@ fn network_receive(
         if net.session.take().is_some() {
             net.last_status = None;
             net.last_appearances_version = 0;
+            *spec_cam = SpectatorCamera::default();
             platform::network_appearances("null");
             restart(&mut practice, &mut orbit, &map.0, 1);
             practice.feedback = "Left the match · practice round";
@@ -919,12 +1017,18 @@ fn network_receive(
                     .expect("the session only keeps complete rosters and valid round limits");
         }
         let count = view.positions.len();
-        if practice.selected.is_some_and(|actor| actor >= count) {
+        if session.is_spectator() {
             practice.selected = None;
+            practice.facings.resize(count, 0.0);
+            practice.facings.copy_from_slice(&view.facings);
+        } else {
+            if practice.selected.is_some_and(|actor| actor >= count) {
+                practice.selected = None;
+            }
+            practice.facings.resize(count, 0.0);
+            // The player's own heading stays local for responsive turning.
+            practice.facings[1..].copy_from_slice(&view.facings[1..]);
         }
-        practice.facings.resize(count, 0.0);
-        // The player's own heading stays local for responsive turning.
-        practice.facings[1..].copy_from_slice(&view.facings[1..]);
         practice.previous = view.positions.clone();
         practice.remote = Some(view.positions);
         practice.connected = Some(view.connected);
@@ -992,6 +1096,7 @@ fn network_receive(
 fn present(
     mut practice: ResMut<Practice>,
     mut orbit: ResMut<Orbit>,
+    spec_cam: Res<SpectatorCamera>,
     startup: Res<startup::State>,
     preview: Res<appearance::Preview>,
     obstacles: Query<&camera::Obstacle>,
@@ -1004,6 +1109,10 @@ fn present(
     mut cameras: Query<&mut Transform, (With<Camera>, Without<FighterVisual>)>,
     net: Option<Res<Net>>,
 ) {
+    let spectating = net
+        .as_ref()
+        .and_then(|net| net.session.as_ref())
+        .is_some_and(network::Session::is_spectator);
     let mut positions = [Vec3::ZERO; arena_protocol::MAX_FIGHTERS];
     let count = match &practice.remote {
         // In a network match the player's own fighter is predicted, drawn
@@ -1040,49 +1149,66 @@ fn present(
         cached_obstacles.extend(obstacles.iter().copied());
     }
     practice.combat_text.advance(time.delta_secs());
-    let mut hide_player = false;
+    let mut hidden_actor: Option<usize> = None;
     if let Ok(mut camera) = cameras.single_mut()
         && preview.open
+        && !spectating
         && startup.sweep().is_none()
     {
         *camera = preview_camera(positions[0], practice.facing, &preview, &cached_obstacles);
         // The ordinary boom snaps back from where it was when closed.
         orbit.eye = None;
     } else if let Ok(mut camera) = cameras.single_mut() {
-        let focus = positions[0] + Vec3::Y * camera::focus_height(orbit.distance);
-        // Behind the loading overlay the camera sweeps around the player so
-        // every direction is drawn (and its GPU work done) before play. The
-        // eye snaps there and back rather than easing into the first view.
-        let sweep = startup.sweep();
-        let direction = Quat::from_rotation_y(orbit.yaw + sweep.unwrap_or(0.0))
-            * Vec3::new(0.0, orbit.pitch.sin(), orbit.pitch.cos());
-        // First person sits at the eyes and looks along the boom; there is no
-        // boom to collide, and a near-zero offset would give a noisy view.
-        let first_person = sweep.is_none() && camera::first_person(orbit.distance);
-        let eye = if first_person {
-            focus
+        if spectating && spec_cam.follow.is_none() && startup.sweep().is_none() {
+            let look = spec_cam.look_direction();
+            *camera = Transform::from_translation(spec_cam.position).looking_to(look, Vec3::Y);
+            orbit.eye = Some(spec_cam.position);
         } else {
-            camera::resolve_eye(
-                focus,
-                direction,
-                orbit.distance,
-                orbit.eye.filter(|_| sweep.is_none()),
-                time.delta_secs(),
-                &cached_obstacles,
-            )
-        };
-        orbit.eye = sweep.is_none().then_some(eye);
-        // Never render the player's own model from inside it.
-        hide_player = camera::hides_player(focus, eye);
-        // Keep a valid view direction even if the focus is inside an obstacle.
-        let view = (focus - eye)
-            .try_normalize()
-            .filter(|_| !first_person)
-            .unwrap_or(-direction);
-        *camera = Transform::from_translation(eye).looking_to(view, Vec3::Y);
+            let follow_actor = if spectating {
+                spec_cam
+                    .follow
+                    .filter(|&a| a < positions.len())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let focus = positions[follow_actor] + Vec3::Y * camera::focus_height(orbit.distance);
+            // Behind the loading overlay the camera sweeps around the player so
+            // every direction is drawn (and its GPU work done) before play. The
+            // eye snaps there and back rather than easing into the first view.
+            let sweep = startup.sweep();
+            let direction = Quat::from_rotation_y(orbit.yaw + sweep.unwrap_or(0.0))
+                * Vec3::new(0.0, orbit.pitch.sin(), orbit.pitch.cos());
+            // First person sits at the eyes and looks along the boom; there is no
+            // boom to collide, and a near-zero offset would give a noisy view.
+            let first_person = sweep.is_none() && camera::first_person(orbit.distance);
+            let eye = if first_person {
+                focus
+            } else {
+                camera::resolve_eye(
+                    focus,
+                    direction,
+                    orbit.distance,
+                    orbit.eye.filter(|_| sweep.is_none()),
+                    time.delta_secs(),
+                    &cached_obstacles,
+                )
+            };
+            orbit.eye = sweep.is_none().then_some(eye);
+            // Never render the focused model from inside it.
+            if camera::hides_player(focus, eye) {
+                hidden_actor = Some(follow_actor);
+            }
+            // Keep a valid view direction even if the focus is inside an obstacle.
+            let view = (focus - eye)
+                .try_normalize()
+                .filter(|_| !first_person)
+                .unwrap_or(-direction);
+            *camera = Transform::from_translation(eye).looking_to(view, Vec3::Y);
+        }
     }
     for (fighter, mut transform, mut visibility) in &mut fighters {
-        *visibility = if fighter.0 < positions.len() && !(fighter.0 == 0 && hide_player) {
+        *visibility = if fighter.0 < positions.len() && hidden_actor != Some(fighter.0) {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -1091,7 +1217,7 @@ fn present(
             continue;
         }
         transform.translation = positions[fighter.0];
-        transform.rotation = Quat::from_rotation_y(if fighter.0 == 0 {
+        transform.rotation = Quat::from_rotation_y(if fighter.0 == 0 && !spectating {
             practice.facing
         } else {
             practice.facings[fighter.0]
@@ -1131,6 +1257,8 @@ fn publish(
     startup: Res<startup::State>,
     map: Res<ActiveMap>,
     orbit: Res<Orbit>,
+    spec_cam: Res<SpectatorCamera>,
+    net: Option<Res<Net>>,
     character: Res<character::CharacterModel>,
     cameras: Query<(&Camera, &GlobalTransform)>,
     visuals: Query<(&FighterVisual, &GlobalTransform)>,
@@ -1138,6 +1266,10 @@ fn publish(
     mut json: Local<String>,
 ) {
     use std::fmt::Write;
+    let spectating = net
+        .as_ref()
+        .and_then(|net| net.session.as_ref())
+        .is_some_and(network::Session::is_spectator);
     let fighters = practice.arena.fighters();
     let player = fighters[0];
     let target = fighters[1];
@@ -1186,8 +1318,22 @@ fn publish(
     json.clear();
     let _ = write!(
         json,
-        r#"{{"startup":{},"teamSize":{},"selectedActor":"#,
+        r#"{{"startup":{},"spectating":{},"spectatorFollow":"#,
         startup.json(),
+        spectating,
+    );
+    match spec_cam
+        .follow
+        .filter(|&a| spectating && a < fighters.len())
+    {
+        Some(actor) => {
+            let _ = write!(json, "{actor}");
+        }
+        None => json.push_str("null"),
+    }
+    let _ = write!(
+        json,
+        r#","teamSize":{},"selectedActor":"#,
         fighters.len() / 2,
     );
     match practice.selected {
@@ -1291,10 +1437,11 @@ fn publish(
     );
     write_spells_json(&mut json, &practice.arena, practice.selected);
     json.push_str(r#"},"nameplates":["#);
-    // The local player is deliberately excluded, independently of selection/focus.
+    // In player mode actor 0 is the local player and excluded; spectators see all fighters.
     if let Some((camera, view)) = camera_view {
         let mut first = true;
-        for (actor, pos) in visual_positions.iter().enumerate().skip(1) {
+        let skip = usize::from(!spectating);
+        for (actor, pos) in visual_positions.iter().enumerate().skip(skip) {
             let Some(pos) = *pos else {
                 continue;
             };
@@ -1519,6 +1666,8 @@ struct Input {
     click: Option<Vec2>,
     focus_click: Option<Vec2>,
     steer: bool,
+    /// Spectator camera command: `-1` = free camera, `0..=5` = follow actor.
+    spectator_cmd: Option<i8>,
 }
 #[cfg(target_arch = "wasm32")]
 mod platform {
@@ -1666,6 +1815,11 @@ mod platform {
                 .as_f64()
                 .zip(a.get(16).as_f64())
                 .and_then(|(x, y)| super::focus_cursor(x as f32, y as f32)),
+            spectator_cmd: a
+                .get(20)
+                .as_f64()
+                .filter(|n| n.is_finite() && *n >= -1.0 && *n < 6.0 && n.fract() == 0.0)
+                .map(|n| n as i8),
         }
     }
     pub fn focus_unit(unit: usize) {
@@ -1768,6 +1922,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<Practice>()
             .init_resource::<Orbit>()
+            .init_resource::<SpectatorCamera>()
             .init_resource::<appearance::Preview>()
             .init_resource::<Time>()
             .init_resource::<Time<Fixed>>()
@@ -1847,6 +2002,7 @@ mod tests {
         app.init_resource::<Practice>()
             .init_resource::<Net>()
             .init_resource::<Orbit>()
+            .init_resource::<SpectatorCamera>()
             .init_resource::<ActiveMap>()
             .insert_resource(Time::<Real>::default())
             .insert_resource(Time::<Fixed>::from_hz(TICKS_PER_SECOND as f64))
@@ -1877,6 +2033,7 @@ mod tests {
                 round_ticks: arena_sim::arena::MAX_ROUND_TICKS,
                 rules: arena_protocol::RULES_VERSION,
                 map: network::fnv1a(arena_map::COLOSSEUM_JSON.as_bytes()),
+                spectator: false,
             })
             .encode(),
         ];
@@ -2147,6 +2304,8 @@ mod tests {
     fn presentation_retracts_and_recovers_without_changing_requested_zoom() {
         let mut app = App::new();
         app.init_resource::<Practice>()
+            .init_resource::<Net>()
+            .init_resource::<SpectatorCamera>()
             .insert_resource(Orbit {
                 pitch: 0.0,
                 ..default()
@@ -2205,6 +2364,8 @@ mod tests {
     fn first_person_sits_at_eye_level_hides_the_player_and_looks_along_the_boom() {
         let mut app = App::new();
         app.init_resource::<Practice>()
+            .init_resource::<Net>()
+            .init_resource::<SpectatorCamera>()
             .insert_resource(Orbit {
                 pitch: -0.4,
                 distance: camera::zoom(6.0, -10.0),
@@ -2253,6 +2414,7 @@ mod tests {
             .init_resource::<Practice>()
             .init_resource::<Net>()
             .init_resource::<Orbit>()
+            .init_resource::<SpectatorCamera>()
             .init_resource::<appearance::Preview>()
             .add_systems(
                 Update,
@@ -2556,6 +2718,26 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn spectator_free_camera_clamps_inside_venue_bounds() {
+        let map = arena_map::colosseum();
+        let mut cam = SpectatorCamera::default();
+        let reach = map.venue.stands_depth();
+        let limit_x = (map.layout.half_x as f32 / 1000.0) + reach;
+        let limit_z = (map.layout.half_z as f32 / 1000.0) + reach;
+        let max_y = (map.venue.outer_wall_height - 1.5).max(12.0);
+        // Extreme horizontal + vertical flight stays safely inside the colosseum stands.
+        cam.fly(1.0, -1.0, true, 0.0, 100.0, &map);
+        assert!(cam.position.x.abs() <= limit_x + 1e-4);
+        assert!(cam.position.z.abs() <= limit_z + 1e-4);
+        assert!(cam.position.y >= 1.0 && cam.position.y <= max_y + 1e-4);
+
+        cam.fly(-1.0, 1.0, false, 5000.0, 100.0, &map);
+        assert!(cam.position.x.abs() <= limit_x + 1e-4);
+        assert!(cam.position.z.abs() <= limit_z + 1e-4);
+        assert!(cam.position.y >= 1.0 && cam.position.y <= max_y + 1e-4);
     }
 }
 #[cfg(not(target_arch = "wasm32"))]

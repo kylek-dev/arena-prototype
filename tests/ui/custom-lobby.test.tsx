@@ -156,13 +156,20 @@ it("hosts a custom lobby from the game menu, controls teams/settings/host, and s
     true,
   );
 
-  // Host changes round time limit and match size.
+  // Host changes round time limit and spectator toggle.
   fireEvent.change(within(dialog).getByLabelText("Round time limit"), {
     target: { value: "300" },
   });
   expect(fake.sent().at(-1)).toEqual({
     type: "set_lobby_settings",
-    settings: { version: 1, map: "colosseum", round_seconds: 300 },
+    settings: { version: 1, map: "colosseum", round_seconds: 300, allow_spectators: true },
+  });
+  fireEvent.change(within(dialog).getByLabelText("Allow spectators"), {
+    target: { value: "off" },
+  });
+  expect(fake.sent().at(-1)).toEqual({
+    type: "set_lobby_settings",
+    settings: { version: 1, map: "colosseum", round_seconds: 1200, allow_spectators: false },
   });
 
   // Second player arrives -> lobby is now full and startable.
@@ -329,11 +336,21 @@ it("handles non-host controls, spectator notices, kicks, and suppresses auto-ope
   fireEvent.click(within(dialog).getByRole("button", { name: "Join spectators" }));
   expect(fake.sent().at(-1)).toEqual({ type: "set_lobby_slot", slot: "spectator" });
 
-  // Spectator receives lobby_started notice while remaining in the lobby.
-  fake.say({ type: "lobby_started", mode: "2v2", match_id: "0123456789abcdef" });
-  expect(dialog.textContent).toContain("Live spectating is coming soon");
+  // Spectator receives a live signed spectator match ticket when the host starts.
+  fake.say({
+    type: "match",
+    mode: "2v2",
+    match_id: "0123456789abcdef",
+    seat: 0,
+    spectator: true,
+    server: "ws://127.0.0.1:8080/play",
+    ticket: "beef",
+    expires: 2_000_000_000,
+  });
+  expect(fake.joined.at(-1)).toMatchObject({ ticket: "beef", spectator: true });
+  expect(screen.queryByRole("dialog")).toBeNull();
 
-  // Kicked from the lobby closes the dialog and shows the QueueBar warning notice.
+  // Kicked from the lobby shows the QueueBar warning notice.
   fake.say({ type: "lobby_left", reason: "kicked" });
   expect(screen.queryByRole("dialog")).toBeNull();
   expect(screen.getByRole("status").textContent).toContain("removed from the custom lobby");

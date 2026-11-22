@@ -20,6 +20,7 @@ export function RoundClock() {
   const won = useStore(engine, (s) => s?.won ?? false);
   const roundResult = useStore(engine, (s) => s?.roundResult ?? null);
   const networked = useStore(engine, (s) => Boolean(s?.networked));
+  const spectating = useStore(engine, (s) => Boolean(s?.spectating));
   const suppressed = useStore(
     interaction,
     (m) => m.layout || m.quick || !!m.capture || m.panel === "menu" || m.panel === "settings",
@@ -40,7 +41,9 @@ export function RoundClock() {
   const clock =
     remainingSeconds !== null ? roundClockFromSeconds(remainingSeconds, won, roundResult) : null;
   const banner =
-    matchBannerVisible || hasScoreboard ? null : roundResultBanner(roundResult, networked);
+    matchBannerVisible || hasScoreboard
+      ? null
+      : roundResultBanner(roundResult, networked, spectating);
   if (!clock && !banner) return null;
 
   const queueOffset = queueVisible ? " below-queue" : "";

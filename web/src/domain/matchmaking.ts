@@ -58,6 +58,7 @@ export type MatchSettings = {
   version: typeof MATCH_SETTINGS_VERSION;
   map: CustomMapId;
   roundSeconds: AllowedRoundSeconds;
+  allowSpectators: boolean;
 };
 export type LobbyMember = {
   id: number;
@@ -104,10 +105,16 @@ export type QueueMessage =
   | { type: "requeued"; mode: QueueMode }
   | { type: "stopped"; reason: string }
   | { type: "refused"; code: string }
-  | { type: "match"; mode: QueueMode; matchId: string; seat: number; ticket: MatchTicket }
+  | {
+      type: "match";
+      mode: QueueMode;
+      matchId: string;
+      seat: number;
+      spectator: boolean;
+      ticket: MatchTicket;
+    }
   | { type: "lobby"; lobby: CustomLobby }
   | { type: "lobby_left"; reason: "left" | "kicked" }
-  | { type: "lobby_started"; mode: QueueMode; matchId: string }
   | { type: "error"; code: string };
 
 const count = (value: unknown): value is number =>
@@ -180,8 +187,17 @@ export function parseQueueMessage(text: unknown): QueueMessage | null {
     case "match": {
       const ticket = parseTicket(v);
       if (!ticket || !isQueueMode(v.mode) || !count(v.seat)) return null;
+      if (v.spectator !== undefined && typeof v.spectator !== "boolean") return null;
       if (typeof v.match_id !== "string" || !/^[0-9a-f]{16}$/.test(v.match_id)) return null;
-      return { type: "match", mode: v.mode, matchId: v.match_id, seat: v.seat, ticket };
+      const spectator = v.spectator === true;
+      return {
+        type: "match",
+        mode: v.mode,
+        matchId: v.match_id,
+        seat: v.seat,
+        spectator,
+        ticket: spectator ? { ...ticket, spectator: true } : ticket,
+      };
     }
     case "lobby": {
       const code = typeof v.code === "string" ? normalizeCode(v.code) : null;
@@ -192,9 +208,11 @@ export function parseQueueMessage(text: unknown): QueueMessage | null {
       if (
         s.version !== MATCH_SETTINGS_VERSION ||
         !isCustomMapId(s.map) ||
-        !isAllowedRoundSeconds(s.round_seconds)
+        !isAllowedRoundSeconds(s.round_seconds) ||
+        (s.allow_spectators !== undefined && typeof s.allow_spectators !== "boolean")
       )
         return null;
+      const allowSpectators = s.allow_spectators !== false;
       if (!count(v.spectator_slots) || v.spectator_slots > MAX_LOBBY_SPECTATORS) return null;
       if (!count(v.you) || v.you < 1 || typeof v.host !== "boolean") return null;
       if (typeof v.can_start !== "boolean" || !Array.isArray(v.members)) return null;
@@ -223,6 +241,7 @@ export function parseQueueMessage(text: unknown): QueueMessage | null {
             version: MATCH_SETTINGS_VERSION,
             map: s.map,
             roundSeconds: s.round_seconds,
+            allowSpectators,
           },
           spectatorSlots: v.spectator_slots,
           you: v.you,
@@ -236,10 +255,6 @@ export function parseQueueMessage(text: unknown): QueueMessage | null {
       return v.reason === "left" || v.reason === "kicked"
         ? { type: "lobby_left", reason: v.reason }
         : null;
-    case "lobby_started":
-      if (!isQueueMode(v.mode)) return null;
-      if (typeof v.match_id !== "string" || !/^[0-9a-f]{16}$/.test(v.match_id)) return null;
-      return { type: "lobby_started", mode: v.mode, matchId: v.match_id };
     case "error":
       return word(v.code) ? { type: "error", code: v.code } : null;
     default:
@@ -273,6 +288,7 @@ export const requests = {
         version: settings.version,
         map: settings.map,
         round_seconds: settings.roundSeconds,
+        allow_spectators: settings.allowSpectators,
       },
     }),
   startLobby: () => JSON.stringify({ type: "start_lobby" }),
@@ -405,8 +421,8 @@ const NOTICES: Record<string, string> = {
   invalid_settings: "Those match settings are not supported by the server.",
   kicked: "You were removed from the custom lobby by the host.",
   rate_limited: "Too many matches started recently. Wait a moment and try again.",
-  lobby_started:
-    "The custom match has started. Live spectating is coming soon; you remain in the lobby for the rematch.",
+  spectators_disabled: "Spectators are disabled in this custom lobby.",
+  spectators_occupied: "Move or remove spectators before turning spectators off.",
 };
 export function endedText(code: string | null) {
   return ENDED[code ?? ""] ?? "Online play stopped.";

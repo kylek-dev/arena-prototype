@@ -50,13 +50,16 @@ export function isRoundClockWarning(seconds: number): boolean {
   return Number.isFinite(seconds) && seconds > 0 && seconds <= 60;
 }
 
-/** Player-facing summary for an authoritative round outcome. */
-export function roundResultLabel(result: RoundResult | null | undefined): string | null {
+/** Player- or spectator-facing summary for an authoritative round outcome. */
+export function roundResultLabel(
+  result: RoundResult | null | undefined,
+  spectating = false,
+): string | null {
   switch (result) {
     case "won":
-      return "Victory";
+      return spectating ? "Team A wins" : "Victory";
     case "lost":
-      return "Defeat";
+      return spectating ? "Team B wins" : "Defeat";
     case "draw":
       return "Draw";
     case "time_limit_draw":
@@ -128,8 +131,9 @@ export function roundResultTone(result: RoundResult): RoundResultTone {
 export function roundResultBanner(
   result: RoundResult | null | undefined,
   networked: boolean,
+  spectating = false,
 ): RoundResultBanner | null {
-  const label = roundResultLabel(result);
+  const label = roundResultLabel(result, spectating);
   if (!label || !result) return null;
   const tone = roundResultTone(result);
   const detail =

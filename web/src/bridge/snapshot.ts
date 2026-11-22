@@ -34,6 +34,10 @@ export type Snapshot = {
   roster?: RosterEntry[];
   /** A network match: the roster reports which players are attached. */
   networked?: boolean;
+  /** True when watching a network match as a read-only spectator. */
+  spectating?: boolean;
+  /** Followed actor index when spectating in follow-cam, or null in free-cam. */
+  spectatorFollow?: number | null;
   nameplates?: NameplateProjection[];
   combatText?: CombatTextProjection[];
   distance: number;
@@ -73,6 +77,7 @@ const ROUND_RESULTS = new Set<RoundResult>(["won", "lost", "draw", "time_limit_d
 const CHARACTER_STATUSES = new Set(["ready", "failed", "placeholder", "loading"]);
 const HOVERED_UNIT_RE = /^(Player|Opponent[1-3]|Team[1-2])$/;
 const NAMEPLATE_TAG_RE = /^(Opponent|Team)[1-3]$/;
+const SPECTATOR_NAMEPLATE_TAG_RE = /^(Player|(Opponent|Team)[1-3])$/;
 
 function isNonNegativeFinite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
@@ -204,6 +209,8 @@ export function needsImmediateDelivery(previous: Snapshot | null, next: Snapshot
     next.tick < previous.tick ||
     next.teamSize !== previous.teamSize ||
     next.selectedActor !== previous.selectedActor ||
+    next.spectating !== previous.spectating ||
+    next.spectatorFollow !== previous.spectatorFollow ||
     next.won !== previous.won ||
     next.roundResult !== previous.roundResult ||
     Boolean(next.scoreboard) !== Boolean(previous.scoreboard) ||
@@ -263,6 +270,10 @@ export function adaptSnapshot(raw: unknown): Snapshot {
   if (
     typeof r.selected !== "boolean" ||
     (r.selectedPlayer !== undefined && typeof r.selectedPlayer !== "boolean") ||
+    (r.spectating !== undefined && typeof r.spectating !== "boolean") ||
+    (r.spectatorFollow !== undefined &&
+      r.spectatorFollow !== null &&
+      (!Number.isInteger(r.spectatorFollow) || r.spectatorFollow < 0 || r.spectatorFollow >= 6)) ||
     (r.hoveredUnit !== undefined &&
       r.hoveredUnit !== null &&
       !HOVERED_UNIT_RE.test(r.hoveredUnit)) ||
@@ -301,12 +312,13 @@ export function adaptSnapshot(raw: unknown): Snapshot {
   if (r.nameplates !== undefined) {
     if (!Array.isArray(r.nameplates) || r.nameplates.length > 6)
       throw new Error("Invalid nameplate projections");
+    const tagRe = r.spectating === true ? SPECTATOR_NAMEPLATE_TAG_RE : NAMEPLATE_TAG_RE;
     const len = r.nameplates.length;
     for (let i = 0; i < len; i += 1) {
       const plate = r.nameplates[i];
       if (
         !plate ||
-        !NAMEPLATE_TAG_RE.test(plate.tag) ||
+        !tagRe.test(plate.tag) ||
         !Number.isFinite(plate.x) ||
         !Number.isFinite(plate.y) ||
         plate.x < 0 ||
@@ -368,13 +380,17 @@ export function adaptSnapshot(raw: unknown): Snapshot {
               ? "practice-opponent"
               : `practice-actor-${actor}`,
         name:
-          actor === 0
-            ? "Player"
-            : actor % 2 === 0
-              ? `Teammate ${actor / 2}`
-              : networked
-                ? `Opponent ${Math.floor(actor / 2) + 1}`
-                : `Enemy Bot${actor === 1 ? "" : ` ${Math.floor(actor / 2) + 1}`}`,
+          r.spectating === true
+            ? actor % 2 === 0
+              ? `Team A ${actor / 2 + 1}`
+              : `Team B ${Math.floor(actor / 2) + 1}`
+            : actor === 0
+              ? "Player"
+              : actor % 2 === 0
+                ? `Teammate ${actor / 2}`
+                : networked
+                  ? `Opponent ${Math.floor(actor / 2) + 1}`
+                  : `Enemy Bot${actor === 1 ? "" : ` ${Math.floor(actor / 2) + 1}`}`,
         ...(conn === false ? { disconnected: true } : {}),
       };
     }
@@ -439,7 +455,13 @@ export function adaptSnapshot(raw: unknown): Snapshot {
     ...(scoreboard !== undefined ? { scoreboard } : {}),
     roster,
     networked,
-    player: { ...r.player, ...playerCombat, maxHealth, id: "practice-player", name: "Player" },
+    player: {
+      ...r.player,
+      ...playerCombat,
+      maxHealth,
+      id: "practice-player",
+      name: roster?.[0]?.name ?? "Player",
+    },
     target: {
       ...r.target,
       ...targetCombat,

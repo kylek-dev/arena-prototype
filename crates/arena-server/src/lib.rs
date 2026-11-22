@@ -29,6 +29,7 @@ use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::{Arena, MAX_ROUND_TICKS};
 use arena_sim::map::Layout;
 use axum::Router;
+use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -98,6 +99,11 @@ enum Command {
         appearance: Option<WireAppearance>,
         out: mpsc::Sender<Outbound>,
     },
+    AttachSpectator {
+        player: u64,
+        conn: ConnId,
+        out: mpsc::Sender<Outbound>,
+    },
     Input {
         seat: usize,
         conn: ConnId,
@@ -107,10 +113,13 @@ enum Command {
         seat: usize,
         conn: ConnId,
     },
+    DetachSpectator {
+        conn: ConnId,
+    },
 }
 
 enum Outbound {
-    Frame(Vec<u8>),
+    Frame(Bytes),
     Close(Option<ErrorCode>),
 }
 
@@ -175,18 +184,28 @@ impl App {
     /// starts when the first ticket connects (development and tests; in
     /// production the front door issues tickets).
     pub fn issue_match(&self, team_size: usize) -> Result<NewMatch, CreateError> {
+        self.issue_match_with_spectators(team_size, 0)
+    }
+
+    /// Issues seat tickets plus optional spectator tickets for development
+    /// and bot benchmarks.
+    pub fn issue_match_with_spectators(
+        &self,
+        team_size: usize,
+        spectators: usize,
+    ) -> Result<NewMatch, CreateError> {
         if self.is_draining() {
             return Err(CreateError::Draining);
         }
         let expires = unix_now() + self.config.ticket_ttl.as_secs();
-        ticket::issue_match(&self.config.key, team_size, expires)
+        ticket::issue_match_with_spectators(&self.config.key, team_size, spectators, expires)
             .ok_or(CreateError::InvalidTeamSize)
     }
 
     /// The match a verified ticket names, starting it if this is the first
     /// ticket to arrive. Must be called inside the Tokio runtime.
     fn match_for(self: &Arc<Self>, claims: &Claims) -> Result<mpsc::Sender<Command>, ErrorCode> {
-        if !claims.is_playable() {
+        if !claims.is_valid() {
             return Err(ErrorCode::BadTicket);
         }
         let mut matches = self.matches.lock().expect("match registry lock");
@@ -220,7 +239,7 @@ impl App {
         let id = claims.match_id;
         Metrics::add(&self.metrics.matches_created, 1);
         Metrics::add(&self.metrics.matches_active, 1);
-        eprintln!("match {id:016x}: started for {team_size}v{team_size} by its first player");
+        eprintln!("match {id:016x}: started for {team_size}v{team_size} by its first connection");
         let session = Session::new(arena, map_hash, self.config.limits, self.metrics.clone());
         tokio::spawn(run_match(
             self.clone(),
@@ -243,7 +262,7 @@ impl App {
     }
 }
 
-/// Up to six connections per match; linear scan avoids hashing on every frame.
+/// Seated players and spectators for one match; linear scan avoids hashing on every frame.
 type Conns = Vec<(ConnId, mpsc::Sender<Outbound>)>;
 
 fn insert_conn(conns: &mut Conns, conn: ConnId, sender: mpsc::Sender<Outbound>) {
@@ -285,6 +304,12 @@ fn apply_command(
             log_attach(id, seat, conn, &out);
             out
         }
+        Some(Command::AttachSpectator { player, conn, out }) => {
+            insert_conn(conns, conn, out);
+            let out = session.attach_spectator(player, conn);
+            log_spectator_attach(id, conn, &out);
+            out
+        }
         Some(Command::Input { seat, conn, frame }) => {
             session.receive(seat, conn, frame);
             return;
@@ -295,6 +320,11 @@ fn apply_command(
                 eprintln!("match {id:016x}: seat {seat} disconnected (connection {conn})");
             }
             session.detach(seat, conn);
+            return;
+        }
+        Some(Command::DetachSpectator { conn }) => {
+            remove_conn(conns, conn);
+            session.detach_spectator(conn);
             return;
         }
         None => session.shut_down(),
@@ -344,7 +374,18 @@ async fn run_match(
                             };
                             bytes_out += frame.len() as u64;
                             if let Err(mpsc::error::TrySendError::Full(_)) =
-                                sender.try_send(Outbound::Frame(frame))
+                                sender.try_send(Outbound::Frame(Bytes::from(frame)))
+                            {
+                                frames_dropped += 1;
+                            }
+                        }
+                        EncodedOut::SharedFrame { conn, frame } => {
+                            let Some(sender) = get_conn(&conns, conn) else {
+                                return;
+                            };
+                            bytes_out += frame.len() as u64;
+                            if let Err(mpsc::error::TrySendError::Full(_)) =
+                                sender.try_send(Outbound::Frame(Bytes::from_owner(frame)))
                             {
                                 frames_dropped += 1;
                             }
@@ -448,6 +489,26 @@ fn log_attach(id: u64, seat: usize, conn: ConnId, out: &[Out]) {
     }
 }
 
+fn log_spectator_attach(id: u64, conn: ConnId, out: &[Out]) {
+    for out in out {
+        match out {
+            Out::Send {
+                conn: to,
+                message: ServerMessage::Welcome(_),
+            } if *to == conn => {
+                eprintln!("match {id:016x}: spectator joined (connection {conn})");
+            }
+            Out::Close {
+                conn: refused,
+                error: Some(code),
+            } if *refused == conn => {
+                eprintln!("match {id:016x}: spectator refused connection {conn}: {code:?}");
+            }
+            _ => {}
+        }
+    }
+}
+
 fn deliver(app: &App, id: u64, conns: &mut Conns, out: Vec<Out>) {
     let mut bytes_out = 0u64;
     let mut frames_dropped = 0u64;
@@ -466,7 +527,7 @@ fn deliver(app: &App, id: u64, conns: &mut Conns, out: Vec<Out>) {
                 let frame = message.encode();
                 bytes_out += frame.len() as u64;
                 if let Err(mpsc::error::TrySendError::Full(_)) =
-                    sender.try_send(Outbound::Frame(frame))
+                    sender.try_send(Outbound::Frame(Bytes::from(frame)))
                 {
                     frames_dropped += 1;
                 }
@@ -515,10 +576,15 @@ async fn render_metrics(State(app): State<Arc<App>>) -> String {
 #[derive(Deserialize)]
 struct DevMatchQuery {
     team_size: Option<usize>,
+    spectators: Option<usize>,
 }
 
 async fn dev_match(State(app): State<Arc<App>>, Query(query): Query<DevMatchQuery>) -> Response {
-    match app.issue_match(query.team_size.unwrap_or(1)) {
+    let spectators = query.spectators.unwrap_or(0);
+    if spectators > 64 {
+        return (StatusCode::BAD_REQUEST, "spectators must be at most 64").into_response();
+    }
+    match app.issue_match_with_spectators(query.team_size.unwrap_or(1), spectators) {
         Ok(created) => axum::Json(created).into_response(),
         Err(CreateError::Draining) => (StatusCode::SERVICE_UNAVAILABLE, "draining").into_response(),
         Err(CreateError::InvalidTeamSize) => {
@@ -602,6 +668,13 @@ impl Drop for OpenConnection<'_> {
     }
 }
 
+struct OpenSpectator<'a>(&'a Metrics);
+impl Drop for OpenSpectator<'_> {
+    fn drop(&mut self) {
+        Metrics::sub(&self.0.spectators_open, 1);
+    }
+}
+
 async fn reject(socket: &mut WebSocket, app: &App, code: ErrorCode) {
     app.metrics.record_error(code);
     let frame = ServerMessage::Error(code).encode();
@@ -612,7 +685,7 @@ async fn reject(socket: &mut WebSocket, app: &App, code: ErrorCode) {
 /// Sends one message from the match; `false` once the connection is done.
 async fn forward(socket: &mut WebSocket, app: &App, outgoing: Outbound) -> bool {
     match outgoing {
-        Outbound::Frame(frame) => socket.send(Message::Binary(frame.into())).await.is_ok(),
+        Outbound::Frame(frame) => socket.send(Message::Binary(frame)).await.is_ok(),
         Outbound::Close(Some(code)) => {
             reject(socket, app, code).await;
             false
@@ -662,26 +735,35 @@ async fn connection(mut socket: WebSocket, app: Arc<App>, _slot: OpenSlot) {
     };
     if app.config.debug_json {
         eprintln!(
-            "conn {conn} hello: match {:016x} seat {}",
-            claims.match_id, claims.seat
+            "conn {conn} hello: match {:016x} role {:?}",
+            claims.match_id, claims.role
         );
     }
     let commands = match app.match_for(&claims) {
         Ok(commands) => commands,
         Err(code) => return reject(&mut socket, &app, code).await,
     };
-    let seat = usize::from(claims.seat);
     let (out_sender, mut outbound) = mpsc::channel(OUTBOUND_QUEUE);
-    if commands
-        .send(Command::Attach {
-            seat,
+    let _spec_open = if claims.is_spectator() {
+        Metrics::add(&app.metrics.spectators_open, 1);
+        Some(OpenSpectator(&app.metrics))
+    } else {
+        None
+    };
+    let attach = match claims.role {
+        ticket::Role::Player { seat } => Command::Attach {
+            seat: usize::from(seat),
             conn,
             appearance,
             out: out_sender,
-        })
-        .await
-        .is_err()
-    {
+        },
+        ticket::Role::Spectator => Command::AttachSpectator {
+            player: claims.player,
+            conn,
+            out: out_sender,
+        },
+    };
+    if commands.send(attach).await.is_err() {
         return reject(&mut socket, &app, ErrorCode::MatchOver).await;
     }
 
@@ -720,6 +802,10 @@ async fn connection(mut socket: WebSocket, app: Arc<App>, _slot: OpenSlot) {
                 }
                 match message {
                     ClientMessage::Input(frame) => {
+                        // Watch-only spectators never act: inputs are strictly ignored.
+                        let Some(seat) = claims.seat() else {
+                            continue;
+                        };
                         if commands.send(Command::Input { seat, conn, frame }).await.is_err() {
                             // The match task has ended; it queued its last
                             // word (usually `MatchOver`) before exiting.
@@ -756,7 +842,14 @@ async fn connection(mut socket: WebSocket, app: Arc<App>, _slot: OpenSlot) {
             },
         }
     }
-    let _ = commands.send(Command::Detach { seat, conn }).await;
+    let detach = match claims.role {
+        ticket::Role::Player { seat } => Command::Detach {
+            seat: usize::from(seat),
+            conn,
+        },
+        ticket::Role::Spectator => Command::DetachSpectator { conn },
+    };
+    let _ = commands.send(detach).await;
 }
 
 /// A started server. Dropping it leaves the server running until the

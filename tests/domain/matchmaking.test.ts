@@ -207,7 +207,7 @@ describe("custom lobbies", () => {
     type: "lobby",
     code: "M9Q3RT",
     mode: "2v2",
-    settings: { version: 1, map: "colosseum", round_seconds: 600 },
+    settings: { version: 1, map: "colosseum", round_seconds: 600, allow_spectators: true },
     spectator_slots: 4,
     you: 1,
     host: true,
@@ -225,7 +225,7 @@ describe("custom lobbies", () => {
       lobby: {
         code: "M9Q3RT",
         mode: "2v2",
-        settings: { version: 1, map: "colosseum", roundSeconds: 600 },
+        settings: { version: 1, map: "colosseum", roundSeconds: 600, allowSpectators: true },
         spectatorSlots: 4,
         you: 1,
         host: true,
@@ -240,17 +240,21 @@ describe("custom lobbies", () => {
       type: "lobby_left",
       reason: "kicked",
     });
-    expect(
-      parseQueueMessage('{"type":"lobby_started","mode":"1v1","match_id":"0123456789abcdef"}'),
-    ).toEqual({
-      type: "lobby_started",
-      mode: "1v1",
-      matchId: "0123456789abcdef",
-    });
+    expect(parseQueueMessage(JSON.stringify({ ...MATCH, seat: 0, spectator: true }))).toMatchObject(
+      {
+        type: "match",
+        spectator: true,
+        ticket: { spectator: true },
+      },
+    );
     for (const bad of [
       { ...LOBBY_WIRE, settings: { version: 2, map: "colosseum", round_seconds: 600 } },
       { ...LOBBY_WIRE, settings: { version: 1, map: "../hack", round_seconds: 600 } },
       { ...LOBBY_WIRE, settings: { version: 1, map: "colosseum", round_seconds: 123 } },
+      {
+        ...LOBBY_WIRE,
+        settings: { version: 1, map: "colosseum", round_seconds: 600, allow_spectators: "yes" },
+      },
       { ...LOBBY_WIRE, members: [] },
       { ...LOBBY_WIRE, members: [{ id: 1, slot: "team_c", host: true, you: true }] },
       { type: "lobby_left", reason: "other" },
@@ -266,16 +270,23 @@ describe("custom lobbies", () => {
     expect(parseCustomFragment("#custom=000000")).toBeNull();
     expect(formatRoundLimit(300)).toBe("5 min");
     expect(
-      JSON.parse(requests.setLobbySettings({ version: 1, map: "colosseum", roundSeconds: 300 })),
+      JSON.parse(
+        requests.setLobbySettings({
+          version: 1,
+          map: "colosseum",
+          roundSeconds: 300,
+          allowSpectators: false,
+        }),
+      ),
     ).toEqual({
       type: "set_lobby_settings",
-      settings: { version: 1, map: "colosseum", round_seconds: 300 },
+      settings: { version: 1, map: "colosseum", round_seconds: 300, allow_spectators: false },
     });
 
     const lobby: CustomLobby = {
       code: "M9Q3RT",
       mode: "1v1",
-      settings: { version: 1, map: "colosseum", roundSeconds: 600 },
+      settings: { version: 1, map: "colosseum", roundSeconds: 600, allowSpectators: true },
       spectatorSlots: 4,
       you: 1,
       host: true,

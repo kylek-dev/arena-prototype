@@ -205,6 +205,7 @@ pub struct Session {
     greeted: Option<u32>,
     pub phase: Phase,
     seat: Option<usize>,
+    spectator: bool,
     /// `order[local] = server actor`.
     order: Vec<usize>,
     map: Option<u64>,
@@ -324,9 +325,15 @@ impl Session {
             .collect();
         serde_json::to_string(&entries).expect("appearances serialize to json")
     }
-    /// Whether intent should be sent now.
+    /// Whether intent should be sent now (never true while spectating).
     pub fn joined(&self) -> bool {
-        self.seat.is_some() && matches!(self.phase, Phase::Waiting | Phase::Playing)
+        !self.spectator
+            && self.seat.is_some()
+            && matches!(self.phase, Phase::Waiting | Phase::Playing)
+    }
+    /// Whether this connection is a watch-only spectator.
+    pub fn is_spectator(&self) -> bool {
+        self.spectator
     }
 
     /// Takes the runtime's feed for this frame and returns this player's
@@ -370,21 +377,27 @@ impl Session {
             match message {
                 ServerMessage::Welcome(welcome) => {
                     let count = usize::from(welcome.team_size) * 2;
-                    let seat = usize::from(welcome.actor);
-                    if seat >= count
+                    let seat = welcome.seat();
+                    let invalid_seat = if welcome.spectator {
+                        welcome.actor != 0
+                    } else {
+                        seat.is_none_or(|s| s >= count)
+                    };
+                    if invalid_seat
                         || welcome.round_ticks == 0
                         || welcome.round_ticks > MAX_ROUND_TICKS
                     {
                         self.phase = Phase::Closed(ErrorCode::Malformed);
                         continue;
                     }
-                    if self.seat != Some(seat)
+                    if self.spectator != welcome.spectator
+                        || self.seat != seat
                         || self.order.len() != count
                         || self.snapshots.back().is_some_and(|newest| {
                             newest.tick > welcome.tick || newest.result.is_some()
                         })
                     {
-                        // A different seat, match, finished round, or tick rewind: nothing buffered applies.
+                        // A different role, seat, match, finished round, or tick rewind: nothing buffered applies.
                         self.snapshots.clear();
                         self.events.clear();
                         self.view_tick = None;
@@ -395,15 +408,21 @@ impl Session {
                             self.appearances_version += 1;
                         }
                     }
-                    self.seat = Some(seat);
-                    self.order = seat_order(seat, count);
+                    self.spectator = welcome.spectator;
+                    self.seat = seat;
+                    self.order = match seat {
+                        Some(seat) => seat_order(seat, count),
+                        None => (0..count).collect(),
+                    };
                     self.map = Some(welcome.map);
                     self.round_ticks = Some(welcome.round_ticks);
                     self.predictor.set_round_limit(welcome.round_ticks);
                     self.phase = Phase::Waiting;
                 }
                 ServerMessage::Snapshot(snapshot) => {
-                    if self.seat.is_none() || snapshot.fighters.len() != self.order.len() {
+                    if (self.seat.is_none() && !self.spectator)
+                        || snapshot.fighters.len() != self.order.len()
+                    {
                         continue;
                     }
                     while self
@@ -426,9 +445,11 @@ impl Session {
                         Some((snapshot.tick, authoritative.clone(), result, snapshot.ack));
                     if snapshot.tick > 0 {
                         frame_ticks.push(snapshot.tick);
-                        self.pacer.observe(snapshot.queued);
-                        self.stats.queued = self.pacer.average();
-                        self.stats.queued_min = self.pacer.minimum();
+                        if !self.spectator {
+                            self.pacer.observe(snapshot.queued);
+                            self.stats.queued = self.pacer.average();
+                            self.stats.queued_min = self.pacer.minimum();
+                        }
                     }
                     if (2..=arena_protocol::MAX_FIGHTERS).contains(&authoritative.len())
                         && authoritative.len().is_multiple_of(2)
@@ -525,7 +546,9 @@ impl Session {
                 }
                 ServerMessage::Error(code) => self.phase = Phase::Closed(code),
                 ServerMessage::Appearances(server_looks) => {
-                    if self.seat.is_none() || server_looks.len() != self.order.len() {
+                    if (self.seat.is_none() && !self.spectator)
+                        || server_looks.len() != self.order.len()
+                    {
                         continue;
                     }
                     let local: Vec<Option<WireAppearance>> = self
@@ -640,7 +663,7 @@ impl Session {
     /// turning; a reconnect to the same seat keeps it. Joining a new match
     /// thus starts facing out of the starting room, toward the other team.
     pub fn take_initial_heading(&mut self) -> Option<f32> {
-        if self.heading_taken {
+        if self.spectator || self.heading_taken {
             return None;
         }
         let own = self.snapshots.back()?.fighters.first()?;
@@ -837,9 +860,11 @@ impl Session {
         )
     }
 
-    /// A ping once a second while joined.
+    /// A ping once a second while connected (seated players and spectators alike).
     pub fn ping(&mut self, now: f64) -> Option<Vec<u8>> {
-        if !self.joined() || self.last_ping.is_some_and(|last| now - last < 1.0) {
+        let active = self.joined()
+            || (self.spectator && matches!(self.phase, Phase::Waiting | Phase::Playing));
+        if !active || self.last_ping.is_some_and(|last| now - last < 1.0) {
             return None;
         }
         self.last_ping = Some(now);
@@ -951,9 +976,10 @@ impl Session {
         };
         let number = |value: Option<f64>| value.map_or("null".into(), |v| format!("{v:.1}"));
         format!(
-            r#"{{"phase":"{phase}","error":{},"seat":{},"mapDiffers":{},"rttMs":{},"inputMs":{},"delayMs":{:.1},"snapshots":{},"underruns":{},"hashMismatches":{},"predictedTicks":{},"corrections":{},"lastCorrectionMm":{},"queued":{},"queuedMin":{},"pace":{:.3},"skippedInputs":{},"stepsPerSecond":{},"sentPerSecond":{},"tickRate":{}}}"#,
+            r#"{{"phase":"{phase}","error":{},"seat":{},"spectator":{},"mapDiffers":{},"rttMs":{},"inputMs":{},"delayMs":{:.1},"snapshots":{},"underruns":{},"hashMismatches":{},"predictedTicks":{},"corrections":{},"lastCorrectionMm":{},"queued":{},"queuedMin":{},"pace":{:.3},"skippedInputs":{},"stepsPerSecond":{},"sentPerSecond":{},"tickRate":{}}}"#,
             error.map_or("null".into(), |code| format!("\"{code:?}\"")),
             self.seat.map_or("null".into(), |seat| seat.to_string()),
+            self.spectator,
             self.map_differs().unwrap_or(false),
             number(self.stats.rtt_ms),
             number(self.stats.input_ms),

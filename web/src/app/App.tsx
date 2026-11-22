@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { TooltipProvider } from "../ui/Tooltip";
 import { Theme } from "@radix-ui/themes";
 import { Frames } from "../features/unit-frames/Frames";
@@ -17,6 +18,7 @@ import { MatchStatus } from "../features/match-status/MatchStatus";
 import { RoundClock } from "../features/round-clock/RoundClock";
 import { Scoreboard } from "../features/scoreboard/Scoreboard";
 import { CustomLobby } from "../features/custom-lobby/CustomLobby";
+import { SpectatorHud } from "../features/spectator/SpectatorHud";
 import { MatchReady } from "../features/queue/MatchReady";
 import { QueueBar } from "../features/queue/QueueBar";
 import { Loading } from "../features/loading/Loading";
@@ -27,7 +29,7 @@ import { Customizer } from "../features/customizer/Customizer";
 import { beforeMatch, customizerVisible } from "../state/appearance";
 import { StartScreen } from "../features/customizer/StartScreen";
 import { Modal } from "../ui/Dialog";
-import { draggingSpell, interaction, setPanel } from "../state/session";
+import { draggingSpell, engine, interaction, setPanel } from "../state/session";
 import { saveMessage, useConfigSelector } from "../state/config";
 import { useStore } from "../state/store";
 import { pendingBinding } from "../state/binding-capture";
@@ -40,6 +42,20 @@ export function App() {
   const dragging = useStore(draggingSpell, (s) => s);
   const customizing = useStore(customizerVisible, (s) => s);
   const lobby = useStore(beforeMatch, (s) => s);
+  const spectating = useStore(engine, (s) => Boolean(s?.spectating));
+  useEffect(() => {
+    if (!spectating) return;
+    const current = interaction.get();
+    if (current.panel === "spellbook" || current.layout || current.quick || current.capture) {
+      interaction.set({
+        ...current,
+        panel: current.panel === "spellbook" ? null : current.panel,
+        layout: false,
+        quick: false,
+        capture: null,
+      });
+    }
+  }, [spectating]);
   const menuBindings = useConfigSelector((c) => c.bindings.menu);
   const menuKey = menuBindings?.find(Boolean);
   const title =
@@ -70,15 +86,21 @@ export function App() {
             <span className="menu-hint">{menuKey ? label(menuKey) : "Shift+Tab"} · Menu</span>
             <Nameplates />
             <CombatText />
-            <Frames />
-            <UnitTooltip />
-            <ActionBars />
-            <SpellDragPreview />
-            <CombatErrors />
+            {spectating ? (
+              <SpectatorHud />
+            ) : (
+              <>
+                <Frames />
+                <UnitTooltip />
+                <ActionBars />
+                <SpellDragPreview />
+                <CombatErrors />
+                <QuickBinding />
+                <LayoutToolbar />
+              </>
+            )}
             <RoundClock />
             <MatchStatus />
-            <QuickBinding />
-            <LayoutToolbar />
           </>
         )}
         <Diagnostics />
@@ -92,7 +114,7 @@ export function App() {
         <StartScreen />
         <Customizer />
         <Loading />
-        {mode.panel && (
+        {mode.panel && !(spectating && mode.panel === "spellbook") && (
           <Modal
             key={mode.panel}
             title={title}

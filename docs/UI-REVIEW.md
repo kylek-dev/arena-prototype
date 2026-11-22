@@ -116,3 +116,19 @@ Manual review checklist before merge/release:
 - Verify **Minimize** → `QueueBar` pill → **Open lobby** layering (including with `RoundClock`, `MatchStatus`, `CombatErrors`, `Customizer`, and `Escape`), and verify **Return to lobby** on the post-match scoreboard starts a rematch cleanly without new invites.
 
 Automated checks passed locally (`./scripts/check.sh`, `cargo run -p arena-headless --locked`, `./scripts/server-smoke.sh`, `npm run build`, `cargo clippy -p arena-client --target wasm32-unknown-unknown --locked -- -D warnings`, and `./scripts/build-web.sh`); no browser was launched and no rendered, visual, or networked pass is claimed.
+
+### 2026-11-22 — Live spectating HUD, camera views, and custom-lobby spectator toggle (`auto/spectating`) — pending human review
+
+Scope:
+
+- `web/src/features/spectator/SpectatorHud.tsx` and `web/src/features/spectator/spectator.css` (registered in `web/src/styles/global.css` and mounted in `web/src/app/App.tsx`): watch-only spectator HUD replacing combat unit frames, action bars, spellbook, and targeting controls with left/right Team A and Team B unit-frame columns (showing health, resource, cast bars, lockouts, and disconnected badges) and a bottom camera control toolbar (`Spectating · 5s delay`, active view label, **Free camera**, **Prev** / **Next** fighter cycle, and **Leave**).
+- `crates/arena-client/src/lib.rs` (`SpectatorCamera`) and `web/input.js` (index 20 `spectatorCmd`): free-camera flight (WASD + Space rise + drag look + wheel dolly clamped inside the colosseum stands) and follow-a-player orbit camera (clicking any team frame, overhead nameplate including actor 0, or Prev/Next).
+- `web/src/features/custom-lobby/CustomLobby.tsx`, `web/src/features/round-clock/RoundClock.tsx`, `web/src/features/scoreboard/Scoreboard.tsx`, and `web/src/features/menu/GameMenu.tsx`: host-controlled **Allow spectators** setting in custom lobbies, neutral `Team A` / `Team B` labels and `"Team A wins"` / `"Team B wins"` outcomes in `RoundClock` and `Scoreboard` (without `"You"` highlight or public **Queue again**), and `"Spectating match"` menu hiding Spells / Edit layout / Quick binding.
+
+Manual review checklist before merge/release:
+
+- Host a 1v1 or 2v2 custom match with a third tab in the **Spectators** slot, start the match, and verify the spectator connects cleanly, trails live play by 5 seconds, sees both teams' unit frames, cast bars, resources, lockouts, round clock, and overhead nameplates (including actor 0), and has no action bars or targeting controls.
+- Test free-camera movement (WASD, Space, mouse drag, scroll wheel) across the colosseum stands and switching to/from follow-a-player view via side team frames, overhead nameplates, **Prev** / **Next**, and **Free camera** (including `Tab` / `Escape` shortcuts).
+- Verify post-match spectator scoreboard displays neutral `Team A` / `Team B` results and **Return to lobby** / **Leave** cleanly after the delayed drain completes, and verify the host **Allow spectators** toggle blocks spectator joins when turned off.
+
+Automated checks passed locally (`./scripts/check.sh`, `cargo run -p arena-headless --locked`, `./scripts/server-smoke.sh`, `npm run build`, `cargo clippy -p arena-client --target wasm32-unknown-unknown --locked -- -D warnings`, `./scripts/build-web.sh`, and isolated release `arena-bot` spectator cost benchmark); no browser was launched and no rendered, visual, or networked pass is claimed.

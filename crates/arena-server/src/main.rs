@@ -33,8 +33,8 @@ use arena_sim::arena::MAX_ROUND_TICKS;
 
 const MAX_ROUND_SECONDS: u64 = MAX_ROUND_TICKS / TICKS_PER_SECOND;
 const USAGE: &str = "usage: arena-server [--bind ADDR] [--dev] [--debug-json] [--drain-seconds N] \
-[--round-seconds N] [--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]... \
-[--connections-per-address N]";
+[--round-seconds N] [--spectator-delay-seconds N] [--max-spectators N] [--allow-origin URL]... \
+[--any-origin] [--trusted-proxy CIDR]... [--connections-per-address N]";
 /// How often a drain reports the matches it is waiting for.
 const DRAIN_REPORT: Duration = Duration::from_secs(10);
 
@@ -96,6 +96,8 @@ async fn run() -> Result<(), String> {
     let mut debug_json = false;
     let mut drain_seconds = None;
     let mut round_seconds = None;
+    let mut spectator_delay_seconds: Option<u64> = None;
+    let mut max_spectators: Option<usize> = None;
     let mut allowed = Vec::new();
     let mut any_origin = false;
     let mut trusted_proxies = Vec::new();
@@ -126,6 +128,26 @@ async fn run() -> Result<(), String> {
                         .parse()
                         .map_err(|_| format!("invalid --round-seconds {value}"))?,
                 );
+            }
+            "--spectator-delay-seconds" => {
+                let value = args.next().ok_or(USAGE)?;
+                let parsed: u64 = value
+                    .parse()
+                    .map_err(|_| format!("invalid --spectator-delay-seconds {value}"))?;
+                if parsed > 60 {
+                    return Err("--spectator-delay-seconds must be between 0 and 60".into());
+                }
+                spectator_delay_seconds = Some(parsed);
+            }
+            "--max-spectators" => {
+                let value = args.next().ok_or(USAGE)?;
+                let parsed: usize = value
+                    .parse()
+                    .map_err(|_| format!("invalid --max-spectators {value}"))?;
+                if parsed > 64 {
+                    return Err("--max-spectators must be between 0 and 64".into());
+                }
+                max_spectators = Some(parsed);
             }
             "--allow-origin" => {
                 let value = args.next().ok_or(USAGE)?;
@@ -170,6 +192,12 @@ async fn run() -> Result<(), String> {
     config.origins = origins;
     config.trusted_proxies = trusted_proxies;
     config.round_ticks = round_ticks;
+    if let Some(delay) = spectator_delay_seconds {
+        config.limits.spectator_delay = delay * TICKS_PER_SECOND;
+    }
+    if let Some(cap) = max_spectators {
+        config.limits.max_spectators = cap;
+    }
     if let Some(limit) = connections_per_address {
         config.connections_per_address = limit;
     } else if dev {

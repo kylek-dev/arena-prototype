@@ -133,7 +133,12 @@ export function createLink(deps: LinkDeps) {
     // The seat is gone for good: do not offer it again later. A seat taken
     // by another tab still exists, so it stays on offer ("Play here").
     if (reason !== null && reason !== "Replaced") store(deps.device, DEVICE_KEY, null);
-    update({ phase: reason === null ? "idle" : "ended", ended: reason, attempt: 0 });
+    update({
+      phase: reason === null ? "idle" : "ended",
+      ended: reason,
+      attempt: 0,
+      ...(reason === null ? { spectator: false } : {}),
+    });
   };
   const connect = () => {
     stopTimer();
@@ -196,10 +201,16 @@ export function createLink(deps: LinkDeps) {
     join(next: MatchTicket) {
       end(null);
       ticket = next;
-      lockedLook = deps.appearance?.() ?? null;
+      lockedLook = next.spectator ? null : (deps.appearance?.() ?? null);
       store(deps.tab, TAB_KEY, next);
       store(deps.device, DEVICE_KEY, next);
-      update({ phase: "connecting", attempt: 0, ended: null, status: null });
+      update({
+        phase: "connecting",
+        attempt: 0,
+        ended: null,
+        spectator: Boolean(next.spectator),
+        status: null,
+      });
       connect();
     },
     /** Leaves the match on this tab; the device still offers a rejoin while the match is live. */

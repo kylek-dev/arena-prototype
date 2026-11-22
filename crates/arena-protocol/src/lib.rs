@@ -26,7 +26,8 @@ use serde::{Deserialize, Serialize};
 /// 4: `InputFrame.view_tick` for bounded server-side targeting lag compensation (ADR 0049).
 /// 5: `FighterScore` and `Snapshot.scoreboard` for server-authoritative end-of-match totals.
 /// 6: `WireAppearance` on `ClientMessage::Hello` and `ServerMessage::Appearances` per-seat relay.
-pub const PROTOCOL_VERSION: u16 = 6;
+/// 7: `Welcome.spectator` for watch-only delayed spectator connections.
+pub const PROTOCOL_VERSION: u16 = 7;
 /// Bumped whenever a rules change could alter a replayed outcome.
 /// 2: rounds end in a draw after twenty minutes (`MAX_ROUND_TICKS`).
 /// 3: time-limit draws are distinct from mutual-elimination draws and round limits are explicit.
@@ -237,7 +238,7 @@ pub enum ServerMessage {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Welcome {
     pub protocol: u16,
-    /// The seat this connection controls, derived from its ticket.
+    /// The seat this connection controls, derived from its ticket (`0` for spectators).
     pub actor: u8,
     pub team_size: u8,
     pub tick: u64,
@@ -247,6 +248,14 @@ pub struct Welcome {
     pub rules: u32,
     /// Digest of the match layout.
     pub map: u64,
+    /// `true` for a watch-only spectator connection with no seat.
+    pub spectator: bool,
+}
+impl Welcome {
+    /// The seat this connection controls, or `None` when spectating.
+    pub fn seat(&self) -> Option<usize> {
+        (!self.spectator).then_some(usize::from(self.actor))
+    }
 }
 
 /// Authoritative per-seat combat totals delivered in a finished match's final
@@ -585,6 +594,15 @@ impl WireEvent {
             }
         }
     }
+
+    /// Translates public arena events for a spectator connection.
+    /// Private per-seat rejections (`ArenaEvent::Rejected`) are never sent.
+    pub fn for_spectator(event: &ArenaEvent) -> Option<Self> {
+        match event {
+            ArenaEvent::Rejected { .. } => None,
+            _ => Self::for_recipient(event, 0),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -696,8 +714,13 @@ impl ClientMessage {
 
 fn valid_welcome(welcome: &Welcome) -> bool {
     let team_size = usize::from(welcome.team_size);
+    let actor_valid = if welcome.spectator {
+        welcome.actor == 0
+    } else {
+        usize::from(welcome.actor) < team_size * 2
+    };
     (1..=MAX_FIGHTERS / 2).contains(&team_size)
-        && usize::from(welcome.actor) < team_size * 2
+        && actor_valid
         && welcome.tick_rate > 0
         && welcome.round_ticks > 0
         && welcome.round_ticks <= MAX_ROUND_TICKS

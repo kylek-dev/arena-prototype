@@ -204,6 +204,7 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
         input.mouseButtons === 3
           ? -1
           : Number(resolver.active("back")) - Number(resolver.active("forward") || input.autorun);
+      if (engine.get()?.spectating && resolver.active("jump")) result[14] = 1;
       return result;
     },
     dispose() {

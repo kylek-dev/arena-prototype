@@ -19,7 +19,7 @@ use arena_bot::link::Link;
 use arena_bot::queue::QueueScenario;
 use arena_bot::{Scenario, run};
 
-const USAGE: &str = "usage: arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3] [--seconds S] [--rtt MS] [--jitter MS] [--loss-pct PCT] [--clump-ms MS] [--interp-delay-ms MS] [--adaptive-interp] [--unpaced] [--reconnect-every S] [--away-ms MS] [--seed N] [--server-pid PID] [--json] [--queue MODE --door HOST:PORT [--bots N]]";
+const USAGE: &str = "usage: arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3] [--spectators N] [--seconds S] [--rtt MS] [--jitter MS] [--loss-pct PCT] [--clump-ms MS] [--interp-delay-ms MS] [--adaptive-interp] [--unpaced] [--reconnect-every S] [--away-ms MS] [--seed N] [--server-pid PID] [--json] [--queue MODE --door HOST:PORT [--bots N]]";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -68,6 +68,7 @@ fn parse_args<I: IntoIterator<Item = String>>(iter: I) -> Result<(Option<Scenari
         server: "127.0.0.1:8080".into(),
         matches: 1,
         team_size: 1,
+        spectators_per_match: 0,
         duration: Duration::from_secs(10),
         link: Link::default(),
         paced: true,
@@ -96,6 +97,15 @@ fn parse_args<I: IntoIterator<Item = String>>(iter: I) -> Result<(Option<Scenari
             "--matches" => scenario.matches = number("--matches", value("--matches")?)? as usize,
             "--team-size" => {
                 scenario.team_size = number("--team-size", value("--team-size")?)? as usize;
+            }
+            "--spectators" => {
+                let parsed = number("--spectators", value("--spectators")?)? as usize;
+                if parsed > 16 {
+                    return Err(format!(
+                        "--spectators must be at most 16, got {parsed}\n{USAGE}"
+                    ));
+                }
+                scenario.spectators_per_match = parsed;
             }
             "--seconds" => {
                 scenario.duration = Duration::from_secs(number("--seconds", value("--seconds")?)?);

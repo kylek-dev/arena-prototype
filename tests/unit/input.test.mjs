@@ -327,8 +327,24 @@ test('the Rust bridge input array keeps its positional contract and drains delta
   input.wheel(-30);
   down(input, 2, 2);
   move(input, 2, 10, 5);
-  assert.deepEqual(input.readInput(), [0, -1, 1, 1, 0, 0, 10, 5, 120, -1, -1, 1, 0, 0, 0, -1, -1, -1, 0, 1]);
-  assert.deepEqual(input.readInput(), [0, -1, 0, 0, 0, 0, 0, 0, 0, -1, -1, 1, 0, 0, 0, -1, -1, -1, 0, 0]);
+  assert.deepEqual(input.readInput(), [0, -1, 1, 1, 0, 0, 10, 5, 120, -1, -1, 1, 0, 0, 0, -1, -1, -1, 0, 1, -2]);
+  assert.deepEqual(input.readInput(), [0, -1, 0, 0, 0, 0, 0, 0, 0, -1, -1, 1, 0, 0, 0, -1, -1, -1, 0, 0, -2]);
+});
+
+test('requestSpectatorCamera encodes free and follow actor commands at index 20 and drains once', () => {
+  const input = new InputState();
+  assert.equal(input.readInput()[20], -2);
+  input.requestSpectatorCamera(3);
+  assert.equal(input.readInput()[20], 3);
+  assert.equal(input.readInput()[20], -2);
+  input.requestSpectatorCamera('free');
+  assert.equal(input.readInput()[20], -1);
+  assert.equal(input.readInput()[20], -2);
+  input.requestSpectatorCamera(99);
+  assert.equal(input.readInput()[20], -2);
+  input.requestSpectatorCamera(1);
+  input.cancel();
+  assert.equal(input.readInput()[20], -2);
 });
 
 test('requestCast encodes each arena spell in the appended bridge field and drains once', () => {

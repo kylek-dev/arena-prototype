@@ -28,8 +28,8 @@ In recommended order (2026-11-15):
 | done | Show the round clock and settle the time-limit result (browser review & playtest tie-break tuning pending) | 3 | [round-clock](issues/round-clock.md) |
 | done | Show a scoreboard with per-player stats, Leave and Queue again when a match ends (browser review pending; CC columns wait for CC effects) | 4 | [scoreboard](issues/scoreboard.md) |
 | done | Host private custom matches with invites, teams, versioned settings, spectator slots and rematch (browser review pending) | 4 | [custom-matches](issues/custom-matches.md) |
-| 5 | Make cast times, cooldowns, resources and interrupts server-authoritative | 3 | [server-casting-resources](issues/server-casting-resources.md) |
-| 6 | Spectate matches | 4 | [spectating](issues/spectating.md) |
+| done | Make cast times, cooldowns, resources and interrupts server-authoritative ([ADR 0048](../docs/decisions/0048-server-authoritative-casting-and-resources.md)) | 3 | [server-casting-resources](issues/server-casting-resources.md) |
+| done | Spectate matches with 5 s anti-ghosting delay, free/follow camera and watch-only HUD ([ADR 0050](../docs/decisions/0050-spectating-and-anti-ghosting-delay.md); browser review pending) | 4 | [spectating](issues/spectating.md) |
 | ongoing | Review the network match experience across browsers (manual, by the user) | 2 | [network-ui-review](issues/network-ui-review.md) |
 | ongoing | Measure and harden netcode on real networks | ongoing | [netcode-hardening](issues/netcode-hardening.md) |
 

@@ -88,10 +88,17 @@ impl CustomLobby {
         let size = self.mode.team_size();
         self.count(LobbySlot::TeamA) == size && self.count(LobbySlot::TeamB) == size
     }
+    fn spectator_capacity(&self) -> usize {
+        if self.settings.allow_spectators {
+            MAX_LOBBY_SPECTATORS
+        } else {
+            0
+        }
+    }
     fn has_space(&self, slot: LobbySlot) -> bool {
         match slot {
             LobbySlot::TeamA | LobbySlot::TeamB => self.count(slot) < self.mode.team_size(),
-            LobbySlot::Spectator => self.count(LobbySlot::Spectator) < MAX_LOBBY_SPECTATORS,
+            LobbySlot::Spectator => self.count(LobbySlot::Spectator) < self.spectator_capacity(),
         }
     }
     fn next_open_slot(&self) -> Option<LobbySlot> {
@@ -102,7 +109,7 @@ impl CustomLobby {
             Some(LobbySlot::TeamA)
         } else if team_b < size {
             Some(LobbySlot::TeamB)
-        } else if self.count(LobbySlot::Spectator) < MAX_LOBBY_SPECTATORS {
+        } else if self.count(LobbySlot::Spectator) < self.spectator_capacity() {
             Some(LobbySlot::Spectator)
         } else {
             None
@@ -121,7 +128,7 @@ impl CustomLobby {
             code: self.code.clone(),
             mode: self.mode,
             settings: self.settings,
-            spectator_slots: MAX_LOBBY_SPECTATORS,
+            spectator_slots: self.spectator_capacity(),
             you,
             host: you == self.host && you != 0,
             can_start: self.can_start(),
@@ -305,6 +312,12 @@ impl Matchmaker {
         if current == slot {
             return Vec::new();
         }
+        if slot == LobbySlot::Spectator && !lobby.settings.allow_spectators {
+            return vec![Out::Refused {
+                conn,
+                reason: Refused::SpectatorsDisabled,
+            }];
+        }
         if lobby.has_space(slot) {
             lobby.members[index].slot = slot;
         } else if lobby.is_host(conn)
@@ -357,6 +370,12 @@ impl Matchmaker {
         let current = lobby.members[index].slot;
         if current == slot {
             return Vec::new();
+        }
+        if slot == LobbySlot::Spectator && !lobby.settings.allow_spectators {
+            return vec![Out::Refused {
+                conn,
+                reason: Refused::SpectatorsDisabled,
+            }];
         }
         if lobby.has_space(slot) {
             lobby.members[index].slot = slot;
@@ -460,7 +479,7 @@ impl Matchmaker {
         let new_size = mode.team_size();
         let excess_a = lobby.count(LobbySlot::TeamA).saturating_sub(new_size);
         let excess_b = lobby.count(LobbySlot::TeamB).saturating_sub(new_size);
-        if lobby.count(LobbySlot::Spectator) + excess_a + excess_b > MAX_LOBBY_SPECTATORS {
+        if lobby.count(LobbySlot::Spectator) + excess_a + excess_b > lobby.spectator_capacity() {
             return vec![Out::Refused {
                 conn,
                 reason: Refused::LobbyTooBig,
@@ -502,6 +521,12 @@ impl Matchmaker {
             return vec![Out::Refused {
                 conn,
                 reason: Refused::InvalidSettings,
+            }];
+        }
+        if !settings.allow_spectators && lobby.count(LobbySlot::Spectator) > 0 {
+            return vec![Out::Refused {
+                conn,
+                reason: Refused::SpectatorsOccupied,
             }];
         }
         lobby.settings = settings;
@@ -699,6 +724,7 @@ mod tests {
             version: MATCH_SETTINGS_VERSION,
             map: MapId::Colosseum,
             round_seconds: 45,
+            allow_spectators: true,
         };
         assert_eq!(
             mm.set_lobby_settings(1, bad),
@@ -707,10 +733,25 @@ mod tests {
                 reason: Refused::InvalidSettings
             }]
         );
+        // Disabling spectators while spectator 5 is present is refused.
+        assert_eq!(
+            mm.set_lobby_settings(
+                1,
+                MatchSettings {
+                    allow_spectators: false,
+                    ..MatchSettings::default()
+                }
+            ),
+            vec![Out::Refused {
+                conn: 1,
+                reason: Refused::SpectatorsOccupied
+            }]
+        );
         let custom = MatchSettings {
             version: MATCH_SETTINGS_VERSION,
             map: MapId::Colosseum,
             round_seconds: 300,
+            allow_spectators: true,
         };
         let out = mm.set_lobby_settings(1, custom);
         assert_eq!(lobby_of(&out, 1).settings, custom);
