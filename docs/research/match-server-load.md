@@ -184,3 +184,11 @@ taskset -c 0-7 ./target/release/arena-server --dev --bind 127.0.0.1:18090 &
 taskset -c 8-15 ./target/release/arena-bot --server 127.0.0.1:18090 \
   --matches 167 --team-size 3 --seconds 30 --rtt 50 --jitter 10 --server-pid $!
 ```
+
+## Follow-up measurements
+
+See [netcode-measurements-2026-11-21.md](netcode-measurements-2026-11-21.md) for
+`PROTOCOL_VERSION = 3` measurements covering post-PR #61 CPU scaling breakdown
+(user/sys/match-tick/context-switches up to 2,004 bots), browser-parity 100 ms
+targeting-fairness disagreement rates, and lossless delta / rate-reduction
+bandwidth evaluations.

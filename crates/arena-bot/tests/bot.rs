@@ -23,6 +23,7 @@ async fn scenario(rtt_ms: u64, jitter_ms: u64) -> (arena_server::Running, Scenar
             Duration::from_millis(jitter_ms),
         ),
         paced: true,
+        interp_delay_ms: arena_bot::fairness::DEFAULT_INTERP_DELAY_MS,
         reconnect_every: None,
         away: Duration::from_millis(200),
         seed: 7,
@@ -205,6 +206,7 @@ async fn bots_emit_structured_json_combat_telemetry_and_time_limit_draw_rate() {
         duration: Duration::from_millis(2200),
         link: Link::round_trip(Duration::from_millis(20), Duration::ZERO),
         paced: true,
+        interp_delay_ms: arena_bot::fairness::DEFAULT_INTERP_DELAY_MS,
         reconnect_every: None,
         away: Duration::from_millis(200),
         seed: 13,
@@ -243,6 +245,61 @@ async fn bots_emit_structured_json_combat_telemetry_and_time_limit_draw_rate() {
     assert_eq!(parsed["round_duration"]["p50_ticks"], 30);
     assert!(parsed["combat"]["los_blocks"].is_u64());
     assert!(parsed["server_metrics"]["tick_mean_microseconds"].is_f64());
+    assert!(parsed["targeting_fairness"]["casts_resolved"].is_u64());
+    assert!(parsed["bandwidth"]["full_30hz_kbit_per_s_per_player"].is_f64());
+    assert!(report.bandwidth.snapshots_30hz > 0);
+    assert!(
+        report.bandwidth.delta_30hz_kbit_per_s_per_player
+            <= report.bandwidth.full_30hz_kbit_per_s_per_player
+    );
 
+    running.shut_down(Duration::ZERO).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bots_measure_targeting_fairness_bandwidth_deltas_and_server_profile() {
+    let (running, mut scenario) = scenario(100, 20).await;
+    scenario.matches = 2;
+    scenario.team_size = 2;
+    // Teams spawn ~94 m apart in Colosseum (~5.7 s approach at 14.4 m/s combined);
+    // 9 s ensures active ranged + close-quarters casting and fairness samples.
+    scenario.duration = Duration::from_secs(9);
+    scenario.interp_delay_ms = 100;
+    let report = run(scenario).await.unwrap();
+    println!("{report}");
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.unexpected_closes, 0);
+    assert_eq!(report.hash_mismatches, 0);
+    assert_eq!(report.interp_delay_ms, 100);
+    // Active 2v2 combat (~3–4 s after approach) must resolve targeted casts and populate fairness metrics.
+    assert!(
+        report.targeting_fairness.casts_resolved > 0,
+        "expected targeted casts to resolve: {:?}",
+        report.targeting_fairness
+    );
+    assert!(report.targeting_fairness.casts_client_in_range > 0);
+    // Bandwidth evaluator must measure live 30 Hz full vs delta and decimated rates.
+    assert!(report.bandwidth.snapshots_30hz > 50);
+    assert!(report.bandwidth.deltas_30hz > 0);
+    assert!(
+        report.bandwidth.delta_30hz_savings_pct > 15.0,
+        "expected meaningful delta savings: {:?}",
+        report.bandwidth
+    );
+    assert!(
+        report.bandwidth.full_15hz_kbit_per_s_per_player
+            < report.bandwidth.full_30hz_kbit_per_s_per_player
+    );
+    // On Linux `--server-pid` populates the full CPU / RSS / context-switch breakdown.
+    #[cfg(target_os = "linux")]
+    {
+        let profile = report
+            .server_profile
+            .as_ref()
+            .expect("linux server profile");
+        assert!(profile.cpu_total_cores >= 0.0);
+        assert!(profile.peak_rss_mib > 0.0);
+        assert!(profile.threads >= 1);
+    }
     running.shut_down(Duration::ZERO).await.unwrap();
 }

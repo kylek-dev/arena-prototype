@@ -1,6 +1,6 @@
 //! `arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3]
 //!            [--seconds S] [--rtt MS] [--jitter MS] [--loss-pct PCT] [--clump-ms MS]
-//!            [--unpaced] [--reconnect-every S] [--away-ms MS]
+//!            [--interp-delay-ms MS] [--unpaced] [--reconnect-every S] [--away-ms MS]
 //!            [--seed N] [--server-pid PID] [--json]
 //!            [--queue 1v1|2v2|3v3 --door HOST:PORT [--bots N]]`
 //!
@@ -14,11 +14,12 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
+use arena_bot::fairness::DEFAULT_INTERP_DELAY_MS;
 use arena_bot::link::Link;
 use arena_bot::queue::QueueScenario;
 use arena_bot::{Scenario, run};
 
-const USAGE: &str = "usage: arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3] [--seconds S] [--rtt MS] [--jitter MS] [--loss-pct PCT] [--clump-ms MS] [--unpaced] [--reconnect-every S] [--away-ms MS] [--seed N] [--server-pid PID] [--json] [--queue MODE --door HOST:PORT [--bots N]]";
+const USAGE: &str = "usage: arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3] [--seconds S] [--rtt MS] [--jitter MS] [--loss-pct PCT] [--clump-ms MS] [--interp-delay-ms MS] [--unpaced] [--reconnect-every S] [--away-ms MS] [--seed N] [--server-pid PID] [--json] [--queue MODE --door HOST:PORT [--bots N]]";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -59,6 +60,10 @@ async fn main() -> ExitCode {
 }
 
 fn parse() -> Result<(Option<Scenario>, bool), String> {
+    parse_args(std::env::args().skip(1))
+}
+
+fn parse_args<I: IntoIterator<Item = String>>(iter: I) -> Result<(Option<Scenario>, bool), String> {
     let mut scenario = Scenario {
         server: "127.0.0.1:8080".into(),
         matches: 1,
@@ -66,6 +71,7 @@ fn parse() -> Result<(Option<Scenario>, bool), String> {
         duration: Duration::from_secs(10),
         link: Link::default(),
         paced: true,
+        interp_delay_ms: DEFAULT_INTERP_DELAY_MS,
         reconnect_every: None,
         away: Duration::from_secs(1),
         seed: 1,
@@ -75,7 +81,7 @@ fn parse() -> Result<(Option<Scenario>, bool), String> {
     let (mut rtt, mut jitter, mut loss_pct, mut clump_ms, mut json) =
         (0u64, 0u64, 0.0f64, 0u64, false);
     let (mut queue, mut door, mut bots) = (None, None, 1usize);
-    let mut args = std::env::args().skip(1);
+    let mut args = iter.into_iter();
     while let Some(arg) = args.next() {
         let mut value = |name: &str| -> Result<String, String> {
             args.next()
@@ -116,6 +122,15 @@ fn parse() -> Result<(Option<Scenario>, bool), String> {
                 }
                 clump_ms = parsed;
             }
+            "--interp-delay-ms" => {
+                let parsed = number("--interp-delay-ms", value("--interp-delay-ms")?)?;
+                if parsed > 2_000 {
+                    return Err(format!(
+                        "--interp-delay-ms must be at most 2000, got {parsed}\n{USAGE}"
+                    ));
+                }
+                scenario.interp_delay_ms = parsed;
+            }
             "--unpaced" => scenario.paced = false,
             "--away-ms" => {
                 scenario.away = Duration::from_millis(number("--away-ms", value("--away-ms")?)?);
@@ -150,4 +165,32 @@ fn parse() -> Result<(Option<Scenario>, bool), String> {
         _ => return Err(format!("--queue and --door go together\n{USAGE}")),
     };
     Ok((Some(scenario), json))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_slice(args: &[&str]) -> Result<(Option<Scenario>, bool), String> {
+        parse_args(args.iter().map(|s| (*s).to_owned()))
+    }
+
+    #[test]
+    fn cli_defaults_and_interp_delay_bounds_are_validated() {
+        let (scenario, json) = parse_slice(&[]).unwrap();
+        let scenario = scenario.unwrap();
+        assert!(!json);
+        assert_eq!(scenario.interp_delay_ms, DEFAULT_INTERP_DELAY_MS);
+
+        let (scenario, json) = parse_slice(&["--interp-delay-ms", "0", "--json"]).unwrap();
+        assert!(json);
+        assert_eq!(scenario.unwrap().interp_delay_ms, 0);
+
+        let (scenario, _) = parse_slice(&["--interp-delay-ms", "2000"]).unwrap();
+        assert_eq!(scenario.unwrap().interp_delay_ms, 2000);
+
+        assert!(parse_slice(&["--interp-delay-ms", "2001"]).is_err());
+        assert!(parse_slice(&["--interp-delay-ms", "abc"]).is_err());
+        assert!(parse_slice(&["--interp-delay-ms"]).is_err());
+    }
 }

@@ -146,7 +146,7 @@ cargo run --release -p arena-bot -- --matches 167 --team-size 3 --seconds 30 --r
 cargo run --release -p arena-bot -- --rtt 100 --reconnect-every 5 --seconds 20   # drop out and rejoin
 ```
 
-`./scripts/server-smoke.sh` runs the same short (about 5 s) server-and-bots smoke test that CI runs (after `cargo build -p arena-server -p arena-bot`). `--json` prints the report as JSON, including deduplicated `outcomes` (wins and draw rate), `round_duration`, `combat` (LOS blocks, hits, damage, heals, casts, interrupts), and `server_metrics.tick_mean_microseconds`. The bot exits non-zero on any error, unexpected close, state hash mismatch or failed rejoin. See the [load baseline](research/match-server-load.md).
+`./scripts/server-smoke.sh` runs the same short (about 5 s) server-and-bots smoke test that CI runs (after `cargo build -p arena-server -p arena-bot`). Pass `--interp-delay-ms MS` (default `100`, matching the browser's 3-tick remote interpolation buffer) to vary the bots' remote view delay, and `--server-pid PID` (Linux) to profile user/kernel/match-tick CPU, peak RSS, and context switches. `--json` prints the report as JSON, including deduplicated `outcomes` (wins and draw rate), `round_duration`, `combat` (LOS blocks, hits, damage, heals, casts, interrupts), `targeting_fairness` (range/LoS disagreement rates and distance errors), `bandwidth` (live 30 Hz full vs lossless delta and 20/15 Hz estimates), `server_metrics.tick_mean_microseconds`, and `server_profile`. The bot exits non-zero on any error, unexpected close, state hash mismatch or failed rejoin. See the [load baseline](research/match-server-load.md) and [2026-11-21 netcode measurements](research/netcode-measurements-2026-11-21.md).
 
 ## VS Code tasks
 
