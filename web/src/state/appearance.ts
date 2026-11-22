@@ -9,7 +9,7 @@ import {
 } from "../domain/appearance";
 import { createStore } from "./store";
 import { pendingBinding } from "./binding-capture";
-import { customizing, prematch, setPanel } from "./session";
+import { customLobbyVisible, customizing, prematch, setPanel } from "./session";
 
 export const APPEARANCE_KEY = "arena.appearance.v1";
 /** Installed kits from assets/character.json; empty without Quaternius sources. */
@@ -102,6 +102,7 @@ export function returnToHome() {
   setPanel(null);
   pendingBinding.set(null);
   customizing.set(false);
+  customLobbyVisible.set(false);
   preview.set({ yaw: 0, zoom: 0 });
   if (characterKits.get().length > 0) prematch.set(true);
 }

@@ -10,6 +10,7 @@
 @import "../features/match-status/match-status.css";
 @import "../features/round-clock/round-clock.css";
 @import "../features/scoreboard/scoreboard.css";
+@import "../features/custom-lobby/custom-lobby.css";
 @import "../ui/panels.css";
 @import "../ui/tooltip.css";
 @import "../features/diagnostics/diagnostics.css";

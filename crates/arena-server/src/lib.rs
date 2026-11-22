@@ -202,8 +202,17 @@ impl App {
             return Err(ErrorCode::ServerShutdown);
         }
         let team_size = usize::from(claims.team_size);
-        let arena = Arena::practice(self.layout.clone(), team_size)
-            .and_then(|arena| arena.with_round_limit(self.config.round_ticks))
+        let (layout, map_hash, round_ticks) = match claims.settings {
+            Some(settings) => {
+                let (layout, map_hash) = match settings.map {
+                    ticket::MapId::Colosseum => (self.layout.clone(), self.map),
+                };
+                (layout, map_hash, settings.round_ticks())
+            }
+            None => (self.layout.clone(), self.map, self.config.round_ticks),
+        };
+        let arena = Arena::practice(layout, team_size)
+            .and_then(|arena| arena.with_round_limit(round_ticks))
             .ok_or(ErrorCode::BadTicket)?;
         let (sender, receiver) = mpsc::channel(COMMAND_QUEUE);
         matches.live.insert(claims.match_id, sender.clone());
@@ -212,7 +221,7 @@ impl App {
         Metrics::add(&self.metrics.matches_created, 1);
         Metrics::add(&self.metrics.matches_active, 1);
         eprintln!("match {id:016x}: started for {team_size}v{team_size} by its first player");
-        let session = Session::new(arena, self.map, self.config.limits, self.metrics.clone());
+        let session = Session::new(arena, map_hash, self.config.limits, self.metrics.clone());
         tokio::spawn(run_match(
             self.clone(),
             id,

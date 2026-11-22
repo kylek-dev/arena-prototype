@@ -273,6 +273,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 seat: 0,
                 team_size: 1,
                 expires: 1,
+                settings: None,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -284,6 +285,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 seat: 2,
                 team_size: 1,
                 expires: far_future,
+                settings: None,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -295,6 +297,39 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 seat: 0,
                 team_size: 4,
                 expires: far_future,
+                settings: None,
+            }))),
+            ErrorCode::BadTicket,
+        ),
+        (
+            "invalid custom settings version",
+            Message::binary(hello(signed(Claims {
+                match_id: created.match_id ^ 2,
+                player: 1,
+                seat: 0,
+                team_size: 1,
+                expires: far_future,
+                settings: Some(arena_server::ticket::MatchSettings {
+                    version: arena_server::ticket::MATCH_SETTINGS_VERSION + 1,
+                    map: arena_server::ticket::MapId::Colosseum,
+                    round_seconds: 600,
+                }),
+            }))),
+            ErrorCode::BadTicket,
+        ),
+        (
+            "non-allowlisted custom round limit",
+            Message::binary(hello(signed(Claims {
+                match_id: created.match_id ^ 3,
+                player: 1,
+                seat: 0,
+                team_size: 1,
+                expires: far_future,
+                settings: Some(arena_server::ticket::MatchSettings {
+                    version: arena_server::ticket::MATCH_SETTINGS_VERSION,
+                    map: arena_server::ticket::MapId::Colosseum,
+                    round_seconds: 123,
+                }),
             }))),
             ErrorCode::BadTicket,
         ),
@@ -306,6 +341,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 seat: 0,
                 team_size: 1,
                 expires: far_future,
+                settings: None,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -356,7 +392,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
     assert_eq!(joined.error().await, ErrorCode::Malformed);
 
     let metrics = running.app.metrics();
-    assert_eq!(metrics.errors(ErrorCode::BadTicket), 5);
+    assert_eq!(metrics.errors(ErrorCode::BadTicket), 7);
     assert_eq!(metrics.errors(ErrorCode::Malformed), 4);
     assert_eq!(metrics.errors(ErrorCode::HelloTimeout), 1);
     // Refused tickets never start a match; only the valid one did.

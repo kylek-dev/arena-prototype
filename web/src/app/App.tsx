@@ -16,6 +16,7 @@ import { CombatErrors } from "../features/combat-errors/CombatErrors";
 import { MatchStatus } from "../features/match-status/MatchStatus";
 import { RoundClock } from "../features/round-clock/RoundClock";
 import { Scoreboard } from "../features/scoreboard/Scoreboard";
+import { CustomLobby } from "../features/custom-lobby/CustomLobby";
 import { MatchReady } from "../features/queue/MatchReady";
 import { QueueBar } from "../features/queue/QueueBar";
 import { Loading } from "../features/loading/Loading";
@@ -82,6 +83,7 @@ export function App() {
         )}
         <Diagnostics />
         <Scoreboard />
+        <CustomLobby />
         {/* The queue follows the player from the home screen into the arena. */}
         <QueueBar />
         <MatchReady />

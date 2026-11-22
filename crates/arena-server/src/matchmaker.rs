@@ -28,7 +28,15 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
+
+use crate::ticket::MatchSettings;
+
+#[path = "matchmaker_custom.rs"]
+mod custom;
+use custom::CustomLobby;
+pub use custom::{LobbyLeft, LobbyMemberView, LobbySlot, LobbyView, MAX_LOBBY_SPECTATORS};
 
 /// A queue connection, numbered by the caller.
 pub type QueueConn = u64;
@@ -49,10 +57,13 @@ const RECENT_WAITS: usize = 20;
 /// ... and how many it needs before it estimates anything.
 const MIN_WAITS: usize = 3;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Mode {
+    #[serde(rename = "1v1")]
     Duel,
+    #[serde(rename = "2v2")]
     Team2v2,
+    #[serde(rename = "3v3")]
     Team3v3,
 }
 impl Mode {
@@ -105,6 +116,24 @@ pub enum Refused {
     PartyFull,
     /// The party is searching or in a ready check; it cannot change now.
     PartyBusy,
+    /// The player is in a private custom lobby and must leave it first.
+    InLobby,
+    /// No custom lobby has that code (or the player is not in one).
+    NoSuchLobby,
+    /// The custom lobby has no open team or spectator slots.
+    LobbyFull,
+    /// Only the lobby host can perform this action.
+    NotHost,
+    /// The chosen team or spectator slot is already full.
+    SlotFull,
+    /// Both teams must be full before the host can start the match.
+    LobbyNotFull,
+    /// Too many players in the lobby to shrink to that team size.
+    LobbyTooBig,
+    /// No member in the lobby matches that id.
+    NoSuchMember,
+    /// Match settings failed server version or allowlist validation.
+    InvalidSettings,
 }
 impl Refused {
     pub fn code(self) -> &'static str {
@@ -114,6 +143,15 @@ impl Refused {
             Refused::NoSuchParty => "no_such_party",
             Refused::PartyFull => "party_full",
             Refused::PartyBusy => "party_busy",
+            Refused::InLobby => "in_lobby",
+            Refused::NoSuchLobby => "no_such_lobby",
+            Refused::LobbyFull => "lobby_full",
+            Refused::NotHost => "not_host",
+            Refused::SlotFull => "slot_full",
+            Refused::LobbyNotFull => "lobby_not_full",
+            Refused::LobbyTooBig => "lobby_too_big",
+            Refused::NoSuchMember => "no_such_member",
+            Refused::InvalidSettings => "invalid_settings",
         }
     }
 }
@@ -203,6 +241,25 @@ pub enum Out {
         mode: Mode,
         seats: Vec<QueueConn>,
     },
+    /// Current state of the player's private custom lobby.
+    Lobby {
+        conn: QueueConn,
+        view: LobbyView,
+    },
+    /// The player left or was removed from their private custom lobby.
+    LobbyLeft {
+        conn: QueueConn,
+        reason: LobbyLeft,
+    },
+    /// The host started a full custom lobby: issue per-seat tickets carrying
+    /// `settings`. Everyone remains in the lobby for rematches.
+    StartCustom {
+        host: QueueConn,
+        mode: Mode,
+        settings: MatchSettings,
+        seats: Vec<QueueConn>,
+        spectators: Vec<QueueConn>,
+    },
     Close {
         conn: QueueConn,
         reason: Closed,
@@ -257,6 +314,9 @@ pub struct Matchmaker {
     waiting: Waiting,
     parties: HashMap<u64, Party>,
     codes: HashMap<String, u64>,
+    lobbies: HashMap<u64, CustomLobby>,
+    lobby_codes: HashMap<String, u64>,
+    in_lobby: HashMap<QueueConn, u64>,
     forming: HashMap<u64, Forming>,
     next_id: u64,
     /// Each connection's party.
@@ -276,6 +336,9 @@ impl Matchmaker {
             waiting: [0; 3],
             parties: HashMap::new(),
             codes: HashMap::new(),
+            lobbies: HashMap::new(),
+            lobby_codes: HashMap::new(),
+            in_lobby: HashMap::new(),
             forming: HashMap::new(),
             next_id: 0,
             of: HashMap::new(),
@@ -439,7 +502,9 @@ impl Matchmaker {
 
     /// The connection went away.
     pub fn disconnect(&mut self, conn: QueueConn, now: Instant) -> Vec<Out> {
-        self.remove_member(conn, now)
+        let mut out = self.remove_from_lobby(conn, None);
+        out.extend(self.remove_member(conn, now));
+        out
     }
 
     /// Takes `conn` out of its party, which stops searching (or fails its
@@ -504,7 +569,7 @@ impl Matchmaker {
             let code: String = (0..CODE_LENGTH)
                 .map(|_| CODE_ALPHABET[(self.random)(CODE_ALPHABET.len())] as char)
                 .collect();
-            if !self.codes.contains_key(&code) {
+            if !self.codes.contains_key(&code) && !self.lobby_codes.contains_key(&code) {
                 return code;
             }
         }
@@ -516,6 +581,12 @@ impl Matchmaker {
         let Some(&id) = self.of.get(&conn) else {
             return Vec::new();
         };
+        if self.in_lobby.contains_key(&conn) {
+            return vec![Out::Refused {
+                conn,
+                reason: Refused::InLobby,
+            }];
+        }
         if self.parties[&id].state != State::Idle {
             return vec![Out::Refused {
                 conn,
@@ -544,6 +615,9 @@ impl Matchmaker {
             return Vec::new();
         };
         let refuse = |reason| vec![Out::Refused { conn, reason }];
+        if self.in_lobby.contains_key(&conn) {
+            return refuse(Refused::InLobby);
+        }
         let Some(&target) = self.codes.get(&code.trim().to_ascii_uppercase()) else {
             return refuse(Refused::NoSuchParty);
         };
@@ -605,6 +679,9 @@ impl Matchmaker {
         };
         let party = &self.parties[&id];
         let refuse = |reason| vec![Out::Refused { conn, reason }];
+        if self.in_lobby.contains_key(&conn) {
+            return refuse(Refused::InLobby);
+        }
         if party.members[0].conn != conn {
             return refuse(Refused::NotLeader);
         }

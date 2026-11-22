@@ -1,0 +1,237 @@
+/* Private custom match lobby modal (closed palette tokens only). */
+.custom-lobby-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 23;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--pal-night-1) 68%, transparent);
+  pointer-events: auto;
+}
+
+.custom-lobby {
+  width: min(860px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  display: grid;
+  gap: 14px;
+  padding: 20px;
+  color: var(--gray-12);
+  background: var(--color-panel-solid);
+  border: 1px solid var(--gray-7);
+  border-radius: var(--radius-4);
+  box-shadow: var(--shadow-6);
+}
+
+.custom-lobby-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.custom-lobby-heading {
+  display: grid;
+  gap: 2px;
+}
+
+.custom-lobby-heading h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.custom-lobby-header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.custom-lobby-invite {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  background: var(--gray-2);
+  border: 1px solid var(--gray-6);
+  border-radius: var(--radius-3);
+}
+
+.custom-lobby-code-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.custom-lobby-code-label {
+  font-size: 12px;
+  color: var(--gray-11);
+}
+
+.custom-lobby-code {
+  font-family: ui-monospace, monospace;
+  font-size: 16px;
+  letter-spacing: 0.12em;
+  color: var(--pal-gold-5);
+}
+
+.custom-lobby-link {
+  width: 100%;
+  font-size: 12px;
+}
+
+.custom-lobby-settings {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.custom-lobby-field {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--gray-11);
+}
+
+.custom-lobby-field select {
+  width: 100%;
+}
+
+.custom-lobby-columns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.custom-lobby-column {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: var(--gray-2);
+  border: 1px solid var(--gray-6);
+  border-radius: var(--radius-3);
+}
+
+.custom-lobby-column.team-a {
+  border-top: 3px solid var(--pal-sky-4);
+}
+
+.custom-lobby-column.team-b {
+  border-top: 3px solid var(--pal-ember-4);
+}
+
+.custom-lobby-column.spectator {
+  border-top: 3px solid var(--pal-stone-4);
+}
+
+.custom-lobby-column-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.custom-lobby-column-head h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.custom-lobby-capacity {
+  font-size: 12px;
+  color: var(--gray-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.custom-lobby-roster {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.custom-lobby-empty {
+  padding: 8px;
+  font-size: 12px;
+  color: var(--gray-10);
+  border: 1px dashed var(--gray-6);
+  border-radius: var(--radius-2);
+}
+
+.custom-lobby-member {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  background: var(--gray-3);
+  border: 1px solid var(--gray-6);
+  border-radius: var(--radius-2);
+}
+
+.custom-lobby-member.you {
+  border-color: var(--pal-sky-4);
+}
+
+.custom-lobby-member-identity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.custom-lobby-member-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.custom-lobby-badge {
+  padding: 1px 6px;
+  border-radius: var(--radius-2);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.custom-lobby-badge.you {
+  background: var(--pal-sky-2);
+  color: var(--pal-sky-7);
+}
+
+.custom-lobby-badge.host {
+  background: var(--pal-gold-2);
+  color: var(--pal-gold-6);
+}
+
+.custom-lobby-member-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.custom-lobby-notice {
+  margin: 0;
+  font-size: 12px;
+  color: var(--pal-gold-5);
+}
+
+.custom-lobby-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--gray-6);
+}
+
+.custom-lobby-status {
+  margin: 0;
+  font-size: 13px;
+  color: var(--gray-11);
+}
+
+@media (max-width: 720px) {
+  .custom-lobby-settings,
+  .custom-lobby-columns {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,4 +1,4 @@
-//! `GET /api/queue`: parties and queues over a WebSocket (ADR 0046).
+//! `GET /api/queue`: parties, queues, and private custom lobbies over a WebSocket (ADR 0046).
 //!
 //! The browser sends small JSON messages and receives the same.
 //!
@@ -9,6 +9,12 @@
 //! - `{"type":"queue","mode":"1v1"|"2v2"|"3v3"}` (party leader only),
 //!   `{"type":"cancel"}`.
 //! - `{"type":"accept"}` or `{"type":"decline"}` when a match is ready.
+//! - `{"type":"create_lobby","mode":"1v1"|"2v2"|"3v3"}`,
+//!   `{"type":"join_lobby","code":"K7P2QX"}`, `{"type":"leave_lobby"}`.
+//! - `{"type":"set_lobby_slot","slot":"team_a"|"team_b"|"spectator"}`.
+//! - Host-only custom lobby controls: `move_lobby_member`, `kick_lobby_member`,
+//!   `transfer_lobby_host`, `set_lobby_mode`, `set_lobby_settings`, and
+//!   `start_lobby` (rate-limited per client address via `door.creations`).
 //!
 //! From the door:
 //! - `party` describes the player's party whenever it changes.
@@ -18,15 +24,18 @@
 //!   accepts: how many accepted out of how many, whether this player did,
 //!   and the time left. `requeued` when it failed because of someone else,
 //!   and `stopped` when the party's search ended.
+//! - `lobby` describes the player's private custom lobby whenever it changes;
+//!   `lobby_left` notes leaving or being removed; `lobby_started` notifies
+//!   lobby spectators when a custom match starts.
 //! - `refused` turns a request down; the connection stays open.
 //! - `match` carries the player's own seat ticket. The connection stays
-//!   open, so the party is still together when the match is over.
+//!   open, so the party or custom lobby stays together when the match is over.
 //! - `error` comes before the door closes the connection.
 //!
 //! One task owns the [`Matchmaker`]; connections talk to it over channels.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -42,9 +51,11 @@ use tokio::time::{Instant, MissedTickBehavior};
 use super::{Door, unix_now};
 use crate::RateWindow;
 use crate::ingress::{self, OpenSlot};
-use crate::matchmaker::{CODE_LENGTH, Closed, Guest, Matchmaker, Mode, Out, PartyView, QueueConn};
+use crate::matchmaker::{
+    CODE_LENGTH, Closed, Guest, LobbySlot, LobbyView, Matchmaker, Mode, Out, PartyView, QueueConn,
+};
 use crate::metrics::Metrics;
-use crate::ticket;
+use crate::ticket::{self, MatchSettings};
 
 /// Largest message a queue client may send.
 const MAX_MESSAGE: usize = 512;
@@ -59,14 +70,48 @@ const OUTBOUND_QUEUE: usize = 32;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum FromClient {
-    Hello { guest: String },
+    Hello {
+        guest: String,
+    },
     CreateParty {},
-    JoinParty { code: String },
+    JoinParty {
+        code: String,
+    },
     LeaveParty {},
-    Queue { mode: String },
+    Queue {
+        mode: String,
+    },
     Cancel {},
     Accept {},
     Decline {},
+    CreateLobby {
+        #[serde(default)]
+        mode: Option<String>,
+    },
+    JoinLobby {
+        code: String,
+    },
+    LeaveLobby {},
+    SetLobbySlot {
+        slot: LobbySlot,
+    },
+    MoveLobbyMember {
+        member: u32,
+        slot: LobbySlot,
+    },
+    KickLobbyMember {
+        member: u32,
+    },
+    TransferLobbyHost {
+        member: u32,
+    },
+    SetLobbyMode {
+        mode: String,
+    },
+    SetLobbySettings {
+        settings: MatchSettings,
+    },
+    StartLobby {},
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +166,18 @@ pub enum ToClient {
         ticket: String,
         expires: u64,
     },
+    /// Current state of the player's private custom lobby.
+    Lobby(LobbyView),
+    /// The player left or was removed from their private custom lobby.
+    LobbyLeft {
+        reason: String,
+    },
+    /// The custom lobby match started (sent to lobby spectators until live
+    /// spectating tickets are issued).
+    LobbyStarted {
+        mode: String,
+        match_id: String,
+    },
     Error {
         code: String,
         message: String,
@@ -147,6 +204,7 @@ pub(super) enum Command {
     Hello {
         conn: QueueConn,
         guest: Guest,
+        address: IpAddr,
         out: mpsc::Sender<ToClient>,
     },
     CreateParty {
@@ -170,6 +228,45 @@ pub(super) enum Command {
         conn: QueueConn,
     },
     Decline {
+        conn: QueueConn,
+    },
+    CreateLobby {
+        conn: QueueConn,
+        mode: Mode,
+    },
+    JoinLobby {
+        conn: QueueConn,
+        code: String,
+    },
+    LeaveLobby {
+        conn: QueueConn,
+    },
+    SetLobbySlot {
+        conn: QueueConn,
+        slot: LobbySlot,
+    },
+    MoveLobbyMember {
+        conn: QueueConn,
+        member: u32,
+        slot: LobbySlot,
+    },
+    KickLobbyMember {
+        conn: QueueConn,
+        member: u32,
+    },
+    TransferLobbyHost {
+        conn: QueueConn,
+        member: u32,
+    },
+    SetLobbyMode {
+        conn: QueueConn,
+        mode: Mode,
+    },
+    SetLobbySettings {
+        conn: QueueConn,
+        settings: MatchSettings,
+    },
+    StartLobby {
         conn: QueueConn,
     },
     Gone {
@@ -202,6 +299,7 @@ fn send(conns: &Senders, conn: QueueConn, message: ToClient) {
 pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) {
     let mut mm = Matchmaker::new(door.config.ready_timeout, random_below);
     let mut conns: Senders = HashMap::new();
+    let mut addresses: HashMap<QueueConn, IpAddr> = HashMap::new();
     let mut tick = tokio::time::interval(TICK_EVERY);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut status_at = Instant::now() + STATUS_EVERY;
@@ -217,8 +315,9 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
             _ = tick.tick() => mm.tick(now),
             command = commands.recv() => match command {
                 None => break,
-                Some(Command::Hello { conn, guest, out }) => {
+                Some(Command::Hello { conn, guest, address, out }) => {
                     conns.insert(conn, out);
+                    addresses.insert(conn, address);
                     mm.connect(conn, guest, now)
                 }
                 Some(Command::CreateParty { conn }) => mm.create_party(conn, now),
@@ -231,8 +330,27 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 Some(Command::Cancel { conn }) => mm.cancel(conn),
                 Some(Command::Accept { conn }) => mm.accept(conn, now),
                 Some(Command::Decline { conn }) => mm.decline(conn, now),
+                Some(Command::CreateLobby { conn, mode }) => mm.create_lobby(conn, mode, now),
+                Some(Command::JoinLobby { conn, code }) => mm.join_lobby(conn, &code, now),
+                Some(Command::LeaveLobby { conn }) => mm.leave_lobby(conn),
+                Some(Command::SetLobbySlot { conn, slot }) => mm.set_lobby_slot(conn, slot),
+                Some(Command::MoveLobbyMember { conn, member, slot }) => {
+                    mm.move_lobby_member(conn, member, slot)
+                }
+                Some(Command::KickLobbyMember { conn, member }) => {
+                    mm.kick_lobby_member(conn, member)
+                }
+                Some(Command::TransferLobbyHost { conn, member }) => {
+                    mm.transfer_lobby_host(conn, member)
+                }
+                Some(Command::SetLobbyMode { conn, mode }) => mm.set_lobby_mode(conn, mode),
+                Some(Command::SetLobbySettings { conn, settings }) => {
+                    mm.set_lobby_settings(conn, settings)
+                }
+                Some(Command::StartLobby { conn }) => mm.start_lobby(conn),
                 Some(Command::Gone { conn }) => {
                     conns.remove(&conn);
+                    addresses.remove(&conn);
                     mm.disconnect(conn, now)
                 }
             },
@@ -285,8 +403,26 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                         ),
                     );
                     conns.remove(&conn);
+                    addresses.remove(&conn);
                 }
                 Out::Start { mode, seats } => start_match(&door, &conns, mode, seats),
+                Out::Lobby { conn, view } => send(&conns, conn, ToClient::Lobby(view)),
+                Out::LobbyLeft { conn, reason } => send(
+                    &conns,
+                    conn,
+                    ToClient::LobbyLeft {
+                        reason: reason.code().into(),
+                    },
+                ),
+                Out::StartCustom {
+                    host,
+                    mode,
+                    settings,
+                    seats,
+                    spectators,
+                } => start_custom_match(
+                    &door, &conns, &addresses, now, host, mode, settings, seats, spectators,
+                ),
             }
         }
         if now >= status_at {
@@ -361,6 +497,66 @@ fn start_match(door: &Door, conns: &Senders, mode: Mode, seats: Vec<QueueConn>) 
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn start_custom_match(
+    door: &Door,
+    conns: &Senders,
+    addresses: &HashMap<QueueConn, IpAddr>,
+    now: Instant,
+    host: QueueConn,
+    mode: Mode,
+    settings: MatchSettings,
+    seats: Vec<QueueConn>,
+    spectators: Vec<QueueConn>,
+) {
+    if let Some(&address) = addresses.get(&host)
+        && door.creations.take(address, now).is_err()
+    {
+        Metrics::add(&door.metrics.refused_rate, 1);
+        send(
+            conns,
+            host,
+            ToClient::Refused {
+                code: "rate_limited".into(),
+            },
+        );
+        return;
+    }
+    let expires = unix_now() + door.config.ticket_ttl.as_secs();
+    let created = ticket::issue_custom_match(&door.config.key, mode.team_size(), settings, expires)
+        .expect("validated custom lobby settings and mode");
+    Metrics::add(&door.metrics.issued, 1);
+    Metrics::add(&door.metrics.custom_matches, 1);
+    eprintln!(
+        "match {:016x}: started from a {} custom lobby (map={}, round={}s)",
+        created.match_id,
+        mode.id(),
+        settings.map.id(),
+        settings.round_seconds,
+    );
+    let match_id = format!("{:016x}", created.match_id);
+    for (seat, (conn, ticket)) in seats.into_iter().zip(created.tickets).enumerate() {
+        if let Some(sender) = conns.get(&conn) {
+            let _ = sender.try_send(ToClient::Match {
+                mode: mode.id().into(),
+                match_id: match_id.clone(),
+                seat,
+                server: door.config.match_server.clone(),
+                ticket,
+                expires,
+            });
+        }
+    }
+    for conn in spectators {
+        if let Some(sender) = conns.get(&conn) {
+            let _ = sender.try_send(ToClient::LobbyStarted {
+                mode: mode.id().into(),
+                match_id: match_id.clone(),
+            });
+        }
+    }
+}
+
 pub(super) async fn upgrade(
     ws: WebSocketUpgrade,
     State(door): State<Arc<Door>>,
@@ -382,7 +578,7 @@ pub(super) async fn upgrade(
     };
     ws.max_message_size(MAX_MESSAGE)
         .max_frame_size(MAX_MESSAGE)
-        .on_upgrade(move |socket| connection(socket, door, slot))
+        .on_upgrade(move |socket| connection(socket, door, slot, address))
 }
 
 async fn say(socket: &mut WebSocket, message: &ToClient) -> bool {
@@ -424,10 +620,37 @@ fn command(conn: QueueConn, message: FromClient) -> Result<Command, &'static str
         FromClient::Cancel {} => Command::Cancel { conn },
         FromClient::Accept {} => Command::Accept { conn },
         FromClient::Decline {} => Command::Decline { conn },
+        FromClient::CreateLobby { mode } => Command::CreateLobby {
+            conn,
+            mode: match mode {
+                Some(id) => Mode::from_id(&id).ok_or("Unknown match size.")?,
+                None => Mode::Duel,
+            },
+        },
+        FromClient::JoinLobby { code } if code.trim().len() == CODE_LENGTH => {
+            Command::JoinLobby { conn, code }
+        }
+        FromClient::JoinLobby { .. } => Command::JoinLobby {
+            conn,
+            code: String::new(),
+        },
+        FromClient::LeaveLobby {} => Command::LeaveLobby { conn },
+        FromClient::SetLobbySlot { slot } => Command::SetLobbySlot { conn, slot },
+        FromClient::MoveLobbyMember { member, slot } => {
+            Command::MoveLobbyMember { conn, member, slot }
+        }
+        FromClient::KickLobbyMember { member } => Command::KickLobbyMember { conn, member },
+        FromClient::TransferLobbyHost { member } => Command::TransferLobbyHost { conn, member },
+        FromClient::SetLobbyMode { mode } => Command::SetLobbyMode {
+            conn,
+            mode: Mode::from_id(&mode).ok_or("Unknown match size.")?,
+        },
+        FromClient::SetLobbySettings { settings } => Command::SetLobbySettings { conn, settings },
+        FromClient::StartLobby {} => Command::StartLobby { conn },
     })
 }
 
-async fn connection(mut socket: WebSocket, door: Arc<Door>, _slot: OpenSlot) {
+async fn connection(mut socket: WebSocket, door: Arc<Door>, _slot: OpenSlot, address: IpAddr) {
     let conn = door.next_conn.fetch_add(1, Ordering::Relaxed);
     let mut rate = RateWindow::new(MESSAGES_PER_SECOND, Instant::now());
     let mut stop = door.shutdown.subscribe();
@@ -468,6 +691,7 @@ async fn connection(mut socket: WebSocket, door: Arc<Door>, _slot: OpenSlot) {
     let hello = Command::Hello {
         conn,
         guest,
+        address,
         out: sender,
     };
     if door.queue.send(hello).await.is_err() {
@@ -575,6 +799,32 @@ mod tests {
             }))
             .unwrap(),
             r#"{"type":"party","code":"K7P2QX","members":2,"leader":true,"queue":"2v2"}"#
+        );
+        // Custom lobby requests parse strictly and reject free-form map/mode fields.
+        assert!(matches!(
+            parse(r#"{"type":"create_lobby","mode":"2v2"}"#),
+            Ok(FromClient::CreateLobby { .. })
+        ));
+        assert!(matches!(
+            parse(
+                r#"{"type":"set_lobby_settings","settings":{"version":1,"map":"colosseum","round_seconds":600}}"#
+            ),
+            Ok(FromClient::SetLobbySettings { .. })
+        ));
+        assert!(
+            parse(r#"{"type":"set_lobby_settings","settings":{"version":1,"map":"../etc/passwd","round_seconds":600}}"#)
+                .is_err()
+        );
+        assert!(
+            parse(r#"{"type":"set_lobby_settings","settings":{"version":1,"map":"colosseum","round_seconds":600,"extra":1}}"#)
+                .is_err()
+        );
+        assert!(
+            command(
+                1,
+                parse(r#"{"type":"set_lobby_mode","mode":"4v4"}"#).unwrap()
+            )
+            .is_err()
         );
     }
 }

@@ -101,3 +101,18 @@ Automated checks passed locally (`./scripts/check.sh`, `cargo run -p arena-headl
 - **Network relay & lock (`PROTOCOL_VERSION = 6`):** Clients send bounded ASCII-identifier `WireAppearance` choices in `Hello` (never free-form paths), the match server validates and locks each seat's look on first join (preserving it across reconnects) and relays per-seat looks via `ServerMessage::Appearances`, clients validate received looks against their local kit catalog with default fallback, and `GameMenu` hides `Customize character` during a network match. Review multi-character visual quality, per-fighter animations, and 3v3 frame pacing in a real browser.
 
 Automated checks passed locally (`./scripts/check.sh`, `cargo run -p arena-headless --locked`, `./scripts/server-smoke.sh`, `npm run build`, `cargo clippy -p arena-client --target wasm32-unknown-unknown --locked -- -D warnings`, and `./scripts/build-web.sh`); no browser was launched and no rendered, visual, or networked pass is claimed.
+
+### 2026-11-22 — Private custom match lobby UI (`auto/custom-matches`) — pending human review
+
+Scope:
+
+- `web/src/features/custom-lobby/CustomLobby.tsx` and `web/src/features/custom-lobby/custom-lobby.css` (registered in `web/src/styles/global.css` and mounted in `web/src/app/App.tsx`): private custom match lobby modal with 6-character invite code and copyable `#custom=CODE` fragment link, Team A / Team B / Spectators (4 slots) roster columns, self slot selection, host-only move/swap/kick/transfer-host controls, host-only team size (`1v1`/`2v2`/`3v3`) and versioned server-enforced settings (`Colosseum` map, `5`/`10`/`15`/`20 min` round limit), full-lobby start guard with pending state, and Escape/Minimize handling.
+- `web/src/features/play-online/PlayOnline.tsx`, `web/src/features/queue/QueueBar.tsx`, `web/src/features/scoreboard/Scoreboard.tsx`: custom lobby host/join entry inside `PlayOnline` (Game menu & home screen), minimized custom-lobby status pill in `QueueBar` coordinated via shared `useQueueBarVisible()` across top-center HUD overlays (and hidden behind `Scoreboard`), and post-match **Return to lobby** action on `Scoreboard` for instant rematches without new invites.
+
+Manual review checklist before merge/release:
+
+- Open Game menu or home screen, host a custom match, copy `#custom=CODE` invite link into a second tab/browser, and verify roster updates, invite code display, and clipboard fallback readability across desktop and 800×600 viewports.
+- Test team pick/swap, host move/swap across full teams, spectator slot moves, host transfer, player removal (`kicked` notice), size changes (including shrink overflow to spectators), and round-limit setting enforcement in live 1v1/2v2/3v3 custom matches.
+- Verify **Minimize** → `QueueBar` pill → **Open lobby** layering (including with `RoundClock`, `MatchStatus`, `CombatErrors`, `Customizer`, and `Escape`), and verify **Return to lobby** on the post-match scoreboard starts a rematch cleanly without new invites.
+
+Automated checks passed locally (`./scripts/check.sh`, `cargo run -p arena-headless --locked`, `./scripts/server-smoke.sh`, `npm run build`, `cargo clippy -p arena-client --target wasm32-unknown-unknown --locked -- -D warnings`, and `./scripts/build-web.sh`); no browser was launched and no rendered, visual, or networked pass is claimed.

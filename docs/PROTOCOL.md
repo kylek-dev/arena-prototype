@@ -114,22 +114,24 @@ could alter a replayed outcome. `Welcome.map` identifies the layout.
 ## Join tickets
 
 A ticket is the postcard encoding of
-`{match_id, player, seat, team_size, expires}` (`expires` in Unix seconds)
-followed by a 32-byte HMAC-SHA256 tag over those bytes, under a key shared
-by whatever issues tickets and the match servers (`ARENA_TICKET_KEY`). The
-signature is checked in constant time before the claims are parsed. Tickets
-are about 58 bytes and valid for two hours, which covers the match, so a
-client reconnects with the same ticket. Browsers treat tickets as opaque
-bytes.
+`{match_id, player, seat, team_size, expires, settings}` (`expires` in Unix
+seconds; optional versioned `MatchSettings { version: 1, map, round_seconds }`
+for private custom matches) followed by a 32-byte HMAC-SHA256 tag over those
+bytes, under a key shared by whatever issues tickets and the match servers
+(`ARENA_TICKET_KEY`). The signature is checked in constant time before the
+claims are parsed. Tickets are about 58–65 bytes and valid for two hours,
+which covers the match, so a client reconnects with the same ticket. Browsers
+treat tickets as opaque bytes.
 
 **A match starts with its first ticket** ([ADR 0045](decisions/0045-front-door-and-playtest-deployment.md)).
 A match server that receives a valid ticket for a match it does not host
-starts it, sized by `team_size`, so whatever holds the key creates matches
-without calling the server. Claims for a team size outside 1–3 or a seat
-outside the match get `BadTicket` and start nothing. A match that has ended
-stays ended while its tickets are valid (`MatchOver`), as long as the
-process runs. A draining server answers the first ticket of a new match
-with `ServerShutdown`.
+starts it, sized by `team_size` (and applying validated `settings` when
+present, such as the custom round time limit), so whatever holds the key
+creates matches without calling the server. Claims for a team size outside
+1–3, a seat outside the match, or invalid custom settings get `BadTicket` and
+start nothing. A match that has ended stays ended while its tickets are valid
+(`MatchOver`), as long as the process runs. A draining server answers the
+first ticket of a new match with `ServerShutdown`.
 
 There are no accounts. The front door (`arena-door`, `POST /api/matches`
 and the `/lobby/` page) issues one join link per seat, with the ticket in
@@ -161,6 +163,16 @@ the connection with `error`.
 | `{"type":"cancel"}` | Any member stops the party's search. |
 | `{"type":"accept"}` | Accepts the match on offer. |
 | `{"type":"decline"}` | Declines it: the check ends for everyone, and this player's party leaves the queue. |
+| `{"type":"create_lobby","mode":"1v1"\|"2v2"\|"3v3"}` | Creates a private custom lobby with a 6-char invite code (leaving any idle party). `mode` defaults to `"1v1"`. |
+| `{"type":"join_lobby","code":"K7P2QX"}` | Joins a private custom lobby by invite code (never a seat credential). |
+| `{"type":"leave_lobby"}` | Leaves the custom lobby; passes host to the next member or deletes it when empty. |
+| `{"type":"set_lobby_slot","slot":"team_a"\|"team_b"\|"spectator"}` | Moves self to an open team or spectator slot (host may swap across full teams). |
+| `{"type":"move_lobby_member","member":2,"slot":"team_a"\|"team_b"\|"spectator"}` | Host only: moves a member (or swaps across full teams). |
+| `{"type":"kick_lobby_member","member":2}` | Host only: removes another member from the lobby (`lobby_left` `kicked`). |
+| `{"type":"transfer_lobby_host","member":2}` | Host only: passes the host role to another member. |
+| `{"type":"set_lobby_mode","mode":"1v1"\|"2v2"\|"3v3"}` | Host only: changes team size before starting (overflow moves to spectators or refuses `lobby_too_big`). |
+| `{"type":"set_lobby_settings","settings":{"version":1,"map":"colosseum","round_seconds":300\|600\|900\|1200}}` | Host only: updates versioned, allowlisted match settings enforced by the match server. |
+| `{"type":"start_lobby"}` | Host only: requires both teams full; rate-limited per address via `door.creations`; issues signed seat tickets while keeping the lobby open for rematches. |
 
 | From the door | Meaning |
 | --- | --- |
@@ -169,7 +181,10 @@ the connection with `error`.
 | `ready_check` `{mode, accepted, total, you, remaining_ms}` | A match to accept within 15 s; sent again whenever someone accepts. |
 | `requeued` `{mode}` | Someone else did not accept; back at the front of the queue. |
 | `stopped` `{reason}` | `cancelled`, `member_left`, `declined`, `not_accepted`, `member_declined` or `member_not_accepted`. The connection stays open. |
-| `refused` `{code}` | `not_leader`, `party_too_big`, `party_full`, `party_busy` or `no_such_party`; nothing changed. |
+| `lobby` `{code, mode, settings, spectator_slots, you, host, can_start, members}` | Current custom lobby roster (`members`: `{id, slot, host, you}`), settings, and readiness. |
+| `lobby_left` `{reason}` | `left` or `kicked`. |
+| `lobby_started` `{mode, match_id}` | Sent to lobby spectators when a custom match starts. |
+| `refused` `{code}` | `not_leader`, `party_too_big`, `party_full`, `party_busy`, `no_such_party`, `in_lobby`, `no_such_lobby`, `lobby_full`, `not_host`, `slot_full`, `lobby_not_full`, `lobby_too_big`, `no_such_member`, `invalid_settings` or `rate_limited`; nothing changed. |
 | `match` `{mode, match_id, seat, server, ticket, expires}` | This player's seat ticket. The connection stays open. |
 | `error` `{code, message}` | Then the door closes: `bad_request`, `rate_limited`, `replaced` or `shutdown`. |
 

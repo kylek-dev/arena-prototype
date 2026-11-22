@@ -9,6 +9,8 @@
 //! verification is deterministic in tests.
 
 use arena_protocol::MAX_TICKET;
+use arena_sim::TICKS_PER_SECOND;
+use arena_sim::arena::MAX_ROUND_TICKS;
 use arena_sim::map::MAX_TEAM;
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
@@ -17,6 +19,62 @@ use sha2::Sha256;
 const TAG: usize = 32;
 /// Shortest accepted signing key.
 pub const MIN_KEY: usize = 32;
+/// Current schema version for custom match settings.
+pub const MATCH_SETTINGS_VERSION: u8 = 1;
+/// Allowed round time limits for custom matches (seconds).
+pub const ALLOWED_ROUND_SECONDS: [u16; 4] = [300, 600, 900, 1200];
+/// Default custom match round time limit (seconds, matching `MAX_ROUND_TICKS`).
+pub const DEFAULT_ROUND_SECONDS: u16 = 1200;
+
+/// Built-in maps a match can run. Never free-form paths or names.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MapId {
+    #[default]
+    Colosseum,
+}
+impl MapId {
+    pub const ALL: [MapId; 1] = [MapId::Colosseum];
+    pub fn id(self) -> &'static str {
+        match self {
+            MapId::Colosseum => "colosseum",
+        }
+    }
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|map| map.id() == id)
+    }
+}
+
+/// Versioned, server-enforced match options carried in signed custom tickets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MatchSettings {
+    pub version: u8,
+    pub map: MapId,
+    /// Round time limit in seconds; must be in [`ALLOWED_ROUND_SECONDS`].
+    pub round_seconds: u16,
+}
+impl Default for MatchSettings {
+    fn default() -> Self {
+        Self {
+            version: MATCH_SETTINGS_VERSION,
+            map: MapId::Colosseum,
+            round_seconds: DEFAULT_ROUND_SECONDS,
+        }
+    }
+}
+impl MatchSettings {
+    /// Whether these settings belong to a supported version and allowlist.
+    pub fn is_valid(self) -> bool {
+        self.version == MATCH_SETTINGS_VERSION
+            && ALLOWED_ROUND_SECONDS.contains(&self.round_seconds)
+            && self.round_ticks() <= MAX_ROUND_TICKS
+    }
+    /// Round time limit in simulation ticks.
+    pub fn round_ticks(self) -> u64 {
+        u64::from(self.round_seconds) * TICKS_PER_SECOND
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Claims {
@@ -27,11 +85,15 @@ pub struct Claims {
     pub team_size: u8,
     /// Unix seconds after which the ticket is refused.
     pub expires: u64,
+    /// Optional custom match settings enforced by the match server.
+    pub settings: Option<MatchSettings>,
 }
 impl Claims {
     /// Whether the claims describe a seat in a match the rules can run.
     pub fn is_playable(&self) -> bool {
-        (1..=MAX_TEAM).contains(&usize::from(self.team_size)) && self.seat < 2 * self.team_size
+        (1..=MAX_TEAM).contains(&usize::from(self.team_size))
+            && self.seat < 2 * self.team_size
+            && self.settings.is_none_or(MatchSettings::is_valid)
     }
 }
 
@@ -50,6 +112,29 @@ pub struct NewMatch {
 /// match server knows about it until the first ticket connects. `None`
 /// when the team size is outside `1..=MAX_TEAM`.
 pub fn issue_match(key: &TicketKey, team_size: usize, expires: u64) -> Option<NewMatch> {
+    issue_match_with_settings(key, team_size, None, expires)
+}
+
+/// Issues a ticket per seat for a custom match with validated versioned
+/// settings. Returns `None` when `team_size` or `settings` is invalid.
+pub fn issue_custom_match(
+    key: &TicketKey,
+    team_size: usize,
+    settings: MatchSettings,
+    expires: u64,
+) -> Option<NewMatch> {
+    if !settings.is_valid() {
+        return None;
+    }
+    issue_match_with_settings(key, team_size, Some(settings), expires)
+}
+
+fn issue_match_with_settings(
+    key: &TicketKey,
+    team_size: usize,
+    settings: Option<MatchSettings>,
+    expires: u64,
+) -> Option<NewMatch> {
     if !(1..=MAX_TEAM).contains(&team_size) {
         return None;
     }
@@ -62,6 +147,7 @@ pub fn issue_match(key: &TicketKey, team_size: usize, expires: u64) -> Option<Ne
                 seat: seat as u8,
                 team_size: team_size as u8,
                 expires,
+                settings,
             }))
         })
         .collect();
@@ -178,6 +264,7 @@ mod tests {
         seat: 3,
         team_size: 2,
         expires: 1_000,
+        settings: None,
     };
 
     #[test]
@@ -263,5 +350,49 @@ mod tests {
             TicketKey::random().issue(&CLAIMS)
         );
         assert_eq!(format!("{:?}", key(1)), "TicketKey(..)", "keys never print");
+    }
+
+    #[test]
+    fn custom_match_settings_are_versioned_bounded_and_signed() {
+        let valid = MatchSettings {
+            version: MATCH_SETTINGS_VERSION,
+            map: MapId::Colosseum,
+            round_seconds: 600,
+        };
+        assert!(valid.is_valid());
+        assert_eq!(valid.round_ticks(), 600 * TICKS_PER_SECOND);
+        assert_eq!(MapId::from_id("colosseum"), Some(MapId::Colosseum));
+        assert_eq!(MapId::from_id("../secret"), None);
+
+        let bad_version = MatchSettings {
+            version: MATCH_SETTINGS_VERSION + 1,
+            ..valid
+        };
+        let bad_seconds = MatchSettings {
+            round_seconds: 123,
+            ..valid
+        };
+        assert!(!bad_version.is_valid());
+        assert!(!bad_seconds.is_valid());
+        assert!(issue_custom_match(&key(1), 2, bad_version, 100).is_none());
+        assert!(issue_custom_match(&key(1), 2, bad_seconds, 100).is_none());
+
+        let created = issue_custom_match(&key(1), 2, valid, 100).unwrap();
+        assert_eq!(created.tickets.len(), 4);
+        for (seat, ticket) in created.tickets.iter().enumerate() {
+            let bytes = from_hex(ticket).unwrap();
+            assert!(bytes.len() <= MAX_TICKET);
+            let claims = key(1).verify(&bytes, 0).unwrap();
+            assert_eq!(claims.seat, seat as u8);
+            assert_eq!(claims.settings, Some(valid));
+            assert!(claims.is_playable());
+        }
+        assert!(
+            !Claims {
+                settings: Some(bad_seconds),
+                ..CLAIMS
+            }
+            .is_playable()
+        );
     }
 }

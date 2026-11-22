@@ -662,4 +662,213 @@ mod queue {
         door.stop().await.unwrap();
         server.stop().await.unwrap();
     }
+
+    #[tokio::test]
+    async fn custom_lobby_hosts_moves_enforces_settings_starts_and_rematches() {
+        let (door, server) = door_and_server(Duration::from_secs(5)).await;
+        let mut host = Player::hello(door.addr, 101).await;
+        let mut guest = Player::hello(door.addr, 102).await;
+        let mut spec = Player::hello(door.addr, 103).await;
+
+        // Host creates a 1v1 custom lobby.
+        host.say(r#"{"type":"create_lobby","mode":"1v1"}"#).await;
+        let code = match host.next_event().await {
+            Some(QueueMessage::Lobby(view)) => {
+                assert!(view.host);
+                assert!(!view.can_start);
+                view.code
+            }
+            other => panic!("expected lobby, got {other:?}"),
+        };
+
+        // Host cannot start until both teams are full.
+        host.say(r#"{"type":"start_lobby"}"#).await;
+        assert_eq!(
+            host.next_event().await,
+            Some(QueueMessage::Refused {
+                code: "lobby_not_full".into()
+            })
+        );
+
+        // Guest joins by code -> fills Team B; spectator joins -> Spectator slot.
+        guest
+            .say(&format!(r#"{{"type":"join_lobby","code":"{code}"}}"#))
+            .await;
+        let _ = host.next_event().await;
+        match guest.next_event().await {
+            Some(QueueMessage::Lobby(view)) => {
+                assert!(view.can_start);
+                assert!(!view.host);
+            }
+            other => panic!("expected lobby, got {other:?}"),
+        }
+        spec.say(&format!(r#"{{"type":"join_lobby","code":"{code}"}}"#))
+            .await;
+        let _ = host.next_event().await;
+        let _ = guest.next_event().await;
+        match spec.next_event().await {
+            Some(QueueMessage::Lobby(view)) => {
+                assert_eq!(view.members.len(), 3);
+                assert_eq!(
+                    view.members[2].slot,
+                    arena_server::matchmaker::LobbySlot::Spectator
+                );
+            }
+            other => panic!("expected lobby for spectator, got {other:?}"),
+        }
+
+        // Host enforces a 5-minute (300 s) custom round time limit.
+        host.say(r#"{"type":"set_lobby_settings","settings":{"version":1,"map":"colosseum","round_seconds":300}}"#)
+            .await;
+        for p in [&mut host, &mut guest, &mut spec] {
+            match p.next_event().await {
+                Some(QueueMessage::Lobby(view)) => assert_eq!(view.settings.round_seconds, 300),
+                other => panic!("expected updated lobby settings, got {other:?}"),
+            }
+        }
+
+        // Start match 1: seated players get match tickets, spectator gets lobby_started.
+        host.say(r#"{"type":"start_lobby"}"#).await;
+        let (first_match_id, host_ticket, server_url) = match host.next_event().await {
+            Some(QueueMessage::Match {
+                mode,
+                match_id,
+                seat,
+                server,
+                ticket,
+                ..
+            }) => {
+                assert_eq!(mode, "1v1");
+                assert_eq!(seat, 0);
+                (match_id, ticket, server)
+            }
+            other => panic!("expected match for host, got {other:?}"),
+        };
+        let guest_ticket = match guest.next_event().await {
+            Some(QueueMessage::Match {
+                match_id,
+                seat,
+                ticket,
+                ..
+            }) => {
+                assert_eq!(match_id, first_match_id);
+                assert_eq!(seat, 1);
+                ticket
+            }
+            other => panic!("expected match for guest, got {other:?}"),
+        };
+        assert_eq!(
+            spec.next_event().await,
+            Some(QueueMessage::LobbyStarted {
+                mode: "1v1".into(),
+                match_id: first_match_id.clone(),
+            })
+        );
+
+        // Connecting to the real match server verifies the signed custom round time limit!
+        let mut live_sockets = Vec::new();
+        for (seat, ticket) in [(0u8, host_ticket), (1u8, guest_ticket)] {
+            let (mut socket, _) = connect_async(&server_url).await.unwrap();
+            let hello = ClientMessage::Hello {
+                protocol: PROTOCOL_VERSION,
+                ticket: from_hex(&ticket).unwrap(),
+                appearance: None,
+            };
+            socket.send(Message::binary(hello.encode())).await.unwrap();
+            let welcome = tokio::time::timeout(WAIT, socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            match ServerMessage::decode(&welcome.into_data()).unwrap() {
+                ServerMessage::Welcome(welcome) => {
+                    assert_eq!(welcome.actor, seat);
+                    assert_eq!(
+                        welcome.round_ticks,
+                        300 * arena_sim::TICKS_PER_SECOND,
+                        "custom 5-minute round limit must be enforced by the match server"
+                    );
+                }
+                other => panic!("expected Welcome, got {other:?}"),
+            }
+            live_sockets.push(socket);
+        }
+        drop(live_sockets);
+
+        // Lobby invite code is never a match seat credential: /play rejects it with BadTicket.
+        {
+            let (mut raw, _) = connect_async(&server_url).await.unwrap();
+            let forged = ClientMessage::Hello {
+                protocol: PROTOCOL_VERSION,
+                ticket: code.as_bytes().to_vec(),
+                appearance: None,
+            };
+            raw.send(Message::binary(forged.encode())).await.unwrap();
+            let reply = tokio::time::timeout(WAIT, raw.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                ServerMessage::decode(&reply.into_data()).unwrap(),
+                ServerMessage::Error(arena_protocol::ErrorCode::BadTicket)
+            );
+        }
+
+        // Rematch: host starts a second match in the same lobby with no new invites!
+        host.say(r#"{"type":"start_lobby"}"#).await;
+        let second_match_id = match host.next_event().await {
+            Some(QueueMessage::Match { match_id, .. }) => match_id,
+            other => panic!("expected rematch ticket, got {other:?}"),
+        };
+        assert_ne!(second_match_id, first_match_id);
+        match guest.next_event().await {
+            Some(QueueMessage::Match { match_id, .. }) => assert_eq!(match_id, second_match_id),
+            other => panic!("expected rematch ticket for guest, got {other:?}"),
+        }
+        assert_eq!(
+            spec.next_event().await,
+            Some(QueueMessage::LobbyStarted {
+                mode: "1v1".into(),
+                match_id: second_match_id,
+            })
+        );
+
+        // Per-address match creation rate limit applies to start_lobby too (default burst = 5).
+        for _ in 0..3 {
+            host.say(r#"{"type":"start_lobby"}"#).await;
+            assert!(matches!(
+                host.next_event().await,
+                Some(QueueMessage::Match { .. })
+            ));
+            assert!(matches!(
+                guest.next_event().await,
+                Some(QueueMessage::Match { .. })
+            ));
+            assert!(matches!(
+                spec.next_event().await,
+                Some(QueueMessage::LobbyStarted { .. })
+            ));
+        }
+        host.say(r#"{"type":"start_lobby"}"#).await;
+        assert_eq!(
+            host.next_event().await,
+            Some(QueueMessage::Refused {
+                code: "rate_limited".into()
+            })
+        );
+
+        let metrics = request(door.addr, "GET", "/metrics", "", "").await.body;
+        assert!(
+            metrics.contains("arena_door_custom_matches_total 5\n"),
+            "{metrics}"
+        );
+        assert!(
+            metrics.contains("arena_door_refused_rate_total 1\n"),
+            "{metrics}"
+        );
+
+        door.stop().await.unwrap();
+        server.stop().await.unwrap();
+    }
 }

@@ -1,5 +1,4 @@
 import { Button } from "@radix-ui/themes";
-import { IDLE_QUEUE, isQueueBarVisible } from "../../domain/matchmaking";
 import { matchMessage, type LinkState } from "../../domain/network";
 import {
   roundClockFromSeconds,
@@ -7,11 +6,11 @@ import {
   snapshotRemainingSeconds,
 } from "../../domain/round-clock";
 import { dispatch } from "../../runtime/commands";
-import { matchQueue, networkLink } from "../../state/network";
+import { networkLink } from "../../state/network";
 import { engine, error, interaction, scoreboardVisible } from "../../state/session";
 import { createStore, useStore } from "../../state/store";
+import { useQueueBarVisible } from "../queue/QueueBar";
 
-const NO_QUEUE = createStore(IDLE_QUEUE);
 const NO_LINK = createStore<LinkState>({ phase: "idle", attempt: 0, ended: null, status: null });
 
 /** Authoritative round countdown timer and round outcome banner.
@@ -28,8 +27,7 @@ export function RoundClock() {
   const scoreboardOpen = useStore(scoreboardVisible, (v) => v);
   const hasScoreboard = useStore(engine, (s) => Boolean(s?.networked && s.won && s.scoreboard));
   const failed = useStore(error, Boolean);
-  const queue = useStore(matchQueue, (q) => q);
-  const queueVisible = useStore(queue?.state ?? NO_QUEUE, isQueueBarVisible);
+  const queueVisible = useQueueBarVisible();
   const link = useStore(networkLink, (l) => l);
   const linkState = useStore(link?.state ?? NO_LINK, (s) => s);
 

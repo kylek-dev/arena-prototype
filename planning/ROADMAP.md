@@ -27,7 +27,7 @@ In recommended order (2026-11-15):
 | done | Show every player's chosen look in matches (moved up by the user; browser review pending) | 4 | [networked-appearance](issues/networked-appearance.md) |
 | done | Show the round clock and settle the time-limit result (browser review & playtest tie-break tuning pending) | 3 | [round-clock](issues/round-clock.md) |
 | done | Show a scoreboard with per-player stats, Leave and Queue again when a match ends (browser review pending; CC columns wait for CC effects) | 4 | [scoreboard](issues/scoreboard.md) |
-| 4 | Host private custom matches with invites, teams and rematch | 4 | [custom-matches](issues/custom-matches.md) |
+| done | Host private custom matches with invites, teams, versioned settings, spectator slots and rematch (browser review pending) | 4 | [custom-matches](issues/custom-matches.md) |
 | 5 | Make cast times, cooldowns, resources and interrupts server-authoritative | 3 | [server-casting-resources](issues/server-casting-resources.md) |
 | 6 | Spectate matches | 4 | [spectating](issues/spectating.md) |
 | ongoing | Review the network match experience across browsers (manual, by the user) | 2 | [network-ui-review](issues/network-ui-review.md) |
