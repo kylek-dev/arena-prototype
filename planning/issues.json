@@ -88,5 +88,15 @@
     "key": "observability-telemetry",
     "title": "Add production-grade OpenTelemetry logging, metrics, tracing and self-hosted Grafana LGTM observability",
     "body_file": "planning/issues/observability-telemetry.md"
+  },
+  {
+    "key": "social-identity",
+    "title": "Add accounts, Name#1234 handles, friends with invites, and an admin role",
+    "body_file": "planning/issues/social-identity.md"
+  },
+  {
+    "key": "chat",
+    "title": "Add team, match and public chat with system messages and slash commands",
+    "body_file": "planning/issues/chat.md"
   }
 ]
