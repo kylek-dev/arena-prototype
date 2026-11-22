@@ -204,7 +204,7 @@
 .custom-lobby-member-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  gap: 6px;
 }
 
 .custom-lobby-notice {

@@ -103,6 +103,7 @@ function MemberRow({
           {member.slot === "spectator" ? (
             <>
               <Button
+                className="action-button"
                 size="1"
                 variant="surface"
                 color="gray"
@@ -113,6 +114,7 @@ function MemberRow({
                 Team A
               </Button>
               <Button
+                className="action-button"
                 size="1"
                 variant="surface"
                 color="gray"
@@ -126,6 +128,7 @@ function MemberRow({
           ) : (
             <>
               <Button
+                className="action-button"
                 size="1"
                 variant="surface"
                 color="gray"
@@ -135,8 +138,9 @@ function MemberRow({
                 {otherTeamLabel}
               </Button>
               <Button
+                className="action-button"
                 size="1"
-                variant="ghost"
+                variant="surface"
                 color="gray"
                 disabled={spectatorsFull}
                 aria-label={`Move Player ${member.id} to Spectators`}
@@ -149,8 +153,9 @@ function MemberRow({
           {!member.you && (
             <>
               <Button
+                className="action-button"
                 size="1"
-                variant="ghost"
+                variant="surface"
                 color="gray"
                 aria-label={`Make Player ${member.id} host`}
                 onClick={() => queue.transferLobbyHost(member.id)}
@@ -158,8 +163,9 @@ function MemberRow({
                 Make host
               </Button>
               <Button
+                className="action-button"
                 size="1"
-                variant="ghost"
+                variant="surface"
                 color="red"
                 aria-label={`Remove Player ${member.id}`}
                 onClick={() => queue.kickLobbyMember(member.id)}

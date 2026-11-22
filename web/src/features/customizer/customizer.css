@@ -170,6 +170,9 @@
   font: inherit;
   cursor: pointer;
 }
+.customizer-tab:hover {
+  color: var(--gray-12);
+}
 .customizer-tab[aria-selected="true"] {
   color: var(--gray-12);
   border-bottom-color: var(--accent-9);

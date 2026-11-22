@@ -446,14 +446,16 @@ export function Customizer() {
         )}
         <footer className="customizer-footer">
           <Button
-            variant="ghost"
+            className="action-button"
+            variant="surface"
             color="gray"
             onClick={() => updateAppearance(randomAppearance(kits))}
           >
             Randomize
           </Button>
           <Button
-            variant="ghost"
+            className="action-button"
+            variant="surface"
             color="gray"
             onClick={() => updateAppearance({ ...defaultAppearance })}
           >

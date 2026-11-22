@@ -45,6 +45,22 @@ button {
 button:not(.rt-Button):hover:not(:disabled) {
   border-color: var(--gray-9);
 }
+/* Zero specificity: only buttons still on the default fill above darken
+   while pressed; component backgrounds (action slots, unit entries) win. */
+:where(button:not(.rt-Button):active:not(:disabled)) {
+  background: var(--gray-5);
+}
+/* Shared style for small command buttons that sit in rows (lobby slots,
+   footers, inline confirmations): a visible border or fill from the Radix
+   `surface` variant, its hover/focus/pressed states, and a minimum hit size
+   (WCAG 2.2 target size) so neighbours never overlap. Use with
+   `variant="surface"` (or `soft`), never `ghost`, whose negative margins
+   make adjacent buttons overlap. */
+.action-button {
+  min-height: 28px;
+  min-width: 28px;
+  white-space: nowrap;
+}
 button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
