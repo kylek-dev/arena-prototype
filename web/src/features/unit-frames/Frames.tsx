@@ -7,6 +7,7 @@ import type { Entity } from "../../domain/units/selection";
 import { useEffect, type ComponentProps } from "react";
 import { Placed } from "../../ui/Placed";
 import { UnitFrame } from "./UnitFrame";
+import { SAMPLE_CAST } from "../cast-bar/PlayerCastBar";
 import { hoveredFrame } from "../../runtime/unit-hover";
 
 function TaggedFrame({
@@ -15,12 +16,14 @@ function TaggedFrame({
   unit,
   editing,
   selected,
+  showCast = true,
 }: {
   tag: UnitTag;
   role: ComponentProps<typeof UnitFrame>["role"];
   unit: Entity | null;
   editing: boolean;
   selected: boolean;
+  showCast?: boolean;
 }) {
   const hovered = useStore(hoveredFrame, (s) => s === tag);
   useEffect(
@@ -29,7 +32,7 @@ function TaggedFrame({
     },
     [tag, unit?.id],
   );
-  const frame = <UnitFrame role={role} unit={unit} />;
+  const frame = <UnitFrame role={role} unit={unit} showCast={showCast} />;
   if (editing) return frame;
   return (
     <button
@@ -68,6 +71,7 @@ export function Frames() {
     focused = useStore(focus, (s) => s),
     editing = useStore(interaction, (s) => s.layout);
   const frames = useConfigSelector((c) => c.frames);
+  const castBarAttached = useConfigSelector((c) => c.castBarAttached);
   const selectedId = state ? unitRoster(state, focused).target?.id : null;
   return (
     <>
@@ -84,6 +88,8 @@ export function Frames() {
               maxHealth: maximum,
               resource: 100,
               maxResource: 100,
+              // The attached player cast bar previews inside the player frame.
+              cast: role === "player" && castBarAttached ? SAMPLE_CAST : null,
             }
           : liveUnit;
         return (
@@ -99,6 +105,7 @@ export function Frames() {
               unit={unit ?? null}
               editing={editing}
               selected={!!unit && unit.id === selectedId}
+              showCast={role !== "player" || castBarAttached}
             />
           </Placed>
         );

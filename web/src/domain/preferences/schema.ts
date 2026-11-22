@@ -15,11 +15,20 @@ import {
   type Chord,
 } from "../bindings/model";
 import { clamp, layout, type Layout } from "../layout/model";
-export type FrameRole = "player" | "target" | "focus" | "opponents" | "team" | "unitTooltip";
+export type FrameRole =
+  | "player"
+  | "target"
+  | "focus"
+  | "opponents"
+  | "team"
+  | "unitTooltip"
+  | "castBar";
 export type Config = {
   bars: Bar[];
   bindings: Bindings;
   frames: Record<FrameRole, Layout>;
+  /** Show the player's cast bar inside the player frame instead of its own frame. */
+  castBarAttached: boolean;
   assignmentsLocked: boolean;
   nameplates: { friendly: boolean; enemy: boolean };
 };
@@ -38,7 +47,10 @@ export function defaultConfig(): Config {
       opponents: layout(0.97, 0.24),
       team: layout(0.03, 0.24),
       unitTooltip: layout(1, 1),
+      // Centred, just above the default action bar (y 0.92), down to 800×600.
+      castBar: layout(0.5, 0.78),
     },
+    castBarAttached: false,
     assignmentsLocked: false,
     nameplates: { friendly: true, enemy: true },
   };
@@ -218,7 +230,9 @@ export function validateConfig(value: unknown): Config {
       opponents: cleanLayout(frames.opponents, d.frames.opponents),
       team: cleanLayout(frames.team, d.frames.team),
       unitTooltip: cleanLayout(frames.unitTooltip, d.frames.unitTooltip),
+      castBar: cleanLayout(frames.castBar, d.frames.castBar),
     },
+    castBarAttached: bool(r.castBarAttached, false),
     assignmentsLocked: bool(r.assignmentsLocked, false),
     nameplates: {
       friendly: bool(record(r.nameplates).friendly, true),
