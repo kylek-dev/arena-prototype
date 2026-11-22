@@ -330,7 +330,7 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 
 ## 2026-11-22 — Practice catches up on ticks missed in a hidden tab (Lane A investigation + client fix)
 - **Branch / Commit:** `auto/practice-hidden-tab-regen`
-- **Base / PR:** `auto/cast-cost-on-completion` (stacked on PR #82)
+- **Base / PR:** `auto/cast-cost-on-completion` — https://github.com/kylek-dev/arena-prototype/pull/83 (stacked on PR #82)
 - **Lane:** A investigation with a client fix (pending human browser check in `docs/UI-REVIEW.md`)
 - **Task:** Playtest Inbox — "Resource regeneration stops while the tab is hidden" ([ADR 0051](../docs/decisions/0051-practice-catches-up-hidden-tab-ticks.md))
 - **Changes:**
@@ -348,3 +348,23 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fresh-Eyes Review:** No Critical or Important findings. Addressed Minors: moved catch-up before `network_receive` so a match ending in a hidden tab never ages the fresh practice round, gated catch-up on the startup overlay, deduplicated position collection, and tightened ADR wording (any >250 ms frame triggers it, test length, cited perf figure, browser behaviour stated as expected rather than observed).
 - **Learnings:** In `bevy_time` 0.20.1 `Time<Virtual>::effective_speed` already includes the `max_delta` clamp; compare `Time<Real>` × `relative_speed` with the virtual delta to measure lost time.
 - **Next Recommended Slice:** Playtest inbox — smooth cast bars.
+
+## 2026-11-22 — Smooth cast bars (Lane B, playtest inbox)
+- **Branch / Commit:** `auto/smooth-cast-bars`
+- **Base / PR:** `auto/practice-hidden-tab-regen` (stacked on PR #83)
+- **Lane:** B (pending human browser review in `docs/UI-REVIEW.md`)
+- **Task:** Playtest Inbox — "Make cast bars smooth"
+- **Changes:**
+  - `web/src/domain/cast-bar.ts`: pure `CastTimeline` (snap on new spell/duration/remaining going up, pull forward to fresh samples, resync on >0.2 s lag, stop 0.25 s past a stalled sample and report `settled`).
+  - `web/src/runtime/cast-bar-animation.ts`: one shared rAF loop that sleeps when every bar is settled and wakes on new samples.
+  - `web/src/features/cast-bar/CastBar.tsx`: frame and nameplate variants writing only fill width and time text; `UnitFrame` (player/target/focus/team/opponents/spectator) and `Nameplates` use it; keyed by unit id so a target switch snaps. Removed the now-unused `castRemainingSeconds`.
+  - Tests: `tests/domain/cast-bar.test.ts` (timeline + animator), `tests/ui/cast-bar.test.tsx` (per-frame fill without React re-renders, no backwards step, unit switch, new cast, nameplates). Docs: `docs/FRONTEND.md` "Cast bar presentation".
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/practice-hidden-tab-regen` (`smoke=false web_build=true wasm=false`): pass
+    - `./scripts/check.sh`: pass (402 Rust tests, 1 pre-existing ignored; 52 Python; 42 Node; 41 Vitest files / 304 tests).
+    - `cargo run -p arena-headless --locked`: pass. `npm run build`: pass (369 modules).
+    - Server smoke / WASM clippy: not applicable (no crate changes).
+  - `./scripts/build-web.sh`: pass (55 static resources; no browser launched).
+- **Fresh-Eyes Review:** No Critical or Important findings. Addressed Minors: key `CastBar` by unit id, sleep the loop when settled, pull forward to samples ahead of the bar, removed unused export, required `label` for the frame variant, docs, loop and unit-switch tests. Not done (optional): sharing the `FrameClock` type with the cooldown animator, `transform`-based fill.
+- **Learnings:** `combatEdgesDiffer` in `web/src/bridge/snapshot.ts` already delivers cast start/end without the 80 ms HUD throttle, so presentation only has to animate between edges.
+- **Next Recommended Slice:** Playtest inbox — "Stop casting" keybind and Esc stops casting.

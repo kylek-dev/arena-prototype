@@ -48,12 +48,6 @@ export function castProgress(cast: ActiveCast): number {
   return Math.min(1, Math.max(0, elapsed / cast.totalTicks));
 }
 
-/** Seconds remaining on an active cast given the authoritative simulation tick rate. */
-export function castRemainingSeconds(cast: ActiveCast, tickRate = 30): number {
-  if (!Number.isFinite(tickRate) || tickRate <= 0) return 0;
-  return Math.max(0, cast.remainingTicks) / tickRate;
-}
-
 /** Resource fill percentage in `[0, 100]` for a unit frame meter. */
 export function resourcePercent(resource: number, maxResource: number): number {
   if (!Number.isFinite(resource) || !Number.isFinite(maxResource) || maxResource <= 0) return 0;

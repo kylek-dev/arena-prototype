@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   castProgress,
-  castRemainingSeconds,
   isValidActiveCast,
   isValidSpellKey,
   resourcePercent,
@@ -40,12 +39,6 @@ describe("casting and resource presentation domain helpers", () => {
       2 / 3,
     );
     expect(castProgress({ spell: "mend", remainingTicks: 1, totalTicks: 45 })).toBeCloseTo(44 / 45);
-    expect(
-      castRemainingSeconds({ spell: "rift_bolt", remainingTicks: 30, totalTicks: 45 }, 30),
-    ).toBe(1);
-    expect(
-      castRemainingSeconds({ spell: "rift_bolt", remainingTicks: 15, totalTicks: 45 }, 0),
-    ).toBe(0);
     expect(resourcePercent(65, 100)).toBe(65);
     expect(resourcePercent(120, 100)).toBe(100);
     expect(resourcePercent(-5, 100)).toBe(0);

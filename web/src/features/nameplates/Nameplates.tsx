@@ -1,5 +1,6 @@
 import { useRef } from "react";
-import { castProgress, spellLabel } from "../../domain/casting";
+import { spellLabel } from "../../domain/casting";
+import { CastBar } from "../cast-bar/CastBar";
 import { visibleNameplates } from "../../domain/units/nameplates";
 import { useConfigSelector } from "../../state/config";
 import { draggingSpell, error, interaction, nameplateScene } from "../../state/session";
@@ -70,15 +71,7 @@ export function Nameplates() {
               <span className="nameplate-name" aria-hidden="true">
                 {unit.disconnected ? `${unit.name} · Disconnected` : unit.name}
               </span>
-              {activeCast && (
-                <span className="nameplate-cast" aria-hidden="true">
-                  <span
-                    className="nameplate-cast-fill"
-                    style={{ width: `${castProgress(activeCast) * 100}%` }}
-                  />
-                  <span className="nameplate-cast-label">{spellLabel(activeCast.spell)}</span>
-                </span>
-              )}
+              {activeCast && <CastBar variant="nameplate" cast={activeCast} />}
               {lockedOut && (
                 <span className="nameplate-lockout" aria-hidden="true">
                   Locked
