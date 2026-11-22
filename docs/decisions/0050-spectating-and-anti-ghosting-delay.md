@@ -27,15 +27,14 @@ Players in private custom matches (and future live match lists) need to watch ma
 - Add `WireEvent::for_spectator(&ArenaEvent) -> Option<Self>`, which strips private `ArenaEvent::Rejected` events unconditionally while forwarding all public combat events (`Jumped`, `CastStarted`, `CastCompleted`, `CastInterrupted`, `Hit`, `Healed`, `Finished`).
 - In `arena-server`, spectator connections strictly ignore all `ClientMessage::Input(_)` frames (keeping `RateWindow` ingress accounting and `Ping`/`Pong` active) and never mark any seat joined or lock any fighter appearance.
 
-### 3. Anti-ghosting delay: **5 seconds (`150` ticks at 30 Hz)**
+### 3. Broadcast timing & optional anti-ghosting delay
 
-- Set `DEFAULT_SPECTATOR_DELAY = 5 * TICKS_PER_SECOND` (`150` ticks = **5.0 seconds**), configurable via `--spectator-delay-seconds` (`0..=60`).
-- **Rationale:** 5 seconds exceeds the full duration of a 1.5 s timed cast, a 2.0 s interrupt lockout, and short pillar-kite transitions — neutralizing real-time voice-call ghosting of fake-casts, interrupts, and surprise peeks — while keeping custom-lobby watch parties responsive enough that spectators see the end of a round shortly after players finish.
-- **Zero-leak semantics:**
+- **Default: `DEFAULT_SPECTATOR_DELAY = 0` ticks (live / real-time)** per user playtest feedback (2026-11-22) for private custom-match watch parties.
+- **Optional anti-ghosting delay:** Configurable server-side via `--spectator-delay-seconds` (`0..=60`, e.g., `5` seconds / `150` ticks exceeds a 1.5 s timed cast, 2.0 s interrupt lockout, and short pillar-kite transitions when hosts want anti-ghosting protection).
+- **Zero-leak semantics when `spectator_delay > 0`:**
   - While `Phase::Waiting` (`snapshot.tick == 0`), waiting attendance snapshots deliver immediately so spectators see players loading in.
-  - Once live combat starts (`snapshot.tick >= 1`), every tick snapshot is enqueued for release at `clock + spectator_delay`.
-  - Mid-match spectator joins or reconnects NEVER receive the live `self.arena` snapshot; they receive only the latest already-eligible delayed snapshot (if one exists) or wait until the first delayed frame matures. `Welcome.tick` reports that delayed tick (or `0`), never the live tick.
-  - When the match enters `Phase::Finished`, seated players still close after `linger` (5 s), while the match session keeps draining remaining queued delayed snapshots (including the final `result` and `scoreboard`) to connected spectators for up to `spectator_delay + linger` before closing them with `MatchOver`.
+  - When `spectator_delay == 0`, live ticks deliver on the same tick and mid-match spectator joins immediately receive `Welcome.tick = self.arena.tick()` and the current live snapshot (still stripped of private `Rejected` events).
+  - When `spectator_delay > 0`, every live tick snapshot (`snapshot.tick >= 1`) is enqueued for release at `clock + spectator_delay`, mid-match joins/reconnects never receive live `self.arena` state (only an already-eligible delayed snapshot), and `Phase::Finished` keeps draining remaining delayed frames (including final `result` and `scoreboard`) to spectators for up to `spectator_delay + linger` before closing them with `MatchOver`.
 
 ### 4. Caps, limits, and zero-copy fanout
 

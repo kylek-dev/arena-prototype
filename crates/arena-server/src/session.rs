@@ -33,8 +33,9 @@ pub type ConnId = u64;
 pub const MAX_BACKLOG: usize = 4;
 /// Ticks a queue must stay above [`MAX_BACKLOG`] before folding: one second.
 pub const FOLD_AFTER: u64 = TICKS_PER_SECOND;
-/// Default anti-ghosting broadcast delay for spectators: 5 seconds (150 ticks at 30 Hz).
-pub const DEFAULT_SPECTATOR_DELAY: u64 = 5 * TICKS_PER_SECOND;
+/// Default broadcast delay for spectators: 0 ticks (live/real-time; configurable
+/// up to 60 s via `--spectator-delay-seconds` if anti-ghosting delay is desired).
+pub const DEFAULT_SPECTATOR_DELAY: u64 = 0;
 /// Default cap on concurrent spectators per match.
 pub const DEFAULT_MAX_SPECTATORS: usize = 4;
 
@@ -356,6 +357,7 @@ impl Session {
         let team_size = (self.seats.len() / 2) as u8;
         let welcome_tick = match self.phase {
             Phase::Waiting => 0,
+            Phase::Running if self.limits.spectator_delay == 0 => self.arena.tick(),
             Phase::Running | Phase::Finished { .. } => self
                 .last_spectator_snapshot
                 .as_ref()
@@ -378,6 +380,17 @@ impl Session {
         });
         match self.phase {
             Phase::Waiting => {
+                out.push(Out::Send {
+                    conn,
+                    message: ServerMessage::Snapshot(Snapshot::capture(
+                        &self.arena,
+                        0,
+                        Vec::new(),
+                        &self.connected(),
+                    )),
+                });
+            }
+            Phase::Running if self.limits.spectator_delay == 0 => {
                 out.push(Out::Send {
                     conn,
                     message: ServerMessage::Snapshot(Snapshot::capture(

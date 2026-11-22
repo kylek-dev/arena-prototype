@@ -14,7 +14,7 @@
   padding-top: 108px;
 }
 .scoreboard {
-  width: min(760px, calc(100vw - 32px));
+  width: min(940px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
   display: flex;
   flex-direction: column;
@@ -227,7 +227,7 @@
   gap: 10px;
   margin-left: auto;
 }
-@media (max-width: 720px) {
+@media (max-width: 880px) {
   .scoreboard {
     padding: 16px;
   }

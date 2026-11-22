@@ -87,7 +87,7 @@ export function SpectatorHud() {
       <SpectatorTeamColumn title="Team B" tone="team-b" units={teamB} followActor={followActor} />
       <div className="spectator-bar" role="toolbar" aria-label="Spectator camera controls">
         <div className="spectator-bar-status">
-          <span className="spectator-badge">Spectating · 5s delay</span>
+          <span className="spectator-badge">Spectating</span>
           <strong className="spectator-view-label">
             {followedUnit ? `Following ${followedUnit.name}` : "Free camera"}
           </strong>

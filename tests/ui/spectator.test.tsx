@@ -192,7 +192,7 @@ it("renders read-only spectator HUD with both teams, camera controls, no action 
   // Round clock and spectator toolbar are visible.
   expect(screen.getByRole("timer", { name: "Round time remaining" })).toBeTruthy();
   const bar = screen.getByRole("toolbar", { name: "Spectator camera controls" });
-  expect(bar.textContent).toContain("Spectating · 5s delay");
+  expect(bar.textContent).toContain("Spectating");
   expect(bar.textContent).toContain("Free camera");
 
   // Combat, targeting, spellbook, and layout commands are blocked while spectating.

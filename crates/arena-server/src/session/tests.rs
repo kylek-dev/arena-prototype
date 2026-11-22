@@ -2093,4 +2093,28 @@ fn session_spectator_tick_encoded_drains_when_empty_refuses_stale_finished_and_h
         saw_close,
         "spectator closed with MatchOver after final delivery"
     );
+
+    // 4. Default spectator delay is 0 (live/real-time): snapshots deliver on the same tick
+    // and mid-match joins immediately receive the current live tick.
+    assert_eq!(Limits::default().spectator_delay, 0);
+    let mut live_session = Session::new(arena(1), 1, Limits::default(), Arc::default());
+    live_session.attach(0, conn(0));
+    live_session.attach(1, conn(1));
+    live_session.tick(); // Waiting -> Running (tick 0)
+    live_session.tick(); // tick 1
+    let mid = live_session.attach_spectator(42, 601);
+    assert!(mid.iter().any(|item| matches!(
+        item,
+        Out::Send {
+            conn: 601,
+            message: ServerMessage::Welcome(Welcome {
+                spectator: true,
+                tick: 1,
+                ..
+            })
+        }
+    )));
+    assert_eq!(snapshot(&mid, 601).unwrap().tick, 1);
+    let next = live_session.tick();
+    assert_eq!(snapshot(&next, 601).unwrap().tick, 2);
 }

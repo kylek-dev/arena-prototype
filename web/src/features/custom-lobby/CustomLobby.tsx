@@ -420,7 +420,7 @@ export function CustomLobby() {
                 })
               }
             >
-              <option value="allowed">Allowed (5s delay)</option>
+              <option value="allowed">Allowed</option>
               <option value="off">Off</option>
             </select>
           </label>

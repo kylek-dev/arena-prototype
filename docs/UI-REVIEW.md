@@ -132,3 +132,10 @@ Manual review checklist before merge/release:
 - Verify post-match spectator scoreboard displays neutral `Team A` / `Team B` results and **Return to lobby** / **Leave** cleanly after the delayed drain completes, and verify the host **Allow spectators** toggle blocks spectator joins when turned off.
 
 Automated checks passed locally (`./scripts/check.sh`, `cargo run -p arena-headless --locked`, `./scripts/server-smoke.sh`, `npm run build`, `cargo clippy -p arena-client --target wasm32-unknown-unknown --locked -- -D warnings`, `./scripts/build-web.sh`, and isolated release `arena-bot` spectator cost benchmark); no browser was launched and no rendered, visual, or networked pass is claimed.
+
+### 2026-11-22 — Playtest follow-up tweaks (`auto/spectating`) — pending human re-check
+
+User tested all 4 stacked Lane B features locally in a browser ("all worked") and requested two tweaks, applied on `auto/spectating`:
+
+- **Scoreboard modal width (`web/src/features/scoreboard/scoreboard.css`):** Widened `.scoreboard` from `min(760px, calc(100vw - 32px))` to `min(940px, calc(100vw - 32px))` and raised the compact column-header breakpoint from `720px` to `880px` so all 6 columns display without a horizontal scrollbar on desktop or narrow viewports.
+- **Real-time default spectating (`crates/arena-server/src/session.rs`, `web/src/features/spectator/SpectatorHud.tsx`, `web/src/features/custom-lobby/CustomLobby.tsx`):** Set `DEFAULT_SPECTATOR_DELAY = 0` (live/real-time by default, keeping `--spectator-delay-seconds 0..=60` optional), delivered immediate live snapshots on mid-match spectator joins when delay is `0`, and removed `"5s delay"` labels from the spectator toolbar and custom lobby selector.
