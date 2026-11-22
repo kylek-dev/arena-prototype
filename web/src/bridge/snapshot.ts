@@ -1,4 +1,5 @@
 import { isValidActiveCast, type ActiveCast, type SpellKey } from "../domain/casting";
+import { snapshotRemainingSeconds } from "../domain/round-clock";
 import {
   expectedActorTag,
   isNonNegativeSafeInt,
@@ -207,6 +208,8 @@ export function needsImmediateDelivery(previous: Snapshot | null, next: Snapshot
     next.roundResult !== previous.roundResult ||
     Boolean(next.scoreboard) !== Boolean(previous.scoreboard) ||
     next.maxRoundTicks !== previous.maxRoundTicks ||
+    next.tickRate !== previous.tickRate ||
+    snapshotRemainingSeconds(next) !== snapshotRemainingSeconds(previous) ||
     next.startup?.ready !== previous.startup?.ready ||
     next.hoveredUnit !== previous.hoveredUnit ||
     next.cooldown > previous.cooldown ||

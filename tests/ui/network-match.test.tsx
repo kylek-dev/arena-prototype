@@ -306,3 +306,104 @@ it("a match joined after another ended starts clean, without the ended match's l
   expect(link.read()).toEqual([2]);
   expect(link.state.get().phase).toBe("open");
 });
+
+it("retains the time-limit draw outcome in MatchStatus after MatchOver closes the socket", () => {
+  render(<MatchStatus />);
+  act(() => link.join(ticket));
+  fake.open();
+  fake.report("playing");
+  act(() =>
+    engine.set(
+      adaptSnapshot({
+        ...teamSnapshot(1),
+        maxHealth: 100,
+        tick: 36_000,
+        maxRoundTicks: 36_000,
+        tickRate: 30,
+        won: true,
+        roundResult: "time_limit_draw",
+        roster: teamSnapshot(1).roster?.map((unit) => ({
+          actor: unit.actor,
+          tag: unit.tag,
+          health: unit.health,
+          connected: true,
+        })),
+      }),
+    ),
+  );
+  // While the match lingers in finished state, MatchStatus stays hidden (RoundClock owns the banner).
+  fake.report("finished");
+  expect(screen.queryByRole("status")).toBeNull();
+  // Server sends Error(MatchOver) and closes; engine resets to local practice.
+  fake.closeWith(3);
+  act(() =>
+    engine.set(snapshot({ tick: 0, maxRoundTicks: 36_000, tickRate: 30, roundResult: null })),
+  );
+  const banner = screen.getByRole("status");
+  expect(banner.textContent).toContain("Time's up · draw · The match is over.");
+  expect(banner.className).toContain("warning");
+  // Dismissing clears the remembered outcome for subsequent matches.
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByRole("status")).toBeNull();
+  act(() => link.join(ticket));
+  fake.open();
+  fake.closeWith(3);
+  expect(screen.getByRole("status").textContent).toContain("The match is over.");
+  expect(screen.getByRole("status").textContent).not.toContain("Time's up");
+});
+
+it("preserves MatchOver outcome across batched/reconnecting closes and never leaks across fast rematches", () => {
+  const finishedNetSnap = () =>
+    adaptSnapshot({
+      ...teamSnapshot(1),
+      maxHealth: 100,
+      tick: 36_000,
+      maxRoundTicks: 36_000,
+      tickRate: 30,
+      won: true,
+      roundResult: "time_limit_draw",
+      roster: teamSnapshot(1).roster?.map((unit) => ({
+        actor: unit.actor,
+        tag: unit.tag,
+        health: unit.health,
+        connected: true,
+      })),
+    });
+
+  render(<MatchStatus />);
+
+  // 1) Batched finished snapshot + MatchOver in one render pass before any open-phase effect runs,
+  //    then engine resets to practice.
+  act(() => link.join(ticket));
+  fake.open();
+  fake.report("playing");
+  act(() => {
+    engine.set(finishedNetSnap());
+    fake.closeWith(3);
+  });
+  act(() =>
+    engine.set(snapshot({ tick: 0, maxRoundTicks: 36_000, tickRate: 30, roundResult: null })),
+  );
+  expect(screen.getByRole("status").textContent).toContain("Time's up · draw · The match is over.");
+
+  // 2) Reconnecting while final snapshot drains, engine resets to practice, then MatchOver closes.
+  act(() => link.join(ticket));
+  fake.open();
+  fake.report("playing");
+  fake.drop();
+  act(() => engine.set(finishedNetSnap()));
+  act(() =>
+    engine.set(snapshot({ tick: 0, maxRoundTicks: 36_000, tickRate: 30, roundResult: null })),
+  );
+  fake.report("closed", "MatchOver");
+  expect(screen.getByRole("status").textContent).toContain("Time's up · draw · The match is over.");
+
+  // 3) Fast rematch: engine still carries prior match's finished snapshot while new socket opens
+  //    (before Bevy processes Welcome / reports status). Prior outcome must NOT leak.
+  act(() => engine.set(finishedNetSnap()));
+  act(() => link.join({ ...ticket, ticket: "cd02" }));
+  fake.open();
+  fake.closeWith(3);
+  expect(screen.getByRole("status").textContent).toContain("The match is over.");
+  expect(screen.getByRole("status").textContent).not.toContain("Time's up");
+});

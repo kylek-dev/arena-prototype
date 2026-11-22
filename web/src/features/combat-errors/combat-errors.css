@@ -1,8 +1,9 @@
 .combat-errors {
   position: absolute;
-  top: 5%;
+  top: max(50px, 7%);
   left: 50%;
   transform: translateX(-50%);
+  z-index: 7;
   text-align: center;
   width: min(420px, 90vw);
   color: var(--pal-ember-4);
@@ -10,6 +11,9 @@
   font-weight: 700;
   text-shadow: 0 1px 3px var(--pal-night-1);
   pointer-events: none;
+}
+.combat-errors.below-queue {
+  top: 146px;
 }
 .combat-errors .nameplate-notice {
   color: var(--pal-gold-5);

@@ -5,6 +5,7 @@ import {
   ERROR_CODES,
   isFinalError,
   isWelcome,
+  matchMessage,
   PROTOCOL_VERSION,
   serverError,
   parseJoinFragment,
@@ -187,6 +188,30 @@ describe("network match identity", () => {
       status({ skippedInputs: -2 }),
     ])
       expect(parseStatus(bad)).toBeNull();
+  });
+
+  it("includes the last match outcome on MatchOver banners without affecting other endings", () => {
+    const ended = { phase: "ended" as const, attempt: 0, ended: "MatchOver", status: null };
+    expect(matchMessage(ended, false, null, null)).toEqual({
+      text: "The match is over.",
+      tone: "info",
+      action: { kind: "dismiss", label: "Dismiss" },
+    });
+    expect(matchMessage(ended, false, null, "time_limit_draw")).toEqual({
+      text: "Time's up · draw · The match is over.",
+      tone: "warning",
+      action: { kind: "dismiss", label: "Dismiss" },
+    });
+    expect(matchMessage(ended, false, null, "won")).toEqual({
+      text: "Victory · The match is over.",
+      tone: "info",
+      action: { kind: "dismiss", label: "Dismiss" },
+    });
+    expect(matchMessage({ ...ended, ended: "Replaced" }, true, null, "time_limit_draw")).toEqual({
+      text: "This seat is now playing in another tab or window.",
+      tone: "info",
+      action: { kind: "rejoin", label: "Play here" },
+    });
   });
 });
 

@@ -7,6 +7,7 @@ import {
   guestId,
   inviteLink,
   isGuestId,
+  isQueueBarVisible,
   noticeText,
   normalizeCode,
   parsePartyFragment,
@@ -181,5 +182,16 @@ describe("queue wording", () => {
     expect(noticeText("member_declined")).toContain("party member declined");
     expect(noticeText("requeued")).toContain("front of the queue");
     expect(noticeText("something_new")).toBeNull();
+  });
+
+  it("reports when the floating queue bar occupies the top-center slot", () => {
+    expect(isQueueBarVisible(IDLE_QUEUE)).toBe(false);
+    expect(isQueueBarVisible(at({ connection: "online", phase: "queued", mode: "2v2" }))).toBe(
+      true,
+    );
+    expect(isQueueBarVisible(at({ connection: "ended", ended: "lost" }))).toBe(true);
+    expect(isQueueBarVisible(at({ phase: "idle", notice: "declined" }))).toBe(true);
+    expect(isQueueBarVisible(at({ phase: "idle", notice: "cancelled" }))).toBe(false);
+    expect(isQueueBarVisible(at({ phase: "ready", mode: "2v2" }))).toBe(false);
   });
 });
