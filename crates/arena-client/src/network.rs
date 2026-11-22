@@ -27,7 +27,7 @@ use std::sync::OnceLock;
 use arena_protocol::prediction::{InterpDelay, Pacer, Predictor, TickRate};
 use arena_protocol::{
     ClientMessage, ErrorCode, FighterScore, FighterState, InputFrame, ServerMessage, WireAction,
-    WireEvent,
+    WireAppearance, WireEvent,
 };
 use arena_sim::arena::{
     ActorInput, Arena, Axes, CastAction, Combatant, InterruptReason, MAX_ROUND_TICKS, Rejection,
@@ -236,6 +236,9 @@ pub struct Session {
     newest_state: Option<(u64, Vec<Combatant>, Option<RoundResult>, u32)>,
     /// Whether this seat's heading has been taken from the server yet.
     heading_taken: bool,
+    /// Relayed per-seat locked looks in local actor order.
+    appearances: Vec<Option<WireAppearance>>,
+    appearances_version: u64,
     pub stats: Stats,
 }
 
@@ -274,6 +277,53 @@ impl Session {
     pub fn round_ticks(&self) -> u64 {
         self.round_ticks.unwrap_or(MAX_ROUND_TICKS)
     }
+    /// Monotonic counter bumped whenever the relayed per-seat appearances change.
+    pub fn appearances_version(&self) -> u64 {
+        self.appearances_version
+    }
+    /// Relayed per-seat locked appearances in local actor order.
+    #[cfg(test)]
+    pub fn appearances(&self) -> &[Option<WireAppearance>] {
+        &self.appearances
+    }
+    /// JSON representation of the relayed local-order appearances for the browser
+    /// kit catalog (`null` until received, otherwise an array of `Appearance | null`).
+    pub fn appearances_json(&self) -> String {
+        if self.appearances.is_empty() {
+            return "null".to_owned();
+        }
+        let entries: Vec<serde_json::Value> = self
+            .appearances
+            .iter()
+            .map(|look| match look {
+                None => serde_json::Value::Null,
+                Some(look) => {
+                    let groups: serde_json::Map<String, serde_json::Value> = look
+                        .groups
+                        .iter()
+                        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                        .collect();
+                    let variants: serde_json::Map<String, serde_json::Value> = look
+                        .variants
+                        .iter()
+                        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                        .collect();
+                    serde_json::json!({
+                        "version": 1,
+                        "ancestry": look.ancestry,
+                        "body": look.body,
+                        "skinTone": look.skin_tone,
+                        "hairColor": look.hair_color,
+                        "eyes": look.eyes,
+                        "build": f64::from(look.build) / 100.0,
+                        "groups": groups,
+                        "variants": variants,
+                    })
+                }
+            })
+            .collect();
+        serde_json::to_string(&entries).expect("appearances serialize to json")
+    }
     /// Whether intent should be sent now.
     pub fn joined(&self) -> bool {
         self.seat.is_some() && matches!(self.phase, Phase::Waiting | Phase::Playing)
@@ -306,6 +356,11 @@ impl Session {
             self.last_view_tick = 0;
             self.frame_inputs = (f64::NAN, 0);
             self.own = None;
+            // The server always sends Appearances right after Welcome when any look is locked.
+            if !self.appearances.is_empty() {
+                self.appearances.clear();
+                self.appearances_version += 1;
+            }
         }
         for frame in &feed.frames {
             let Ok(message) = ServerMessage::decode(frame) else {
@@ -335,6 +390,10 @@ impl Session {
                         self.view_tick = None;
                         self.last_view_tick = 0;
                         self.heading_taken = false;
+                        if !self.appearances.is_empty() {
+                            self.appearances.clear();
+                            self.appearances_version += 1;
+                        }
                     }
                     self.seat = Some(seat);
                     self.order = seat_order(seat, count);
@@ -465,6 +524,20 @@ impl Session {
                     }
                 }
                 ServerMessage::Error(code) => self.phase = Phase::Closed(code),
+                ServerMessage::Appearances(server_looks) => {
+                    if self.seat.is_none() || server_looks.len() != self.order.len() {
+                        continue;
+                    }
+                    let local: Vec<Option<WireAppearance>> = self
+                        .order
+                        .iter()
+                        .map(|&actor| server_looks[actor].clone())
+                        .collect();
+                    if self.appearances != local {
+                        self.appearances = local;
+                        self.appearances_version += 1;
+                    }
+                }
             }
         }
         self.tick_rate

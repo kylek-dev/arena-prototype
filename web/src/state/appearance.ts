@@ -1,8 +1,9 @@
 import {
   defaultAppearance,
   parseAppearance,
-  renderSpec,
-  selectKit,
+  parseNetworkAppearances,
+  practiceAppearances,
+  resolveRosterSpecs,
   type Appearance,
   type Kit,
 } from "../domain/appearance";
@@ -13,10 +14,16 @@ import { customizing, prematch, setPanel } from "./session";
 export const APPEARANCE_KEY = "arena.appearance.v1";
 /** Installed kits from assets/character.json; empty without Quaternius sources. */
 export const characterKits = createStore<Kit[]>([]);
+/** Relayed per-seat appearances during a network match (local actor order); `null` in practice. */
+export const remoteAppearances = createStore<(Appearance | null)[] | null>(null);
 export const customizerVisible = customizing;
 export const beforeMatch = prematch;
 export const preview = createStore({ yaw: 0, zoom: 0 });
 export const appearanceSaveError = createStore("");
+
+export function onAppearances(raw: unknown) {
+  remoteAppearances.set(parseNetworkAppearances(raw));
+}
 
 export function loadAppearance(storage: Pick<Storage, "getItem">): Appearance {
   try {
@@ -49,15 +56,33 @@ export function updateAppearance(next: Appearance) {
 }
 
 // The engine polls this every frame; the JSON is rebuilt only on change.
-let cache: { kits: Kit[]; look: Appearance; revision: number; json: string } | null = null;
+let practiceCache: { kits: Kit[]; looks: Appearance[] } | null = null;
+let cache: {
+  kits: Kit[];
+  look: Appearance;
+  remote: (Appearance | null)[] | null;
+  revision: number;
+  json: string;
+} | null = null;
 let revision = 0;
 export function readAppearance(): unknown[] {
   const kits = characterKits.get();
   const look = appearance.get();
-  if (!cache || cache.kits !== kits || cache.look !== look) {
-    const kit = selectKit(kits, look);
-    if (!kit) return [];
-    cache = { kits, look, revision: ++revision, json: JSON.stringify(renderSpec(kit, look)) };
+  const remote = remoteAppearances.get();
+  if (!cache || cache.kits !== kits || cache.look !== look || cache.remote !== remote) {
+    if (!practiceCache || practiceCache.kits !== kits) {
+      practiceCache = { kits, looks: practiceAppearances(kits) };
+    }
+    const specs = resolveRosterSpecs(kits, look, practiceCache.looks, remote);
+    if (!specs.length) return [];
+    // Keep top-level actor 0 fields alongside `specs` for backwards compatibility.
+    cache = {
+      kits,
+      look,
+      remote,
+      revision: ++revision,
+      json: JSON.stringify({ ...specs[0], specs }),
+    };
   }
   return [cache.revision, cache.json];
 }

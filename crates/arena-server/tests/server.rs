@@ -101,6 +101,7 @@ impl Client {
         self.send(&ClientMessage::Hello {
             protocol: PROTOCOL_VERSION,
             ticket,
+            appearance: None,
         })
         .await;
     }
@@ -314,6 +315,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 ClientMessage::Hello {
                     protocol: PROTOCOL_VERSION + 1,
                     ticket: valid.clone(),
+                    appearance: None,
                 }
                 .encode(),
             ),
@@ -369,6 +371,7 @@ fn hello(ticket: Vec<u8>) -> Vec<u8> {
     ClientMessage::Hello {
         protocol: PROTOCOL_VERSION,
         ticket,
+        appearance: None,
     }
     .encode()
 }
@@ -1249,5 +1252,125 @@ async fn live_ws_finished_match_delivers_identical_authoritative_scoreboard_matc
     assert_eq!(a.error().await, ErrorCode::MatchOver);
     assert_eq!(b.error().await, ErrorCode::MatchOver);
 
+    running.shut_down(Duration::ZERO).await.unwrap();
+}
+
+#[tokio::test]
+async fn server_validates_locks_and_relays_player_appearances_across_reconnects() {
+    use arena_protocol::WireAppearance;
+
+    let running = server().await;
+    let created = new_match(running.addr, 1).await;
+
+    let look_a = WireAppearance {
+        ancestry: "human".into(),
+        body: "female".into(),
+        skin_tone: "natural".into(),
+        hair_color: "auburn".into(),
+        eyes: "brown".into(),
+        build: 0,
+        groups: vec![
+            ("hair".into(), "Hair_Buns".into()),
+            ("torso".into(), "Ranger".into()),
+        ],
+        variants: vec![("Ranger".into(), "green".into())],
+    };
+    let look_b = WireAppearance {
+        ancestry: "elf".into(),
+        body: "male".into(),
+        skin_tone: "fair".into(),
+        hair_color: "platinum".into(),
+        eyes: "blue".into(),
+        build: 50,
+        groups: vec![("hair".into(), "Race_Hair".into())],
+        variants: Vec::new(),
+    };
+    let swapped = WireAppearance {
+        ancestry: "orc".into(),
+        body: "male".into(),
+        skin_tone: "olive".into(),
+        hair_color: "black".into(),
+        eyes: "amber".into(),
+        build: 100,
+        groups: Vec::new(),
+        variants: Vec::new(),
+    };
+
+    // Malformed look with path traversal is rejected with Malformed before joining.
+    let mut bad_client = Client::open(running.addr).await;
+    let mut bad_look = look_a.clone();
+    bad_look.body = "../secret".into();
+    bad_client
+        .send(&ClientMessage::Hello {
+            protocol: PROTOCOL_VERSION,
+            ticket: from_hex(&created.tickets[0]).unwrap(),
+            appearance: Some(bad_look),
+        })
+        .await;
+    assert_eq!(bad_client.error().await, ErrorCode::Malformed);
+
+    // Seat 0 joins with look_a and receives its own locked look.
+    let mut a = Client::open(running.addr).await;
+    a.send(&ClientMessage::Hello {
+        protocol: PROTOCOL_VERSION,
+        ticket: from_hex(&created.tickets[0]).unwrap(),
+        appearance: Some(look_a.clone()),
+    })
+    .await;
+    assert!(matches!(a.next().await, Some(ServerMessage::Welcome(_))));
+    assert!(matches!(a.next().await, Some(ServerMessage::Snapshot(_))));
+    assert_eq!(
+        a.next().await,
+        Some(ServerMessage::Appearances(vec![Some(look_a.clone()), None]))
+    );
+
+    // Seat 1 joins with look_b; both seat 0 and seat 1 receive both locked looks.
+    let mut b = Client::open(running.addr).await;
+    b.send(&ClientMessage::Hello {
+        protocol: PROTOCOL_VERSION,
+        ticket: from_hex(&created.tickets[1]).unwrap(),
+        appearance: Some(look_b.clone()),
+    })
+    .await;
+    assert!(matches!(b.next().await, Some(ServerMessage::Welcome(_))));
+    assert!(matches!(b.next().await, Some(ServerMessage::Snapshot(_))));
+    assert_eq!(
+        b.next().await,
+        Some(ServerMessage::Appearances(vec![
+            Some(look_a.clone()),
+            Some(look_b.clone()),
+        ]))
+    );
+    let mut a_saw_both = false;
+    for _ in 0..16 {
+        if let Some(ServerMessage::Appearances(looks)) = a.next().await {
+            assert_eq!(looks, vec![Some(look_a.clone()), Some(look_b.clone())]);
+            a_saw_both = true;
+            break;
+        }
+    }
+    assert!(a_saw_both, "seat 0 received seat 1's locked look");
+
+    // Seat 0 reconnects trying to swap to `swapped`; the server keeps the original locked `look_a`.
+    let mut a2 = Client::open(running.addr).await;
+    a2.send(&ClientMessage::Hello {
+        protocol: PROTOCOL_VERSION,
+        ticket: from_hex(&created.tickets[0]).unwrap(),
+        appearance: Some(swapped),
+    })
+    .await;
+    assert!(matches!(a2.next().await, Some(ServerMessage::Welcome(_))));
+    assert!(matches!(a2.next().await, Some(ServerMessage::Snapshot(_))));
+    assert_eq!(
+        a2.next().await,
+        Some(ServerMessage::Appearances(vec![
+            Some(look_a.clone()),
+            Some(look_b.clone()),
+        ]))
+    );
+    assert_eq!(a.error().await, ErrorCode::Replaced);
+
+    a2.leave().await;
+    b.leave().await;
     running.shut_down(Duration::ZERO).await.unwrap();
 }

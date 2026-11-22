@@ -79,7 +79,7 @@ export function GameMenu() {
         </>
       )}
       <Separator size="4" />
-      {customizable && (
+      {customizable && !inMatch && (
         <Button
           variant="surface"
           color="gray"

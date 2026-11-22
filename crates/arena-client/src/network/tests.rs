@@ -1023,3 +1023,59 @@ fn finished_scoreboard_is_renumbered_into_local_order_and_cleared_on_rematch() {
     assert_eq!(fresh_view.result, None);
     assert_eq!(fresh_view.scoreboard, None);
 }
+
+#[test]
+fn relayed_appearances_renumber_into_local_order_and_serialize_to_json() {
+    use arena_protocol::WireAppearance;
+
+    let look = |ancestry: &str, body: &str| WireAppearance {
+        ancestry: ancestry.into(),
+        body: body.into(),
+        skin_tone: "natural".into(),
+        hair_color: "auburn".into(),
+        eyes: "brown".into(),
+        build: 25,
+        groups: vec![("hair".into(), "Hair_Buns".into())],
+        variants: vec![("Ranger".into(), "green".into())],
+    };
+    // Join as seat 1 in 2v2: seat_order(1, 4) == [1, 0, 3, 2].
+    let mut session = joined(1, 2);
+    assert_eq!(session.appearances_version(), 0);
+    assert_eq!(session.appearances_json(), "null");
+
+    let server_looks = vec![
+        Some(look("human", "female")), // server 0 -> local 1 (Opponent1)
+        Some(look("elf", "male")),     // server 1 -> local 0 (Player)
+        None,                          // server 2 -> local 3 (Opponent2)
+        Some(look("orc", "female")),   // server 3 -> local 2 (Team1)
+    ];
+    session.receive(
+        &feed(1, vec![ServerMessage::Appearances(server_looks).encode()]),
+        0.1,
+        &layout(),
+    );
+    assert_eq!(session.appearances_version(), 1);
+    assert_eq!(
+        session.appearances(),
+        &[
+            Some(look("elf", "male")),
+            Some(look("human", "female")),
+            Some(look("orc", "female")),
+            None,
+        ]
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&session.appearances_json()).unwrap();
+    assert_eq!(parsed.as_array().unwrap().len(), 4);
+    assert_eq!(parsed[0]["ancestry"], "elf");
+    assert_eq!(parsed[0]["body"], "male");
+    assert_eq!(parsed[0]["build"], 0.25);
+    assert_eq!(parsed[1]["ancestry"], "human");
+    assert_eq!(parsed[2]["ancestry"], "orc");
+    assert!(parsed[3].is_null());
+
+    // Starting a new socket generation clears previous relayed appearances cleanly.
+    session.receive(&feed(2, vec![welcome(1, 2)]), 1.0, &layout());
+    assert_eq!(session.appearances_version(), 2);
+    assert!(session.appearances().is_empty());
+    assert_eq!(session.appearances_json(), "null");
+}

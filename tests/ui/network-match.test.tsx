@@ -9,8 +9,10 @@ import { Nameplates } from "../../web/src/features/nameplates/Nameplates";
 import { Frames } from "../../web/src/features/unit-frames/Frames";
 import { diagnosticsVisible } from "../../web/src/runtime/diagnostics";
 import { createLink, type Link } from "../../web/src/runtime/network";
+import { characterKits } from "../../web/src/state/appearance";
 import { networkLink } from "../../web/src/state/network";
 import { engine, error, focus, interaction, nameplateScene } from "../../web/src/state/session";
+import { humanKit } from "../domain/kit-fixture";
 import { snapshot, teamSnapshot } from "./fixtures";
 
 vi.mock("../../web/src/runtime/diagnostics", async (original) => ({
@@ -254,21 +256,27 @@ it("tells the player about connecting, waiting, reconnecting, the end and a rejo
 });
 
 it("offers leaving in the menu during a match and hides practice-only controls", () => {
+  characterKits.set([humanKit()]);
   engine.set(snapshot());
   render(<GameMenu />);
   expect(screen.getByText("Local solo practice")).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "Practice mode" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Customize character" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Leave match" })).toBeNull();
   act(() => link.join(ticket));
   expect(screen.getByText("Network match")).toBeTruthy();
   expect(screen.queryByRole("combobox", { name: "Practice mode" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Reset practice" })).toBeNull();
+  // Character look is locked once in a match.
+  expect(screen.queryByRole("button", { name: "Customize character" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Leave match" }));
   expect(link.state.get().phase).toBe("idle");
   expect(link.read()).toEqual([]);
-  // Back in practice, the match can be rejoined from the menu.
+  // Back in practice, the match can be rejoined from the menu and customization returns.
+  expect(screen.getByRole("button", { name: "Customize character" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Rejoin last match" }));
   expect(link.state.get().phase).toBe("connecting");
+  characterKits.set([]);
 });
 
 it("shows network statistics in the diagnostics overlay during a match", () => {

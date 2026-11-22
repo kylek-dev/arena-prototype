@@ -25,7 +25,8 @@ use serde::{Deserialize, Serialize};
 ///    and cast/interrupt/heal events & rejections.
 /// 4: `InputFrame.view_tick` for bounded server-side targeting lag compensation (ADR 0049).
 /// 5: `FighterScore` and `Snapshot.scoreboard` for server-authoritative end-of-match totals.
-pub const PROTOCOL_VERSION: u16 = 5;
+/// 6: `WireAppearance` on `ClientMessage::Hello` and `ServerMessage::Appearances` per-seat relay.
+pub const PROTOCOL_VERSION: u16 = 6;
 /// Bumped whenever a rules change could alter a replayed outcome.
 /// 2: rounds end in a draw after twenty minutes (`MAX_ROUND_TICKS`).
 /// 3: time-limit draws are distinct from mutual-elimination draws and round limits are explicit.
@@ -44,6 +45,69 @@ const _: () = assert!(MAX_FIGHTERS == arena_sim::map::MAX_TEAM * 2);
 /// Most events one snapshot may carry; the server sends more snapshots
 /// rather than exceed it.
 pub const MAX_EVENTS: usize = 256;
+/// Maximum byte length of any identifier inside [`WireAppearance`].
+pub const MAX_APPEARANCE_ID: usize = 32;
+/// Maximum part-group choices inside [`WireAppearance`].
+pub const MAX_APPEARANCE_GROUPS: usize = 10;
+/// Maximum material-variant choices inside [`WireAppearance`].
+pub const MAX_APPEARANCE_VARIANTS: usize = 8;
+
+/// Bounded, identifier-only character appearance choice sent with `Hello` and
+/// relayed per seat in [`ServerMessage::Appearances`]. Never carries asset
+/// paths, floats, or simulation state; clients validate identifiers against
+/// their local kit catalog and fall back to defaults for unknown values.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireAppearance {
+    pub ancestry: String,
+    pub body: String,
+    pub skin_tone: String,
+    pub hair_color: String,
+    pub eyes: String,
+    /// Race build morph weight in percent (`0..=100`, mapped to `0.0..=1.0`).
+    pub build: u8,
+    /// `(group_id, option_id)` pairs (unique keys, at most [`MAX_APPEARANCE_GROUPS`]).
+    pub groups: Vec<(String, String)>,
+    /// `(material_slot, variant_id)` pairs (unique keys, at most [`MAX_APPEARANCE_VARIANTS`]).
+    pub variants: Vec<(String, String)>,
+}
+
+impl WireAppearance {
+    /// Strict ASCII identifier check: never permits path separators, dots, whitespace, or empty strings.
+    pub fn is_valid_id(id: &str) -> bool {
+        !id.is_empty()
+            && id.len() <= MAX_APPEARANCE_ID
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    }
+
+    /// Validates all identifier lengths, character sets, counts, uniqueness, and morph bounds.
+    pub fn is_valid(&self) -> bool {
+        if !Self::is_valid_id(&self.ancestry)
+            || !Self::is_valid_id(&self.body)
+            || !Self::is_valid_id(&self.skin_tone)
+            || !Self::is_valid_id(&self.hair_color)
+            || !Self::is_valid_id(&self.eyes)
+            || self.build > 100
+            || self.groups.len() > MAX_APPEARANCE_GROUPS
+            || self.variants.len() > MAX_APPEARANCE_VARIANTS
+        {
+            return false;
+        }
+        let valid_pairs = |pairs: &[(String, String)]| {
+            for (i, (k, v)) in pairs.iter().enumerate() {
+                if !Self::is_valid_id(k) || !Self::is_valid_id(v) {
+                    return false;
+                }
+                if pairs[..i].iter().any(|(prev, _)| prev == k) {
+                    return false;
+                }
+            }
+            true
+        };
+        valid_pairs(&self.groups) && valid_pairs(&self.variants)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientMessage {
@@ -51,6 +115,8 @@ pub enum ClientMessage {
     Hello {
         protocol: u16,
         ticket: Vec<u8>,
+        /// Optional locked character look choice for this seat.
+        appearance: Option<WireAppearance>,
     },
     Input(InputFrame),
     Ping {
@@ -162,7 +228,10 @@ pub enum ServerMessage {
         nonce: u32,
     },
     /// Sent once before the server closes the connection.
+    /// Must stay variant 3; browser runtime recognizes `[3, code]`.
     Error(ErrorCode),
+    /// Per-seat locked character looks in server actor order (`2..=MAX_FIGHTERS`, even).
+    Appearances(Vec<Option<WireAppearance>>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -610,7 +679,13 @@ impl ClientMessage {
     pub fn decode(frame: &[u8]) -> Result<Self, DecodeError> {
         let message: Self = decode(frame, MAX_CLIENT_FRAME)?;
         match &message {
-            Self::Hello { ticket, .. } if ticket.len() > MAX_TICKET => Err(DecodeError::OverLimit),
+            Self::Hello {
+                ticket, appearance, ..
+            } if ticket.len() > MAX_TICKET
+                || !appearance.as_ref().is_none_or(WireAppearance::is_valid) =>
+            {
+                Err(DecodeError::OverLimit)
+            }
             _ => Ok(message),
         }
     }
@@ -692,6 +767,15 @@ fn valid_snapshot(snapshot: &Snapshot) -> bool {
     true
 }
 
+fn valid_appearances(appearances: &[Option<WireAppearance>]) -> bool {
+    let count = appearances.len();
+    (2..=MAX_FIGHTERS).contains(&count)
+        && count.is_multiple_of(2)
+        && appearances
+            .iter()
+            .all(|look| look.as_ref().is_none_or(WireAppearance::is_valid))
+}
+
 impl ServerMessage {
     pub fn encode(&self) -> Vec<u8> {
         encode(self)
@@ -701,6 +785,9 @@ impl ServerMessage {
         match &message {
             Self::Welcome(welcome) if !valid_welcome(welcome) => Err(DecodeError::OverLimit),
             Self::Snapshot(snapshot) if !valid_snapshot(snapshot) => Err(DecodeError::OverLimit),
+            Self::Appearances(appearances) if !valid_appearances(appearances) => {
+                Err(DecodeError::OverLimit)
+            }
             _ => Ok(message),
         }
     }

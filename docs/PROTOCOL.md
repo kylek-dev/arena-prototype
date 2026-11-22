@@ -57,7 +57,7 @@ yet.
 
 | Message | Fields | Notes |
 | --- | --- | --- |
-| `Hello` | `protocol: u16`, `ticket: bytes (≤ 512)` | Must be the first message, within 5 s of connecting. Stays variant 0 with `protocol` first in every version; `peek_hello_protocol` reads it from any version so the server can answer `VersionMismatch`. |
+| `Hello` | `protocol: u16`, `ticket: bytes (≤ 512)`, `appearance: Option<WireAppearance>` | Must be the first message, within 5 s of connecting. Stays variant 0 with `protocol` first in every version; `peek_hello_protocol` reads it from any version so the server can answer `VersionMismatch`. `appearance` carries bounded ASCII identifiers (`ancestry`, `body`, `skin_tone`, `hair_color`, `eyes`, `build: 0..=100`, `≤ 10` unique `groups`, `≤ 8` unique `variants`; every identifier `1..=32` `[A-Za-z0-9_-]`, never free-form paths) and is locked per seat on first join. |
 | `Input` | `seq: u32`, `movement: [i16; 2]`, `facing: u16`, `jump: bool`, `action: WireAction`, `view_tick: u64` | `seq` increases by 1 per message; gaps are allowed, repeats and regressions are dropped. Axes must lie in ±1000; the rules reject anything else. `action` is `None`, `Cast { spell, target }` (`Pulse`, `RiftBolt`, `Quell`, `Mend`), or `CancelCast`. `view_tick` is the monotonic server tick of remote fighters rendered on the client (`0` = unspecified / present tick only); the server never trusts coordinates and clamps `view_tick` monotonically to at most `MAX_LAG_COMP_TICKS` (6 ticks = 200 ms) behind the current tick for cast-start geometry validation ([ADR 0049](decisions/0049-bounded-targeting-lag-comp-and-adaptive-interp.md)). |
 | `Ping` | `nonce: u32` | Echoed in `Pong` for RTT measurement. |
 
@@ -68,7 +68,8 @@ yet.
 | `Welcome` | `protocol`, `actor: u8`, `team_size: u8`, `tick: u64`, `tick_rate: u8`, `round_ticks: u64`, `rules: u32`, `map: u64` | `round_ticks` is the round's tick limit (`1..=MAX_ROUND_TICKS`, default 20 minutes), `rules` is the rules version and `map` a digest of the layout, so the remaining clock, replays and mismatches are explainable. |
 | `Snapshot` | `tick: u64`, `ack: u32`, `queued: u8`, `hash: u64`, `result`, `fighters` (≤ 6), `scoreboard` (`Option<Vec<FighterScore>>`), `events` (≤ 256) | `ack` is the last input `seq` applied, and `queued` how many of the recipient's inputs are still waiting. `hash` is `Arena::state_hash()`. `result` is `None` while running, or `Won { team }`, `Draw` (simultaneous elimination) or `TimeLimitDraw` (round clock expired with both teams standing). `fighters` carries each fighter's full rule state in actor order (position, height, vertical velocity, momentum, health, resource, `gcd_remaining`, `lockout_remaining`, per-spell `cooldowns`, `active_cast`, facing), so a client can rebuild the arena and check `hash`, plus `connected`: whether that fighter's player is attached (not part of the rules or `hash`). `scoreboard` is `None` while the match runs (1 byte on the wire) and `Some(scores)` in server actor order on the final snapshot (`result.is_some()`), with one `FighterScore` (`damage_done`, `damage_taken`, `healing_done`, `healing_received`, `killing_blows`) per seat accumulated authoritatively by the match server (not part of `hash`). `events` are tick-tagged events since the previous snapshot: `Jumped`, `CastStarted`, `CastCompleted`, `CastInterrupted`, `Hit`, `Healed`, `Finished`, and `Rejected` only for the actor it names. `Moved` is not sent because positions show it. |
 | `Pong` | `nonce: u32` | |
-| `Error` | `code` | Sent before the server closes: `VersionMismatch`, `BadTicket`, `MatchFull`, `MatchOver`, `RateLimited`, `Malformed`, `HelloTimeout`, `ServerShutdown`, `Replaced` (a newer connection with the same ticket took the seat). |
+| `Error` | `code` | Sent before the server closes: `VersionMismatch`, `BadTicket`, `MatchFull`, `MatchOver`, `RateLimited`, `Malformed`, `HelloTimeout`, `ServerShutdown`, `Replaced` (a newer connection with the same ticket took the seat). Stays variant 3 (`[3, code]`). |
+| `Appearances` | `Vec<Option<WireAppearance>>` (`2..=6`, even) | Sent on join (when any seat has a locked look) and broadcast whenever a seat locks a new look on first join, in server actor order. Never carries paths; clients validate against their local kit catalog and fall back to defaults. |
 
 Snapshots go out every tick to start with. Live `PROTOCOL_VERSION = 3` combat
 measurements ([netcode-measurements-2026-11-21.md](research/netcode-measurements-2026-11-21.md))
@@ -102,8 +103,8 @@ complexity or rate reduction (which degrades targeting fairness):
 
 ## Versioning
 
-`PROTOCOL_VERSION` (currently 5: adds `FighterScore` and `Snapshot.scoreboard`
-for server-authoritative end-of-match combat totals) changes with any
+`PROTOCOL_VERSION` (currently 6: adds bounded `WireAppearance` on `Hello` and
+`ServerMessage::Appearances` per-seat relay) changes with any
 incompatible layout change; the golden-frame test fails until it is bumped
 deliberately.
 `RULES_VERSION` (currently 5: bounded server-side target-position history rewind

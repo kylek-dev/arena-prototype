@@ -8,8 +8,10 @@ import {
   beforeMatch,
   customizerVisible,
   enterArena,
+  onAppearances,
   readAppearance,
   readPreview,
+  remoteAppearances,
 } from "../state/appearance";
 import { observeCastResult } from "./cast-feedback";
 import { engine, error, focus, nameplateScene } from "../state/session";
@@ -59,6 +61,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     readNetwork: link.read,
     sendNetwork: link.send,
     onNetwork: link.onStatus,
+    onAppearances,
     readInput: router.sample,
     readHover: unitHover.read,
     readGraphics,
@@ -124,6 +127,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     matchQueue.set(null);
     link.dispose();
     networkLink.set(null);
+    remoteAppearances.set(null);
     clearPostMatchScoreboard();
     stopFrameTiming();
     router.dispose();

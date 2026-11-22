@@ -118,6 +118,7 @@ async fn links_from_the_front_door_start_and_join_a_match() {
         let hello = ClientMessage::Hello {
             protocol: PROTOCOL_VERSION,
             ticket: from_hex(&ticket).unwrap(),
+            appearance: None,
         };
         socket.send(Message::binary(hello.encode())).await.unwrap();
         let welcome = tokio::time::timeout(WAIT, socket.next())
@@ -341,6 +342,7 @@ mod queue {
         let hello = ClientMessage::Hello {
             protocol: PROTOCOL_VERSION,
             ticket: from_hex(ticket).unwrap(),
+            appearance: None,
         };
         socket.send(Message::binary(hello.encode())).await.unwrap();
         let frame = tokio::time::timeout(WAIT, socket.next())

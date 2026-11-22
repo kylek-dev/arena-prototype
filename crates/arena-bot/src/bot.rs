@@ -199,6 +199,7 @@ async fn session(
     send(ClientMessage::Hello {
         protocol: PROTOCOL_VERSION,
         ticket: seat.ticket.clone(),
+        appearance: None,
     });
 
     let mut tick_rate = 30u32;
@@ -351,6 +352,7 @@ async fn session(
                             stop = Some(End::Error(code));
                             break;
                         }
+                        ServerMessage::Appearances(_) => {}
                     }
                 }
                 if !frame_ticks.is_empty() {

@@ -1761,3 +1761,62 @@ fn tick_encoded_matches_tick_bytes_on_finished_scoreboard_with_and_without_rejec
         }
     }
 }
+
+#[test]
+fn session_locks_first_appearance_per_seat_and_relays_to_connected_players() {
+    use arena_protocol::WireAppearance;
+
+    let look = |body: &str, hair: &str| WireAppearance {
+        ancestry: "human".into(),
+        body: body.into(),
+        skin_tone: "natural".into(),
+        hair_color: hair.into(),
+        eyes: "brown".into(),
+        build: 20,
+        groups: vec![("hair".into(), "Hair_Buns".into())],
+        variants: vec![],
+    };
+    let mut session = session_with(arena(1));
+    let look0 = look("female", "auburn");
+    let look1 = look("male", "black");
+
+    let out0 = session.attach_with_appearance(0, conn(0), Some(look0.clone()));
+    assert!(out0.iter().any(|item| matches!(
+        item,
+        Out::Send {
+            conn: c,
+            message: ServerMessage::Appearances(looks),
+        } if *c == conn(0) && looks == &vec![Some(look0.clone()), None]
+    )));
+
+    let out1 = session.attach_with_appearance(1, conn(1), Some(look1.clone()));
+    for seat_conn in [conn(0), conn(1)] {
+        assert!(out1.iter().any(|item| matches!(
+            item,
+            Out::Send {
+                conn: c,
+                message: ServerMessage::Appearances(looks),
+            } if *c == seat_conn && looks == &vec![Some(look0.clone()), Some(look1.clone())]
+        )));
+    }
+
+    // Reconnecting with a different appearance does not replace the locked look.
+    let rejoin = session.attach_with_appearance(0, 999, Some(look("male", "violet")));
+    assert_eq!(
+        session.appearances(),
+        vec![Some(look0.clone()), Some(look1.clone())]
+    );
+    assert!(rejoin.iter().any(|item| matches!(
+        item,
+        Out::Send {
+            conn: 999,
+            message: ServerMessage::Appearances(looks),
+        } if looks == &vec![Some(look0.clone()), Some(look1.clone())]
+    )));
+
+    // Joining first with None also locks None for the match (cannot inject a look on reconnect).
+    let mut none_first = session_with(arena(1));
+    none_first.attach_with_appearance(0, conn(0), None);
+    none_first.attach_with_appearance(0, 888, Some(look0));
+    assert_eq!(none_first.appearances(), vec![None, None]);
+}

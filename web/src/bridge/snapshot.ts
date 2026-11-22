@@ -468,6 +468,7 @@ declare global {
       readNetwork?: () => unknown[];
       sendNetwork?: (frame: Uint8Array) => void;
       onNetwork?: (status: unknown) => void;
+      onAppearances?: (looks: unknown) => void;
       onState: (state: unknown) => void;
     };
     arenaDebug?: { readonly state: Snapshot | null; readonly metrics: unknown };

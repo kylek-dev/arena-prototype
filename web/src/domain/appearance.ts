@@ -320,3 +320,59 @@ export function randomAppearance(kits: Kit[], random = Math.random): Appearance 
     build: kit.morph ? Math.round(random() * 10) / 10 : 0,
   };
 }
+
+/** Deterministic PRNG (mulberry32) for stable, distinct practice opponent looks. */
+function seededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Coherent, varied looks for non-player practice slots (`1..=5`). */
+export function practiceAppearances(kits: Kit[], count = 5, seed = 0x51a7_2026): Appearance[] {
+  if (!kits.length) return [];
+  const random = seededRandom(seed);
+  return Array.from({ length: count }, () => randomAppearance(kits, random));
+}
+
+const VALID_ROSTER_COUNTS = new Set([2, 4, 6]);
+
+/** Parses `onAppearances` relayed from Rust (`null` when not in a network match,
+ * otherwise an even-length `2 | 4 | 6` array of validated looks or `null` fallbacks). */
+export function parseNetworkAppearances(raw: unknown): (Appearance | null)[] | null {
+  if (raw === null || raw === undefined) return null;
+  if (!Array.isArray(raw) || !VALID_ROSTER_COUNTS.has(raw.length)) return null;
+  return raw.map((entry) => parseAppearance(entry));
+}
+
+/** Resolves render specs for every fighter slot (`0..6`) against the local kit catalog.
+ * Unknown kits, parts, colors, or variants safely fall back to catalog defaults. */
+export function resolveRosterSpecs(
+  kits: Kit[],
+  localLook: Appearance,
+  practiceLooks: readonly Appearance[],
+  remoteLooks: readonly (Appearance | null)[] | null,
+): RenderSpec[] {
+  if (!kits.length) return [];
+  const resolveOne = (look: Appearance): RenderSpec | null => {
+    const kit = selectKit(kits, look);
+    return kit ? renderSpec(kit, look) : null;
+  };
+  if (remoteLooks !== null) {
+    return remoteLooks
+      .map((look) => resolveOne(look ?? defaultAppearance))
+      .filter((spec): spec is RenderSpec => spec !== null);
+  }
+  const specs: RenderSpec[] = [];
+  const own = resolveOne(localLook);
+  if (own) specs.push(own);
+  for (let i = 0; i < 5; i += 1) {
+    const spec = resolveOne(practiceLooks[i] ?? defaultAppearance);
+    if (spec) specs.push(spec);
+  }
+  return specs;
+}

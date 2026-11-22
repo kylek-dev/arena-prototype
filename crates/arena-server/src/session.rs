@@ -16,7 +16,7 @@ use std::sync::Arc;
 use arena_protocol::{
     EncodedSnapshotBody, ErrorCode, FighterScore, FighterState, InputFrame, MAX_FIGHTERS,
     PROTOCOL_VERSION, RULES_VERSION, ServerMessage, Snapshot, TickEvent, Welcome, WireAction,
-    WireEvent, WireResult,
+    WireAppearance, WireEvent, WireResult,
 };
 use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::{ActorInput, Arena, ArenaEvent, MAX_LAG_COMP_TICKS};
@@ -100,6 +100,8 @@ struct Seat {
     /// Authoritative combat totals accumulated for this seat across the match
     /// (retained across disconnects and reconnects).
     score: FighterScore,
+    /// Character look locked on this seat's first join (`None` until the seat joins).
+    appearance: Option<Option<WireAppearance>>,
 }
 
 /// One seat's input flow since the last report (development diagnostics).
@@ -150,6 +152,13 @@ impl Session {
     pub fn scoreboard(&self) -> Vec<FighterScore> {
         self.seats.iter().map(|seat| seat.score).collect()
     }
+    /// Locked character looks in server actor order (`None` for seats without a look).
+    pub fn appearances(&self) -> Vec<Option<WireAppearance>> {
+        self.seats
+            .iter()
+            .map(|seat| seat.appearance.clone().flatten())
+            .collect()
+    }
     /// Each connected seat's input flow since the previous call, which
     /// starts a new window.
     pub fn take_windows(&mut self) -> Vec<(usize, SeatWindow)> {
@@ -172,6 +181,17 @@ impl Session {
     /// same seat (a reconnect) replaces the older one, which is told why so
     /// it does not reconnect and take the seat back.
     pub fn attach(&mut self, seat: usize, conn: ConnId) -> Vec<Out> {
+        self.attach_with_appearance(seat, conn, None)
+    }
+
+    /// Takes `seat` and locks `appearance` on the seat's first join. Later
+    /// reconnects keep the locked look so a player cannot swap looks mid-match.
+    pub fn attach_with_appearance(
+        &mut self,
+        seat: usize,
+        conn: ConnId,
+        appearance: Option<WireAppearance>,
+    ) -> Vec<Out> {
         if matches!(self.phase, Phase::Finished { .. } | Phase::Ended) {
             return vec![Out::Close {
                 conn,
@@ -194,6 +214,13 @@ impl Session {
                 error: Some(ErrorCode::Replaced),
             });
         }
+        let locked_new_look = if slot.appearance.is_none() {
+            let has_look = appearance.is_some();
+            slot.appearance = Some(appearance);
+            has_look
+        } else {
+            false
+        };
         slot.joined = true;
         slot.absent_since = None;
         // A new connection starts its own sequence, and nothing of it has
@@ -225,6 +252,24 @@ impl Session {
                 &self.connected(),
             )),
         });
+        let looks = self.appearances();
+        if looks.iter().any(Option::is_some) {
+            if locked_new_look {
+                for seat_slot in &self.seats {
+                    if let Some(target_conn) = seat_slot.conn {
+                        out.push(Out::Send {
+                            conn: target_conn,
+                            message: ServerMessage::Appearances(looks.clone()),
+                        });
+                    }
+                }
+            } else {
+                out.push(Out::Send {
+                    conn,
+                    message: ServerMessage::Appearances(looks),
+                });
+            }
+        }
         out
     }
 
