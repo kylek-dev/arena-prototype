@@ -1,17 +1,22 @@
-//! Player appearance from a customizable character kit (ADR 0040).
+//! Fighter appearance from customizable character kits (ADR 0040).
 //!
-//! The browser resolves the player's choices against the kit manifest into a
-//! small render spec: which kit, which named part nodes are visible, per-slot
-//! material tints/texture variants and an optional morph weight. This module
-//! only applies that spec; it knows nothing about hairstyles or outfits.
+//! The browser resolves each fighter's look (local player, practice opponents,
+//! or networked peers) against the kit manifest into a render spec: which kit,
+//! which named part nodes are visible, per-slot material tints/texture variants
+//! and an optional morph weight. This module only applies those specs per actor;
+//! it knows nothing about hairstyles or outfits.
 //! Presentation only: nothing here reaches the simulation.
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+use arena_protocol::MAX_FIGHTERS;
 use bevy::{gltf::GltfMaterialName, mesh::morph::MorphWeights, prelude::*};
 
-use crate::character::{Profile, QUATERNIUS_FEMALE};
+use crate::character::{
+    CharacterFallback, CharacterModel, FallbackActor, KitCache, Profile, QUATERNIUS_FEMALE,
+};
 
-/// Manifest id meaning "assemble the player from a kit".
+/// Manifest id meaning "assemble fighters from customizable kits".
 pub const KITS_MODEL: &str = "quaternius-kits";
 
 #[derive(Clone, Debug, PartialEq)]
@@ -40,10 +45,15 @@ pub struct Spec {
 }
 
 impl Spec {
-    /// Parses the browser's render spec. Anything malformed is rejected whole
-    /// rather than half-applied.
+    /// Parses one browser render spec from a JSON string. Anything malformed is
+    /// rejected whole rather than half-applied.
+    #[cfg(test)]
     pub fn parse(json: &str) -> Option<Self> {
         let value: serde_json::Value = serde_json::from_str(json).ok()?;
+        Self::from_value(&value)
+    }
+
+    pub fn from_value(value: &serde_json::Value) -> Option<Self> {
         let kit = value.get("kit")?;
         let finite = |v: &serde_json::Value| v.as_f64().filter(|n| n.is_finite()).map(|n| n as f32);
         let path = kit.get("path")?.as_str()?;
@@ -111,6 +121,28 @@ impl Spec {
     }
 }
 
+/// Parses either a per-fighter roster payload (`{"specs":[spec0, ...]}`) or a
+/// legacy single-player spec JSON (mapped to actor 0).
+pub fn parse_roster(json: &str) -> Option<[Option<Spec>; MAX_FIGHTERS]> {
+    let value: serde_json::Value = serde_json::from_str(json).ok()?;
+    let mut out: [Option<Spec>; MAX_FIGHTERS] = std::array::from_fn(|_| None);
+    if let Some(specs) = value.get("specs").and_then(serde_json::Value::as_array) {
+        if specs.is_empty() || specs.len() > MAX_FIGHTERS {
+            return None;
+        }
+        for (slot, entry) in out.iter_mut().zip(specs) {
+            if entry.is_null() {
+                *slot = None;
+            } else {
+                *slot = Some(Spec::from_value(entry)?);
+            }
+        }
+        return Some(out);
+    }
+    out[0] = Some(Spec::from_value(&value)?);
+    Some(out)
+}
+
 /// A stable `&'static Profile` per kit: the rest of the client keeps treating
 /// profiles as static data. At most one entry per kit id is ever created.
 pub fn kit_profile(kit: &KitRef) -> &'static Profile {
@@ -138,13 +170,32 @@ pub fn kit_profile(kit: &KitRef) -> &'static Profile {
     profile
 }
 
-/// The last spec and preview state received from the browser.
+/// The last per-fighter specs received from the browser.
 #[derive(Resource, Default)]
 pub struct Desired {
     revision: Option<f64>,
-    pub spec: Option<Spec>,
-    /// Bumped whenever `spec` changes, so instances re-apply.
-    pub generation: u64,
+    specs: [Option<Spec>; MAX_FIGHTERS],
+    /// Bumped per actor whenever that actor's spec changes, so only that fighter re-applies.
+    generations: [u64; MAX_FIGHTERS],
+}
+
+impl Desired {
+    pub fn spec_for(&self, actor: usize) -> Option<&Spec> {
+        self.specs.get(actor).and_then(Option::as_ref)
+    }
+
+    pub fn generation_for(&self, actor: usize) -> u64 {
+        self.generations.get(actor).copied().unwrap_or(0)
+    }
+
+    pub fn set_roster(&mut self, next: [Option<Spec>; MAX_FIGHTERS]) {
+        for (actor, spec) in next.into_iter().enumerate() {
+            if self.specs[actor] != spec {
+                self.specs[actor] = spec;
+                self.generations[actor] += 1;
+            }
+        }
+    }
 }
 
 /// The close-up character view used by the customization screen.
@@ -179,29 +230,39 @@ impl Preview {
     }
 }
 
-/// Marks a spawned kit scene root: which kit it is and the spec generation
-/// it shows.
+/// Marks a spawned kit scene root: which fighter owns it, which kit it is,
+/// whether its glTF scene has finished instantiating, mesh count, the spec
+/// generation it shows, and its per-fighter deduplicated `(source, handle)`
+/// material overrides.
 #[derive(Component)]
 pub struct KitInstance {
+    pub actor: usize,
     pub path: String,
+    pub ready: bool,
+    pub meshes: usize,
     pub applied: Option<u64>,
+    slot_materials: HashMap<String, (StandardMaterial, Handle<StandardMaterial>)>,
 }
 impl KitInstance {
-    pub fn new(path: &str) -> Self {
+    pub fn new_for(actor: usize, path: &str) -> Self {
         Self {
+            actor,
             path: path.to_owned(),
+            ready: false,
+            meshes: 0,
             applied: None,
+            slot_materials: HashMap::new(),
         }
     }
 }
 
-/// The player's body carrier, which kit scenes are spawned under.
+/// The local player's body carrier (used by lightning hand tagging).
 #[derive(Component)]
 pub struct PlayerBody;
 
-/// The glTF material a mesh entity started with, before overrides.
-#[derive(Component)]
-pub struct SourceMaterial(StandardMaterial);
+/// Body carrier for any fighter (`0..MAX_FIGHTERS`), under which kit scenes spawn.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FighterBody(pub usize);
 
 pub fn read(mut desired: ResMut<Desired>, mut preview: ResMut<Preview>, time: Res<Time>) {
     let next = crate::platform::read_preview();
@@ -217,95 +278,122 @@ pub fn read(mut desired: ResMut<Desired>, mut preview: ResMut<Preview>, time: Re
         return;
     }
     desired.revision = Some(revision);
-    match Spec::parse(&json) {
-        Some(spec) => {
-            if desired.spec.as_ref() != Some(&spec) {
-                desired.spec = Some(spec);
-                desired.generation += 1;
-            }
-        }
+    match parse_roster(&json) {
+        Some(roster) => desired.set_roster(roster),
         None => warn!("Ignoring malformed character appearance"),
     }
 }
 
-/// Loads a different kit when the spec names one. The current model stays
-/// visible until the new one is ready (see `character::on_ready`).
+/// Ensures every active fighter has a kit instance matching its desired kit,
+/// sharing cached GLBs and animation graphs across fighters via [`KitCache`].
+/// Previous kits stay visible until the replacement is ready and styled.
+#[allow(clippy::too_many_arguments)]
 pub fn switch_kit(
     mut commands: Commands,
     desired: Res<Desired>,
+    practice: Res<crate::Practice>,
     server: Res<AssetServer>,
     mut graphs: ResMut<Assets<AnimationGraph>>,
-    mut model: ResMut<crate::character::CharacterModel>,
-    bodies: Query<Entity, With<PlayerBody>>,
+    mut model: ResMut<CharacterModel>,
+    mut kit_cache: ResMut<KitCache>,
+    bodies: Query<(Entity, &FighterBody)>,
+    instances: Query<&KitInstance>,
 ) {
-    let Some(spec) = &desired.spec else {
-        return;
-    };
-    let Some(current) = model.profile else {
-        return;
-    };
-    // Only kit-built players switch; legacy single models stay as they are.
-    if !model.kit || current.path == spec.kit.path {
+    // Only kit-built clients spawn kits; legacy single models stay as they are.
+    if !model.kit {
         return;
     }
-    let profile = kit_profile(&spec.kit);
-    *model = crate::character::CharacterModel::load(Some(profile), &server, &mut graphs);
-    model.kit = true;
-    let Some(scene) = model.scene.clone() else {
-        return;
-    };
-    for body in &bodies {
-        commands.entity(body).with_children(|body| {
-            body.spawn((
-                WorldAssetRoot(scene.clone()),
-                profile.transform(),
-                Visibility::Hidden,
-                KitInstance::new(profile.path),
-            ))
-            .observe(crate::character::on_ready);
+    let active_count = practice.arena.fighters().len().min(MAX_FIGHTERS);
+    for (body_entity, body) in &bodies {
+        let actor = body.0;
+        if actor >= active_count {
+            continue;
+        }
+        let Some(spec) = desired.spec_for(actor) else {
+            continue;
+        };
+        let already_spawned = instances
+            .iter()
+            .any(|inst| inst.actor == actor && inst.path == spec.kit.path);
+        if already_spawned {
+            continue;
+        }
+        let profile = kit_profile(&spec.kit);
+        let cached = kit_cache.get_or_load(profile, &server, &mut graphs);
+        let scene = cached.scene.clone();
+        if actor == 0 && model.profile.map(|p| p.path) != Some(profile.path) {
+            model.set_kit_loading(cached);
+        }
+        commands.entity(body_entity).with_children(|parent| {
+            parent
+                .spawn((
+                    WorldAssetRoot(scene),
+                    profile.transform(),
+                    Visibility::Hidden,
+                    KitInstance::new_for(actor, profile.path),
+                ))
+                .observe(crate::character::on_ready);
         });
     }
 }
 
-/// Applies part visibility, materials and morphs to ready kit instances whose
-/// shown generation is stale.
+/// Applies part visibility, deduplicated per-fighter material overrides, and
+/// morphs to ready kit instances whose shown generation is stale.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn apply(
     mut commands: Commands,
     desired: Res<Desired>,
     server: Res<AssetServer>,
-    model: Res<crate::character::CharacterModel>,
+    mut model: Option<ResMut<CharacterModel>>,
+    kit_cache: Option<Res<KitCache>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut instances: Query<(Entity, &mut KitInstance)>,
     children: Query<&Children>,
-    mut named: Query<(&Name, &mut Visibility), Without<crate::character::CharacterFallback>>,
-    mut surfaces: Query<(
-        &GltfMaterialName,
-        &mut MeshMaterial3d<StandardMaterial>,
-        Option<&SourceMaterial>,
-    )>,
+    mut named: Query<
+        (&Name, &mut Visibility),
+        (Without<CharacterFallback>, Without<FallbackActor>),
+    >,
+    mut surfaces: Query<(&GltfMaterialName, &mut MeshMaterial3d<StandardMaterial>)>,
     mut morphs: Query<(&Name, &mut MorphWeights)>,
-    mut fallback: Query<&mut Visibility, With<crate::character::CharacterFallback>>,
+    mut fallback_actors: Query<(&FallbackActor, &mut Visibility), Without<CharacterFallback>>,
+    mut player_fallback: Query<&mut Visibility, With<CharacterFallback>>,
 ) {
-    let Some(spec) = &desired.spec else {
-        return;
-    };
-    if model.status() != "ready" {
-        return;
-    }
     for (root, mut instance) in &mut instances {
-        if instance.applied == Some(desired.generation) {
+        if !instance.ready {
             continue;
         }
-        // Only the instance of the kit the spec names, once that kit is the
-        // loaded model; an outgoing one keeps its look until it is replaced.
-        if instance.path != spec.kit.path
-            || model.profile.map(|p| p.path) != Some(spec.kit.path.as_str())
+        let actor = instance.actor;
+        let Some(spec) = desired.spec_for(actor) else {
+            continue;
+        };
+        let generation = desired.generation_for(actor);
+        if instance.applied == Some(generation) {
+            continue;
+        }
+        // Only style the instance matching the currently desired kit path; an
+        // outgoing kit keeps its look until the replacement is ready.
+        if instance.path != spec.kit.path {
+            continue;
+        }
+        instance.applied = Some(generation);
+        // Restore CharacterModel if actor 0 reverted back to an already-ready kit
+        // while a replacement kit was still loading (or had failed).
+        if actor == 0
+            && let (Some(model), Some(cache)) = (model.as_deref_mut(), kit_cache.as_deref())
+            && (model.profile.map(|p| p.path) != Some(instance.path.as_str())
+                || model.status() != "ready")
+            && let Some(cached) = cache.get(&instance.path)
         {
-            continue;
+            model.set_kit_ready(cached, instance.meshes.max(1));
         }
-        instance.applied = Some(desired.generation);
-        reveal(&mut commands, root, &mut fallback);
+        reveal(
+            &mut commands,
+            root,
+            actor,
+            &mut fallback_actors,
+            &mut player_fallback,
+        );
+        let mut updated_slots: HashMap<String, Handle<StandardMaterial>> = HashMap::new();
         for entity in children.iter_descendants(root) {
             if let Ok((name, mut visibility)) = named.get_mut(entity)
                 && let Some(shown) = spec.visible(name.as_str())
@@ -323,59 +411,83 @@ pub fn apply(
             {
                 *first = *weight;
             }
-            let Ok((material_name, mut handle, source)) = surfaces.get_mut(entity) else {
+            let Ok((material_name, mut handle)) = surfaces.get_mut(entity) else {
                 continue;
             };
             let Some(change) = spec.materials.iter().find(|m| m.name == material_name.0) else {
                 continue;
             };
-            let base = match source {
-                Some(source) => source.0.clone(),
-                None => {
-                    let Some(original) = materials.get(&handle.0) else {
-                        continue;
-                    };
-                    let original = original.clone();
-                    commands
-                        .entity(entity)
-                        .insert(SourceMaterial(original.clone()));
-                    original
-                }
-            };
-            let next = overridden(base, change, &server);
-            // Each mesh owns its copy, so overrides never leak into the shared
-            // glTF asset (or into the next kit using it).
-            if source.is_some()
-                && let Some(mut existing) = materials.get_mut(&handle.0)
-            {
-                *existing = next;
-            } else {
-                handle.0 = materials.add(next);
+            if let Some(shared_slot_handle) = updated_slots.get(&material_name.0) {
+                handle.0 = shared_slot_handle.clone();
+                continue;
             }
+            // Share one overridden StandardMaterial handle per material slot on
+            // this fighter, keeping the original glTF StandardMaterial alongside
+            // it so re-applying never depends on child iteration order or mutates
+            // the shared glTF asset.
+            let slot_handle = if let Some((base, existing_handle)) =
+                instance.slot_materials.get(&material_name.0).cloned()
+            {
+                let next = overridden(base, change, &server);
+                if let Some(mut existing) = materials.get_mut(&existing_handle) {
+                    *existing = next;
+                    existing_handle
+                } else {
+                    let fresh = materials.add(next);
+                    instance
+                        .slot_materials
+                        .get_mut(&material_name.0)
+                        .expect("slot exists")
+                        .1 = fresh.clone();
+                    fresh
+                }
+            } else {
+                let Some(original) = materials.get(&handle.0).cloned() else {
+                    continue;
+                };
+                let next = overridden(original.clone(), change, &server);
+                let fresh = materials.add(next);
+                instance
+                    .slot_materials
+                    .insert(material_name.0.clone(), (original, fresh.clone()));
+                fresh
+            };
+            handle.0 = slot_handle.clone();
+            updated_slots.insert(material_name.0.clone(), slot_handle);
         }
     }
 }
 
-/// Shows a freshly applied kit and retires whatever stood in for it: the
-/// previous kit, or the procedural fallback at startup.
+/// Shows a freshly applied kit for `actor` and retires whatever stood in for
+/// that same actor: its previous kit, or its procedural fallback at startup.
 fn reveal(
     commands: &mut Commands,
     root: Entity,
-    fallback: &mut Query<&mut Visibility, With<crate::character::CharacterFallback>>,
+    actor: usize,
+    fallback_actors: &mut Query<(&FallbackActor, &mut Visibility), Without<CharacterFallback>>,
+    player_fallback: &mut Query<&mut Visibility, With<CharacterFallback>>,
 ) {
     commands.entity(root).insert(Visibility::Inherited);
     commands.queue(move |world: &mut World| {
         let others: Vec<Entity> = world
-            .query_filtered::<Entity, With<KitInstance>>()
+            .query::<(Entity, &KitInstance)>()
             .iter(world)
-            .filter(|entity| *entity != root)
+            .filter(|(entity, inst)| *entity != root && inst.actor == actor)
+            .map(|(entity, _)| entity)
             .collect();
         for entity in others {
             world.despawn(entity);
         }
     });
-    for mut visibility in fallback.iter_mut() {
-        *visibility = Visibility::Hidden;
+    for (fallback_actor, mut visibility) in fallback_actors.iter_mut() {
+        if fallback_actor.0 == actor {
+            *visibility = Visibility::Hidden;
+        }
+    }
+    if actor == 0 {
+        for mut visibility in player_fallback.iter_mut() {
+            *visibility = Visibility::Hidden;
+        }
     }
 }
 
@@ -403,6 +515,11 @@ mod tests {
                      {"name":"Eyes","tint":[1,1,1],"texture":"characters/kits/textures/eye-blue.png"}],
         "morph":null}"#;
 
+    const SPEC_FEMALE: &str = r#"{"kit":{"id":"human-female","path":"characters/kits/human-female.glb","sole":-0.004,"scale":1.0656},
+        "parts":[["Hair_Buns",true],["Body_Torso",false]],
+        "materials":[{"name":"Skin","tint":[0.4,0.3,0.2],"texture":null}],
+        "morph":null}"#;
+
     #[test]
     fn spec_parses_parts_materials_and_kit() {
         let spec = Spec::parse(SPEC).unwrap();
@@ -415,6 +532,23 @@ mod tests {
             Some("characters/kits/textures/eye-blue.png")
         );
         assert_eq!(spec.morph, None);
+    }
+
+    #[test]
+    fn roster_json_parses_multi_fighter_and_single_legacy_specs() {
+        let roster_json = format!(r#"{{"specs":[{SPEC},{SPEC_FEMALE},null]}}"#);
+        let roster = parse_roster(&roster_json).unwrap();
+        assert_eq!(roster[0].as_ref().unwrap().kit.id, "human-male");
+        assert_eq!(roster[1].as_ref().unwrap().kit.id, "human-female");
+        assert!(roster[2].is_none());
+        // Legacy single-spec JSON still populates actor 0.
+        let single = parse_roster(SPEC).unwrap();
+        assert_eq!(single[0].as_ref().unwrap().kit.id, "human-male");
+        assert!(single[1].is_none());
+        // Empty or over-max roster arrays are rejected.
+        assert!(parse_roster(r#"{"specs":[]}"#).is_none());
+        let seven = format!(r#"{{"specs":[{SPEC},{SPEC},{SPEC},{SPEC},{SPEC},{SPEC},{SPEC}]}}"#);
+        assert!(parse_roster(&seven).is_none());
     }
 
     #[test]
@@ -484,57 +618,72 @@ mod tests {
     }
 
     #[test]
-    fn apply_shows_chosen_parts_copies_materials_and_retires_the_previous_kit() {
+    fn apply_shows_chosen_parts_deduplicates_per_fighter_materials_and_isolates_actors() {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Image>()
             .init_asset::<StandardMaterial>()
             .add_systems(Update, apply);
-        let spec = Spec::parse(SPEC).unwrap();
-        app.insert_resource(crate::character::CharacterModel::ready(kit_profile(
-            &spec.kit,
-        )));
-        app.insert_resource(Desired {
-            revision: Some(1.0),
-            spec: Some(spec),
-            generation: 1,
-        });
+        let spec0 = Spec::parse(SPEC).unwrap();
+        let spec1 = Spec::parse(SPEC_FEMALE).unwrap();
+        let mut desired = Desired::default();
+        desired.set_roster([Some(spec0), Some(spec1), None, None, None, None]);
+        app.insert_resource(desired);
         let shared = app
             .world_mut()
             .resource_mut::<Assets<StandardMaterial>>()
             .add(StandardMaterial::default());
-        let fallback = app
+        let fallback0 = app
             .world_mut()
             .spawn((
-                crate::character::CharacterFallback,
+                CharacterFallback,
+                FallbackActor(0),
                 Name::new("Procedural humanoid"),
                 Visibility::Inherited,
             ))
             .id();
-        let previous = app
-            .world_mut()
-            .spawn(KitInstance {
-                path: "characters/kits/human-female.glb".into(),
-                applied: Some(0),
-            })
-            .id();
-        let mut hair = Entity::PLACEHOLDER;
-        let mut torso = Entity::PLACEHOLDER;
-        let mut skin = Entity::PLACEHOLDER;
-        let root = app
+        let fallback1 = app
             .world_mut()
             .spawn((
-                KitInstance::new("characters/kits/human-male.glb"),
-                Visibility::Hidden,
+                FallbackActor(1),
+                Name::new("Procedural humanoid"),
+                Visibility::Inherited,
             ))
+            .id();
+        let previous0 = app
+            .world_mut()
+            .spawn(KitInstance {
+                actor: 0,
+                path: "characters/kits/human-female.glb".into(),
+                ready: true,
+                meshes: 1,
+                applied: Some(0),
+                slot_materials: HashMap::new(),
+            })
+            .id();
+        let mut hair0 = Entity::PLACEHOLDER;
+        let mut torso0 = Entity::PLACEHOLDER;
+        let mut skin0_a = Entity::PLACEHOLDER;
+        let mut skin0_b = Entity::PLACEHOLDER;
+        let mut inst0 = KitInstance::new_for(0, "characters/kits/human-male.glb");
+        inst0.ready = true;
+        let root0 = app
+            .world_mut()
+            .spawn((inst0, Visibility::Hidden))
             .with_children(|root| {
-                hair = root
+                hair0 = root
                     .spawn((Name::new("Hair_Long"), Visibility::Hidden))
                     .id();
-                torso = root
+                torso0 = root
                     .spawn((Name::new("Body_Torso"), Visibility::Inherited))
                     .with_children(|node| {
-                        skin = node
+                        skin0_a = node
+                            .spawn((
+                                GltfMaterialName("Skin".into()),
+                                MeshMaterial3d(shared.clone()),
+                            ))
+                            .id();
+                        skin0_b = node
                             .spawn((
                                 GltfMaterialName("Skin".into()),
                                 MeshMaterial3d(shared.clone()),
@@ -544,44 +693,239 @@ mod tests {
                     .id();
             })
             .id();
+
+        let mut skin1 = Entity::PLACEHOLDER;
+        let mut inst1 = KitInstance::new_for(1, "characters/kits/human-female.glb");
+        inst1.ready = true;
+        let root1 = app
+            .world_mut()
+            .spawn((inst1, Visibility::Hidden))
+            .with_children(|root| {
+                skin1 = root
+                    .spawn((
+                        GltfMaterialName("Skin".into()),
+                        MeshMaterial3d(shared.clone()),
+                    ))
+                    .id();
+            })
+            .id();
+
         app.update();
         let world = app.world();
-        assert_eq!(world.get::<Visibility>(hair), Some(&Visibility::Inherited));
-        assert_eq!(world.get::<Visibility>(torso), Some(&Visibility::Hidden));
-        assert_eq!(world.get::<Visibility>(root), Some(&Visibility::Inherited));
-        assert_eq!(world.get::<Visibility>(fallback), Some(&Visibility::Hidden));
-        assert!(world.get_entity(previous).is_err(), "previous kit retired");
-        let own = &world
-            .get::<MeshMaterial3d<StandardMaterial>>(skin)
+        assert_eq!(world.get::<Visibility>(hair0), Some(&Visibility::Inherited));
+        assert_eq!(world.get::<Visibility>(torso0), Some(&Visibility::Hidden));
+        assert_eq!(world.get::<Visibility>(root0), Some(&Visibility::Inherited));
+        assert_eq!(world.get::<Visibility>(root1), Some(&Visibility::Inherited));
+        assert_eq!(
+            world.get::<Visibility>(fallback0),
+            Some(&Visibility::Hidden)
+        );
+        assert_eq!(
+            world.get::<Visibility>(fallback1),
+            Some(&Visibility::Hidden)
+        );
+        assert!(
+            world.get_entity(previous0).is_err(),
+            "actor 0 previous kit retired"
+        );
+        assert!(
+            world.get_entity(root1).is_ok(),
+            "actor 1 kit untouched by actor 0 reveal"
+        );
+
+        let own0_a = &world
+            .get::<MeshMaterial3d<StandardMaterial>>(skin0_a)
             .unwrap()
             .0;
-        assert_ne!(own, &shared, "overrides use a per-mesh copy");
+        let own0_b = &world
+            .get::<MeshMaterial3d<StandardMaterial>>(skin0_b)
+            .unwrap()
+            .0;
+        let own1 = &world
+            .get::<MeshMaterial3d<StandardMaterial>>(skin1)
+            .unwrap()
+            .0;
+        assert_ne!(
+            own0_a, &shared,
+            "overrides never mutate shared glTF material"
+        );
+        assert_eq!(
+            own0_a, own0_b,
+            "same fighter shares one handle per material slot"
+        );
+        assert_ne!(
+            own0_a, own1,
+            "distinct fighters keep isolated material handles"
+        );
         let materials = world.resource::<Assets<StandardMaterial>>();
         assert_eq!(materials.get(&shared).unwrap().base_color, Color::WHITE);
-        let tinted = materials.get(own).unwrap().base_color.to_srgba();
-        assert!((tinted.red - 0.8).abs() < 1e-4);
-        // Re-applying the same generation is a no-op; a new one edits the copy.
-        let own = own.clone();
+        assert!((materials.get(own0_a).unwrap().base_color.to_srgba().red - 0.8).abs() < 1e-4);
+        assert!((materials.get(own1).unwrap().base_color.to_srgba().red - 0.4).abs() < 1e-4);
+
+        // Re-applying generation 2 edits actor 0's material handle in place without affecting actor 1.
+        let own0_handle = own0_a.clone();
+        let own1_handle = own1.clone();
         app.update();
-        let mut desired = app.world_mut().resource_mut::<Desired>();
-        desired.spec.as_mut().unwrap().materials[0].tint = [0.5, 0.5, 0.5];
-        desired.generation = 2;
+        {
+            let mut desired = app.world_mut().resource_mut::<Desired>();
+            desired.specs[0].as_mut().unwrap().materials[0].tint = [0.5, 0.5, 0.5];
+            desired.generations[0] += 1;
+        }
         app.update();
         let world = app.world();
         assert_eq!(
             world
-                .get::<MeshMaterial3d<StandardMaterial>>(skin)
+                .get::<MeshMaterial3d<StandardMaterial>>(skin0_a)
                 .unwrap()
                 .0,
-            own
+            own0_handle
         );
-        let red = world
-            .resource::<Assets<StandardMaterial>>()
-            .get(&own)
-            .unwrap()
-            .base_color
-            .to_srgba()
-            .red;
-        assert!((red - 0.5).abs() < 1e-4);
+        let materials = world.resource::<Assets<StandardMaterial>>();
+        assert!(
+            (materials
+                .get(&own0_handle)
+                .unwrap()
+                .base_color
+                .to_srgba()
+                .red
+                - 0.5)
+                .abs()
+                < 1e-4
+        );
+        assert!(
+            (materials
+                .get(&own1_handle)
+                .unwrap()
+                .base_color
+                .to_srgba()
+                .red
+                - 0.4)
+                .abs()
+                < 1e-4
+        );
+    }
+
+    #[test]
+    fn switch_kit_shares_cached_glbs_across_all_six_fighters_in_3v3() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<WorldAsset>()
+            .init_asset::<Gltf>()
+            .init_asset::<AnimationClip>()
+            .init_asset::<AnimationGraph>()
+            .insert_resource(crate::Practice::new(&arena_map::colosseum(), 3))
+            .insert_resource(KitCache::default())
+            .insert_resource(CharacterModel::ready(kit_profile(
+                &Spec::parse(SPEC).unwrap().kit,
+            )))
+            .add_systems(Update, switch_kit);
+        let male = Spec::parse(SPEC).unwrap();
+        let female = Spec::parse(SPEC_FEMALE).unwrap();
+        let mut desired = Desired::default();
+        desired.set_roster([
+            Some(male.clone()),
+            Some(female.clone()),
+            Some(male.clone()),
+            Some(female.clone()),
+            Some(male),
+            Some(female),
+        ]);
+        app.insert_resource(desired);
+        for actor in 0..MAX_FIGHTERS {
+            app.world_mut().spawn(FighterBody(actor));
+        }
+        app.update();
+        let world = app.world_mut();
+        assert_eq!(
+            world.resource::<KitCache>().len(),
+            2,
+            "6 fighters across 2 kits reuse only 2 cached GLB/AnimationGraph entries"
+        );
+        let mut spawned_actors: Vec<usize> = world
+            .query::<&KitInstance>()
+            .iter(world)
+            .map(|inst| inst.actor)
+            .collect();
+        spawned_actors.sort_unstable();
+        assert_eq!(spawned_actors, vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn reverting_actor_0_back_to_a_ready_kit_restores_character_model_status() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Image>()
+            .init_asset::<WorldAsset>()
+            .init_asset::<Gltf>()
+            .init_asset::<AnimationClip>()
+            .init_asset::<AnimationGraph>()
+            .init_asset::<StandardMaterial>()
+            .insert_resource(crate::Practice::new(&arena_map::colosseum(), 1))
+            .insert_resource(KitCache::default())
+            .add_systems(Update, (switch_kit, apply).chain());
+
+        let kit_a = Spec::parse(SPEC).unwrap();
+        let kit_b = Spec::parse(SPEC_FEMALE).unwrap();
+        let prof_a = kit_profile(&kit_a.kit);
+        {
+            let server = app.world().resource::<AssetServer>().clone();
+            app.world_mut()
+                .resource_scope(|world, mut cache: Mut<KitCache>| {
+                    world.resource_scope(|_, mut graphs: Mut<Assets<AnimationGraph>>| {
+                        cache.get_or_load(prof_a, &server, &mut graphs);
+                    });
+                });
+        }
+        app.insert_resource(CharacterModel::ready(prof_a));
+        let mut desired = Desired::default();
+        desired.set_roster([Some(kit_a.clone()), None, None, None, None, None]);
+        app.insert_resource(desired);
+        let body0 = app.world_mut().spawn(FighterBody(0)).id();
+        let mut ready_a = KitInstance::new_for(0, &kit_a.kit.path);
+        ready_a.ready = true;
+        ready_a.meshes = 12;
+        app.world_mut()
+            .spawn((ready_a, Visibility::Inherited, ChildOf(body0)));
+        app.update();
+        assert_eq!(app.world().resource::<CharacterModel>().status(), "ready");
+
+        // Switch actor 0 to Kit B: CharacterModel transitions to loading for Kit B.
+        app.world_mut().resource_mut::<Desired>().set_roster([
+            Some(kit_b),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ]);
+        app.update();
+        assert_eq!(app.world().resource::<CharacterModel>().status(), "loading");
+        assert_eq!(
+            app.world()
+                .resource::<CharacterModel>()
+                .profile
+                .map(|p| p.path),
+            Some("characters/kits/human-female.glb")
+        );
+
+        // Revert back to Kit A before Kit B finishes: CharacterModel must recover to ready Kit A.
+        app.world_mut().resource_mut::<Desired>().set_roster([
+            Some(kit_a),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ]);
+        app.update();
+        assert_eq!(app.world().resource::<CharacterModel>().status(), "ready");
+        assert_eq!(
+            app.world()
+                .resource::<CharacterModel>()
+                .profile
+                .map(|p| p.path),
+            Some("characters/kits/human-male.glb")
+        );
+        assert_eq!(app.world().resource::<CharacterModel>().meshes, 12);
     }
 }

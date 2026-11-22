@@ -16,15 +16,38 @@ fn input(seq: u32) -> InputFrame {
     }
 }
 
+fn sample_appearance() -> WireAppearance {
+    WireAppearance {
+        ancestry: "human".into(),
+        body: "female".into(),
+        skin_tone: "natural".into(),
+        hair_color: "auburn".into(),
+        eyes: "brown".into(),
+        build: 30,
+        groups: vec![
+            ("hair".into(), "Hair_Buns".into()),
+            ("torso".into(), "Ranger".into()),
+        ],
+        variants: vec![("Ranger".into(), "green".into())],
+    }
+}
+
 fn client_samples() -> Vec<ClientMessage> {
     vec![
         ClientMessage::Hello {
             protocol: PROTOCOL_VERSION,
             ticket: vec![7; MAX_TICKET],
+            appearance: None,
+        },
+        ClientMessage::Hello {
+            protocol: PROTOCOL_VERSION,
+            ticket: vec![7; 64],
+            appearance: Some(sample_appearance()),
         },
         ClientMessage::Hello {
             protocol: 0,
             ticket: Vec::new(),
+            appearance: None,
         },
         ClientMessage::Input(input(u32::MAX)),
         ClientMessage::Input(InputFrame {
@@ -132,6 +155,8 @@ fn server_samples() -> Vec<ServerMessage> {
         ServerMessage::Pong { nonce: 1 },
         ServerMessage::Error(ErrorCode::VersionMismatch),
         ServerMessage::Error(ErrorCode::ServerShutdown),
+        ServerMessage::Appearances(vec![Some(sample_appearance()), None]),
+        ServerMessage::Appearances(vec![Some(sample_appearance()); MAX_FIGHTERS]),
     ]
 }
 
@@ -166,14 +191,46 @@ fn ordinary_traffic_is_small() {
 #[test]
 fn the_wire_layout_is_pinned() {
     // Golden frames: changing them requires a PROTOCOL_VERSION bump.
-    assert_eq!(PROTOCOL_VERSION, 5);
+    assert_eq!(PROTOCOL_VERSION, 6);
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 5,
+            protocol: 6,
             ticket: vec![0xAB, 0xCD],
+            appearance: None,
         }
         .encode(),
-        [0, 5, 2, 0xAB, 0xCD]
+        [0, 6, 2, 0xAB, 0xCD, 0]
+    );
+    let compact = WireAppearance {
+        ancestry: "elf".into(),
+        body: "male".into(),
+        skin_tone: "fair".into(),
+        hair_color: "black".into(),
+        eyes: "blue".into(),
+        build: 50,
+        groups: vec![("hair".into(), "Hair_Long".into())],
+        variants: vec![("Ranger".into(), "green".into())],
+    };
+    assert_eq!(
+        ClientMessage::Hello {
+            protocol: 6,
+            ticket: vec![0xAB, 0xCD],
+            appearance: Some(compact),
+        }
+        .encode(),
+        [
+            0, 6, 2, 0xAB, 0xCD, 1, // Hello variant 0, protocol 6, ticket, Some
+            3, b'e', b'l', b'f', // ancestry
+            4, b'm', b'a', b'l', b'e', // body
+            4, b'f', b'a', b'i', b'r', // skin_tone
+            5, b'b', b'l', b'a', b'c', b'k', // hair_color
+            4, b'b', b'l', b'u', b'e', // eyes
+            50,   // build
+            1, 4, b'h', b'a', b'i', b'r', 9, b'H', b'a', b'i', b'r', b'_', b'L', b'o', b'n',
+            b'g', // groups
+            1, 6, b'R', b'a', b'n', b'g', b'e', b'r', 5, b'g', b'r', b'e', b'e',
+            b'n', // variants
+        ]
     );
     assert_eq!(
         ClientMessage::Input(InputFrame {
@@ -290,10 +347,127 @@ fn malformed_frames_are_rejected_not_trusted() {
     let long = ClientMessage::Hello {
         protocol: PROTOCOL_VERSION,
         ticket: vec![0; MAX_TICKET + 1],
+        appearance: None,
     };
     assert_eq!(
         ClientMessage::decode(&long.encode()),
         Err(DecodeError::OverLimit)
+    );
+    // Malformed / oversized appearance identifiers, counts, duplicates, and morph weight.
+    let mut bad_looks = vec![
+        WireAppearance {
+            ancestry: "".into(),
+            ..sample_appearance()
+        },
+        WireAppearance {
+            body: "../etc/passwd".into(),
+            ..sample_appearance()
+        },
+        WireAppearance {
+            skin_tone: "a/b".into(),
+            ..sample_appearance()
+        },
+        WireAppearance {
+            hair_color: "x".repeat(MAX_APPEARANCE_ID + 1),
+            ..sample_appearance()
+        },
+        WireAppearance {
+            eyes: "has space".into(),
+            ..sample_appearance()
+        },
+        WireAppearance {
+            build: 101,
+            ..sample_appearance()
+        },
+        WireAppearance {
+            groups: vec![("hair".into(), "A".into()), ("hair".into(), "B".into())],
+            ..sample_appearance()
+        },
+        WireAppearance {
+            groups: (0..=MAX_APPEARANCE_GROUPS)
+                .map(|i| (format!("g{i}"), "v".into()))
+                .collect(),
+            ..sample_appearance()
+        },
+        WireAppearance {
+            variants: vec![("Skin".into(), "a".into()), ("Skin".into(), "b".into())],
+            ..sample_appearance()
+        },
+        WireAppearance {
+            variants: (0..=MAX_APPEARANCE_VARIANTS)
+                .map(|i| (format!("m{i}"), "v".into()))
+                .collect(),
+            ..sample_appearance()
+        },
+    ];
+    for bad in bad_looks.drain(..) {
+        let hello = ClientMessage::Hello {
+            protocol: PROTOCOL_VERSION,
+            ticket: vec![1, 2],
+            appearance: Some(bad.clone()),
+        };
+        assert_eq!(
+            ClientMessage::decode(&hello.encode()),
+            Err(DecodeError::OverLimit)
+        );
+        let server_msg = ServerMessage::Appearances(vec![Some(bad), None]);
+        assert_eq!(
+            ServerMessage::decode(&server_msg.encode()),
+            Err(DecodeError::OverLimit)
+        );
+    }
+    // Invalid roster lengths in ServerMessage::Appearances (empty, odd, > MAX_FIGHTERS).
+    for bad_len in [0, 1, 3, 5, MAX_FIGHTERS + 2] {
+        let server_msg = ServerMessage::Appearances(vec![None; bad_len]);
+        assert_eq!(
+            ServerMessage::decode(&server_msg.encode()),
+            Err(DecodeError::OverLimit)
+        );
+    }
+    // Oversized Hello exceeding MAX_CLIENT_FRAME is rejected as Oversized.
+    let huge_hello = ClientMessage::Hello {
+        protocol: PROTOCOL_VERSION,
+        ticket: vec![0; MAX_TICKET],
+        appearance: Some(WireAppearance {
+            groups: (0..MAX_APPEARANCE_GROUPS)
+                .map(|i| (format!("g{i:0>30}"), "v".repeat(MAX_APPEARANCE_ID)))
+                .collect(),
+            ..sample_appearance()
+        }),
+    };
+    assert_eq!(
+        ClientMessage::decode(&huge_hello.encode()),
+        Err(DecodeError::Oversized)
+    );
+    // Bad group/variant keys & raw invalid UTF-8 bytes inside WireAppearance are rejected.
+    for bad_pair in [
+        WireAppearance {
+            groups: vec![("../bad".into(), "ok".into())],
+            ..sample_appearance()
+        },
+        WireAppearance {
+            groups: vec![("hair".into(), "".into())],
+            ..sample_appearance()
+        },
+        WireAppearance {
+            variants: vec![("bad key".into(), "ok".into())],
+            ..sample_appearance()
+        },
+    ] {
+        let hello = ClientMessage::Hello {
+            protocol: PROTOCOL_VERSION,
+            ticket: vec![1, 2],
+            appearance: Some(bad_pair),
+        };
+        assert_eq!(
+            ClientMessage::decode(&hello.encode()),
+            Err(DecodeError::OverLimit)
+        );
+    }
+    let bad_utf8_hello = [0, PROTOCOL_VERSION as u8, 1, 0xAA, 1, 2, 0xFF, 0xFE];
+    assert_eq!(
+        ClientMessage::decode(&bad_utf8_hello),
+        Err(DecodeError::Malformed)
     );
     let mut crowded = Snapshot::capture(&colosseum(3), 0, Vec::new(), &[]);
     crowded.fighters.push(crowded.fighters[0]);
@@ -461,6 +635,7 @@ fn a_hello_reveals_its_version_even_from_a_future_client() {
     let current = ClientMessage::Hello {
         protocol: PROTOCOL_VERSION,
         ticket: vec![1, 2, 3],
+        appearance: None,
     };
     assert_eq!(
         peek_hello_protocol(&current.encode()),
@@ -1186,8 +1361,13 @@ fn fuzz_client_and_server_frames_preserve_all_wire_invariants() {
         if let Ok(message) = ClientMessage::decode(&frame) {
             assert!(frame.len() <= MAX_CLIENT_FRAME);
             match &message {
-                ClientMessage::Hello { protocol, ticket } => {
+                ClientMessage::Hello {
+                    protocol,
+                    ticket,
+                    appearance,
+                } => {
                     assert!(ticket.len() <= MAX_TICKET);
+                    assert!(appearance.as_ref().is_none_or(WireAppearance::is_valid));
                     assert_eq!(peeked, Some(*protocol));
                 }
                 _ => assert_eq!(peeked, None),
@@ -1271,6 +1451,13 @@ fn fuzz_client_and_server_frames_preserve_all_wire_invariants() {
                     );
                 }
                 ServerMessage::Pong { .. } | ServerMessage::Error(_) => {}
+                ServerMessage::Appearances(looks) => {
+                    let count = looks.len();
+                    assert!((2..=MAX_FIGHTERS).contains(&count) && count.is_multiple_of(2));
+                    for look in looks.iter().flatten() {
+                        assert!(look.is_valid());
+                    }
+                }
             }
             let reencoded = message.encode();
             assert_eq!(ServerMessage::decode(&reencoded), Ok(message.clone()));

@@ -1,4 +1,6 @@
 //! Presentation-only glTF character. The rules still own position/collision.
+use std::collections::HashMap;
+
 use bevy::{prelude::*, world_serialization::WorldInstanceReady};
 
 use crate::character_animation::{Clip, Controller, JumpEdges, Timing};
@@ -85,6 +87,79 @@ impl Profile {
 #[derive(Component)]
 pub struct CharacterFallback;
 
+/// Tags each fighter's procedural fallback humanoid so kits hide only their own actor's fallback.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FallbackActor(pub usize);
+
+/// Cached glTF scene and animation graph shared across all fighters wearing the same kit.
+pub struct CachedKit {
+    pub profile: &'static Profile,
+    pub scene: Handle<WorldAsset>,
+    pub asset: Handle<Gltf>,
+    pub graph: Handle<AnimationGraph>,
+    pub nodes: Vec<AnimationNodeIndex>,
+    pub failed_logged: bool,
+}
+
+/// Loads each customizable kit GLB and animation graph at most once, even in 3v3.
+#[derive(Resource, Default)]
+pub struct KitCache {
+    entries: HashMap<String, CachedKit>,
+}
+
+impl KitCache {
+    pub fn get(&self, path: &str) -> Option<&CachedKit> {
+        self.entries.get(path)
+    }
+
+    pub fn insert_from_model(&mut self, model: &CharacterModel) {
+        if let (Some(profile), Some(scene), Some(asset)) =
+            (model.profile, model.scene.clone(), model.asset.clone())
+        {
+            self.entries
+                .entry(profile.path.to_owned())
+                .or_insert(CachedKit {
+                    profile,
+                    scene,
+                    asset,
+                    graph: model.graph.clone(),
+                    nodes: model.nodes.clone(),
+                    failed_logged: false,
+                });
+        }
+    }
+
+    pub fn get_or_load(
+        &mut self,
+        profile: &'static Profile,
+        server: &AssetServer,
+        graphs: &mut Assets<AnimationGraph>,
+    ) -> &CachedKit {
+        self.entries
+            .entry(profile.path.to_owned())
+            .or_insert_with(|| {
+                let loaded = CharacterModel::load(Some(profile), server, graphs);
+                CachedKit {
+                    profile,
+                    scene: loaded.scene.expect("profile always loads a scene"),
+                    asset: loaded.asset.expect("profile always loads a gltf"),
+                    graph: loaded.graph,
+                    nodes: loaded.nodes,
+                    failed_logged: false,
+                }
+            })
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut CachedKit> {
+        self.entries.values_mut()
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
 #[derive(Resource)]
 pub struct CharacterModel {
     pub scene: Option<Handle<WorldAsset>>,
@@ -98,6 +173,27 @@ pub struct CharacterModel {
     pub kit: bool,
 }
 impl CharacterModel {
+    pub fn set_kit_loading(&mut self, cached: &CachedKit) {
+        self.scene = Some(cached.scene.clone());
+        self.asset = Some(cached.asset.clone());
+        self.graph = cached.graph.clone();
+        self.nodes = cached.nodes.clone();
+        self.profile = Some(cached.profile);
+        self.status = "loading";
+        self.meshes = 0;
+        self.kit = true;
+    }
+
+    pub fn set_kit_ready(&mut self, cached: &CachedKit, meshes: usize) {
+        self.scene = Some(cached.scene.clone());
+        self.asset = Some(cached.asset.clone());
+        self.graph = cached.graph.clone();
+        self.nodes = cached.nodes.clone();
+        self.profile = Some(cached.profile);
+        self.status = "ready";
+        self.meshes = meshes;
+        self.kit = true;
+    }
     pub fn load(
         profile: Option<&'static Profile>,
         server: &AssetServer,
@@ -164,10 +260,90 @@ pub fn on_ready(
     mut fallback: Query<&mut Visibility, With<CharacterFallback>>,
     mut carriers: Query<&mut crate::animation::Animator>,
     mut model: ResMut<CharacterModel>,
+    kit_cache: Option<Res<KitCache>>,
+    desired: Option<Res<crate::appearance::Desired>>,
     scenes: Query<&WorldAssetRoot>,
-    instances: Query<Entity, With<crate::appearance::KitInstance>>,
+    mut instances: Query<&mut crate::appearance::KitInstance>,
 ) {
-    // A kit replaced before it finished loading is discarded, not shown.
+    if let Ok(mut instance) = instances.get_mut(ready.entity) {
+        let actor = instance.actor;
+        // A kit replaced before it finished loading is discarded, not shown.
+        let still_wanted = desired
+            .as_ref()
+            .and_then(|d| d.spec_for(actor))
+            .map(|spec| spec.kit.path == instance.path)
+            .unwrap_or_else(|| {
+                actor == 0
+                    && scenes
+                        .get(ready.entity)
+                        .ok()
+                        .is_some_and(|root| model.scene.as_ref() == Some(&root.0))
+            });
+        if !still_wanted {
+            commands.entity(ready.entity).despawn();
+            return;
+        }
+        let mesh_count = children
+            .iter_descendants(ready.entity)
+            .filter(|entity| meshes.contains(*entity))
+            .count();
+        let player_entities: Vec<_> = children
+            .iter_descendants(ready.entity)
+            .filter(|entity| players.contains(*entity))
+            .collect();
+        let (profile, graph, nodes) = if let Some(cached) = kit_cache
+            .as_deref()
+            .and_then(|cache| cache.get(&instance.path))
+        {
+            (cached.profile, cached.graph.clone(), cached.nodes.clone())
+        } else if let Some(profile) = model.profile {
+            (profile, model.graph.clone(), model.nodes.clone())
+        } else {
+            if actor == 0 {
+                model.status = "failed";
+            }
+            warn!("Kit scene for actor {actor} became ready without a profile; retaining fallback");
+            return;
+        };
+        if mesh_count == 0 || player_entities.len() != 1 {
+            if actor == 0 {
+                model.status = "failed";
+            }
+            warn!(
+                "Kit for actor {actor} requires meshes and one animation player; retaining fallback"
+            );
+            return;
+        }
+        let entity = player_entities[0];
+        let mut player = players.get_mut(entity).expect("queried animation player");
+        let mut transitions = AnimationTransitions::new();
+        if let Some(&idle) = nodes.get(Clip::Idle as usize) {
+            transitions
+                .play(&mut player, idle, std::time::Duration::ZERO)
+                .repeat();
+        }
+        commands.entity(entity).insert((
+            AnimationGraphHandle(graph),
+            transitions,
+            Controller::new_for(actor, profile.timing, nodes),
+        ));
+        instance.ready = true;
+        instance.meshes = mesh_count;
+        if actor == 0 {
+            model.meshes = mesh_count;
+            model.status = "ready";
+        }
+        for mut carrier in &mut carriers {
+            if carrier.actor == actor {
+                carrier.authored = true;
+            }
+        }
+        // Kit visibility is revealed by `appearance::apply` once part visibility
+        // and material overrides are applied.
+        return;
+    }
+
+    // Legacy single-model path (non-kit BaseMale/BaseFemale/QuaterniusFemale on actor 0).
     if let Ok(root) = scenes.get(ready.entity)
         && model.scene.as_ref() != Some(&root.0)
     {
@@ -213,12 +389,6 @@ pub fn on_ready(
             carrier.authored = true;
         }
     }
-    // A kit is revealed by `appearance::apply` once its look is applied, so
-    // no frame shows every hairstyle and outfit at once; until then the
-    // previous kit (or the fallback at startup) stays.
-    if instances.contains(ready.entity) {
-        return;
-    }
     if let Ok(mut visibility) = roots.get_mut(ready.entity) {
         *visibility = Visibility::Inherited;
     }
@@ -227,7 +397,31 @@ pub fn on_ready(
     }
 }
 
-pub fn check_loading(asset_server: Res<AssetServer>, mut model: ResMut<CharacterModel>) {
+pub fn check_loading(
+    asset_server: Res<AssetServer>,
+    mut model: ResMut<CharacterModel>,
+    mut kit_cache: Option<ResMut<KitCache>>,
+) {
+    if let Some(cache) = kit_cache.as_deref_mut() {
+        for cached in cache.iter_mut() {
+            if cached.failed_logged {
+                continue;
+            }
+            let failed = asset_server
+                .get_load_state(cached.asset.id())
+                .is_some_and(|state| state.is_failed())
+                || asset_server
+                    .get_recursive_dependency_load_state(cached.asset.id())
+                    .is_some_and(|state| state.is_failed());
+            if failed {
+                cached.failed_logged = true;
+                warn!(
+                    "Character kit '{}' failed to load; retaining procedural fallback",
+                    cached.profile.path
+                );
+            }
+        }
+    }
     if model.status != "loading" {
         return;
     }

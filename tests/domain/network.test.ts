@@ -217,13 +217,72 @@ describe("network match identity", () => {
 
 describe("protocol corners the runtime speaks itself", () => {
   it("encodes Hello exactly as arena-protocol's golden frame", () => {
-    // arena-protocol: Hello { protocol: 5, ticket: [0xab, 0xcd] } == [0, 5, 2, 0xab, 0xcd]
-    expect([...encodeHello("abcd")]).toEqual([0, 5, 2, 0xab, 0xcd]);
-    expect(PROTOCOL_VERSION).toBe(5);
+    // arena-protocol: Hello { protocol: 6, ticket: [0xab, 0xcd], appearance: None }
+    expect([...encodeHello("abcd")]).toEqual([0, 6, 2, 0xab, 0xcd, 0]);
+    expect(PROTOCOL_VERSION).toBe(6);
     // Lengths and versions past 127 use more varint bytes.
     const long = encodeHello("00".repeat(300), 300);
     expect([...long.slice(0, 5)]).toEqual([0, 0xac, 0x02, 0xac, 0x02]);
-    expect(long.length).toBe(5 + 300);
+    expect(long.length).toBe(5 + 300 + 1);
+    expect(long[long.length - 1]).toBe(0);
+
+    // Golden frame with WireAppearance matching arena-protocol::tests::the_wire_layout_is_pinned.
+    const withLook = encodeHello("abcd", {
+      version: 1,
+      ancestry: "elf",
+      body: "male",
+      skinTone: "fair",
+      hairColor: "black",
+      eyes: "blue",
+      build: 0.5,
+      groups: { hair: "Hair_Long" },
+      variants: { Ranger: "green" },
+    });
+    const ascii = (s: string) => Array.from(s, (ch) => ch.charCodeAt(0));
+    expect([...withLook]).toEqual([
+      0,
+      6,
+      2,
+      0xab,
+      0xcd,
+      1,
+      3,
+      ...ascii("elf"),
+      4,
+      ...ascii("male"),
+      4,
+      ...ascii("fair"),
+      5,
+      ...ascii("black"),
+      4,
+      ...ascii("blue"),
+      50,
+      1,
+      4,
+      ...ascii("hair"),
+      9,
+      ...ascii("Hair_Long"),
+      1,
+      6,
+      ...ascii("Ranger"),
+      5,
+      ...ascii("green"),
+    ]);
+
+    // Malformed identifiers in appearance safely omit appearance rather than sending invalid wire frames.
+    expect([
+      ...encodeHello("abcd", {
+        version: 1,
+        ancestry: "../secret",
+        body: "male",
+        skinTone: "fair",
+        hairColor: "black",
+        eyes: "blue",
+        build: 0,
+        groups: {},
+        variants: {},
+      }),
+    ]).toEqual([0, 6, 2, 0xab, 0xcd, 0]);
   });
 
   it("reads Error frames with arena-protocol's code order and nothing else", () => {
@@ -265,6 +324,63 @@ describe("network link", () => {
     link.send(new Uint8Array([9]));
     expect(latest().sent.at(-1)).toEqual(new Uint8Array([9]));
     expect(link.state.get().phase).toBe("open");
+  });
+
+  it("locks the saved character appearance on join and sends it in Hello across reconnects", () => {
+    const looks: {
+      current: {
+        version: 1;
+        ancestry: string;
+        body: string;
+        skinTone: string;
+        hairColor: string;
+        eyes: string;
+        build: number;
+        groups: Record<string, string>;
+        variants: Record<string, string>;
+      };
+    } = {
+      current: {
+        version: 1,
+        ancestry: "elf",
+        body: "male",
+        skinTone: "fair",
+        hairColor: "black",
+        eyes: "blue",
+        build: 0.5,
+        groups: { hair: "Hair_Long" },
+        variants: { Ranger: "green" },
+      },
+    };
+    const sockets: FakeSocket[] = [];
+    const timers: { run: () => void; ms: number; id: number }[] = [];
+    const link = createLink({
+      createSocket: (url) => {
+        const s = new FakeSocket(url);
+        sockets.push(s);
+        return s;
+      },
+      now: () => NOW,
+      setTimer: (run, ms) => {
+        const id = timers.length + 1;
+        timers.push({ run, ms, id });
+        return id;
+      },
+      clearTimer: () => {},
+      tab: memory(),
+      device: memory(),
+      appearance: () => looks.current,
+    });
+    const initialLook = looks.current;
+    link.join(ticket);
+    sockets[0].open();
+    expect(sockets[0].sent).toEqual([encodeHello("ab01", initialLook)]);
+    // Changing the local appearance mid-match does not alter the locked look sent on reconnect.
+    looks.current = { ...initialLook, body: "female", hairColor: "auburn" };
+    sockets[0].drop();
+    timers.shift()?.run();
+    sockets[1].open();
+    expect(sockets[1].sent).toEqual([encodeHello("ab01", initialLook)]);
   });
 
   it("reconnects with backoff until a socket opens, then joins as a new generation", () => {
@@ -339,12 +455,15 @@ describe("network link", () => {
     link.join(ticket);
     latest().open();
     latest().receive([0, 1, 1]);
+    latest().receive([4, 2, 0, 0]);
+    latest().receive([4, 2, 1, 1]); // Replaces older queued Appearances.
     for (let index = 0; index < 600; index += 1) latest().receive([1, index & 0xff]);
     const [generation, ...frames] = link.read() as [number, ...Uint8Array[]];
     expect(generation).toBe(1);
     expect(frames).toHaveLength(512);
     expect([...frames[0]]).toEqual([0, 1, 1]);
-    expect([...frames[1]]).toEqual([1, 89]);
+    expect([...frames[1]]).toEqual([4, 2, 1, 1]);
+    expect([...frames[2]]).toEqual([1, 90]);
     expect([...frames[511]]).toEqual([1, 599 & 0xff]);
   });
 

@@ -3,8 +3,11 @@ import {
   defaultAppearance,
   parseAppearance,
   parseKits,
+  parseNetworkAppearances,
+  practiceAppearances,
   randomAppearance,
   renderSpec,
+  resolveRosterSpecs,
   selectKit,
   type Appearance,
   type Kit,
@@ -129,5 +132,44 @@ describe("character appearance", () => {
       expect(parseAppearance(look)).toEqual(look);
       expect(() => renderSpec(selectKit([humanKit(), elf], look)!, look)).not.toThrow();
     }
+  });
+
+  it("generates deterministic practice looks and validates networked looks against the local catalog", () => {
+    const kits = [humanKit(), humanKit("male"), elf];
+    const p1 = practiceAppearances(kits);
+    const p2 = practiceAppearances(kits);
+    expect(p1).toHaveLength(5);
+    expect(p1).toEqual(p2);
+
+    // Practice roster resolves actor 0 (local) + 5 opponent/teammate looks.
+    const practiceSpecs = resolveRosterSpecs(kits, defaultAppearance, p1, null);
+    expect(practiceSpecs).toHaveLength(6);
+    expect(practiceSpecs[0].kit.id).toBe("human-female");
+
+    // Networked appearances: invalid entries and unknown kits/parts safely fall back to catalog defaults.
+    const parsed = parseNetworkAppearances([
+      { ...defaultAppearance, body: "male" },
+      {
+        ...defaultAppearance,
+        ancestry: "unknown-race",
+        body: "female",
+        skinTone: "neon",
+        groups: { hair: "Nonexistent" },
+      },
+      "corrupt-entry",
+      null,
+    ]);
+    expect(parsed).toHaveLength(4);
+    expect(parsed?.[2]).toBeNull();
+    expect(parsed?.[3]).toBeNull();
+    expect(parseNetworkAppearances([defaultAppearance])).toBeNull(); // odd roster rejected
+
+    const netSpecs = resolveRosterSpecs(kits, defaultAppearance, p1, parsed);
+    expect(netSpecs).toHaveLength(4);
+    expect(netSpecs[0].kit.id).toBe("human-male");
+    // Unknown ancestry falls back to human-female; unknown hair/skin fall back to valid defaults.
+    expect(netSpecs[1].kit.id).toBe("human-female");
+    expect(netSpecs[2].kit.id).toBe("human-female");
+    expect(netSpecs[3].kit.id).toBe("human-female");
   });
 });

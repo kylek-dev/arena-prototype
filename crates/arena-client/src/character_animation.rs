@@ -92,7 +92,10 @@ const STRAFE_EXIT: f32 = 0.35;
 
 #[derive(Component)]
 pub(crate) struct Controller {
+    actor: usize,
     timing: Timing,
+    /// Per-kit animation graph node indices; empty falls back to `CharacterModel.nodes`.
+    nodes: Vec<AnimationNodeIndex>,
     previous: Option<Vec3>,
     tick: u64,
     pulse_cd: u32,
@@ -179,8 +182,14 @@ fn flight_phase(fighter: Combatant, overstep: f32) -> f32 {
 
 impl Controller {
     pub(crate) fn new(timing: Timing) -> Self {
+        Self::new_for(0, timing, Vec::new())
+    }
+
+    pub(crate) fn new_for(actor: usize, timing: Timing, nodes: Vec<AnimationNodeIndex>) -> Self {
         Self {
+            actor,
             timing,
+            nodes,
             previous: None,
             tick: 0,
             pulse_cd: 0,
@@ -317,23 +326,41 @@ pub(crate) fn animate(
         &mut AnimationTransitions,
     )>,
 ) {
-    let Some((_, transform)) = fighters.iter().find(|(f, _)| f.0 == 0) else {
-        return;
-    };
+    let mut transforms = [None::<Transform>; arena_protocol::MAX_FIGHTERS];
+    for (visual, transform) in &fighters {
+        if visual.0 < transforms.len() {
+            transforms[visual.0] = Some(*transform);
+        }
+    }
+    let roster = practice.arena.fighters();
     for (mut controller, mut player, mut transitions) in &mut players {
+        let actor = controller.actor;
+        let Some(&fighter) = roster.get(actor) else {
+            continue;
+        };
+        let Some(transform) = transforms.get(actor).copied().flatten() else {
+            continue;
+        };
         let playback = controller.step(Sample {
             position: transform.translation,
             rotation: transform.rotation,
             tick: practice.arena.tick(),
-            fighter: practice.arena.fighters()[0],
+            fighter,
             overstep: fixed.overstep_fraction(),
             dt: time.delta_secs(),
         });
+        let nodes = if controller.nodes.is_empty() {
+            &model.nodes
+        } else {
+            &controller.nodes
+        };
+        let Some(&index) = nodes.get(playback.clip as usize) else {
+            continue;
+        };
         if playback.reset {
             player.stop_all();
             *transitions = AnimationTransitions::new();
         }
-        let index = model.nodes[playback.clip as usize];
         let change = playback.reset
             || controller.current != Some(playback.clip)
             || (playback.clip == Clip::Cast && playback.cast_started);
@@ -345,7 +372,8 @@ pub(crate) fn animate(
                 .filter(|_| !playback.reset)
                 .zip(controller.current)
                 .and_then(|(cycle, from)| {
-                    let time = player.animation(model.nodes[from as usize])?.seek_time();
+                    let &from_node = nodes.get(from as usize)?;
+                    let time = player.animation(from_node)?.seek_time();
                     carried_seek(from, time, playback.clip, cycle)
                 });
             let active = transitions.play(
@@ -791,5 +819,80 @@ mod tests {
         assert!(!held.cast_started);
         let interrupted = controller.step(sample(Vec3::ZERO, 3));
         assert_eq!(interrupted.clip, Clip::Idle);
+    }
+
+    #[test]
+    fn multiple_fighters_animate_independently_from_their_own_transforms() {
+        let mut app = App::new();
+        let (_, nodes_a) =
+            AnimationGraph::from_clips(Clip::ALL.map(|_| Handle::<AnimationClip>::default()));
+        let (_, nodes_b) =
+            AnimationGraph::from_clips(Clip::ALL.map(|_| Handle::<AnimationClip>::default()));
+        app.insert_resource(crate::character::CharacterModel::ready(
+            &crate::character::QUATERNIUS_FEMALE,
+        ))
+        .init_resource::<Time>()
+        .init_resource::<Time<Fixed>>()
+        .insert_resource(crate::Practice::new(&arena_map::colosseum(), 1))
+        .add_systems(Update, animate);
+
+        let f0 = app
+            .world_mut()
+            .spawn((crate::FighterVisual(0), Transform::default()))
+            .id();
+        let f1 = app
+            .world_mut()
+            .spawn((crate::FighterVisual(1), Transform::default()))
+            .id();
+        let p0 = app
+            .world_mut()
+            .spawn((
+                Controller::new_for(
+                    0,
+                    crate::character::QUATERNIUS_FEMALE.timing,
+                    nodes_a.clone(),
+                ),
+                AnimationPlayer::default(),
+                AnimationTransitions::new(),
+            ))
+            .id();
+        let p1 = app
+            .world_mut()
+            .spawn((
+                Controller::new_for(
+                    1,
+                    crate::character::QUATERNIUS_FEMALE.timing,
+                    nodes_b.clone(),
+                ),
+                AnimationPlayer::default(),
+                AnimationTransitions::new(),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<Time>()
+            .advance_by(Duration::from_secs_f32(1.0 / 60.0));
+        app.world_mut().run_schedule(Update);
+        // Move ONLY actor 1 forward while actor 0 stays idle.
+        app.world_mut()
+            .get_mut::<Transform>(f1)
+            .unwrap()
+            .translation
+            .z = -0.05;
+        let _ = f0;
+        app.world_mut().run_schedule(Update);
+        assert_eq!(
+            app.world()
+                .get::<AnimationTransitions>(p0)
+                .unwrap()
+                .get_main_animation(),
+            Some(nodes_a[Clip::Idle as usize])
+        );
+        assert_eq!(
+            app.world()
+                .get::<AnimationTransitions>(p1)
+                .unwrap()
+                .get_main_animation(),
+            Some(nodes_b[Clip::Forward as usize])
+        );
     }
 }

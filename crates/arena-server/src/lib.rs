@@ -22,7 +22,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use arena_protocol::{
-    ClientMessage, ErrorCode, InputFrame, PROTOCOL_VERSION, ServerMessage, peek_hello_protocol,
+    ClientMessage, ErrorCode, InputFrame, PROTOCOL_VERSION, ServerMessage, WireAppearance,
+    peek_hello_protocol,
 };
 use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::{Arena, MAX_ROUND_TICKS};
@@ -94,6 +95,7 @@ enum Command {
     Attach {
         seat: usize,
         conn: ConnId,
+        appearance: Option<WireAppearance>,
         out: mpsc::Sender<Outbound>,
     },
     Input {
@@ -263,9 +265,14 @@ fn apply_command(
     command: Option<Command>,
 ) {
     let out = match command {
-        Some(Command::Attach { seat, conn, out }) => {
+        Some(Command::Attach {
+            seat,
+            conn,
+            appearance,
+            out,
+        }) => {
             insert_conn(conns, conn, out);
-            let out = session.attach(seat, conn);
+            let out = session.attach_with_appearance(seat, conn, appearance);
             log_attach(id, seat, conn, &out);
             out
         }
@@ -562,10 +569,14 @@ impl RateWindow {
 }
 
 /// Validates the first frame as a current-version `Hello` and returns its
-/// ticket bytes.
-pub fn read_hello(frame: &[u8]) -> Result<Vec<u8>, ErrorCode> {
+/// ticket bytes and optional appearance choice.
+pub fn read_hello(frame: &[u8]) -> Result<(Vec<u8>, Option<WireAppearance>), ErrorCode> {
     match ClientMessage::decode(frame) {
-        Ok(ClientMessage::Hello { protocol, ticket }) if protocol == PROTOCOL_VERSION => Ok(ticket),
+        Ok(ClientMessage::Hello {
+            protocol,
+            ticket,
+            appearance,
+        }) if protocol == PROTOCOL_VERSION => Ok((ticket, appearance)),
         Ok(ClientMessage::Hello { .. }) => Err(ErrorCode::VersionMismatch),
         Ok(_) => Err(ErrorCode::Malformed),
         Err(_) => match peek_hello_protocol(frame) {
@@ -632,8 +643,8 @@ async fn connection(mut socket: WebSocket, app: Arc<App>, _slot: OpenSlot) {
         Ok(Some(Err(code))) => return reject(&mut socket, &app, code).await,
         Ok(Some(Ok(frame))) => frame,
     };
-    let ticket = match read_hello(&frame) {
-        Ok(ticket) => ticket,
+    let (ticket, appearance) = match read_hello(&frame) {
+        Ok(hello) => hello,
         Err(code) => return reject(&mut socket, &app, code).await,
     };
     let claims = match app.config.key.verify(&ticket, unix_now()) {
@@ -656,6 +667,7 @@ async fn connection(mut socket: WebSocket, app: Arc<App>, _slot: OpenSlot) {
         .send(Command::Attach {
             seat,
             conn,
+            appearance,
             out: out_sender,
         })
         .await
@@ -847,10 +859,11 @@ mod tests {
             ClientMessage::Hello {
                 protocol,
                 ticket: vec![1, 2],
+                appearance: None,
             }
             .encode()
         };
-        assert_eq!(read_hello(&hello(PROTOCOL_VERSION)), Ok(vec![1, 2]));
+        assert_eq!(read_hello(&hello(PROTOCOL_VERSION)), Ok((vec![1, 2], None)));
         assert_eq!(
             read_hello(&hello(PROTOCOL_VERSION + 1)),
             Err(ErrorCode::VersionMismatch)

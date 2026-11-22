@@ -10,10 +10,12 @@
 // else is the engine's: it reads `[generation, ...frames]` each frame, sends
 // inputs and pings back, and reports the match status.
 
+import type { Appearance } from "../domain/appearance";
 import {
   backoffMs,
   encodeHello,
   endsLink,
+  isAppearances,
   isExpired,
   isWelcome,
   parseJoinFragment,
@@ -23,6 +25,13 @@ import {
   type LinkState,
   type MatchTicket,
 } from "../domain/network";
+import {
+  appearance,
+  beforeMatch,
+  customizerVisible,
+  enterArena,
+  remoteAppearances,
+} from "../state/appearance";
 import { createStore } from "../state/store";
 
 type SocketLike = {
@@ -45,6 +54,10 @@ export type LinkDeps = {
   tab: StorageLike | null;
   /** Per browser: remembers the last match for an offered rejoin. */
   device: StorageLike | null;
+  /** Optional saved look to lock on join and send in `Hello`. */
+  appearance?: () => Appearance | null;
+  /** Optional hook called synchronously whenever a match link ends or resets. */
+  onReset?: () => void;
 };
 
 const TAB_KEY = "arena.match";
@@ -80,6 +93,7 @@ export function createLink(deps: LinkDeps) {
     status: null,
   });
   let ticket: MatchTicket | null = null;
+  let lockedLook: Appearance | null = null;
   let socket: SocketLike | null = null;
   let generation = 0;
   let opened = 0;
@@ -113,6 +127,8 @@ export function createLink(deps: LinkDeps) {
     generation = 0;
     queue = [];
     ticket = null;
+    lockedLook = null;
+    deps.onReset?.();
     store(deps.tab, TAB_KEY, null);
     // The seat is gone for good: do not offer it again later. A seat taken
     // by another tab still exists, so it stays on offer ("Play here").
@@ -138,16 +154,21 @@ export function createLink(deps: LinkDeps) {
       generation = opened;
       // Frames from an older socket are stale once a new one is open.
       queue = [];
-      if (ticket) next.send(encodeHello(ticket.ticket));
+      if (ticket) next.send(encodeHello(ticket.ticket, lockedLook));
       update({ phase: "open", attempt: 0 });
     };
     next.onmessage = (event) => {
       if (!(event.data instanceof ArrayBuffer)) return;
       const frame = new Uint8Array(event.data);
       lastError = serverError(frame) ?? lastError;
+      if (isAppearances(frame)) {
+        // Only the newest per-seat appearances relay matters; replace any queued older copy.
+        const existing = queue.findIndex((queued) => isAppearances(queued));
+        if (existing >= 0) queue.splice(existing, 1);
+      }
       queue.push(frame);
       if (queue.length > MAX_QUEUED) {
-        const oldest = queue.findIndex((queued) => !isWelcome(queued));
+        const oldest = queue.findIndex((queued) => !isWelcome(queued) && !isAppearances(queued));
         queue.splice(Math.max(oldest, 0), 1);
       }
     };
@@ -175,6 +196,7 @@ export function createLink(deps: LinkDeps) {
     join(next: MatchTicket) {
       end(null);
       ticket = next;
+      lockedLook = deps.appearance?.() ?? null;
       store(deps.tab, TAB_KEY, next);
       store(deps.device, DEVICE_KEY, next);
       update({ phase: "connecting", attempt: 0, ended: null, status: null });
@@ -234,7 +256,10 @@ export function takeJoinFragment(win: Window = window) {
 export function installJoinLinks(link: Link, win: Window = window) {
   const onHash = () => {
     const ticket = takeJoinFragment(win);
-    if (ticket) link.join(ticket);
+    if (ticket) {
+      if (beforeMatch.get() || customizerVisible.get()) enterArena(() => {});
+      link.join(ticket);
+    }
   };
   win.addEventListener("hashchange", onHash);
   return () => win.removeEventListener("hashchange", onHash);
@@ -255,5 +280,7 @@ export function browserLink() {
     clearTimer: (id) => window.clearTimeout(id as number),
     tab: safe(() => window.sessionStorage),
     device: safe(() => window.localStorage),
+    appearance: () => appearance.get(),
+    onReset: () => remoteAppearances.set(null),
   });
 }

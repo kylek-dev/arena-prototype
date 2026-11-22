@@ -346,6 +346,7 @@ impl Humanoid {
     pub fn spawn(&self, parent: &mut ChildSpawnerCommands, meshes: &CharacterMeshes, actor: usize) {
         let mut root = parent.spawn((
             Name::new("Procedural humanoid"),
+            crate::character::FallbackActor(actor),
             Transform::from_scale(Vec3::new(
                 self.appearance.build,
                 self.appearance.height,

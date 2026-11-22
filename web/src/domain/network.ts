@@ -1,6 +1,7 @@
 // Network match identity and connection policy (ADR 0044, Phase 5).
 // Pure functions only: the socket lives in runtime/network.ts.
 import type { RoundResult } from "../bridge/snapshot";
+import type { Appearance } from "./appearance";
 import { roundResultLabel } from "./round-clock";
 
 /** A seat in one match: where to connect and the bearer ticket for it. */
@@ -147,7 +148,7 @@ export function endsLink(error: string | null) {
 // same bytes; everything else is decoded by the engine.
 
 /** Must match `arena_protocol::PROTOCOL_VERSION`. */
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 /** `ServerMessage::Error` codes in declaration order (`[3, index]`). */
 export const ERROR_CODES = [
   "VersionMismatch",
@@ -172,10 +173,75 @@ function varint(value: number): number[] {
   return bytes;
 }
 
-/** `ClientMessage::Hello { protocol, ticket }`: variant 0, then varints. */
-export function encodeHello(ticketHex: string, protocol = PROTOCOL_VERSION): Uint8Array {
+const WIRE_ID_RE = /^[A-Za-z0-9_-]{1,32}$/;
+const MAX_CLIENT_FRAME = 1024;
+const MAX_APPEARANCE_GROUPS = 10;
+const MAX_APPEARANCE_VARIANTS = 8;
+
+function encodeAsciiString(value: string): number[] {
+  const bytes = varint(value.length);
+  for (let i = 0; i < value.length; i += 1) bytes.push(value.charCodeAt(i));
+  return bytes;
+}
+
+function encodeWireAppearance(look: Appearance): number[] | null {
+  if (
+    !WIRE_ID_RE.test(look.ancestry) ||
+    !WIRE_ID_RE.test(look.body) ||
+    !WIRE_ID_RE.test(look.skinTone) ||
+    !WIRE_ID_RE.test(look.hairColor) ||
+    !WIRE_ID_RE.test(look.eyes)
+  ) {
+    return null;
+  }
+  const build = Number.isFinite(look.build)
+    ? Math.max(0, Math.min(100, Math.round(look.build * 100)))
+    : 0;
+  const groups = Object.entries(look.groups)
+    .filter(([k, v]) => typeof v === "string" && WIRE_ID_RE.test(k) && WIRE_ID_RE.test(v))
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .slice(0, MAX_APPEARANCE_GROUPS) as [string, string][];
+  const variants = Object.entries(look.variants)
+    .filter(([k, v]) => typeof v === "string" && WIRE_ID_RE.test(k) && WIRE_ID_RE.test(v))
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .slice(0, MAX_APPEARANCE_VARIANTS);
+  const out: number[] = [
+    ...encodeAsciiString(look.ancestry),
+    ...encodeAsciiString(look.body),
+    ...encodeAsciiString(look.skinTone),
+    ...encodeAsciiString(look.hairColor),
+    ...encodeAsciiString(look.eyes),
+    build,
+    ...varint(groups.length),
+  ];
+  for (const [k, v] of groups) {
+    out.push(...encodeAsciiString(k), ...encodeAsciiString(v));
+  }
+  out.push(...varint(variants.length));
+  for (const [k, v] of variants) {
+    out.push(...encodeAsciiString(k), ...encodeAsciiString(v));
+  }
+  return out;
+}
+
+/** `ClientMessage::Hello { protocol, ticket, appearance }`: variant 0, then varints + Option<WireAppearance>. */
+export function encodeHello(
+  ticketHex: string,
+  protocolOrAppearance: number | Appearance | null = PROTOCOL_VERSION,
+  protocolOverride?: number,
+): Uint8Array {
+  const appearance = typeof protocolOrAppearance === "object" ? protocolOrAppearance : null;
+  const protocol =
+    typeof protocolOrAppearance === "number"
+      ? protocolOrAppearance
+      : (protocolOverride ?? PROTOCOL_VERSION);
   const ticket = (ticketHex.match(/../g) ?? []).map((pair) => Number.parseInt(pair, 16));
-  return new Uint8Array([0, ...varint(protocol), ...varint(ticket.length), ...ticket]);
+  const prefix = [0, ...varint(protocol), ...varint(ticket.length), ...ticket];
+  const encodedLook = appearance ? encodeWireAppearance(appearance) : null;
+  if (encodedLook && prefix.length + 1 + encodedLook.length <= MAX_CLIENT_FRAME) {
+    return new Uint8Array([...prefix, 1, ...encodedLook]);
+  }
+  return new Uint8Array([...prefix, 0]);
 }
 
 /** The code of a `ServerMessage::Error` frame, or null for any other frame. */
@@ -185,7 +251,12 @@ export function serverError(frame: Uint8Array): string | null {
 
 /** Whether a frame is the server's `Welcome` (variant 0). */
 export function isWelcome(frame: Uint8Array) {
-  return frame[0] === 0;
+  return frame.length > 0 && frame[0] === 0;
+}
+
+/** Whether a frame is the server's `Appearances` relay (variant 4). */
+export function isAppearances(frame: Uint8Array) {
+  return frame.length > 0 && frame[0] === 4;
 }
 
 /** Delay before reconnect attempt `attempt` (0-based): 0.5 s doubling to 8 s. */

@@ -112,6 +112,7 @@ struct Net {
     /// Seconds since start, read once per frame for the fixed tick.
     now: f64,
     last_status: Option<(f64, network::Phase)>,
+    last_appearances_version: u64,
 }
 #[derive(Resource)]
 struct Orbit {
@@ -165,6 +166,7 @@ pub fn run() {
         .init_resource::<animation::Settings>()
         .init_resource::<appearance::Desired>()
         .init_resource::<appearance::Preview>()
+        .init_resource::<character::KitCache>()
         .add_plugins(
             DefaultPlugins
                 .set(AssetPlugin {
@@ -295,12 +297,13 @@ fn setup(
     practice: Res<Practice>,
 ) {
     let model_id = platform::character_model();
-    // A kit-built player starts from the browser's saved appearance, so the
-    // first model loaded is already the right one.
-    let kit = (model_id.as_deref() == Some(appearance::KITS_MODEL))
+    // Kit-built clients start from the browser's saved appearance roster so the
+    // player's first model loaded is already the right kit.
+    let initial_roster = (model_id.as_deref() == Some(appearance::KITS_MODEL))
         .then(platform::read_appearance)
         .flatten()
-        .and_then(|(_, json)| appearance::Spec::parse(&json));
+        .and_then(|(_, json)| appearance::parse_roster(&json));
+    let kit = initial_roster.as_ref().and_then(|roster| roster[0].clone());
     let mut character = character::CharacterModel::load(
         match &kit {
             Some(spec) => Some(appearance::kit_profile(&spec.kit)),
@@ -310,6 +313,10 @@ fn setup(
         &mut graphs,
     );
     character.kit = kit.is_some();
+    let mut kit_cache = character::KitCache::default();
+    if character.kit {
+        kit_cache.insert_from_model(&character);
+    }
     let kit_instance = kit.as_ref().map(|spec| spec.kit.path.clone());
     let player_scene = character.scene.clone();
     let player_transform = character
@@ -317,6 +324,7 @@ fn setup(
         .map(character::Profile::transform)
         .unwrap_or_default();
     commands.insert_resource(character);
+    commands.insert_resource(kit_cache);
     // The venue itself is spawned (and respawned after edits) from the
     // active map by `rebuild_venue`; its materials and textures load once.
     let venue_assets = venue::VenueAssets::new(&mut meshes, &mut materials, &mut images);
@@ -350,6 +358,7 @@ fn setup(
             .with_children(|parent| {
                 let mut body = parent.spawn((
                     animation::Animator::new(index),
+                    appearance::FighterBody(index),
                     Transform::default(),
                     Visibility::default(),
                 ));
@@ -374,7 +383,7 @@ fn setup(
                             Visibility::Hidden,
                         ));
                         if let Some(path) = &kit_instance {
-                            root.insert(appearance::KitInstance::new(path));
+                            root.insert(appearance::KitInstance::new_for(0, path));
                         }
                         root.observe(character::on_ready);
                     }
@@ -838,6 +847,8 @@ fn network_receive(
     let Some(feed) = platform::read_network() else {
         if net.session.take().is_some() {
             net.last_status = None;
+            net.last_appearances_version = 0;
+            platform::network_appearances("null");
             restart(&mut practice, &mut orbit, &map.0, 1);
             practice.feedback = "Left the match · practice round";
         }
@@ -854,10 +865,17 @@ fn network_receive(
     let Net {
         session,
         last_status,
+        last_appearances_version,
         ..
     } = &mut *net;
     let session = session.get_or_insert_default();
     let rejections = session.receive(&feed, now, &map.0.layout);
+    let appearances_version = session.appearances_version();
+    if appearances_version != *last_appearances_version {
+        let json = session.appearances_json();
+        platform::network_appearances(&json);
+        *last_appearances_version = appearances_version;
+    }
     // A new match starts facing where the server placed this player: out of
     // its starting room. The camera starts behind it.
     if let Some(heading) = session.take_initial_heading() {
@@ -1509,7 +1527,7 @@ mod platform {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen(
-        inline_js = "export function arena_character() { const id = globalThis.arenaShell.characterModel; return typeof id === 'string' ? id : undefined; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(tag) { globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); } export function arena_map() { return globalThis.arenaShell.readMap?.() ?? []; } export function arena_map_status(json) { globalThis.arenaShell.onMapStatus?.(JSON.parse(json)); } export function arena_appearance() { return globalThis.arenaShell.readAppearance?.() ?? []; } export function arena_preview() { return globalThis.arenaShell.readPreview?.() ?? []; } export function arena_network() { return globalThis.arenaShell.readNetwork?.() ?? []; } export function arena_network_send(frame) { globalThis.arenaShell.sendNetwork?.(frame.slice()); } export function arena_network_status(json) { globalThis.arenaShell.onNetwork?.(JSON.parse(json)); }"
+        inline_js = "export function arena_character() { const id = globalThis.arenaShell.characterModel; return typeof id === 'string' ? id : undefined; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(tag) { globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); } export function arena_map() { return globalThis.arenaShell.readMap?.() ?? []; } export function arena_map_status(json) { globalThis.arenaShell.onMapStatus?.(JSON.parse(json)); } export function arena_appearance() { return globalThis.arenaShell.readAppearance?.() ?? []; } export function arena_preview() { return globalThis.arenaShell.readPreview?.() ?? []; } export function arena_network() { return globalThis.arenaShell.readNetwork?.() ?? []; } export function arena_network_send(frame) { globalThis.arenaShell.sendNetwork?.(frame.slice()); } export function arena_network_status(json) { globalThis.arenaShell.onNetwork?.(JSON.parse(json)); } export function arena_network_appearances(json) { globalThis.arenaShell.onAppearances?.(JSON.parse(json)); }"
     )]
     extern "C" {
         fn arena_character() -> Option<String>;
@@ -1527,6 +1545,7 @@ mod platform {
         fn arena_network() -> js_sys::Array;
         fn arena_network_send(frame: &[u8]);
         fn arena_network_status(json: &str);
+        fn arena_network_appearances(json: &str);
     }
     /// The runtime's match feed as `[generation, ...frames]`; `None` when
     /// there is no match (older shells send nothing).
@@ -1548,6 +1567,9 @@ mod platform {
     }
     pub fn network_status(json: &str) {
         arena_network_status(json);
+    }
+    pub fn network_appearances(json: &str) {
+        arena_network_appearances(json);
     }
     /// The player's appearance spec as `[revision, json]`; older shells send none.
     pub fn read_appearance() -> Option<(f64, String)> {
@@ -2573,6 +2595,7 @@ mod platform {
         std::sync::Mutex::new(None);
     pub static SENT: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
     pub static NETWORK_STATUS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    pub static NETWORK_APPEARANCES: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
     pub fn read_network() -> Option<super::network::Feed> {
         NETWORK
             .lock()
@@ -2588,6 +2611,9 @@ mod platform {
     }
     pub fn network_status(json: &str) {
         *NETWORK_STATUS.lock().unwrap() = Some(json.to_owned());
+    }
+    pub fn network_appearances(json: &str) {
+        *NETWORK_APPEARANCES.lock().unwrap() = Some(json.to_owned());
     }
     pub fn read_map() -> Option<(f64, String)> {
         MAP.lock().unwrap().clone()
