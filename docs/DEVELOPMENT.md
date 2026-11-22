@@ -109,6 +109,8 @@ Open http://localhost:8000. Keep that terminal running; Ctrl+C stops the server.
 - Input/domain/DOM watch loop: `npm run test:watch`; dependency-free legacy input loop: `npm run test:input:watch`.
 - Rules-only test loop: `cargo test -p arena-sim`.
 - Scripted original headless example: `cargo run -p arena-headless`.
+- Headless combat telemetry (deterministic zero-network Arena batches with duration, draw rate, LOS blocks, spell/interrupt counts, and `Arena::advance` tick compute time):
+  `cargo run --release -p arena-headless -- --matches 20 --team-size 2 --json` (pass `--per-match` for individual match records and `--map assets/maps/colosseum.json` for custom layouts).
 
 ### Match server (no browser client yet)
 
@@ -144,7 +146,7 @@ cargo run --release -p arena-bot -- --matches 167 --team-size 3 --seconds 30 --r
 cargo run --release -p arena-bot -- --rtt 100 --reconnect-every 5 --seconds 20   # drop out and rejoin
 ```
 
-`./scripts/server-smoke.sh` runs the same short (about 5 s) server-and-bots smoke test that CI runs (after `cargo build -p arena-server -p arena-bot`). `--json` prints the report as JSON. The bot exits non-zero on any error, unexpected close, state hash mismatch or failed rejoin. See the [load baseline](research/match-server-load.md).
+`./scripts/server-smoke.sh` runs the same short (about 5 s) server-and-bots smoke test that CI runs (after `cargo build -p arena-server -p arena-bot`). `--json` prints the report as JSON, including deduplicated `outcomes` (wins and draw rate), `round_duration`, `combat` (LOS blocks, hits, damage, heals, casts, interrupts), and `server_metrics.tick_mean_microseconds`. The bot exits non-zero on any error, unexpected close, state hash mismatch or failed rejoin. See the [load baseline](research/match-server-load.md).
 
 ## VS Code tasks
 

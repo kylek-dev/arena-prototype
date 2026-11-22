@@ -7,6 +7,7 @@ rust-version.workspace = true
 description = "Bot players and load tester for the match server, with simulated latency and jitter."
 
 [dependencies]
+arena-headless = { path = "../arena-headless" }
 arena-protocol = { path = "../arena-protocol" }
 arena-sim = { path = "../arena-sim" }
 arena-map = { path = "../arena-map" }

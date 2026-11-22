@@ -234,6 +234,7 @@ dependencies = [
 name = "arena-bot"
 version = "0.1.0"
 dependencies = [
+ "arena-headless",
  "arena-map",
  "arena-protocol",
  "arena-server",
@@ -263,7 +264,10 @@ dependencies = [
 name = "arena-headless"
 version = "0.1.0"
 dependencies = [
+ "arena-map",
  "arena-sim",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

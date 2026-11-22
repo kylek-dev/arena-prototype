@@ -68,28 +68,7 @@ impl Link {
     }
 }
 
-/// Small deterministic generator (xorshift64*), so runs can be repeated.
-#[derive(Clone, Debug)]
-pub struct Rng(u64);
-impl Rng {
-    pub fn new(seed: u64) -> Self {
-        // Never zero, and different seeds diverge immediately.
-        Self(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
-    }
-    pub fn next_u64(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-    /// Uniform in `[0, 1)`.
-    pub fn unit(&mut self) -> f64 {
-        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
-    }
-    pub fn below(&mut self, limit: Duration) -> Duration {
-        limit.mul_f64(self.unit())
-    }
-}
+pub use arena_headless::policy::Rng;
 
 pub struct DelayLine<T> {
     sender: mpsc::UnboundedSender<(Instant, T)>,

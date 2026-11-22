@@ -7,16 +7,14 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
+use arena_headless::telemetry::CombatMetrics;
 use arena_protocol::prediction::{Pacer, Predictor, TickRate};
 use arena_protocol::{
-    ClientMessage, ErrorCode, FighterState, InputFrame, PROTOCOL_VERSION, ServerMessage, Snapshot,
-    WireAction, WireSpell,
+    ClientMessage, ErrorCode, FighterState, InputFrame, MAX_FIGHTERS, PROTOCOL_VERSION,
+    ServerMessage, Snapshot, WireAction, WireEvent, WireSpell,
 };
-use arena_sim::arena::{ATTACK_RANGE, ActorInput, MAX_ROUND_TICKS};
+use arena_sim::arena::{ActorInput, CastAction, Combatant, MAX_ROUND_TICKS, Position};
 use arena_sim::map::Layout;
-use arena_sim::spells::{
-    PULSE_COST, QUELL_COST, QUELL_RANGE, RIFT_BOLT_COST, RIFT_BOLT_RANGE, SpellId,
-};
 use futures_util::{SinkExt, StreamExt};
 use tokio::time::Instant;
 use tokio_tungstenite::connect_async_with_config;
@@ -73,6 +71,10 @@ pub struct SeatStats {
     /// Reconciliations that moved the prediction, and by how much (mm).
     pub corrections: u64,
     pub correction_mm: Vec<u32>,
+    /// Private rejection events received by this seat (e.g. `LineOfSight`, `OutOfRange`).
+    pub rejections: CombatMetrics,
+    /// Next event tick eligible for per-seat rejection recording (deduplicates reconnects).
+    pub(crate) next_rejection_tick: u64,
     pub round_finished: bool,
 }
 
@@ -254,11 +256,13 @@ async fn session(
                                     stats.input_latency.record(now - at);
                                 }
                             }
+                            seat.shared
+                                .observe_snapshot(seat.match_id, tick_rate, &snapshot);
                             if snapshot.tick > 0 {
-                                seat.shared.check_hash(seat.match_id, snapshot.tick, snapshot.hash);
                                 frame_ticks.push(snapshot.tick);
                                 pacer.observe(snapshot.queued);
                             }
+                            record_seat_rejections(stats, &snapshot.events);
                             if let Some(result) = snapshot.result
                                 && !result_matches(
                                     result,
@@ -393,6 +397,25 @@ async fn session(
     end
 }
 
+/// Records this seat's private `WireEvent::Rejected` events while ignoring any
+/// event tick already observed prior to a reconnect. Multiple rejections on the
+/// same tick within a single snapshot are all counted.
+pub(crate) fn record_seat_rejections(stats: &mut SeatStats, events: &[arena_protocol::TickEvent]) {
+    let mut max_event_tick: Option<u64> = None;
+    for tick_event in events {
+        if tick_event.tick < stats.next_rejection_tick {
+            continue;
+        }
+        max_event_tick = Some(max_event_tick.map_or(tick_event.tick, |m| m.max(tick_event.tick)));
+        if let WireEvent::Rejected(reason) = tick_event.event {
+            stats.rejections.record_rejection(reason.into());
+        }
+    }
+    if let Some(max_tick) = max_event_tick {
+        stats.next_rejection_tick = max_tick.saturating_add(1);
+    }
+}
+
 /// Whether a round result agrees with the fighters' health and authoritative
 /// round clock: a win needs the whole losing team down, a mutual-elimination
 /// draw needs every fighter down, and a time-limit draw needs both teams
@@ -424,145 +447,34 @@ pub fn result_matches(
     }
 }
 
-/// standing enemy, cast timed spells, interrupt casting enemies, face them, and
-/// jump now and then. The server judges everything; the bot is often wrong on purpose.
+/// Bot combat decision delegated to the canonical `arena_headless::policy::decide`.
+/// The server judges everything; the bot omits LOS checks on purpose.
 pub fn decide(actor: usize, snapshot: &Snapshot, rng: &mut Rng) -> InputFrame {
-    let Some(me) = snapshot.fighters.get(actor) else {
-        return InputFrame::default();
-    };
-    let target = snapshot
-        .fighters
-        .iter()
-        .enumerate()
-        .filter(|(index, fighter)| index % 2 != actor % 2 && fighter.health > 0)
-        .min_by_key(|(_, fighter)| {
-            let (dx, dz) = (i64::from(fighter.x - me.x), i64::from(fighter.z - me.z));
-            dx * dx + dz * dz
-        });
-    let Some((index, enemy)) = target else {
-        return InputFrame::default();
-    };
-    let (dx, dz) = (f64::from(enemy.x - me.x), f64::from(enemy.z - me.z));
-    let distance = dx.hypot(dz).max(1.0);
-    // Planar heading: 0 faces −Z, counter-clockwise from above.
-    let yaw = (-dx).atan2(-dz);
-    let facing = ((yaw / std::f64::consts::TAU).rem_euclid(1.0) * 65536.0).round() as u32 as u16;
-
-    // While actively casting, stand still so timed casts complete cleanly.
-    if me.active_cast.is_some() {
-        return InputFrame {
-            seq: 0,
-            movement: [0, 0],
-            facing,
-            jump: false,
-            action: WireAction::None,
-        };
-    }
-
-    let (ux, uz) = (dx / distance, dz / distance);
-    let close = distance < f64::from(ATTACK_RANGE) * 0.8;
-    let movement = if close {
-        // Orbit/strafe around the target instead of standing frozen during GCDs or lockouts.
-        let sign = if (actor + (snapshot.tick / 45) as usize).is_multiple_of(2) {
-            1.0
-        } else {
-            -1.0
-        };
-        let (mut sx, mut sz) = (-uz * sign, ux * sign);
-        if distance < 2_500.0 {
-            sx -= ux * 0.35;
-            sz -= uz * 0.35;
-            let len = sx.hypot(sz).max(1e-6);
-            sx /= len;
-            sz /= len;
-        }
-        [(sx * 1000.0) as i16, (sz * 1000.0) as i16]
-    } else {
-        // Wander a little so bots round pillars instead of sticking to them.
-        let wobble = (rng.unit() - 0.5) * 0.6;
-        let (sin, cos) = wobble.sin_cos();
-        let (mx, mz) = (ux * cos - uz * sin, ux * sin + uz * cos);
-        [(mx * 1000.0) as i16, (mz * 1000.0) as i16]
-    };
-
-    // Interrupt a casting enemy within Quell range after a human-like reaction window
-    // (~0.45 s into the cast) so cast bars are readable instead of getting kicked on tick 1.
-    const QUELL_REACTION_TICKS: u32 = 14;
-    let casting_enemy = snapshot
-        .fighters
-        .iter()
-        .enumerate()
-        .find(|(idx, fighter)| {
-            idx % 2 != actor % 2
-                && fighter.health > 0
-                && fighter.active_cast.is_some_and(|cast| {
-                    cast.total_ticks.saturating_sub(cast.remaining_ticks) >= QUELL_REACTION_TICKS
-                })
-                && {
-                    let ex = i64::from(fighter.x) - i64::from(me.x);
-                    let ez = i64::from(fighter.z) - i64::from(me.z);
-                    ex * ex + ez * ez <= i64::from(QUELL_RANGE).pow(2)
-                }
-        })
-        .map(|(idx, _)| idx as u8);
-    if let Some(victim) = casting_enemy
-        && me.lockout_remaining == 0
-        && me.cooldowns[SpellId::Quell.index()] == 0
-        && me.resource >= QUELL_COST
+    let count = snapshot.fighters.len().min(MAX_FIGHTERS);
+    let mut fighters = [Combatant::new(Position { x: 0, z: 0 }, 0); MAX_FIGHTERS];
+    for (dst, src) in fighters[..count]
+        .iter_mut()
+        .zip(&snapshot.fighters[..count])
     {
-        return InputFrame {
-            seq: 0,
-            movement,
-            facing,
-            jump: false,
-            action: WireAction::Cast {
-                spell: WireSpell::Quell,
-                target: Some(victim),
-            },
-        };
+        *dst = src.combatant();
     }
-
-    // Stagger Rift Bolt casts across mid-range and combat so bots weave visible timed casts
-    // without all planting in lockstep on the exact tick they cross 12 m.
-    let can_bolt = distance <= f64::from(RIFT_BOLT_RANGE)
-        && me.height == 0
-        && me.lockout_remaining == 0
-        && me.gcd_remaining == 0
-        && me.cooldowns[SpellId::RiftBolt.index()] == 0
-        && me.resource >= RIFT_BOLT_COST;
-    let bolt_chance = if distance > f64::from(ATTACK_RANGE) {
-        0.06
-    } else {
-        0.04
+    let input = arena_headless::policy::decide(actor, snapshot.tick, &fighters[..count], rng);
+    let movement = input.movement.map_or([0, 0], |axes| [axes.x, axes.z]);
+    let facing = input.facing.unwrap_or(0);
+    let action = match input.action {
+        None => WireAction::None,
+        Some(CastAction::Cancel) => WireAction::CancelCast,
+        Some(CastAction::Cast { spell, target }) => WireAction::Cast {
+            spell: spell.into(),
+            target: target.and_then(|t| u8::try_from(t).ok()),
+        },
     };
-    if can_bolt && rng.unit() < bolt_chance {
-        return InputFrame {
-            seq: 0,
-            movement: [0, 0],
-            facing,
-            jump: false,
-            action: WireAction::Cast {
-                spell: WireSpell::RiftBolt,
-                target: Some(index as u8),
-            },
-        };
-    }
-
-    let can_pulse = distance <= f64::from(ATTACK_RANGE)
-        && me.lockout_remaining == 0
-        && me.gcd_remaining == 0
-        && me.cooldowns[SpellId::Pulse.index()] == 0
-        && me.resource >= PULSE_COST;
     InputFrame {
         seq: 0,
         movement,
         facing,
-        jump: rng.unit() < 1.0 / 90.0,
-        action: if can_pulse {
-            InputFrame::pulse(index as u8)
-        } else {
-            WireAction::None
-        },
+        jump: input.jump,
+        action,
     }
 }
 
@@ -570,6 +482,7 @@ pub fn decide(actor: usize, snapshot: &Snapshot, rng: &mut Rng) -> InputFrame {
 mod tests {
     use super::*;
     use arena_protocol::{FighterState, WireCast};
+    use arena_sim::spells::SpellId;
 
     fn fighter(x: i32, z: i32, health: u16) -> FighterState {
         FighterState {
@@ -775,5 +688,68 @@ mod tests {
             100,
             100
         ));
+    }
+
+    #[test]
+    fn seat_rejections_count_multiple_same_tick_events_and_deduplicate_replays() {
+        use arena_protocol::{TickEvent, WireRejection};
+        let mut stats = SeatStats::default();
+        // Two rejections on tick 5 in one snapshot must both be counted.
+        record_seat_rejections(
+            &mut stats,
+            &[
+                TickEvent {
+                    tick: 5,
+                    event: WireEvent::Rejected(WireRejection::LineOfSight),
+                },
+                TickEvent {
+                    tick: 5,
+                    event: WireEvent::Rejected(WireRejection::OutOfRange),
+                },
+            ],
+        );
+        assert_eq!(stats.rejections.los_blocks, 1);
+        assert_eq!(stats.rejections.los_rejections, 1);
+        assert_eq!(stats.rejections.out_of_range_blocks, 1);
+        assert_eq!(stats.rejections.rejections_total, 2);
+        assert_eq!(stats.next_rejection_tick, 6);
+
+        // Replayed events for tick <= 5 (e.g. across reconnect) are ignored.
+        record_seat_rejections(
+            &mut stats,
+            &[TickEvent {
+                tick: 5,
+                event: WireEvent::Rejected(WireRejection::LineOfSight),
+            }],
+        );
+        assert_eq!(stats.rejections.rejections_total, 2);
+
+        // Non-rejection events advance `next_rejection_tick` without adding rejections.
+        record_seat_rejections(
+            &mut stats,
+            &[TickEvent {
+                tick: 8,
+                event: WireEvent::Jumped { actor: 0 },
+            }],
+        );
+        assert_eq!(stats.rejections.rejections_total, 2);
+        assert_eq!(stats.next_rejection_tick, 9);
+
+        // Stale tick 7 is now ignored; fresh tick 9 is counted.
+        record_seat_rejections(
+            &mut stats,
+            &[
+                TickEvent {
+                    tick: 7,
+                    event: WireEvent::Rejected(WireRejection::Silenced),
+                },
+                TickEvent {
+                    tick: 9,
+                    event: WireEvent::Rejected(WireRejection::LineOfSight),
+                },
+            ],
+        );
+        assert_eq!(stats.rejections.los_blocks, 2);
+        assert_eq!(stats.rejections.rejections_total, 3);
     }
 }
