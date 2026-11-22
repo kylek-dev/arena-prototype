@@ -24,6 +24,57 @@ export function modeLabel(mode: QueueMode) {
 }
 /** Players per party at most: one full team. */
 export const MAX_PARTY = 3;
+/** Spectator slots reserved in a private custom lobby. */
+export const MAX_LOBBY_SPECTATORS = 4;
+/** Current schema version for server-enforced custom match settings. */
+export const MATCH_SETTINGS_VERSION = 1;
+/** Allowed custom match round time limits (seconds). */
+export const ALLOWED_ROUND_SECONDS = [300, 600, 900, 1200] as const;
+export type AllowedRoundSeconds = (typeof ALLOWED_ROUND_SECONDS)[number];
+
+export type CustomMapId = "colosseum";
+export const CUSTOM_MAPS: readonly { id: CustomMapId; label: string }[] = [
+  { id: "colosseum", label: "Colosseum" },
+];
+export function isCustomMapId(value: unknown): value is CustomMapId {
+  return CUSTOM_MAPS.some((map) => map.id === value);
+}
+export function mapLabel(map: CustomMapId) {
+  return CUSTOM_MAPS.find((entry) => entry.id === map)?.label ?? map;
+}
+export function isAllowedRoundSeconds(value: unknown): value is AllowedRoundSeconds {
+  return typeof value === "number" && ALLOWED_ROUND_SECONDS.includes(value as AllowedRoundSeconds);
+}
+export function formatRoundLimit(seconds: number) {
+  return `${Math.round(seconds / 60)} min`;
+}
+
+export type LobbySlot = "team_a" | "team_b" | "spectator";
+export function isLobbySlot(value: unknown): value is LobbySlot {
+  return value === "team_a" || value === "team_b" || value === "spectator";
+}
+
+export type MatchSettings = {
+  version: typeof MATCH_SETTINGS_VERSION;
+  map: CustomMapId;
+  roundSeconds: AllowedRoundSeconds;
+};
+export type LobbyMember = {
+  id: number;
+  slot: LobbySlot;
+  host: boolean;
+  you: boolean;
+};
+export type CustomLobby = {
+  code: string;
+  mode: QueueMode;
+  settings: MatchSettings;
+  spectatorSlots: number;
+  you: number;
+  host: boolean;
+  canStart: boolean;
+  members: LobbyMember[];
+};
 
 export type Party = {
   /** Invite code; `null` for a player on their own. */
@@ -54,6 +105,9 @@ export type QueueMessage =
   | { type: "stopped"; reason: string }
   | { type: "refused"; code: string }
   | { type: "match"; mode: QueueMode; matchId: string; seat: number; ticket: MatchTicket }
+  | { type: "lobby"; lobby: CustomLobby }
+  | { type: "lobby_left"; reason: "left" | "kicked" }
+  | { type: "lobby_started"; mode: QueueMode; matchId: string }
   | { type: "error"; code: string };
 
 const count = (value: unknown): value is number =>
@@ -129,6 +183,63 @@ export function parseQueueMessage(text: unknown): QueueMessage | null {
       if (typeof v.match_id !== "string" || !/^[0-9a-f]{16}$/.test(v.match_id)) return null;
       return { type: "match", mode: v.mode, matchId: v.match_id, seat: v.seat, ticket };
     }
+    case "lobby": {
+      const code = typeof v.code === "string" ? normalizeCode(v.code) : null;
+      if (!code || !isQueueMode(v.mode)) return null;
+      const rawSettings = v.settings;
+      if (!rawSettings || typeof rawSettings !== "object") return null;
+      const s = rawSettings as Record<string, unknown>;
+      if (
+        s.version !== MATCH_SETTINGS_VERSION ||
+        !isCustomMapId(s.map) ||
+        !isAllowedRoundSeconds(s.round_seconds)
+      )
+        return null;
+      if (!count(v.spectator_slots) || v.spectator_slots > MAX_LOBBY_SPECTATORS) return null;
+      if (!count(v.you) || v.you < 1 || typeof v.host !== "boolean") return null;
+      if (typeof v.can_start !== "boolean" || !Array.isArray(v.members)) return null;
+      const maxMembers = 2 * MAX_PARTY + MAX_LOBBY_SPECTATORS;
+      if (v.members.length < 1 || v.members.length > maxMembers) return null;
+      const members: LobbyMember[] = [];
+      for (const entry of v.members) {
+        if (!entry || typeof entry !== "object") return null;
+        const m = entry as Record<string, unknown>;
+        if (
+          !count(m.id) ||
+          m.id < 1 ||
+          !isLobbySlot(m.slot) ||
+          typeof m.host !== "boolean" ||
+          typeof m.you !== "boolean"
+        )
+          return null;
+        members.push({ id: m.id, slot: m.slot, host: m.host, you: m.you });
+      }
+      return {
+        type: "lobby",
+        lobby: {
+          code,
+          mode: v.mode,
+          settings: {
+            version: MATCH_SETTINGS_VERSION,
+            map: s.map,
+            roundSeconds: s.round_seconds,
+          },
+          spectatorSlots: v.spectator_slots,
+          you: v.you,
+          host: v.host,
+          canStart: v.can_start,
+          members,
+        },
+      };
+    }
+    case "lobby_left":
+      return v.reason === "left" || v.reason === "kicked"
+        ? { type: "lobby_left", reason: v.reason }
+        : null;
+    case "lobby_started":
+      if (!isQueueMode(v.mode)) return null;
+      if (typeof v.match_id !== "string" || !/^[0-9a-f]{16}$/.test(v.match_id)) return null;
+      return { type: "lobby_started", mode: v.mode, matchId: v.match_id };
     case "error":
       return word(v.code) ? { type: "error", code: v.code } : null;
     default:
@@ -146,6 +257,25 @@ export const requests = {
   createParty: () => JSON.stringify({ type: "create_party" }),
   joinParty: (code: string) => JSON.stringify({ type: "join_party", code }),
   leaveParty: () => JSON.stringify({ type: "leave_party" }),
+  createLobby: (mode: QueueMode = "1v1") => JSON.stringify({ type: "create_lobby", mode }),
+  joinLobby: (code: string) => JSON.stringify({ type: "join_lobby", code }),
+  leaveLobby: () => JSON.stringify({ type: "leave_lobby" }),
+  setLobbySlot: (slot: LobbySlot) => JSON.stringify({ type: "set_lobby_slot", slot }),
+  moveLobbyMember: (member: number, slot: LobbySlot) =>
+    JSON.stringify({ type: "move_lobby_member", member, slot }),
+  kickLobbyMember: (member: number) => JSON.stringify({ type: "kick_lobby_member", member }),
+  transferLobbyHost: (member: number) => JSON.stringify({ type: "transfer_lobby_host", member }),
+  setLobbyMode: (mode: QueueMode) => JSON.stringify({ type: "set_lobby_mode", mode }),
+  setLobbySettings: (settings: MatchSettings) =>
+    JSON.stringify({
+      type: "set_lobby_settings",
+      settings: {
+        version: settings.version,
+        map: settings.map,
+        round_seconds: settings.roundSeconds,
+      },
+    }),
+  startLobby: () => JSON.stringify({ type: "start_lobby" }),
 };
 
 /** The door's queue endpoint on the page's own origin. */
@@ -160,6 +290,15 @@ export function inviteLink(location: Pick<Location, "origin" | "pathname">, code
 /** The invite code in a page fragment such as `#party=K7P2QX`. */
 export function parsePartyFragment(hash: string) {
   const code = new URLSearchParams(hash.replace(/^#/, "")).get("party");
+  return code ? normalizeCode(code) : null;
+}
+/** The game page with a custom lobby invite in the fragment, which no server sees. */
+export function customInviteLink(location: Pick<Location, "origin" | "pathname">, code: string) {
+  return `${location.origin}${location.pathname}#custom=${code}`;
+}
+/** The custom lobby code in a page fragment such as `#custom=K7P2QX`. */
+export function parseCustomFragment(hash: string) {
+  const code = new URLSearchParams(hash.replace(/^#/, "")).get("custom");
   return code ? normalizeCode(code) : null;
 }
 
@@ -185,6 +324,8 @@ export type QueueState = {
   connection: "offline" | "connecting" | "online" | "ended";
   /** This player's party once connected; on their own it has no code. */
   party: Party | null;
+  /** This player's private custom lobby, or `null` when not in one. */
+  lobby: CustomLobby | null;
   /** The party's search: none, waiting in a queue, or a match to accept. */
   phase: "idle" | "queued" | "ready";
   mode: QueueMode | null;
@@ -203,6 +344,7 @@ export type QueueState = {
 export const IDLE_QUEUE: QueueState = {
   connection: "offline",
   party: null,
+  lobby: null,
   phase: "idle",
   mode: null,
   since: null,
@@ -252,6 +394,19 @@ const NOTICES: Record<string, string> = {
   party_full: "That party is full (3 players).",
   party_busy: "That party is in a queue right now. Try again when it stops.",
   no_such_party: "No party has that code. Check it, or ask for a new invite.",
+  in_lobby: "Leave your custom lobby before queueing or joining a party.",
+  no_such_lobby: "No custom lobby has that code. Check it, or ask the host for a new invite.",
+  lobby_full: "That custom lobby is full.",
+  not_host: "Only the lobby host can do that.",
+  slot_full: "That team or spectator slot is already full.",
+  lobby_not_full: "Fill both teams before starting the match.",
+  lobby_too_big: "Too many players are in the lobby for that team size.",
+  no_such_member: "That player is no longer in the lobby.",
+  invalid_settings: "Those match settings are not supported by the server.",
+  kicked: "You were removed from the custom lobby by the host.",
+  rate_limited: "Too many matches started recently. Wait a moment and try again.",
+  lobby_started:
+    "The custom match has started. Live spectating is coming soon; you remain in the lobby for the rematch.",
 };
 export function endedText(code: string | null) {
   return ENDED[code ?? ""] ?? "Online play stopped.";
@@ -260,22 +415,58 @@ export function noticeText(code: string | null) {
   return code ? (NOTICES[code] ?? null) : null;
 }
 
-/** Why the party left the queue: worth telling wherever the player is. */
+/** Why the party left the queue or lobby: worth telling wherever the player is. */
 export const LEFT_QUEUE_NOTICES: ReadonlySet<string> = new Set([
   "member_left",
   "declined",
   "not_accepted",
   "member_declined",
   "member_not_accepted",
+  "kicked",
 ]);
 
-/** Whether the floating queue status bar occupies the top-center slot. */
-export function isQueueBarVisible(state: QueueState): boolean {
-  return (
+/** Team size for a queue or custom match mode. */
+export function teamSizeForMode(mode: QueueMode) {
+  return QUEUE_MODES.find((entry) => entry.id === mode)?.maxParty ?? 1;
+}
+
+/** Plain-language summary of why a custom lobby can or cannot start. */
+export function lobbyReadinessText(lobby: CustomLobby) {
+  const size = teamSizeForMode(lobby.mode);
+  const teamA = lobby.members.filter((m) => m.slot === "team_a").length;
+  const teamB = lobby.members.filter((m) => m.slot === "team_b").length;
+  if (teamA === size && teamB === size) {
+    return lobby.host
+      ? "Both teams are full. Ready to start."
+      : "Both teams are full. Waiting for the host to start.";
+  }
+  const needA = Math.max(0, size - teamA);
+  const needB = Math.max(0, size - teamB);
+  if (needA > 0 && needB > 0) {
+    return `Need ${needA} more on Team A and ${needB} more on Team B to start.`;
+  }
+  if (needA > 0) {
+    return `Need ${needA} more on Team A to start.`;
+  }
+  return `Need ${needB} more on Team B to start.`;
+}
+
+export type QueueBarContext = {
+  lobbyOpen?: boolean;
+  inMatch?: boolean;
+  scoreboardOpen?: boolean;
+};
+
+/** Whether the floating queue/custom-lobby status bar occupies the top-center slot. */
+export function isQueueBarVisible(state: QueueState, ctx?: QueueBarContext): boolean {
+  if (
     state.connection === "ended" ||
     (state.phase === "queued" && !!state.mode) ||
     (state.phase === "idle" && !!state.notice && LEFT_QUEUE_NOTICES.has(state.notice))
-  );
+  ) {
+    return true;
+  }
+  return Boolean(state.lobby && !ctx?.lobbyOpen && !ctx?.inMatch && !ctx?.scoreboardOpen);
 }
 
 /** What the queue bar shows while searching, or `null` when not. */
@@ -315,6 +506,7 @@ export const READY_MS = 15_000;
 
 /** Why `mode` cannot be queued for now, or `null` when it can. */
 export function queueBlocked(state: QueueState, mode: QueueMode) {
+  if (state.lobby) return "Leave your custom lobby before joining a public queue.";
   const party = state.party;
   if (party && !party.leader) return "Only the party leader can start a search.";
   const limit = QUEUE_MODES.find((entry) => entry.id === mode)?.maxParty ?? 1;

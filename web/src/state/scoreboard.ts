@@ -6,7 +6,7 @@ import {
   type ScoreboardRow,
 } from "../domain/scoreboard";
 import { pendingBinding } from "./binding-capture";
-import { customizing, scoreboardVisible, setPanel } from "./session";
+import { customLobbyVisible, customizing, scoreboardVisible, setPanel } from "./session";
 import { createStore } from "./store";
 
 /** Retained post-match scoreboard (stays visible after the server sends MatchOver). */
@@ -54,6 +54,7 @@ function closeTransientModes() {
   setPanel(null);
   pendingBinding.set(null);
   customizing.set(false);
+  customLobbyVisible.set(false);
 }
 
 export function setPostMatchScoreboard(board: MatchScoreboard | null) {

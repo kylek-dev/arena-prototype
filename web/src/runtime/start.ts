@@ -14,7 +14,7 @@ import {
   remoteAppearances,
 } from "../state/appearance";
 import { observeCastResult } from "./cast-feedback";
-import { engine, error, focus, nameplateScene } from "../state/session";
+import { customLobbyVisible, engine, error, focus, nameplateScene } from "../state/session";
 import { reconcileFocus } from "../domain/units/selection";
 import { installPointer } from "./pointer";
 import { installUnitHover } from "./unit-hover";
@@ -47,6 +47,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
   // screen if the player is still there.
   const queue = browserQueue((ticket) => {
     clearPostMatchScoreboard();
+    customLobbyVisible.set(false);
     if (beforeMatch.get() || customizerVisible.get()) enterArena(() => {});
     link.join(ticket);
   });
@@ -129,6 +130,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     networkLink.set(null);
     remoteAppearances.set(null);
     clearPostMatchScoreboard();
+    customLobbyVisible.set(false);
     stopFrameTiming();
     router.dispose();
     pointer.dispose();

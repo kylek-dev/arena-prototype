@@ -1,12 +1,7 @@
 import { Button } from "@radix-ui/themes";
 import { useEffect, useState } from "react";
-import {
-  IDLE_QUEUE,
-  isQueueBarVisible,
-  modeLabel,
-  noticeText,
-  queueBlocked,
-} from "../../domain/matchmaking";
+import { IDLE_QUEUE, modeLabel, noticeText, queueBlocked } from "../../domain/matchmaking";
+import { useQueueBarVisible } from "../queue/QueueBar";
 import type { LinkState } from "../../domain/network";
 import {
   DEFAULT_SCOREBOARD_SORT,
@@ -28,7 +23,7 @@ import {
   postMatchScoreboard,
   syncPostMatchScoreboard,
 } from "../../state/scoreboard";
-import { engine, error } from "../../state/session";
+import { customLobbyVisible, engine, error } from "../../state/session";
 import { createStore, useStore } from "../../state/store";
 
 const NO_QUEUE = createStore(IDLE_QUEUE);
@@ -239,7 +234,7 @@ export function Scoreboard() {
   const linkState = useStore(link?.state ?? NO_LINK, (s) => s);
   const queue = useStore(matchQueue, (q) => q);
   const queueState = useStore(queue?.state ?? NO_QUEUE, (s) => s);
-  const queueVisible = isQueueBarVisible(queueState);
+  const queueVisible = useQueueBarVisible();
   const [queuePending, setQueuePending] = useState(false);
 
   useEffect(() => {
@@ -262,21 +257,24 @@ export function Scoreboard() {
 
   if (!board || fatalError) return null;
 
+  const inCustomLobby = queueState.lobby !== null;
   const targetMode = scoreboardQueueMode(board) ?? queueState.mode;
   const blocked = targetMode ? queueBlocked(queueState, targetMode) : null;
   const searching = queueState.phase === "queued" || queueState.phase === "ready";
   const connectingQueue = queuePending || queueState.connection === "connecting";
   const refusalNotice = queueState.phase === "idle" ? noticeText(queueState.notice) : null;
-  const queueLabel =
-    queueState.phase === "ready"
+  const queueLabel = inCustomLobby
+    ? "Return to lobby"
+    : queueState.phase === "ready"
       ? "Match ready"
       : queueState.phase === "queued" && queueState.mode
         ? `In ${modeLabel(queueState.mode)} queue`
         : connectingQueue
           ? "Queueing…"
           : "Queue again";
-  const queueHint =
-    queueState.phase === "ready"
+  const queueHint = inCustomLobby
+    ? `Your custom lobby (${queueState.lobby?.code}) is still open for a rematch.`
+    : queueState.phase === "ready"
       ? "Your next match is ready."
       : queueState.phase === "queued" && queueState.mode
         ? `Searching for a ${modeLabel(queueState.mode)} match…`
@@ -289,6 +287,12 @@ export function Scoreboard() {
   };
 
   const onQueueAgain = () => {
+    if (inCustomLobby) {
+      dismissPostMatchScoreboard();
+      if (link && linkState.phase !== "idle") link.leave();
+      customLobbyVisible.set(true);
+      return;
+    }
     if (!queue || !targetMode || blocked || searching || connectingQueue) return;
     setQueuePending(true);
     if (link && (linkState.phase === "ended" || linkState.status?.phase === "finished")) {
@@ -305,8 +309,8 @@ export function Scoreboard() {
       onLeave={onLeave}
       onQueueAgain={onQueueAgain}
       queueAction={{
-        visible: queue !== null && targetMode !== null,
-        disabled: Boolean(blocked || searching || connectingQueue),
+        visible: inCustomLobby || (queue !== null && targetMode !== null),
+        disabled: !inCustomLobby && Boolean(blocked || searching || connectingQueue),
         label: queueLabel,
         hint: queueHint,
       }}

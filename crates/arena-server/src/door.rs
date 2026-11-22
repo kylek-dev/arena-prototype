@@ -90,6 +90,7 @@ struct DoorMetrics {
     /// Players in a queue or ready check right now.
     queued: AtomicU64,
     queue_matches: AtomicU64,
+    custom_matches: AtomicU64,
 }
 
 struct Door {
@@ -248,6 +249,11 @@ async fn render_metrics(State(door): State<Arc<Door>>) -> String {
             "door_queue_matches_total",
             "Matches formed from the queues.",
             &door.metrics.queue_matches,
+        ),
+        (
+            "door_custom_matches_total",
+            "Matches started from private custom lobbies.",
+            &door.metrics.custom_matches,
         ),
         (
             "door_matches_issued_total",

@@ -11,7 +11,9 @@ import {
   type QueueMode,
 } from "../../domain/matchmaking";
 import type { Queue } from "../../runtime/matchmaking";
+import { customizerVisible } from "../../state/appearance";
 import { matchQueue } from "../../state/network";
+import { customLobbyVisible, setPanel } from "../../state/session";
 import { createStore, useStore } from "../../state/store";
 import "./play-online.css";
 
@@ -22,6 +24,9 @@ const REFUSALS = new Set([
   "party_full",
   "party_busy",
   "no_such_party",
+  "in_lobby",
+  "no_such_lobby",
+  "lobby_full",
 ]);
 
 function InviteLink({ code }: { code: string }) {
@@ -92,18 +97,61 @@ function JoinParty({ queue }: { queue: Queue }) {
   );
 }
 
-/** Party and queue controls: invite or join friends, then search. */
+function JoinLobby({ queue }: { queue: Queue }) {
+  const [open, setOpen] = useState(false);
+  const [code, setCode] = useState("");
+  if (!open)
+    return (
+      <Button size="1" variant="surface" color="gray" onClick={() => setOpen(true)}>
+        Join custom lobby
+      </Button>
+    );
+  const join = () => {
+    if (queue.joinLobby(code)) {
+      setOpen(false);
+      setCode("");
+    }
+  };
+  return (
+    <div className="party-join">
+      <input
+        value={code}
+        maxLength={12}
+        placeholder="Code"
+        aria-label="Custom lobby code"
+        autoComplete="off"
+        spellCheck={false}
+        onChange={(event) => setCode(event.target.value.toUpperCase())}
+        onKeyDown={(event) => event.key === "Enter" && join()}
+      />
+      <Button size="1" onClick={join} disabled={!code.trim()}>
+        Join
+      </Button>
+      <Button size="1" variant="ghost" color="gray" onClick={() => setOpen(false)}>
+        Cancel
+      </Button>
+    </div>
+  );
+}
+
+/** Party, public queue and private custom match controls. */
 export function PlayOnline({ onQueue }: { onQueue?: () => void }) {
   const queue = useStore(matchQueue, (q) => q);
   const state = useStore(queue?.state ?? NO_QUEUE, (s) => s);
   if (!queue) return null;
   const party = state.party?.code ? state.party : null;
+  const lobby = state.lobby;
   const searching = state.phase !== "idle";
   // Answers to this panel's own requests; the queue bar tells the rest.
   const notice = REFUSALS.has(state.notice ?? "") ? noticeText(state.notice) : null;
   const start = (mode: QueueMode) => {
     queue.queue(mode);
     onQueue?.();
+  };
+  const openLobby = () => {
+    setPanel(null);
+    customizerVisible.set(false);
+    customLobbyVisible.set(true);
   };
   return (
     <section className="stack play-online" aria-labelledby="play-online-heading">
@@ -118,84 +166,130 @@ export function PlayOnline({ onQueue }: { onQueue?: () => void }) {
           </Button>
         </div>
       )}
-      <div className="party" role="group" aria-label="Party">
-        {party ? (
-          <>
-            <Text size="1">
-              Party <strong className="party-code">{party.code}</strong> · {party.members} of 3 ·{" "}
-              {party.leader ? "you lead" : "a friend leads"}
-            </Text>
-            <div className="party-actions">
-              {party.code && <InviteLink code={party.code} />}
-              <Button
-                size="1"
-                variant="soft"
-                color="gray"
-                disabled={searching}
-                onClick={() => queue.leaveParty()}
-              >
-                Leave party
-              </Button>
-            </div>
-          </>
-        ) : (
-          <>
-            <Text size="1" color="gray">
-              Queue alone, or invite friends to play on your team.
-            </Text>
-            <div className="party-actions">
-              <Button
-                size="1"
-                variant="surface"
-                disabled={searching}
-                onClick={() => queue.createParty()}
-              >
-                Invite friends
-              </Button>
-              {!searching && <JoinParty queue={queue} />}
-            </div>
-          </>
-        )}
-      </div>
+      {!lobby && (
+        <div className="party" role="group" aria-label="Party">
+          {party ? (
+            <>
+              <Text size="1">
+                Party <strong className="party-code">{party.code}</strong> · {party.members} of 3 ·{" "}
+                {party.leader ? "you lead" : "a friend leads"}
+              </Text>
+              <div className="party-actions">
+                {party.code && <InviteLink code={party.code} />}
+                <Button
+                  size="1"
+                  variant="soft"
+                  color="gray"
+                  disabled={searching}
+                  onClick={() => queue.leaveParty()}
+                >
+                  Leave party
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <Text size="1" color="gray">
+                Queue alone, or invite friends to play on your team.
+              </Text>
+              <div className="party-actions">
+                <Button
+                  size="1"
+                  variant="surface"
+                  disabled={searching}
+                  onClick={() => queue.createParty()}
+                >
+                  Invite friends
+                </Button>
+                {!searching && <JoinParty queue={queue} />}
+              </div>
+            </>
+          )}
+        </div>
+      )}
       {notice && (
         <Text size="1" className="play-online-notice" role="status">
           {notice}
         </Text>
       )}
-      {searching && state.mode ? (
-        <div className="stack">
-          <Text size="1" color="gray">
-            {state.phase === "ready"
-              ? "Your match is ready: accept it in the window."
-              : `In the ${modeLabel(state.mode)} queue. The bar at the top shows your wait; you can keep practicing or customizing meanwhile.`}
+      {lobby ? (
+        <div className="party" role="group" aria-label="Custom match">
+          <Text size="1">
+            Custom lobby <strong className="party-code">{lobby.code}</strong> ·{" "}
+            {modeLabel(lobby.mode)} · {lobby.members.length}{" "}
+            {lobby.members.length === 1 ? "player" : "players"}
           </Text>
-          {state.phase === "queued" && (
-            <Button variant="soft" color="gray" onClick={() => queue.cancel()}>
-              Leave queue
+          <div className="party-actions">
+            <Button size="1" onClick={openLobby}>
+              Open lobby
             </Button>
-          )}
+            <Button
+              size="1"
+              variant="soft"
+              color="gray"
+              onClick={() => {
+                customLobbyVisible.set(false);
+                queue.leaveLobby();
+              }}
+            >
+              Leave lobby
+            </Button>
+          </div>
         </div>
-      ) : party && !party.leader ? (
-        <Text size="1" color="gray">
-          The party leader chooses the queue.
-        </Text>
       ) : (
-        <div className="queue-modes">
-          {QUEUE_MODES.map((mode) => {
-            const blocked = queueBlocked(state, mode.id);
-            return (
+        <>
+          {searching && state.mode ? (
+            <div className="stack">
+              <Text size="1" color="gray">
+                {state.phase === "ready"
+                  ? "Your match is ready: accept it in the window."
+                  : `In the ${modeLabel(state.mode)} queue. The bar at the top shows your wait; you can keep practicing or customizing meanwhile.`}
+              </Text>
+              {state.phase === "queued" && (
+                <Button variant="soft" color="gray" onClick={() => queue.cancel()}>
+                  Leave queue
+                </Button>
+              )}
+            </div>
+          ) : party && !party.leader ? (
+            <Text size="1" color="gray">
+              The party leader chooses the queue.
+            </Text>
+          ) : (
+            <div className="queue-modes">
+              {QUEUE_MODES.map((mode) => {
+                const blocked = queueBlocked(state, mode.id);
+                return (
+                  <Button
+                    key={mode.id}
+                    variant="surface"
+                    disabled={!!blocked}
+                    title={blocked ?? mode.hint}
+                    onClick={() => start(mode.id)}
+                  >
+                    {mode.label}
+                  </Button>
+                );
+              })}
+            </div>
+          )}
+          <div className="party" role="group" aria-label="Custom match">
+            <Text size="1" color="gray">
+              Private match with friends: pick teams, size and round limit.
+            </Text>
+            <div className="party-actions">
               <Button
-                key={mode.id}
+                size="1"
                 variant="surface"
-                disabled={!!blocked}
-                title={blocked ?? mode.hint}
-                onClick={() => start(mode.id)}
+                disabled={searching}
+                onClick={() => queue.createLobby("1v1")}
               >
-                {mode.label}
+                Host custom match
               </Button>
-            );
-          })}
-        </div>
+              {!searching && <JoinLobby queue={queue} />}
+            </div>
+          </div>
+        </>
       )}
     </section>
   );

@@ -2,14 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   IDLE_QUEUE,
   QUEUE_MODES,
+  customInviteLink,
   formatExpected,
+  formatRoundLimit,
   formatWait,
   guestId,
   inviteLink,
   isGuestId,
   isQueueBarVisible,
+  lobbyReadinessText,
   noticeText,
   normalizeCode,
+  parseCustomFragment,
   parsePartyFragment,
   parseQueueMessage,
   queueBlocked,
@@ -17,6 +21,7 @@ import {
   queueUrl,
   readyStatus,
   requests,
+  type CustomLobby,
   type QueueState,
 } from "../../web/src/domain/matchmaking";
 
@@ -193,5 +198,98 @@ describe("queue wording", () => {
     expect(isQueueBarVisible(at({ phase: "idle", notice: "declined" }))).toBe(true);
     expect(isQueueBarVisible(at({ phase: "idle", notice: "cancelled" }))).toBe(false);
     expect(isQueueBarVisible(at({ phase: "ready", mode: "2v2" }))).toBe(false);
+    expect(isQueueBarVisible(at({ phase: "idle", notice: "kicked" }))).toBe(true);
+  });
+});
+
+describe("custom lobbies", () => {
+  const LOBBY_WIRE = {
+    type: "lobby",
+    code: "M9Q3RT",
+    mode: "2v2",
+    settings: { version: 1, map: "colosseum", round_seconds: 600 },
+    spectator_slots: 4,
+    you: 1,
+    host: true,
+    can_start: false,
+    members: [
+      { id: 1, slot: "team_a", host: true, you: true },
+      { id: 2, slot: "team_b", host: false, you: false },
+    ],
+  };
+
+  it("parses valid custom lobby messages and rejects malformed settings or slots", () => {
+    const parsed = parseQueueMessage(JSON.stringify(LOBBY_WIRE));
+    expect(parsed).toEqual({
+      type: "lobby",
+      lobby: {
+        code: "M9Q3RT",
+        mode: "2v2",
+        settings: { version: 1, map: "colosseum", roundSeconds: 600 },
+        spectatorSlots: 4,
+        you: 1,
+        host: true,
+        canStart: false,
+        members: [
+          { id: 1, slot: "team_a", host: true, you: true },
+          { id: 2, slot: "team_b", host: false, you: false },
+        ],
+      },
+    });
+    expect(parseQueueMessage('{"type":"lobby_left","reason":"kicked"}')).toEqual({
+      type: "lobby_left",
+      reason: "kicked",
+    });
+    expect(
+      parseQueueMessage('{"type":"lobby_started","mode":"1v1","match_id":"0123456789abcdef"}'),
+    ).toEqual({
+      type: "lobby_started",
+      mode: "1v1",
+      matchId: "0123456789abcdef",
+    });
+    for (const bad of [
+      { ...LOBBY_WIRE, settings: { version: 2, map: "colosseum", round_seconds: 600 } },
+      { ...LOBBY_WIRE, settings: { version: 1, map: "../hack", round_seconds: 600 } },
+      { ...LOBBY_WIRE, settings: { version: 1, map: "colosseum", round_seconds: 123 } },
+      { ...LOBBY_WIRE, members: [] },
+      { ...LOBBY_WIRE, members: [{ id: 1, slot: "team_c", host: true, you: true }] },
+      { type: "lobby_left", reason: "other" },
+    ]) {
+      expect(parseQueueMessage(JSON.stringify(bad))).toBeNull();
+    }
+  });
+
+  it("formats custom invite links, requests, readiness, and blocks public queues while in a lobby", () => {
+    const link = customInviteLink({ origin: "https://arena.example.com", pathname: "/" }, "M9Q3RT");
+    expect(link).toBe("https://arena.example.com/#custom=M9Q3RT");
+    expect(parseCustomFragment("#custom=m9q3rt")).toBe("M9Q3RT");
+    expect(parseCustomFragment("#custom=000000")).toBeNull();
+    expect(formatRoundLimit(300)).toBe("5 min");
+    expect(
+      JSON.parse(requests.setLobbySettings({ version: 1, map: "colosseum", roundSeconds: 300 })),
+    ).toEqual({
+      type: "set_lobby_settings",
+      settings: { version: 1, map: "colosseum", round_seconds: 300 },
+    });
+
+    const lobby: CustomLobby = {
+      code: "M9Q3RT",
+      mode: "1v1",
+      settings: { version: 1, map: "colosseum", roundSeconds: 600 },
+      spectatorSlots: 4,
+      you: 1,
+      host: true,
+      canStart: false,
+      members: [{ id: 1, slot: "team_a", host: true, you: true }],
+    };
+    expect(lobbyReadinessText(lobby)).toBe("Need 1 more on Team B to start.");
+    expect(
+      lobbyReadinessText({
+        ...lobby,
+        canStart: true,
+        members: [...lobby.members, { id: 2, slot: "team_b", host: false, you: false }],
+      }),
+    ).toBe("Both teams are full. Ready to start.");
+    expect(queueBlocked({ ...IDLE_QUEUE, lobby }, "1v1")).toContain("custom lobby");
   });
 });

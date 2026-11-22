@@ -35,12 +35,15 @@ export const customizing = createStore(false);
 export const prematch = createStore(false);
 // Post-match scoreboard modal retained locally after the match ends.
 export const scoreboardVisible = createStore(false);
+// Private custom match lobby modal.
+export const customLobbyVisible = createStore(false);
 export function blocksGameplay() {
   const mode = interaction.get();
   return (
     customizing.get() ||
     prematch.get() ||
     scoreboardVisible.get() ||
+    customLobbyVisible.get() ||
     !!mode.capture ||
     mode.quick ||
     mode.layout ||

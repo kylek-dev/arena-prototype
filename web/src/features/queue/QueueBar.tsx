@@ -4,19 +4,42 @@ import {
   LEFT_QUEUE_NOTICES,
   endedText,
   isQueueBarVisible,
+  modeLabel,
   noticeText,
   queueStatus,
 } from "../../domain/matchmaking";
+import type { LinkState } from "../../domain/network";
 import type { Queue } from "../../runtime/matchmaking";
-import { matchQueue } from "../../state/network";
+import { customizerVisible } from "../../state/appearance";
+import { matchQueue, networkLink } from "../../state/network";
+import { customLobbyVisible, scoreboardVisible, setPanel } from "../../state/session";
 import { createStore, useStore } from "../../state/store";
 import { useClock } from "./useClock";
 import "./queue.css";
 
 const NO_QUEUE = createStore(IDLE_QUEUE);
+const NO_LINK = createStore<LinkState>({ phase: "idle", attempt: 0, ended: null, status: null });
+
+/** Canonical top-center visibility check shared by QueueBar and HUD elements using `.below-queue`. */
+export function useQueueBarVisible(): boolean {
+  const queue = useStore(matchQueue, (q) => q);
+  const lobbyOpen = useStore(customLobbyVisible, (v) => v);
+  const scoreboardOpen = useStore(scoreboardVisible, (v) => v);
+  const link = useStore(networkLink, (l) => l);
+  const linkPhase = useStore(link?.state ?? NO_LINK, (s) => s.phase);
+  const inMatch = linkPhase !== "idle" && linkPhase !== "ended";
+  return useStore(queue?.state ?? NO_QUEUE, (state) =>
+    isQueueBarVisible(state, { lobbyOpen, inMatch, scoreboardOpen }),
+  );
+}
 
 function Bar({ queue }: { queue: Queue }) {
   const state = useStore(queue.state, (s) => s);
+  const lobbyOpen = useStore(customLobbyVisible, (v) => v);
+  const scoreboardOpen = useStore(scoreboardVisible, (v) => v);
+  const link = useStore(networkLink, (l) => l);
+  const linkPhase = useStore(link?.state ?? NO_LINK, (s) => s.phase);
+  const inMatch = linkPhase !== "idle" && linkPhase !== "ended";
   const now = useClock(state.phase === "queued", queue.now);
   const status = queueStatus(state, now);
   if (state.connection === "ended")
@@ -52,6 +75,33 @@ function Bar({ queue }: { queue: Queue }) {
         </Button>
       </div>
     );
+  if (state.lobby && !lobbyOpen && !inMatch && !scoreboardOpen)
+    return (
+      <div className="queue-bar" role="status" aria-label="Custom lobby">
+        <div className="queue-bar-body">
+          <div className="queue-bar-head">
+            <strong>
+              Custom lobby · {state.lobby.code} ({modeLabel(state.lobby.mode)})
+            </strong>
+          </div>
+          <div className="queue-bar-detail">
+            {state.lobby.members.length} {state.lobby.members.length === 1 ? "player" : "players"}{" "}
+            in lobby
+          </div>
+        </div>
+        <Button
+          size="1"
+          variant="soft"
+          onClick={() => {
+            setPanel(null);
+            customizerVisible.set(false);
+            customLobbyVisible.set(true);
+          }}
+        >
+          Open lobby
+        </Button>
+      </div>
+    );
   if (state.phase === "idle" && state.notice && LEFT_QUEUE_NOTICES.has(state.notice))
     return (
       <div className="queue-bar warning" role="status">
@@ -64,11 +114,10 @@ function Bar({ queue }: { queue: Queue }) {
   return null;
 }
 
-/** The queue at a glance: which queue, time waited, expected wait and
- * players queued, with Cancel; or why the search ended. Shown on the home
+/** The queue (or minimized custom lobby) at a glance: shown on the home
  * screen and in the arena alike. */
 export function QueueBar() {
   const queue = useStore(matchQueue, (q) => q);
-  const visible = useStore(queue?.state ?? NO_QUEUE, isQueueBarVisible);
+  const visible = useQueueBarVisible();
   return queue && visible ? <Bar queue={queue} /> : null;
 }

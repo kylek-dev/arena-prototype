@@ -10,10 +10,13 @@ import {
   guestId,
   isGuestId,
   normalizeCode,
+  parseCustomFragment,
   parsePartyFragment,
   parseQueueMessage,
   queueUrl,
   requests,
+  type LobbySlot,
+  type MatchSettings,
   type QueueMode,
   type QueueState,
 } from "../domain/matchmaking";
@@ -159,6 +162,18 @@ export function createQueue(deps: QueueDeps) {
         update({ phase: "idle", since: null, readyCheck: null, notice: null });
         deps.onMatch(message.ticket);
         break;
+      case "lobby":
+        update({ lobby: message.lobby, notice: null });
+        break;
+      case "lobby_left":
+        update({
+          lobby: null,
+          notice: message.reason === "kicked" ? "kicked" : null,
+        });
+        break;
+      case "lobby_started":
+        update({ notice: "lobby_started" });
+        break;
       case "error":
         end(message.code);
         break;
@@ -207,6 +222,46 @@ export function createQueue(deps: QueueDeps) {
     leaveParty() {
       request(requests.leaveParty());
     },
+    /** Hosts a new private custom lobby. */
+    createLobby(mode: QueueMode = "1v1") {
+      update({ notice: null });
+      request(requests.createLobby(mode));
+    },
+    /** Joins a friend's private custom lobby; `false` when the code cannot be one. */
+    joinLobby(text: string) {
+      const code = normalizeCode(text);
+      if (!code) {
+        update({ notice: "no_such_lobby" });
+        return false;
+      }
+      update({ notice: null });
+      request(requests.joinLobby(code));
+      return true;
+    },
+    leaveLobby() {
+      request(requests.leaveLobby());
+    },
+    setLobbySlot(slot: LobbySlot) {
+      request(requests.setLobbySlot(slot));
+    },
+    moveLobbyMember(member: number, slot: LobbySlot) {
+      request(requests.moveLobbyMember(member, slot));
+    },
+    kickLobbyMember(member: number) {
+      request(requests.kickLobbyMember(member));
+    },
+    transferLobbyHost(member: number) {
+      request(requests.transferLobbyHost(member));
+    },
+    setLobbyMode(mode: QueueMode) {
+      request(requests.setLobbyMode(mode));
+    },
+    setLobbySettings(settings: MatchSettings) {
+      request(requests.setLobbySettings(settings));
+    },
+    startLobby() {
+      request(requests.startLobby());
+    },
     /** Clears the notice, or an ended connection's message. */
     dismiss() {
       const current = state.get();
@@ -237,14 +292,20 @@ export function browserQueue(onMatch: (ticket: MatchTicket) => void) {
   });
 }
 
-/** Joins the party in an invite link (`#party=K7P2QX`), on load and when
- * a link is pasted into an open tab, and removes it from the address bar. */
+/** Joins the party (`#party=K7P2QX`) or private custom lobby (`#custom=K7P2QX`)
+ * in an invite link on load and when pasted into an open tab, removing the
+ * fragment from the address bar immediately. */
 export function installPartyLinks(queue: Queue, win: Window = window) {
   const take = () => {
-    const code = parsePartyFragment(win.location.hash);
-    if (!win.location.hash.includes("party=")) return;
+    const hash = win.location.hash;
+    const hasParty = hash.includes("party=");
+    const hasCustom = hash.includes("custom=");
+    if (!hasParty && !hasCustom) return;
+    const partyCode = hasParty ? parsePartyFragment(hash) : null;
+    const customCode = hasCustom ? parseCustomFragment(hash) : null;
     win.history.replaceState(null, "", win.location.pathname + win.location.search);
-    if (code) queue.joinParty(code);
+    if (customCode) queue.joinLobby(customCode);
+    else if (partyCode) queue.joinParty(partyCode);
   };
   take();
   win.addEventListener("hashchange", take);

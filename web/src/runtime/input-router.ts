@@ -13,6 +13,7 @@ import {
   customizing,
   prematch,
   scoreboardVisible,
+  customLobbyVisible,
 } from "../state/session";
 import { isEngineReady } from "../domain/abilities/catalog";
 import { dispatch, input } from "./commands";
@@ -82,6 +83,10 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
     cancel();
     focusPolicy.restore();
   });
+  const unCustomLobby = customLobbyVisible.subscribe(() => {
+    cancel();
+    focusPolicy.restore();
+  });
   const unDrag = draggingSpell.subscribe(() => {
     cancel();
     focusPolicy.restore();
@@ -118,6 +123,16 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
       }
       e.preventDefault();
       if (!e.repeat) acceptBinding(destination.action, destination.entry, c);
+      return;
+    }
+    if (
+      customLobbyVisible.get() &&
+      !scoreboardVisible.get() &&
+      e.code === "Escape" &&
+      !mode.panel
+    ) {
+      e.preventDefault();
+      customLobbyVisible.set(false);
       return;
     }
     if (customizing.get() && e.code === "Escape" && !mode.panel) {
@@ -199,6 +214,7 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
       unCustomize();
       unPrematch();
       unScoreboard();
+      unCustomLobby();
       unReset();
       unEngine();
       cancel();
