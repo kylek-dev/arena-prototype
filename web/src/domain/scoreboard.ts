@@ -1,6 +1,12 @@
 // Pure end-of-match scoreboard domain helpers (no DOM, React, or engine dependencies).
 import type { RosterEntry, RoundResult } from "../bridge/snapshot";
-import { formatRoundClock, roundResultLabel } from "./round-clock";
+import type { QueueMode } from "./matchmaking";
+import {
+  formatRoundClock,
+  roundResultLabel,
+  roundResultTone,
+  type RoundResultTone,
+} from "./round-clock";
 import type { UnitTag } from "./units/tags";
 
 /** Authoritative per-seat totals published in the engine snapshot (in local actor order). */
@@ -235,4 +241,18 @@ export function buildMatchScoreboard(source: ScoreboardSource): MatchScoreboard 
     allyTotals: sumTeamTotals(allies),
     opponentTotals: sumTeamTotals(opponents),
   };
+}
+
+/** Infers the matchmaking queue mode (`1v1`, `2v2`, `3v3`) from the scoreboard's team size. */
+export function scoreboardQueueMode(board: MatchScoreboard): QueueMode | null {
+  if (board.allies.length === 1 && board.opponents.length === 1) return "1v1";
+  if (board.allies.length === 2 && board.opponents.length === 2) return "2v2";
+  if (board.allies.length === 3 && board.opponents.length === 3) return "3v3";
+  return null;
+}
+
+export type ScoreboardTone = RoundResultTone;
+
+export function scoreboardTone(result: RoundResult): ScoreboardTone {
+  return roundResultTone(result);
 }

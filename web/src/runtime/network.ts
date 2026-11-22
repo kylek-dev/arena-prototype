@@ -180,8 +180,9 @@ export function createLink(deps: LinkDeps) {
       update({ phase: "connecting", attempt: 0, ended: null, status: null });
       connect();
     },
-    /** Leaves the match on this tab; the device still offers a rejoin. */
+    /** Leaves the match on this tab; the device still offers a rejoin while the match is live. */
     leave() {
+      if (state.get().status?.phase === "finished") store(deps.device, DEVICE_KEY, null);
       end(null);
     },
     /** Closes the socket without forgetting the match (runtime teardown). */

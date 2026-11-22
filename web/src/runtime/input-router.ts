@@ -12,6 +12,7 @@ import {
   inputReset,
   customizing,
   prematch,
+  scoreboardVisible,
 } from "../state/session";
 import { isEngineReady } from "../domain/abilities/catalog";
 import { dispatch, input } from "./commands";
@@ -74,6 +75,10 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
     focusPolicy.restore();
   });
   const unPrematch = prematch.subscribe(() => {
+    cancel();
+    focusPolicy.restore();
+  });
+  const unScoreboard = scoreboardVisible.subscribe(() => {
     cancel();
     focusPolicy.restore();
   });
@@ -193,6 +198,7 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
       unDrag();
       unCustomize();
       unPrematch();
+      unScoreboard();
       unReset();
       unEngine();
       cancel();

@@ -7,7 +7,8 @@ import {
   type Kit,
 } from "../domain/appearance";
 import { createStore } from "./store";
-import { customizing, prematch } from "./session";
+import { pendingBinding } from "./binding-capture";
+import { customizing, prematch, setPanel } from "./session";
 
 export const APPEARANCE_KEY = "arena.appearance.v1";
 /** Installed kits from assets/character.json; empty without Quaternius sources. */
@@ -70,4 +71,12 @@ export function enterArena(reset: () => void) {
   prematch.set(false);
   preview.set({ yaw: 0, zoom: 0 });
   reset();
+}
+/** Returns to the home screen when character kits are loaded; otherwise stays in local practice. */
+export function returnToHome() {
+  setPanel(null);
+  pendingBinding.set(null);
+  customizing.set(false);
+  preview.set({ yaw: 0, zoom: 0 });
+  if (characterKits.get().length > 0) prematch.set(true);
 }

@@ -4,7 +4,13 @@ import { readGraphics } from "../state/graphics";
 import { readWeapons } from "../state/weapons";
 import { readLighting } from "../state/lighting";
 import { loadStartupMap, onMapStatus, readMap } from "../state/map-editor";
-import { beforeMatch, enterArena, readAppearance, readPreview } from "../state/appearance";
+import {
+  beforeMatch,
+  customizerVisible,
+  enterArena,
+  readAppearance,
+  readPreview,
+} from "../state/appearance";
 import { observeCastResult } from "./cast-feedback";
 import { engine, error, focus, nameplateScene } from "../state/session";
 import { reconcileFocus } from "../domain/units/selection";
@@ -17,6 +23,7 @@ import { debugEnabled, measureFrames, metrics, recordError, recordState } from "
 import { browserLink, installJoinLinks, takeJoinFragment } from "./network";
 import { browserQueue, installPartyLinks } from "./matchmaking";
 import { matchQueue, networkLink } from "../state/network";
+import { clearPostMatchScoreboard, syncPostMatchScoreboard } from "../state/scoreboard";
 export function startRuntime(canvas: HTMLCanvasElement) {
   const pointer = installPointer(canvas, () => router.cancel());
   const router = installInput(canvas, pointer.end);
@@ -37,7 +44,8 @@ export function startRuntime(canvas: HTMLCanvasElement) {
   // A seat found by the queue is joined like any other, leaving the home
   // screen if the player is still there.
   const queue = browserQueue((ticket) => {
-    if (beforeMatch.get()) enterArena(() => {});
+    clearPostMatchScoreboard();
+    if (beforeMatch.get() || customizerVisible.get()) enterArena(() => {});
     link.join(ticket);
   });
   matchQueue.set(queue);
@@ -84,6 +92,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
         if (now - lastDelivery < 80 && !needsImmediateDelivery(previous, next)) return;
         lastDelivery = now;
         engine.set(next);
+        syncPostMatchScoreboard(next, link.state.get());
         if (!previous && document.activeElement === document.body) canvas.focus();
       } catch (e) {
         fail(String(e));
@@ -115,6 +124,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     matchQueue.set(null);
     link.dispose();
     networkLink.set(null);
+    clearPostMatchScoreboard();
     stopFrameTiming();
     router.dispose();
     pointer.dispose();

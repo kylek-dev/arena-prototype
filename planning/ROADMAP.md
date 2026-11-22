@@ -26,7 +26,7 @@ In recommended order (2026-11-15):
 | done | Queue premade parties in 2v2 and 3v3 (pulled forward by the user; browser review pending) | 4 | [party-queues](issues/party-queues.md) |
 | 2 | Show every player's chosen look in matches (moved up by the user) | 4 | [networked-appearance](issues/networked-appearance.md) |
 | done | Show the round clock and settle the time-limit result (browser review & playtest tie-break tuning pending) | 3 | [round-clock](issues/round-clock.md) |
-| 3b | Show a scoreboard with per-player stats, Leave and Queue again when a match ends (user request) | 4 | [scoreboard](issues/scoreboard.md) |
+| done | Show a scoreboard with per-player stats, Leave and Queue again when a match ends (browser review pending; CC columns wait for CC effects) | 4 | [scoreboard](issues/scoreboard.md) |
 | 4 | Host private custom matches with invites, teams and rematch | 4 | [custom-matches](issues/custom-matches.md) |
 | 5 | Make cast times, cooldowns, resources and interrupts server-authoritative | 3 | [server-casting-resources](issues/server-casting-resources.md) |
 | 6 | Spectate matches | 4 | [spectating](issues/spectating.md) |
