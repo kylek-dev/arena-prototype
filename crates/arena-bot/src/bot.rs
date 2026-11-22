@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arena_headless::telemetry::CombatMetrics;
-use arena_protocol::prediction::{Pacer, Predictor, TickRate};
+use arena_protocol::prediction::{InterpDelay, Pacer, Predictor, TickRate};
 use arena_protocol::{
     ClientMessage, ErrorCode, FighterState, InputFrame, MAX_FIGHTERS, PROTOCOL_VERSION,
     ServerMessage, Snapshot, WireAction, WireEvent, WireSpell,
@@ -39,6 +39,8 @@ pub struct Seat {
     pub paced: bool,
     /// Remote-fighter view delay (ms), matching browser interpolation (default 100 ms).
     pub interp_delay_ms: u64,
+    /// Use browser-parity adaptive interpolation delay (`InterpDelay`).
+    pub adaptive_interp: bool,
     pub seed: u64,
     /// Drop the connection and rejoin this often (staggered per seat).
     pub reconnect_every: Option<Duration>,
@@ -77,6 +79,8 @@ pub struct SeatStats {
     /// Reconciliations that moved the prediction, and by how much (mm).
     pub corrections: u64,
     pub correction_mm: Vec<u32>,
+    /// Sampled effective interpolation delay (ms) when `adaptive_interp` is enabled.
+    pub interp_delay_ms: Vec<u32>,
     /// Private rejection events received by this seat (e.g. `LineOfSight`, `OutOfRange`).
     pub rejections: CombatMetrics,
     /// Next event tick eligible for per-seat rejection recording (deduplicates reconnects).
@@ -214,6 +218,8 @@ async fn session(
     let mut predictor = Predictor::default();
     let mut pacer = Pacer::default();
     let mut measured_rate = TickRate::default();
+    let mut interp_delay = InterpDelay::default();
+    let mut last_view_tick = 0u64;
     let session_start = Instant::now();
     // Once the socket refuses writes, stop sending and let the incoming side
     // deliver what the server said last (usually an `Error`), which the
@@ -248,6 +254,8 @@ async fn session(
                             predictor.set_round_limit(round_ticks);
                             pacer.reset();
                             measured_rate.reset();
+                            interp_delay.reset();
+                            last_view_tick = 0;
                             view_buffer.clear();
                             fairness.reset_connection();
                             bandwidth.reset_connection();
@@ -343,10 +351,9 @@ async fn session(
                     }
                 }
                 if !frame_ticks.is_empty() {
-                    measured_rate.observe_frame(
-                        now.saturating_duration_since(session_start).as_secs_f64(),
-                        frame_ticks,
-                    );
+                    let now_s = now.saturating_duration_since(session_start).as_secs_f64();
+                    measured_rate.observe_frame(now_s, frame_ticks.iter().copied());
+                    interp_delay.observe_frame(now_s, frame_ticks, measured_rate.rate());
                 }
                 if let Some(end) = stop {
                     break end;
@@ -366,8 +373,15 @@ async fn session(
                 } else {
                     now + step
                 };
-                let delay_ticks = interp_delay_ticks(seat.interp_delay_ms, tick_rate);
-                let Some(decision_view) =
+                let delay_ticks = if seat.adaptive_interp {
+                    let ticks_f = interp_delay.delay_ticks();
+                    let delay_ms = (ticks_f / measured_rate.rate().max(1.0) * 1000.0).round() as u32;
+                    stats.interp_delay_ms.push(delay_ms);
+                    ticks_f.round() as u64
+                } else {
+                    interp_delay_ticks(seat.interp_delay_ms, tick_rate)
+                };
+                let Some(decision) =
                     view_buffer.decision_view(seat.actor, predictor.predicted(), delay_ticks)
                 else {
                     continue;
@@ -375,8 +389,16 @@ async fn session(
                 let running = view_buffer
                     .latest()
                     .is_some_and(|snapshot| snapshot.tick > 0 && snapshot.result.is_none());
+                if running && decision.remote_tick > 0 {
+                    last_view_tick = last_view_tick.max(decision.remote_tick);
+                }
+                let decision_view = decision.snapshot;
                 seq += 1;
-                let mut frame = InputFrame { seq, ..decide(seat.actor, &decision_view, rng) };
+                let mut frame = InputFrame {
+                    seq,
+                    view_tick: if running { last_view_tick } else { 0 },
+                    ..decide(seat.actor, &decision_view, rng)
+                };
                 // Hold still while a newly submitted timed cast is still in flight so the
                 // next tick's movement frame never cancels it before the server acknowledges it.
                 if pending_cast_ack.is_some() {
@@ -524,6 +546,7 @@ pub fn decide(actor: usize, snapshot: &Snapshot, rng: &mut Rng) -> InputFrame {
         facing,
         jump: input.jump,
         action,
+        view_tick: 0,
     }
 }
 

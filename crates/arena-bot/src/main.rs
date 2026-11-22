@@ -1,6 +1,6 @@
 //! `arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3]
 //!            [--seconds S] [--rtt MS] [--jitter MS] [--loss-pct PCT] [--clump-ms MS]
-//!            [--interp-delay-ms MS] [--unpaced] [--reconnect-every S] [--away-ms MS]
+//!            [--interp-delay-ms MS] [--adaptive-interp] [--unpaced] [--reconnect-every S] [--away-ms MS]
 //!            [--seed N] [--server-pid PID] [--json]
 //!            [--queue 1v1|2v2|3v3 --door HOST:PORT [--bots N]]`
 //!
@@ -19,7 +19,7 @@ use arena_bot::link::Link;
 use arena_bot::queue::QueueScenario;
 use arena_bot::{Scenario, run};
 
-const USAGE: &str = "usage: arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3] [--seconds S] [--rtt MS] [--jitter MS] [--loss-pct PCT] [--clump-ms MS] [--interp-delay-ms MS] [--unpaced] [--reconnect-every S] [--away-ms MS] [--seed N] [--server-pid PID] [--json] [--queue MODE --door HOST:PORT [--bots N]]";
+const USAGE: &str = "usage: arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3] [--seconds S] [--rtt MS] [--jitter MS] [--loss-pct PCT] [--clump-ms MS] [--interp-delay-ms MS] [--adaptive-interp] [--unpaced] [--reconnect-every S] [--away-ms MS] [--seed N] [--server-pid PID] [--json] [--queue MODE --door HOST:PORT [--bots N]]";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -72,6 +72,7 @@ fn parse_args<I: IntoIterator<Item = String>>(iter: I) -> Result<(Option<Scenari
         link: Link::default(),
         paced: true,
         interp_delay_ms: DEFAULT_INTERP_DELAY_MS,
+        adaptive_interp: false,
         reconnect_every: None,
         away: Duration::from_secs(1),
         seed: 1,
@@ -131,6 +132,7 @@ fn parse_args<I: IntoIterator<Item = String>>(iter: I) -> Result<(Option<Scenari
                 }
                 scenario.interp_delay_ms = parsed;
             }
+            "--adaptive-interp" => scenario.adaptive_interp = true,
             "--unpaced" => scenario.paced = false,
             "--away-ms" => {
                 scenario.away = Duration::from_millis(number("--away-ms", value("--away-ms")?)?);
@@ -184,7 +186,12 @@ mod tests {
 
         let (scenario, json) = parse_slice(&["--interp-delay-ms", "0", "--json"]).unwrap();
         assert!(json);
-        assert_eq!(scenario.unwrap().interp_delay_ms, 0);
+        let scenario = scenario.unwrap();
+        assert_eq!(scenario.interp_delay_ms, 0);
+        assert!(!scenario.adaptive_interp);
+
+        let (scenario, _) = parse_slice(&["--adaptive-interp"]).unwrap();
+        assert!(scenario.unwrap().adaptive_interp);
 
         let (scenario, _) = parse_slice(&["--interp-delay-ms", "2000"]).unwrap();
         assert_eq!(scenario.unwrap().interp_delay_ms, 2000);

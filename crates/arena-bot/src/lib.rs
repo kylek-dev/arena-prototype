@@ -52,6 +52,8 @@ pub struct Scenario {
     pub paced: bool,
     /// Remote-fighter view delay (ms), matching browser interpolation (default 100 ms).
     pub interp_delay_ms: u64,
+    /// Use browser-parity adaptive interpolation delay (`InterpDelay`) instead of fixed `interp_delay_ms`.
+    pub adaptive_interp: bool,
     pub reconnect_every: Option<Duration>,
     /// How long a dropped seat stays away before rejoining.
     pub away: Duration,
@@ -279,6 +281,9 @@ pub struct Report {
     pub loss_pct: f64,
     pub clump_ms: f64,
     pub interp_delay_ms: u64,
+    pub adaptive_interp: bool,
+    /// Sampled effective interpolation delay in ms when `--adaptive-interp` is enabled: `[p50, p99, max]`.
+    pub effective_interp_delay_ms: [u32; 3],
     pub paced: bool,
     pub reconnect_every_s: Option<f64>,
     pub rounds_started: u64,
@@ -342,6 +347,7 @@ pub(crate) struct Totals {
     predicted_inputs: u64,
     corrections: u64,
     correction_mm: Vec<u32>,
+    interp_delay_ms: Vec<u32>,
     rejections: CombatMetrics,
     fairness: FairnessStats,
     bandwidth: BandwidthStats,
@@ -371,6 +377,7 @@ impl Totals {
         self.predicted_inputs += seat.predicted_inputs;
         self.corrections += seat.corrections;
         self.correction_mm.extend(seat.correction_mm);
+        self.interp_delay_ms.extend(seat.interp_delay_ms);
         self.rejections.merge(&seat.rejections);
         self.fairness.merge(seat.fairness);
         self.bandwidth.merge(seat.bandwidth);
@@ -397,6 +404,7 @@ impl Totals {
         self.predicted_inputs += other.predicted_inputs;
         self.corrections += other.corrections;
         self.correction_mm.extend(other.correction_mm);
+        self.interp_delay_ms.extend(other.interp_delay_ms);
         self.rejections.merge(&other.rejections);
         self.fairness.merge(other.fairness);
         self.bandwidth.merge(other.bandwidth);
@@ -499,6 +507,13 @@ pub async fn run(mut scenario: Scenario) -> Result<Report, String> {
         loss_pct: scenario.link.loss_rate * 100.0,
         clump_ms: scenario.link.clump.as_secs_f64() * 1000.0,
         interp_delay_ms: scenario.interp_delay_ms,
+        adaptive_interp: scenario.adaptive_interp,
+        effective_interp_delay_ms: if scenario.adaptive_interp {
+            percentiles(totals.interp_delay_ms)
+        } else {
+            let fixed = u32::try_from(scenario.interp_delay_ms).unwrap_or(u32::MAX);
+            [fixed; 3]
+        },
         paced: scenario.paced,
         reconnect_every_s: scenario.reconnect_every.map(|every| every.as_secs_f64()),
         rounds_started: totals.rounds_started,
@@ -565,6 +580,7 @@ async fn run_group(
                     link: scenario.link,
                     paced: scenario.paced,
                     interp_delay_ms: scenario.interp_delay_ms,
+                    adaptive_interp: scenario.adaptive_interp,
                     seed: rng.next_u64(),
                     reconnect_every: scenario.reconnect_every,
                     away: scenario.away,
@@ -824,10 +840,16 @@ impl fmt::Display for Report {
         if let Some(every) = self.reconnect_every_s {
             link_notes.push_str(&format!(", rejoin every {every:.0} s"));
         }
+        let interp_note = if self.adaptive_interp {
+            let [p50, p99, max] = self.effective_interp_delay_ms;
+            format!("adaptive interp p50 {p50} p99 {p99} max {max} ms")
+        } else {
+            format!("interp delay {} ms", self.interp_delay_ms)
+        };
         writeln!(
             f,
-            "link           base RTT {:.0} ms, jitter up to {:.0} ms per direction, interp delay {} ms{link_notes}",
-            self.rtt_ms, self.jitter_ms, self.interp_delay_ms
+            "link           base RTT {:.0} ms, jitter up to {:.0} ms per direction, {interp_note}{link_notes}",
+            self.rtt_ms, self.jitter_ms
         )?;
         writeln!(
             f,
@@ -871,10 +893,11 @@ impl fmt::Display for Report {
         let [de_p50, de_p99, de_max] = tf.distance_error_mm;
         writeln!(
             f,
-            "fairness       {} casts resolved ({} reached geom, {} accepted, {} folded), OOR disagree {}/{} ({:.2}%), LoS disagree {}/{} ({:.2}%), dist err p50 {de_p50} p99 {de_p99} max {de_max} mm",
+            "fairness       {} casts resolved ({} reached geom, {} accepted, {} lag-comped, {} folded), OOR disagree {}/{} ({:.2}%), LoS disagree {}/{} ({:.2}%), dist err p50 {de_p50} p99 {de_p99} max {de_max} mm",
             tf.casts_resolved,
             tf.casts_reached_geometry,
             tf.casts_accepted,
+            tf.casts_saved_by_lag_comp,
             tf.casts_folded_or_skipped,
             tf.disagreed_out_of_range,
             tf.casts_reached_geometry_in_range,

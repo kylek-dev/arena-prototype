@@ -664,6 +664,7 @@ fn simulate(mut practice: ResMut<Practice>, mut net: ResMut<Net>) {
         facing: Some(binary_angle(practice.facing)),
         jump: std::mem::take(&mut practice.jump),
         action: None,
+        rewind_ticks: 0,
     };
     if let Some(spell) = std::mem::take(&mut practice.cast) {
         if let Some(target) = resolve_cast_target(spell, practice.selected) {

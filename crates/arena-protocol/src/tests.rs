@@ -12,6 +12,7 @@ fn input(seq: u32) -> InputFrame {
         facing: 0xC000,
         jump: true,
         action: InputFrame::pulse(3),
+        view_tick: 0,
     }
 }
 
@@ -29,6 +30,7 @@ fn client_samples() -> Vec<ClientMessage> {
         ClientMessage::Input(InputFrame {
             seq: 42,
             action: WireAction::CancelCast,
+            view_tick: u64::MAX,
             ..InputFrame::default()
         }),
         ClientMessage::Input(InputFrame::default()),
@@ -139,8 +141,8 @@ fn every_message_round_trips_within_its_frame_limit() {
 #[test]
 fn ordinary_traffic_is_small() {
     // Budgets, not measurements of a network: at 30 Hz a 3v3 snapshot
-    // without events costs each player under 6 KB/s, and input under 0.5 KB/s.
-    assert!(ClientMessage::Input(input(1_000_000)).encode().len() <= 16);
+    // without events costs each player under 6 KB/s, and input under 0.6 KB/s.
+    assert!(ClientMessage::Input(input(1_000_000)).encode().len() <= 20);
     let quiet = ServerMessage::Snapshot(Snapshot::capture(
         &colosseum(3),
         70_000,
@@ -153,21 +155,25 @@ fn ordinary_traffic_is_small() {
 #[test]
 fn the_wire_layout_is_pinned() {
     // Golden frames: changing them requires a PROTOCOL_VERSION bump.
-    assert_eq!(PROTOCOL_VERSION, 3);
+    assert_eq!(PROTOCOL_VERSION, 4);
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 3,
+            protocol: 4,
             ticket: vec![0xAB, 0xCD],
         }
         .encode(),
-        [0, 3, 2, 0xAB, 0xCD]
+        [0, 4, 2, 0xAB, 0xCD]
     );
     assert_eq!(
-        ClientMessage::Input(input(300)).encode(),
+        ClientMessage::Input(InputFrame {
+            view_tick: 120,
+            ..input(300)
+        })
+        .encode(),
         // variant 1, seq 300 (varint), x -1000 / z 707 (zigzag varints),
-        // facing 0xC000, jump, WireAction::Cast { Pulse (0), Some(3) }.
+        // facing 0xC000, jump, WireAction::Cast { Pulse (0), Some(3) }, view_tick 120.
         [
-            1, 0xAC, 0x02, 0xCF, 0x0F, 0x86, 0x0B, 0x80, 0x80, 0x03, 1, 1, 0, 1, 3
+            1, 0xAC, 0x02, 0xCF, 0x0F, 0x86, 0x0B, 0x80, 0x80, 0x03, 1, 1, 0, 1, 3, 120
         ]
     );
     // The browser runtime reads these two-byte error frames itself (so a
@@ -442,6 +448,7 @@ fn merged_inputs_keep_one_command_of_each_kind_and_never_lose_a_press() {
         facing: 9,
         jump: false,
         action: WireAction::None,
+        view_tick: 0,
     }
     .merge_into(&mut slot);
     assert_eq!(
@@ -451,6 +458,7 @@ fn merged_inputs_keep_one_command_of_each_kind_and_never_lose_a_press() {
             facing: Some(9),
             jump: true,
             action: ActorInput::pulse(3),
+            rewind_ticks: 0,
         }
     );
     InputFrame {

@@ -140,7 +140,7 @@ export function endsLink(error: string | null) {
 // same bytes; everything else is decoded by the engine.
 
 /** Must match `arena_protocol::PROTOCOL_VERSION`. */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 /** `ServerMessage::Error` codes in declaration order (`[3, index]`). */
 export const ERROR_CODES = [
   "VersionMismatch",

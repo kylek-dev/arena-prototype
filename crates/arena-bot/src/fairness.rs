@@ -1,10 +1,11 @@
 //! Targeting-fairness and lag-compensation disagreement measurement.
 //!
 //! A browser client predicts its own fighter's movement immediately while
-//! rendering other fighters ~100 ms (`INTERPOLATION_DELAY = 3` ticks at 30 Hz)
-//! behind the newest received snapshot. Meanwhile, `arena-server` validates
-//! spell range, line of sight, and target liveness on its authoritative present
-//! state when the input is applied.
+//! rendering other fighters behind the newest received snapshot (default 100 ms =
+//! `DEFAULT_INTERP_DELAY_TICKS = 3` ticks, adapting down to ~42 ms on low-jitter
+//! links via `InterpDelay`). Meanwhile, `arena-server` validates spell range,
+//! line of sight, and target liveness authoritatively with bounded target-position
+//! history rewind (ADR 0049).
 //!
 //! This module reproduces that client view in `arena-bot` and correlates each
 //! targeted spell cast's `InputFrame.seq` against the exact tick snapshot that
@@ -21,7 +22,7 @@ use arena_sim::spells::SpellId;
 use serde::Serialize;
 
 /// Default remote-fighter view delay (100 ms = 3 ticks at 30 Hz), matching
-/// `arena_client::network::INTERPOLATION_DELAY`.
+/// `arena_protocol::prediction::DEFAULT_INTERP_DELAY_TICKS`.
 pub const DEFAULT_INTERP_DELAY_MS: u64 = 100;
 /// Maximum buffered snapshots per seat (~2 s at 30 Hz).
 const MAX_BUFFERED_SNAPSHOTS: usize = 64;
@@ -40,6 +41,14 @@ pub fn interp_delay_ticks(delay_ms: u64, tick_rate: u32) -> u64 {
 #[derive(Debug, Default)]
 pub struct ViewBuffer {
     snapshots: VecDeque<Snapshot>,
+}
+
+/// Browser-parity decision view paired with the exact server tick of its
+/// delayed remote-fighter state.
+#[derive(Clone, Debug)]
+pub struct DecisionView {
+    pub snapshot: Snapshot,
+    pub remote_tick: u64,
 }
 
 impl ViewBuffer {
@@ -77,7 +86,7 @@ impl ViewBuffer {
         actor: usize,
         predicted_self: Option<Combatant>,
         delay_ticks: u64,
-    ) -> Option<Snapshot> {
+    ) -> Option<DecisionView> {
         let latest = self.snapshots.back()?;
         let target_tick = latest.tick.saturating_sub(delay_ticks);
         let remote = self
@@ -103,7 +112,10 @@ impl ViewBuffer {
             me.momentum = [pred.momentum.x, pred.momentum.z];
             me.facing = pred.facing;
         }
-        Some(view)
+        Some(DecisionView {
+            snapshot: view,
+            remote_tick: remote.tick,
+        })
     }
 }
 
@@ -125,6 +137,9 @@ pub struct FairnessStats {
     pub casts_resolved: u64,
     pub casts_folded_or_skipped: u64,
     pub casts_accepted: u64,
+    /// Casts accepted by the server via bounded target-position lag compensation
+    /// even though present-tick geometry was out of range or lacked LoS.
+    pub casts_saved_by_lag_comp: u64,
     /// Matched casts that passed pre-geometry checks (`Cooldown`, `GlobalCooldown`,
     /// `AlreadyCasting`, `Silenced`, `Moving`, `InvalidTarget`, `InvalidActor`,
     /// `MatchOver`) and actually reached server range/LoS validation.
@@ -153,6 +168,7 @@ impl FairnessStats {
         self.casts_resolved += other.casts_resolved;
         self.casts_folded_or_skipped += other.casts_folded_or_skipped;
         self.casts_accepted += other.casts_accepted;
+        self.casts_saved_by_lag_comp += other.casts_saved_by_lag_comp;
         self.casts_reached_geometry += other.casts_reached_geometry;
         self.casts_reached_geometry_in_range += other.casts_reached_geometry_in_range;
         self.casts_reached_geometry_has_los += other.casts_reached_geometry_has_los;
@@ -185,6 +201,7 @@ impl FairnessStats {
             casts_resolved: self.casts_resolved,
             casts_folded_or_skipped: self.casts_folded_or_skipped,
             casts_accepted: self.casts_accepted,
+            casts_saved_by_lag_comp: self.casts_saved_by_lag_comp,
             casts_reached_geometry: self.casts_reached_geometry,
             casts_reached_geometry_in_range: self.casts_reached_geometry_in_range,
             casts_reached_geometry_has_los: self.casts_reached_geometry_has_los,
@@ -223,6 +240,7 @@ pub struct TargetingFairnessReport {
     pub casts_resolved: u64,
     pub casts_folded_or_skipped: u64,
     pub casts_accepted: u64,
+    pub casts_saved_by_lag_comp: u64,
     pub casts_reached_geometry: u64,
     pub casts_reached_geometry_in_range: u64,
     pub casts_reached_geometry_has_los: u64,
@@ -475,6 +493,9 @@ impl FairnessTracker {
             }
             if accepted {
                 stats.casts_accepted += 1;
+                if !server_in_range || !server_has_los {
+                    stats.casts_saved_by_lag_comp += 1;
+                }
             }
         }
 
@@ -543,7 +564,9 @@ mod tests {
         let mut predicted = Combatant::new(Position { x: 100, z: -2_000 }, 1234);
         predicted.health = 50; // Ignored: combat state stays authoritative from `latest`.
 
-        let view = buf.decision_view(0, Some(predicted), 3).unwrap();
+        let decision = buf.decision_view(0, Some(predicted), 3).unwrap();
+        let view = decision.snapshot;
+        assert_eq!(decision.remote_tick, 3);
         assert_eq!(view.tick, 6);
         // Self uses predicted movement + authoritative latest health.
         assert_eq!((view.fighters[0].x, view.fighters[0].z), (100, -2_000));

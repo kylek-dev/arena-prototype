@@ -15,10 +15,10 @@ use std::sync::Arc;
 
 use arena_protocol::{
     EncodedSnapshotBody, ErrorCode, FighterState, InputFrame, MAX_FIGHTERS, PROTOCOL_VERSION,
-    RULES_VERSION, ServerMessage, Snapshot, TickEvent, Welcome, WireEvent, WireResult,
+    RULES_VERSION, ServerMessage, Snapshot, TickEvent, Welcome, WireAction, WireEvent, WireResult,
 };
 use arena_sim::TICKS_PER_SECOND;
-use arena_sim::arena::{ActorInput, Arena, ArenaEvent};
+use arena_sim::arena::{ActorInput, Arena, ArenaEvent, MAX_LAG_COMP_TICKS};
 
 use crate::metrics::Metrics;
 
@@ -86,6 +86,9 @@ struct Seat {
     last_seq: Option<u32>,
     /// Last `seq` folded into a tick (reported as `Snapshot.ack`).
     ack: u32,
+    /// Highest `view_tick` observed for this seat during this match (monotonic
+    /// clamp preventing backwards tick-shopping across ticks or reconnects).
+    max_view_tick: u64,
     pending: VecDeque<InputFrame>,
     absent_since: Option<u64>,
     /// When the queue last went above `MAX_BACKLOG`, while it stays there.
@@ -360,18 +363,37 @@ impl Session {
             }
             Phase::Running => {
                 let clock = self.clock;
+                let post_tick = self.arena.tick().saturating_add(1);
                 let count = self.seats.len();
                 let mut inputs = [ActorInput::default(); MAX_FIGHTERS];
                 let mut starved = 0u64;
                 let mut folded = 0u64;
                 let mut arrivals = [0u64; 5];
+                let apply_frame = |seat: &mut Seat, slot: &mut ActorInput, frame: InputFrame| {
+                    frame.merge_into(slot);
+                    seat.ack = frame.seq;
+                    let rewind = if frame.view_tick == 0 {
+                        0
+                    } else {
+                        let clamped = frame.view_tick.min(post_tick);
+                        let effective = clamped.max(seat.max_view_tick);
+                        seat.max_view_tick = effective;
+                        post_tick
+                            .saturating_sub(effective)
+                            .min(u64::from(MAX_LAG_COMP_TICKS)) as u8
+                    };
+                    match frame.action {
+                        WireAction::Cast { .. } => slot.rewind_ticks = rewind,
+                        WireAction::CancelCast => slot.rewind_ticks = 0,
+                        WireAction::None => {}
+                    }
+                };
                 for (seat, slot) in self.seats.iter_mut().zip(&mut inputs[..count]) {
                     // One input per tick, in order, so a client can
                     // predict its own movement exactly: input `n` is one
                     // tick of rules. Nothing waiting means an idle tick.
                     if let Some(frame) = seat.pending.pop_front() {
-                        frame.merge_into(slot);
-                        seat.ack = frame.seq;
+                        apply_frame(seat, slot, frame);
                         seat.window.applied += 1;
                     } else if seat.conn.is_some() {
                         starved += 1;
@@ -385,8 +407,7 @@ impl Session {
                         if clock - since >= FOLD_AFTER {
                             while seat.pending.len() > MAX_BACKLOG {
                                 let frame = seat.pending.pop_front().expect("over the backlog");
-                                frame.merge_into(slot);
-                                seat.ack = frame.seq;
+                                apply_frame(seat, slot, frame);
                                 folded += 1;
                                 seat.window.folded += 1;
                             }

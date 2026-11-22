@@ -192,9 +192,9 @@ describe("network match identity", () => {
 
 describe("protocol corners the runtime speaks itself", () => {
   it("encodes Hello exactly as arena-protocol's golden frame", () => {
-    // arena-protocol: Hello { protocol: 3, ticket: [0xab, 0xcd] } == [0, 3, 2, 0xab, 0xcd]
-    expect([...encodeHello("abcd")]).toEqual([0, 3, 2, 0xab, 0xcd]);
-    expect(PROTOCOL_VERSION).toBe(3);
+    // arena-protocol: Hello { protocol: 4, ticket: [0xab, 0xcd] } == [0, 4, 2, 0xab, 0xcd]
+    expect([...encodeHello("abcd")]).toEqual([0, 4, 2, 0xab, 0xcd]);
+    expect(PROTOCOL_VERSION).toBe(4);
     // Lengths and versions past 127 use more varint bytes.
     const long = encodeHello("00".repeat(300), 300);
     expect([...long.slice(0, 5)]).toEqual([0, 0xac, 0x02, 0xac, 0x02]);
