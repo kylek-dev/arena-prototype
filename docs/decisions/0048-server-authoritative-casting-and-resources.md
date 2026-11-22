@@ -44,12 +44,14 @@ post-movement snapshot (`pre_combat`):
 - **4a. Cancellations & active casts:** Explicit `CastAction::Cancel` cancels an
   active cast; remaining casts validate caster state (alive, not locked out, not
   moving for stationary casts) and, on the completion tick (`remaining_ticks == 1`),
-  re-validate target life, team, range and line of sight. Completed casts queue
-  effects and start their personal cooldown; failed casts emit `CastInterrupted`
-  without starting personal cooldown or refunding resource/GCD.
+  re-validate target life, team, range, line of sight and costs. Completed casts
+  pay their costs, queue effects and start their personal cooldown; failed casts
+  emit `CastInterrupted` without starting personal cooldown, spending any cost or
+  refunding GCD (see the 2026-11-22 amendment).
 - **4b. New cast intents:** Each actor's `CastAction::Cast` validates through
-  `CastingState::try_cast`. Resource and GCD are consumed at cast start and are
-  never refunded on interrupt. Instant interrupts (`Quell`) only affect targets
+  `CastingState::try_cast`. GCD is consumed at cast start and never refunded on
+  interrupt. Costs are checked at start; instants pay them at once and timed casts
+  pay them only on completion. Instant interrupts (`Quell`) only affect targets
   that remained actively casting after 4a, so cancelling via movement or
   `CancelCast` on the same tick successfully fake-casts (baits the interrupt
   without suffering lockout), and actor index ordering never breaks ties.
@@ -94,3 +96,44 @@ post-movement snapshot (`pre_combat`):
   `web/src/domain/casting.ts`. Rendering cast bars and live resource meters in
   the React HUD is queued as a separate Lane B slice requiring human browser
   review.
+
+## Amendment (2026-11-22): costs are charged when a timed cast completes
+
+**Status: proposed (implemented in `arena-sim`, `RULES_VERSION = 6`).**
+
+Playtesting found that losing a cast to an interrupt, a cancel, movement or a
+failed completion re-check also lost its whole resource cost, which felt like a
+double penalty on top of the lost GCD and (for interrupts) the lockout.
+
+- `CastingState::try_cast` still checks resource and health costs before a cast
+  starts, so an unaffordable spell is rejected with `NotEnoughResource` /
+  `NotEnoughHealth` exactly as before.
+- Instant spells pay at once, unchanged.
+- Timed casts pay nothing at start. `CastingState::tick` re-checks the costs on
+  the completion tick, after the target, range and line-of-sight re-check, and
+  charges them only if the cast resolves. A cast that is interrupted, cancelled,
+  moved out of, or fails any completion re-check spends nothing. The GCD it
+  consumed is still not refunded.
+- **Health costs follow the same rule.** They are checked at start, re-checked at
+  completion (still leaving at least 1 HP), and charged on completion. Keeping one
+  rule for every cost means a cast never takes something the player cannot get
+  back if it fails. No current spell has a health cost; the rule is covered by
+  `casting` unit tests.
+- A cost that became unaffordable mid-cast fails the completion with the existing
+  `InterruptReason::Cancelled` wire reason. Nothing in the current kit can lower
+  a caster's pool mid-cast, and only damage taken earlier in the cast can make a
+  health cost unaffordable (no current spell has one), so no new wire reason was
+  added; add one with a protocol bump if a drain effect ever lands.
+- The client needs no separate parity code: practice mode and HUD pre-checks run
+  the same `arena-sim` rules, and casting stays unpredicted (section 4).
+- `RULES_VERSION` moves from 5 to 6 because replays of interrupted casts now end
+  with different resource totals.
+
+Balance consequences to expect in playtests:
+
+- Passive regeneration during a cast is no longer "banked" into the space the
+  cost freed up. A Rift Bolt started from a full pool now ends at 65 rather than
+  80, because the pool sat at its cap for the whole cast. Casting from a full
+  pool is slightly worse; casting from a part-spent pool is unchanged.
+- Fake-casting (section 2) now costs only the GCD, not the spell's resource, so
+  baiting interrupts is cheaper.

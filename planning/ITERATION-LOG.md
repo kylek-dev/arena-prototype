@@ -307,3 +307,23 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Learnings:** Promoted spectator `tick_encoded` draining, `Phase::Finished` zero-linger flush, and `spectating` UI-mode clearing into `## Codebase Patterns`.
 - **Next Recommended Slice:** All 4 Lane B items in `planning/BACKLOG.md` are now complete and queued as stacked PRs awaiting human browser review!
 - **Playtest Follow-Up (2026-11-22 on `auto/spectating`):** User verified all 4 stacked features locally ("all worked") and requested two tweaks: removed the scoreboard's horizontal scrollbar (fixed on `auto/scoreboard-ui`: `940px` modal, wrapping stat headers, `880px` compact breakpoint; merged up the stack), and changed `DEFAULT_SPECTATOR_DELAY` to `0` (live/real-time by default, delivering live snapshots immediately on mid-match joins while preserving optional `--spectator-delay-seconds 0..=60` anti-ghosting support, and removing `"5s delay"` HUD/lobby labels).
+
+## 2026-11-22 — Charge cast costs on completion (Lane A, playtest inbox)
+- **Branch / Commit:** `auto/cast-cost-on-completion`
+- **Base / PR:** `main` (base of the 2026-11-22 playtest-inbox stack)
+- **Lane:** A (machine-verified)
+- **Task:** Playtest Inbox — "Spend the resource when a cast finishes, not when it starts" ([ADR 0048 amendment](../docs/decisions/0048-server-authoritative-casting-and-resources.md))
+- **Changes:**
+  - `arena-sim`: extracted `check_costs` / `pay_costs` in `casting.rs`; `try_cast` checks costs at start and charges only instants; `CastingState::tick` (now `&mut CasterContext`) re-checks costs on the completion tick and charges them only when the cast resolves; `Arena::advance` 4a writes the charged health/resource back. Health costs follow the same rule.
+  - `arena-protocol`: `RULES_VERSION` 5 → 6 (golden Welcome frame updated; wire layout unchanged, `PROTOCOL_VERSION` stays 7).
+  - Tests: casting unit tests (no spend at start, single charge at completion, resource/health completion re-check failures spend nothing), arena tests (range/LoS loss, Quell interrupt, cancel/move jukes, Mend) and a restored mid-cast fighter paying exactly once; session test with a part-spent pool; WebSocket test asserts cancelled Mend and interrupted Rift Bolt spent nothing.
+  - Docs: ADR 0048 amendment (with balance consequences), `docs/PROTOCOL.md`, `docs/ABILITIES.md` open-decision list.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base main` (`smoke=true web_build=false wasm=true`): pass
+    - `./scripts/check.sh`: pass (399 Rust tests passed, 1 pre-existing ignored; 52 Python; 42 Node; 39 Vitest files / 292 tests).
+    - `cargo run -p arena-headless --locked`: pass (`winner=Some(0)`).
+    - `./scripts/server-smoke.sh`: pass (1,141 cross-seat hash checks, 0 mismatches, 17/17 rejoins, 0 overruns).
+    - WASM clippy: pass. `npm run build` / `./scripts/build-web.sh`: not applicable (no `web/` or `arena-client` changes).
+- **Fresh-Eyes Review:** No Critical or Important findings. Addressed Minors: refuse a completing cast without a cost re-check before `combat.tick()` starts its cooldown, extra health-failure assertions, restored mid-cast test, ADR balance consequences and wording, `ABILITIES.md` decided items.
+- **Learnings:** The practice client, HUD `spell_status` and predictor all route through `arena-sim`, so rule changes need no separate client parity code; the golden Welcome frame pins the `RULES_VERSION` byte.
+- **Next Recommended Slice:** Playtest inbox — practice-mode regeneration while the tab is hidden.

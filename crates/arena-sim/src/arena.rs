@@ -11,9 +11,11 @@
 //! 3. jumps for every actor;
 //! 4. combat: explicit cancellations and active timed casts resolve against one
 //!    shared post-movement state (re-checking range, line of sight and target
-//!    life at completion), new spell intents validate through `casting` and
-//!    `combat_state` against that pre-damage state, and interrupts, damage,
-//!    healing, death-interrupts and round completion land together;
+//!    life at completion, then charging the cast's cost), new spell intents
+//!    validate through `casting` and `combat_state` against that pre-damage
+//!    state (instants pay at once, timed casts pay only on completion), and
+//!    interrupts, damage, healing, death-interrupts and round completion land
+//!    together;
 //! 5. vertical motion;
 //! 6. end-of-tick GCD, cooldown and lockout decay plus passive resource regen.
 //!
@@ -776,7 +778,7 @@ impl Arena {
             let (mut combat, mut casting) = hydrate_casting(&self.fighters[actor], actor);
             let mut health = self.fighters[actor].health;
             let mut resources = BTreeMap::from([(ARENA_RESOURCE, self.fighters[actor].resource)]);
-            let caster = CasterContext {
+            let mut caster = CasterContext {
                 id: actor,
                 class: ARENA_CLASS,
                 health: &mut health,
@@ -791,8 +793,12 @@ impl Arena {
             let target_ctx = active
                 .target
                 .and_then(|t| target_context(pre_combat, &self.layout, actor, t));
-            match casting.tick(&mut combat, &caster, target_ctx.as_ref()) {
+            match casting.tick(&mut combat, &mut caster, target_ctx.as_ref()) {
                 Ok(Some(prepared)) => {
+                    // Timed casts pay their costs only when they complete.
+                    self.fighters[actor].health = health;
+                    self.fighters[actor].resource =
+                        resources.get(&ARENA_RESOURCE).copied().unwrap_or(0);
                     self.fighters[actor].active_cast = None;
                     self.fighters[actor].cooldowns[active.spell.index()] =
                         combat.cooldown_remaining(active.spell);
@@ -1906,6 +1912,47 @@ mod tests {
     }
 
     #[test]
+    fn restored_mid_cast_fighter_pays_exactly_once_on_completion() {
+        use crate::spells::{RIFT_BOLT_CAST_TICKS, RIFT_BOLT_COST};
+
+        // A reconnect or replay restores a fighter mid-cast with a part-spent
+        // pool on a tick that never regenerates before completion.
+        let mut original = close_quarters(1, 10_000);
+        original.fighters[0].resource = 50;
+        original.fighters[0].active_cast = Some(ActiveCastState {
+            spell: SpellId::RiftBolt,
+            target: Some(1),
+            remaining_ticks: 2,
+            total_ticks: RIFT_BOLT_CAST_TICKS,
+        });
+        original.fighters[0].gcd_remaining = 0;
+        let mut restored = Arena::restore(
+            original.layout().clone(),
+            1,
+            original.fighters().to_vec(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(restored.step(&[]), vec![]);
+        assert_eq!(restored.fighters()[0].resource, 50);
+        let events = restored.step(&[]);
+        assert!(events.contains(&ArenaEvent::CastCompleted {
+            actor: 0,
+            spell: SpellId::RiftBolt,
+            target: Some(1),
+        }));
+        // Tick 2 completes (tick 3 regenerates +1 at its end).
+        assert_eq!(restored.fighters()[0].resource, 50 - RIFT_BOLT_COST + 1);
+        for _ in 0..10 {
+            restored.step(&[]);
+        }
+        assert!(
+            restored.fighters()[0].resource > 50 - RIFT_BOLT_COST,
+            "never charged twice"
+        );
+    }
+
+    #[test]
     fn simultaneous_lethal_hits_both_land_and_draw() {
         let mut arena = close_quarters(1, 3_000);
         arena.fighters[0].health = ATTACK_DAMAGE;
@@ -2395,8 +2442,9 @@ mod tests {
                 duration_ticks: RIFT_BOLT_CAST_TICKS,
             }]
         );
-        // Resource deducted immediately; GCD started (29 - 1 = 28 after tick 0); personal CD not started yet.
-        assert_eq!(arena.fighters()[0].resource, MAX_RESOURCE - RIFT_BOLT_COST);
+        // Resource is NOT spent at cast start; GCD started (29 - 1 = 28 after tick 0);
+        // personal CD not started yet.
+        assert_eq!(arena.fighters()[0].resource, MAX_RESOURCE);
         assert_eq!(arena.fighters()[0].gcd_remaining, 28);
         assert_eq!(arena.fighters()[0].cooldown_remaining(SpellId::RiftBolt), 0);
         assert_eq!(
@@ -2449,11 +2497,9 @@ mod tests {
             arena.fighters()[0].cooldown_remaining(SpellId::RiftBolt),
             RIFT_BOLT_COOLDOWN_TICKS - 1
         );
-        // Passive regen restored +15 over 45 ticks (10/s).
-        assert_eq!(
-            arena.fighters()[0].resource,
-            MAX_RESOURCE - RIFT_BOLT_COST + 15
-        );
+        // The pool stayed full (regen capped) for the whole cast; the cost is
+        // charged only now, on the completion tick.
+        assert_eq!(arena.fighters()[0].resource, MAX_RESOURCE - RIFT_BOLT_COST);
 
         // Re-check range on completion tick: enemy walks past 12 m just before completion.
         let mut range_loss = close_quarters(1, 11_900);
@@ -2473,6 +2519,11 @@ mod tests {
             by: None,
         }));
         assert_eq!(range_loss.fighters()[1].health, MAX_HEALTH);
+        assert_eq!(
+            range_loss.fighters()[0].resource,
+            MAX_RESOURCE,
+            "a cast that fails its completion re-check spends nothing"
+        );
         assert_eq!(
             range_loss.fighters()[0].cooldown_remaining(SpellId::RiftBolt),
             0,
@@ -2516,6 +2567,7 @@ mod tests {
             }]
         );
         assert_eq!(los_loss.fighters()[1].health, MAX_HEALTH);
+        assert_eq!(los_loss.fighters()[0].resource, MAX_RESOURCE);
 
         // Friendly heal (Mend) heals self or teammate up to MAX_HEALTH, never enemy.
         let mut heal_arena = close_quarters(2, 2_000);
@@ -2541,7 +2593,7 @@ mod tests {
                 duration_ticks: MEND_CAST_TICKS,
             }]
         );
-        assert_eq!(heal_arena.fighters()[0].resource, MAX_RESOURCE - MEND_COST);
+        assert_eq!(heal_arena.fighters()[0].resource, MAX_RESOURCE);
         for _ in 1..MEND_CAST_TICKS {
             heal_arena.step(&[]);
         }
@@ -2561,6 +2613,7 @@ mod tests {
             ]
         );
         assert_eq!(heal_arena.fighters()[2].health, 50 + MEND_HEAL);
+        assert_eq!(heal_arena.fighters()[0].resource, MAX_RESOURCE - MEND_COST);
         assert_eq!(
             heal_arena.fighters()[0].cooldown_remaining(SpellId::Mend),
             MEND_COOLDOWN_TICKS - 1
@@ -2579,9 +2632,7 @@ mod tests {
 
     #[test]
     fn interrupts_off_gcd_lockout_movement_cancel_and_fake_casting_work_authoritatively() {
-        use crate::spells::{
-            INTERRUPT_LOCKOUT_TICKS, QUELL_COOLDOWN_TICKS, QUELL_COST, RIFT_BOLT_COST,
-        };
+        use crate::spells::{INTERRUPT_LOCKOUT_TICKS, QUELL_COOLDOWN_TICKS, QUELL_COST};
 
         let mut arena = close_quarters(1, 5_000);
         // Actor 1 fires Pulse (starts GCD = 29), Actor 0 starts Rift Bolt on tick 0.
@@ -2640,8 +2691,8 @@ mod tests {
             arena.fighters()[0].lockout_remaining,
             INTERRUPT_LOCKOUT_TICKS - 1
         );
-        // Resource was NOT refunded and personal cooldown did NOT start.
-        assert_eq!(arena.fighters()[0].resource, MAX_RESOURCE - RIFT_BOLT_COST);
+        // The interrupted cast spent no resource and its personal cooldown did NOT start.
+        assert_eq!(arena.fighters()[0].resource, MAX_RESOURCE);
         assert_eq!(arena.fighters()[0].cooldown_remaining(SpellId::RiftBolt), 0);
         // Quell spent its cost and started its 6 s cooldown without resetting Actor 1's GCD.
         assert_eq!(
@@ -2688,6 +2739,11 @@ mod tests {
             assert_eq!(swapped.step(&commands), events, "order independent");
             assert_eq!(juke, swapped);
             assert_eq!(juke.fighters()[0].lockout_remaining, 0);
+            assert_eq!(
+                juke.fighters()[0].resource,
+                MAX_RESOURCE,
+                "a cancelled or moved-out-of cast spends nothing"
+            );
             assert_eq!(
                 juke.fighters()[1].cooldown_remaining(SpellId::Quell),
                 QUELL_COOLDOWN_TICKS - 1,

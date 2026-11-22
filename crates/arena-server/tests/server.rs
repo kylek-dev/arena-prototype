@@ -769,7 +769,7 @@ async fn a_round_that_reaches_the_time_limit_ends_in_a_time_limit_draw() {
 #[tokio::test]
 async fn server_judges_timed_casts_resources_cooldowns_and_interrupts_over_websockets() {
     use arena_protocol::{WireAction, WireInterruptReason, WireSpell};
-    use arena_sim::spells::{MEND_CAST_TICKS, MEND_COST, RIFT_BOLT_CAST_TICKS, RIFT_BOLT_COST};
+    use arena_sim::spells::{MEND_CAST_TICKS, RIFT_BOLT_CAST_TICKS, RIFT_BOLT_COST};
 
     // Ticks run at 200 Hz (5 ms) in this test, so allow proportional message rate while walking into range.
     let mut cfg = config(true);
@@ -807,11 +807,12 @@ async fn server_judges_timed_casts_resources_cooldowns_and_interrupts_over_webso
             })
         })
         .await;
-    assert_eq!(started.fighters[0].resource, 100 - MEND_COST);
+    // Timed casts charge on completion, so starting Mend spends nothing.
+    assert_eq!(started.fighters[0].resource, 100);
     assert!(started.fighters[0].gcd_remaining > 0);
     assert!(started.fighters[0].active_cast.is_some());
 
-    // Moving cancels the stationary Mend cast with Moved and does not refund resource.
+    // Moving cancels the stationary Mend cast with Moved, and it spends nothing.
     first.input(forward()).await;
     let cancelled = first
         .snapshot_until(|s| {
@@ -828,6 +829,7 @@ async fn server_judges_timed_casts_resources_cooldowns_and_interrupts_over_webso
         .await;
     assert_eq!(cancelled.fighters[0].active_cast, None);
     assert_eq!(cancelled.fighters[0].cooldowns[3], 0);
+    assert_eq!(cancelled.fighters[0].resource, 100);
 
     // Both players walk toward center until within Quell range (8 m).
     let mut latest = cancelled;
@@ -900,6 +902,8 @@ async fn server_judges_timed_casts_resources_cooldowns_and_interrupts_over_webso
         .await;
     assert_eq!(interrupted.fighters[0].active_cast, None);
     assert!(interrupted.fighters[0].lockout_remaining > 0);
+    // Neither the cancelled Mend nor the interrupted Rift Bolt spent anything.
+    assert_eq!(interrupted.fighters[0].resource, 100);
     assert_eq!(interrupted.fighters[1].health, 100);
 
     // Seat 0 tries to Pulse while locked out -> Silenced rejection.
