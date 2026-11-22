@@ -80,6 +80,7 @@ pub fn decide(actor: usize, tick: u64, fighters: &[Combatant], rng: &mut Rng) ->
             facing: Some(facing),
             jump: false,
             action: None,
+            rewind_ticks: 0,
         };
     }
 
@@ -141,6 +142,7 @@ pub fn decide(actor: usize, tick: u64, fighters: &[Combatant], rng: &mut Rng) ->
                 spell: SpellId::Quell,
                 target: Some(victim),
             }),
+            rewind_ticks: 0,
         };
     }
 
@@ -165,6 +167,7 @@ pub fn decide(actor: usize, tick: u64, fighters: &[Combatant], rng: &mut Rng) ->
                 spell: SpellId::RiftBolt,
                 target: Some(index),
             }),
+            rewind_ticks: 0,
         };
     }
 
@@ -182,6 +185,7 @@ pub fn decide(actor: usize, tick: u64, fighters: &[Combatant], rng: &mut Rng) ->
         } else {
             None
         },
+        rewind_ticks: 0,
     }
 }
 

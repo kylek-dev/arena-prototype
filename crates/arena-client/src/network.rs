@@ -24,7 +24,7 @@
 use std::collections::VecDeque;
 use std::sync::OnceLock;
 
-use arena_protocol::prediction::{Pacer, Predictor, TickRate};
+use arena_protocol::prediction::{InterpDelay, Pacer, Predictor, TickRate};
 use arena_protocol::{
     ClientMessage, ErrorCode, FighterState, InputFrame, ServerMessage, WireAction, WireEvent,
 };
@@ -36,9 +36,6 @@ use arena_sim::map::Layout;
 use arena_sim::spells::SpellId;
 use bevy::math::Vec3;
 
-/// Ticks the view trails the newest snapshot: 100 ms at 30 Hz, enough to
-/// ride out moderate jitter.
-pub const INTERPOLATION_DELAY: f64 = 3.0;
 /// Snapshots kept for interpolation (a little over two seconds).
 const BUFFER: usize = 72;
 /// Beyond this many ticks of error the view clock snaps instead of easing.
@@ -220,6 +217,10 @@ pub struct Session {
     pacer: Pacer,
     /// The server's tick rate on this client's clock.
     tick_rate: TickRate,
+    /// Adaptive remote-fighter interpolation delay (ticks).
+    interp_delay: InterpDelay,
+    /// Monotonic server tick of remote fighters last rendered in [`Self::view`].
+    last_view_tick: u64,
     /// The frame (its `now`) of the latest input, and inputs sent in it.
     frame_inputs: (f64, u32),
     /// When recent fixed steps ran and inputs were sent (the last second).
@@ -296,6 +297,8 @@ impl Session {
             self.predictor.reset();
             self.pacer.reset();
             self.tick_rate.reset();
+            self.interp_delay.reset();
+            self.last_view_tick = 0;
             self.frame_inputs = (f64::NAN, 0);
             self.own = None;
         }
@@ -315,11 +318,18 @@ impl Session {
                         self.phase = Phase::Closed(ErrorCode::Malformed);
                         continue;
                     }
-                    if self.seat != Some(seat) || self.order.len() != count {
-                        // A different seat or match: nothing buffered applies.
+                    if self.seat != Some(seat)
+                        || self.order.len() != count
+                        || self
+                            .snapshots
+                            .back()
+                            .is_some_and(|newest| newest.tick > welcome.tick)
+                    {
+                        // A different seat, match, or tick rewind: nothing buffered applies.
                         self.snapshots.clear();
                         self.events.clear();
                         self.view_tick = None;
+                        self.last_view_tick = 0;
                         self.heading_taken = false;
                     }
                     self.seat = Some(seat);
@@ -411,7 +421,15 @@ impl Session {
                         Phase::Waiting
                     };
                     // Out-of-order or repeated ticks cannot happen over one
-                    // TCP stream, but a reconnect may rewind; keep order.
+                    // TCP stream, but a reconnect or new match may rewind; keep order.
+                    let rewound = self
+                        .snapshots
+                        .back()
+                        .is_some_and(|newest| newest.tick > snapshot.tick);
+                    if rewound || snapshot.tick < self.last_view_tick {
+                        self.last_view_tick = 0;
+                        self.view_tick = None;
+                    }
                     while self
                         .snapshots
                         .back()
@@ -439,7 +457,10 @@ impl Session {
                 ServerMessage::Error(code) => self.phase = Phase::Closed(code),
             }
         }
-        self.tick_rate.observe_frame(now, frame_ticks);
+        self.tick_rate
+            .observe_frame(now, frame_ticks.iter().copied());
+        self.interp_delay
+            .observe_frame(now, frame_ticks, self.tick_rate.rate());
         self.reconcile(layout);
         rejections
     }
@@ -508,6 +529,12 @@ impl Session {
     /// inputs at (before pacing) and to advance the view by.
     pub fn tick_rate(&self) -> f64 {
         self.tick_rate.rate()
+    }
+
+    /// Current adaptive remote-fighter interpolation delay, in server ticks.
+    #[cfg(test)]
+    pub fn interp_delay_ticks(&self) -> f64 {
+        self.interp_delay.delay_ticks()
     }
 
     /// How much to stretch the fixed input interval so this player's queue
@@ -687,6 +714,7 @@ impl Session {
                     facing: Some(facing),
                     jump,
                     action: None,
+                    rewind_ticks: 0,
                 },
             );
             if let (Some(predicted), Some(own)) = (predicted, self.own.as_mut()) {
@@ -720,6 +748,7 @@ impl Session {
                 facing,
                 jump,
                 action: wire_action,
+                view_tick: self.last_view_tick,
             })
             .encode(),
         )
@@ -746,11 +775,13 @@ impl Session {
         }
         let rate = self.tick_rate.rate();
         let newest = self.snapshots.back()?;
+        let newest_u64 = newest.tick;
         let oldest = self.snapshots.front()?.tick as f64;
-        let newest_tick = newest.tick as f64;
-        // Where the view should be: behind the server's estimated clock.
-        let target =
-            (newest_tick + (now - self.newest_at) * rate - INTERPOLATION_DELAY).max(oldest);
+        let newest_tick = newest_u64 as f64;
+        // Where the view should be: behind the server's estimated clock by the
+        // adaptive interpolation delay (ADR 0049).
+        let delay = self.interp_delay.delay_ticks();
+        let target = (newest_tick + (now - self.newest_at) * rate - delay).max(oldest);
         let mut tick = match self.view_tick {
             Some(tick) if (target - tick).abs() < SNAP => {
                 // Run at real time, then ease a tenth of the remaining error
@@ -762,6 +793,9 @@ impl Session {
         };
         if tick > newest_tick {
             self.stats.underruns += 1;
+            if self.phase == Phase::Playing && newest_u64 > 0 {
+                self.interp_delay.observe_underrun(newest_u64);
+            }
             tick = newest_tick;
         }
         self.view_tick = Some(tick);
@@ -781,6 +815,9 @@ impl Session {
             self.snapshots.pop_front();
         }
         let (a, b) = (&self.snapshots[0], &self.snapshots[b - a]);
+        if self.phase == Phase::Playing && a.tick > 0 {
+            self.last_view_tick = self.last_view_tick.max(a.tick);
+        }
         let span = (b.tick - a.tick) as f64;
         let fraction = if span > 0.0 {
             ((tick - a.tick as f64) / span).clamp(0.0, 1.0) as f32

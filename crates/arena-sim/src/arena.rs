@@ -53,6 +53,10 @@ pub const AXIS_LIMIT: i16 = 1000;
 pub const HALF_TURN: u16 = 0x8000;
 /// Equalized starter haste percentage used for normal GCD calculation (29 ticks at 23%).
 pub const ARENA_HASTE_PERCENTAGE: u32 = Specialisation::Toxicologist.stat_template().haste() as u32;
+/// Maximum ticks of authoritative target-position history retained for bounded
+/// server-side targeting lag compensation (6 ticks = 200 ms at 30 Hz; ADR 0049).
+pub const MAX_LAG_COMP_TICKS: u8 = 6;
+const POSITION_HISTORY_LEN: usize = MAX_LAG_COMP_TICKS as usize;
 pub use crate::spells::{
     INTERRUPT_LOCKOUT_TICKS as LOCKOUT_TICKS, MAX_RESOURCE as ARENA_MAX_RESOURCE,
 };
@@ -181,10 +185,14 @@ pub struct ActorInput {
     pub jump: bool,
     /// Spell cast or cast cancellation for this tick.
     pub action: Option<CastAction>,
+    /// Server-derived bounded target-position rewind in ticks for cast-start
+    /// geometry checks (`0` = present tick only; capped at [`MAX_LAG_COMP_TICKS`]
+    /// inside [`Arena::advance`]). Never carries client coordinates.
+    pub rewind_ticks: u8,
 }
 impl ActorInput {
     pub fn is_idle(&self) -> bool {
-        *self == Self::default()
+        self.movement.is_none() && self.facing.is_none() && !self.jump && self.action.is_none()
     }
 
     /// Convenience helper for the default Pulse attack against `target`.
@@ -330,14 +338,72 @@ pub enum ArenaEvent {
         reason: Rejection,
     },
 }
+/// Fixed-size ring buffer of past authoritative planar fighter positions for
+/// bounded server-side targeting lag compensation (ADR 0049). Zero heap
+/// allocations and strictly deterministic across replays.
 #[derive(Clone, Debug, PartialEq, Eq)]
+struct PositionHistory {
+    entries: [[Position; MAX_TEAM * 2]; POSITION_HISTORY_LEN],
+    next: usize,
+    len: usize,
+}
+impl Default for PositionHistory {
+    fn default() -> Self {
+        Self {
+            entries: [[Position { x: 0, z: 0 }; MAX_TEAM * 2]; POSITION_HISTORY_LEN],
+            next: 0,
+            len: 0,
+        }
+    }
+}
+impl PositionHistory {
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    fn push(&mut self, fighters: &[Combatant]) {
+        let slot = &mut self.entries[self.next];
+        *slot = [Position { x: 0, z: 0 }; MAX_TEAM * 2];
+        for (dst, fighter) in slot.iter_mut().zip(fighters) {
+            *dst = fighter.position;
+        }
+        self.next = (self.next + 1) % POSITION_HISTORY_LEN;
+        if self.len < POSITION_HISTORY_LEN {
+            self.len += 1;
+        }
+    }
+
+    /// Returns `actor`'s authoritative position from `ticks_ago` completed ticks
+    /// prior (`1..=MAX_LAG_COMP_TICKS`), or `None` if unavailable.
+    fn position(&self, ticks_ago: u8, actor: usize) -> Option<Position> {
+        let back = usize::from(ticks_ago);
+        if back == 0 || back > self.len || actor >= MAX_TEAM * 2 {
+            return None;
+        }
+        let index = (self.next + POSITION_HISTORY_LEN - back) % POSITION_HISTORY_LEN;
+        Some(self.entries[index][actor])
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Arena {
     tick: u64,
     max_round_ticks: u64,
     layout: Layout,
     fighters: Vec<Combatant>,
     result: Option<RoundResult>,
+    position_history: PositionHistory,
 }
+impl PartialEq for Arena {
+    fn eq(&self, other: &Self) -> bool {
+        self.tick == other.tick
+            && self.max_round_ticks == other.max_round_ticks
+            && self.layout == other.layout
+            && self.fighters == other.fighters
+            && self.result == other.result
+    }
+}
+impl Eq for Arena {}
 impl Arena {
     /// Practice and match roster: even actors are team 0, odd actors team 1.
     /// Team `t`'s `k`th member starts at that team's `k`th room spawn, facing
@@ -351,19 +417,22 @@ impl Arena {
         if spawns.iter().any(|team| team.len() < team_size) {
             return None;
         }
-        let fighters = (0..team_size * 2)
+        let fighters: Vec<Combatant> = (0..team_size * 2)
             .map(|index| {
                 // Team 0's rooms lie toward +Z, so it faces −Z (angle 0).
                 let facing = if index % 2 == 0 { 0 } else { HALF_TURN };
                 Combatant::new(spawns[index % 2][index / 2], facing)
             })
             .collect();
+        let mut position_history = PositionHistory::default();
+        position_history.push(&fighters);
         Some(Self {
             tick: 0,
             max_round_ticks: MAX_ROUND_TICKS,
             layout,
             fighters,
             result: None,
+            position_history,
         })
     }
 }
@@ -386,6 +455,7 @@ impl Arena {
             layout,
             fighters,
             result,
+            position_history: PositionHistory::default(),
         })
     }
     /// Sets this round's tick limit (`1..=MAX_ROUND_TICKS`), returning `None`
@@ -418,6 +488,7 @@ impl Arena {
         self.fighters.clear();
         self.fighters.extend_from_slice(fighters);
         self.result = result;
+        self.position_history.clear();
         true
     }
     pub fn tick(&self) -> u64 {
@@ -450,6 +521,7 @@ impl Arena {
             return false;
         }
         self.layout = layout;
+        self.position_history.clear();
         true
     }
     pub fn result(&self) -> Option<RoundResult> {
@@ -790,8 +862,17 @@ impl Arena {
                 silence_blocks_spell: self.fighters[actor].lockout_remaining > 0,
                 is_moving: moving[actor],
             };
-            let target_ctx =
-                target.and_then(|t| target_context(pre_combat, &self.layout, actor, t));
+            let target_ctx = target.and_then(|t| {
+                target_context_with_lag_comp(
+                    pre_combat,
+                    &self.position_history,
+                    &self.layout,
+                    actor,
+                    t,
+                    def.range,
+                    input.rewind_ticks,
+                )
+            });
             match casting.try_cast(&mut combat, &mut caster, &def, target_ctx.as_ref()) {
                 Err(error) => {
                     reject(&mut events, actor, rejection_from(error));
@@ -847,6 +928,10 @@ impl Arena {
                 }
             }
         }
+
+        // Record this tick's authoritative post-movement positions so subsequent
+        // ticks can perform bounded server-side targeting lag compensation.
+        self.position_history.push(pre_combat);
 
         // 4c. Apply interrupts, damage, healing, death interrupts, and check round end.
         for (target, pending) in interrupts[..count].iter().enumerate() {
@@ -1060,6 +1145,54 @@ fn target_context(
         is_stunned: false,
         active_effects: &[],
     })
+}
+
+/// Validates target geometry for cast starts, checking present-tick `pre_combat`
+/// first and falling back to at most two bounded server-recorded target
+/// positions (`clamped` and `clamped - 1` ticks ago, matching a client's
+/// `[floor(view_tick), ceil(view_tick)]` interpolation bracket).
+///
+/// Both range and line of sight must hold simultaneously at the same historical
+/// tick from the caster's present authoritative position; target health/liveness
+/// and team identity always stay strictly present-tick.
+fn target_context_with_lag_comp(
+    fighters: &[Combatant],
+    history: &PositionHistory,
+    layout: &Layout,
+    actor: usize,
+    target: usize,
+    spell_range: u16,
+    rewind_ticks: u8,
+) -> Option<TargetContext<'static>> {
+    let present = target_context(fighters, layout, actor, target)?;
+    if rewind_ticks == 0 || actor == target || present.health == 0 {
+        return Some(present);
+    }
+    let range_sq = u64::from(spell_range).pow(2);
+    if present.distance_squared <= range_sq && present.has_line_of_sight {
+        return Some(present);
+    }
+    let attacker = fighters[actor].position;
+    let clamped = rewind_ticks.min(MAX_LAG_COMP_TICKS);
+    let candidates = if clamped > 1 {
+        [Some(clamped), Some(clamped - 1)]
+    } else {
+        [Some(clamped), None]
+    };
+    for ticks_ago in candidates.into_iter().flatten() {
+        let Some(hist_pos) = history.position(ticks_ago, target) else {
+            continue;
+        };
+        let dist_sq = attacker.distance_squared(hist_pos) as u64;
+        if dist_sq <= range_sq && layout.line_of_sight(attacker, hist_pos) {
+            return Some(TargetContext {
+                distance_squared: dist_sq,
+                has_line_of_sight: true,
+                ..present
+            });
+        }
+    }
+    Some(present)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2012,6 +2145,7 @@ mod tests {
             facing: Some(42),
             jump: true,
             action: ActorInput::pulse(1),
+            rewind_ticks: 0,
         };
         assert_eq!(
             a.advance(&[input]),
@@ -2041,6 +2175,7 @@ mod tests {
             tick: 7,
             max_round_ticks: MAX_ROUND_TICKS,
             layout: fixture(),
+            position_history: PositionHistory::default(),
             fighters: vec![
                 Combatant {
                     position: Position {
@@ -2822,5 +2957,287 @@ mod tests {
             vec![rejected(0, Rejection::Moving)]
         );
     }
+    #[test]
+    fn bounded_lag_comp_rewinds_fleeing_target_without_range_creep_or_overflow() {
+        // Place enemy at 5,800 mm (in Pulse 6,000 mm range) and record that tick.
+        let mut base = close_quarters(1, 5_800);
+        base.position_history.clear();
+        base.position_history.push(&base.fighters);
+
+        // Enemy flees +X at 240 mm/tick for 3 ticks: 5,800 -> 6,040 -> 6,280 -> 6,520 mm.
+        let flee = ActorInput {
+            movement: Some(Axes { x: 1000, z: 0 }),
+            ..ActorInput::default()
+        };
+        for _ in 0..3 {
+            base.advance(&[ActorInput::default(), flee]);
+        }
+        assert_eq!(base.fighters[1].position.x, 6_520);
+
+        // Present-tick cast (rewind_ticks = 0) rejects OutOfRange.
+        let mut strict = base.clone();
+        assert_eq!(
+            strict.advance(&[
+                ActorInput {
+                    action: ActorInput::pulse(1),
+                    rewind_ticks: 0,
+                    ..ActorInput::default()
+                },
+                ActorInput::default(),
+            ]),
+            vec![rejected(0, Rejection::OutOfRange)]
+        );
+
+        // Rewinding 4 ticks reaches the tick before fleeing (5,800 mm, in range): succeeds!
+        // Note: on the cast tick itself `pre_combat` is at 6,520 (post_tick = 4), so
+        // 4 ticks ago is tick 0 (5,800 mm) and 3 ticks ago is tick 1 (6,040 mm).
+        let mut rewound = base.clone();
+        let events = rewound.advance(&[
+            ActorInput {
+                action: ActorInput::pulse(1),
+                rewind_ticks: 4,
+                ..ActorInput::default()
+            },
+            ActorInput::default(),
+        ]);
+        assert_eq!(
+            events,
+            vec![ArenaEvent::Hit {
+                actor: 0,
+                target: 1,
+                damage: ATTACK_DAMAGE,
+            }]
+        );
+
+        // Interpolation bracket `[clamped, clamped - 1]`: if target was in range at
+        // `clamped - 1` (e.g., walking into range at 5,800 mm 4 ticks ago while at
+        // 6,040 mm 5 ticks ago), `rewind_ticks = 5` still hits cleanly.
+        let mut bracket = close_quarters(1, 6_040);
+        bracket.position_history.clear();
+        bracket.position_history.push(&bracket.fighters); // 5 ticks ago: 6,040 (out)
+        let approach = ActorInput {
+            movement: Some(Axes { x: -1000, z: 0 }),
+            ..ActorInput::default()
+        };
+        bracket.advance(&[ActorInput::default(), approach]); // 4 ticks ago: 5,800 (in)
+        for _ in 0..3 {
+            bracket.advance(&[ActorInput::default(), flee]); // 6,040 -> 6,280 -> 6,520
+        }
+        let events = bracket.advance(&[
+            ActorInput {
+                action: ActorInput::pulse(1),
+                rewind_ticks: 5,
+                ..ActorInput::default()
+            },
+            ActorInput::default(),
+        ]);
+        assert!(events.iter().any(|e| matches!(e, ArenaEvent::Hit { .. })));
+
+        // Hard cap: fleeing for MAX_LAG_COMP_TICKS + 1 ticks leaves EVERY slot in
+        // history out of range; even `rewind_ticks = u8::MAX` must reject OutOfRange.
+        let mut capped = close_quarters(1, 5_800);
+        capped.position_history.clear();
+        capped.position_history.push(&capped.fighters);
+        for _ in 0..=MAX_LAG_COMP_TICKS {
+            capped.advance(&[ActorInput::default(), flee]);
+        }
+        assert_eq!(
+            capped.advance(&[
+                ActorInput {
+                    action: ActorInput::pulse(1),
+                    rewind_ticks: u8::MAX,
+                    ..ActorInput::default()
+                },
+                ActorInput::default(),
+            ]),
+            vec![rejected(0, Rejection::OutOfRange)]
+        );
+
+        // Zero range creep against stationary targets: standing 1 mm out of range
+        // (6,001 mm) is ALWAYS rejected even with full `MAX_LAG_COMP_TICKS` rewind.
+        let mut stationary = close_quarters(1, ATTACK_RANGE + 1);
+        stationary.position_history.clear();
+        for _ in 0..MAX_LAG_COMP_TICKS {
+            stationary.advance(&[]);
+        }
+        assert_eq!(
+            stationary.advance(&[ActorInput {
+                action: ActorInput::pulse(1),
+                rewind_ticks: MAX_LAG_COMP_TICKS,
+                ..ActorInput::default()
+            }]),
+            vec![rejected(0, Rejection::OutOfRange)]
+        );
+    }
+
+    #[test]
+    fn bounded_lag_comp_respects_pillar_los_no_mix_and_match_and_strict_completion() {
+        use crate::spells::{RIFT_BOLT_CAST_TICKS, RIFT_BOLT_RANGE};
+        let layout = fixture();
+        let pillar = layout.pillars[0];
+        // Caster sits directly south of pillar[0]; target starts east of the
+        // pillar in clear view, then steps directly north behind the pillar.
+        let caster_pos = Position {
+            x: pillar.center.x,
+            z: pillar.center.z + pillar.half_z + 1_000,
+        };
+        let hidden_pos = Position {
+            x: pillar.center.x,
+            z: pillar.center.z - pillar.half_z - 1_000,
+        };
+        let visible_pos = Position {
+            x: pillar.center.x + pillar.half_x + 1_500,
+            z: caster_pos.z,
+        };
+        assert!(layout.walkable(caster_pos));
+        assert!(layout.walkable(hidden_pos));
+        assert!(layout.walkable(visible_pos));
+        assert!(layout.line_of_sight(caster_pos, visible_pos));
+        assert!(!layout.line_of_sight(caster_pos, hidden_pos));
+        assert!(caster_pos.distance_squared(hidden_pos) <= i64::from(RIFT_BOLT_RANGE).pow(2));
+        assert!(caster_pos.distance_squared(visible_pos) <= i64::from(RIFT_BOLT_RANGE).pow(2));
+
+        let mut arena = Arena::practice(layout.clone(), 1).unwrap();
+        arena.fighters[0].position = caster_pos;
+        arena.fighters[1].position = visible_pos;
+        arena.position_history.clear();
+        arena.position_history.push(&arena.fighters); // 3 ticks ago: visible & in range
+        arena.fighters[1].position = hidden_pos;
+        arena.advance(&[]); // 2 ticks ago: hidden
+        arena.advance(&[]); // 1 tick ago: hidden
+
+        // Present tick rejects LineOfSight; rewinding 3 ticks starts RiftBolt cleanly.
+        let mut strict = arena.clone();
+        assert_eq!(
+            strict.advance(&[ActorInput {
+                action: Some(CastAction::Cast {
+                    spell: SpellId::RiftBolt,
+                    target: Some(1),
+                }),
+                rewind_ticks: 0,
+                ..ActorInput::default()
+            }]),
+            vec![rejected(0, Rejection::LineOfSight)]
+        );
+
+        let mut rewound = arena.clone();
+        let events = rewound.advance(&[ActorInput {
+            action: Some(CastAction::Cast {
+                spell: SpellId::RiftBolt,
+                target: Some(1),
+            }),
+            rewind_ticks: 3,
+            ..ActorInput::default()
+        }]);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            ArenaEvent::CastStarted {
+                spell: SpellId::RiftBolt,
+                ..
+            }
+        )));
+
+        // Timed cast completions (Phase 4a) do NOT rewind: target staying hidden
+        // interrupts RiftBolt on its completion tick as LineOfSight.
+        for _ in 1..RIFT_BOLT_CAST_TICKS {
+            assert_eq!(rewound.advance(&[]), vec![]);
+        }
+        assert_eq!(
+            rewound.advance(&[]),
+            vec![ArenaEvent::CastInterrupted {
+                actor: 0,
+                spell: SpellId::RiftBolt,
+                reason: InterruptReason::LineOfSight,
+                by: None,
+            }]
+        );
+
+        // No mix-and-match across ticks: target was visible but OUT OF RANGE 3 ticks ago,
+        // and is IN RANGE but BEHIND PILLAR on the present tick -> must still reject!
+        let far_visible = Position {
+            x: caster_pos.x + 15_000,
+            z: caster_pos.z,
+        };
+        assert!(layout.line_of_sight(caster_pos, far_visible));
+        assert!(caster_pos.distance_squared(far_visible) > i64::from(RIFT_BOLT_RANGE).pow(2));
+        let mut mix = Arena::practice(layout.clone(), 1).unwrap();
+        mix.fighters[0].position = caster_pos;
+        mix.fighters[1].position = far_visible;
+        mix.position_history.clear();
+        mix.position_history.push(&mix.fighters);
+        mix.fighters[1].position = hidden_pos;
+        mix.advance(&[]);
+        mix.advance(&[]);
+        assert_eq!(
+            mix.advance(&[ActorInput {
+                action: Some(CastAction::Cast {
+                    spell: SpellId::RiftBolt,
+                    target: Some(1),
+                }),
+                rewind_ticks: 3,
+                ..ActorInput::default()
+            }]),
+            vec![rejected(0, Rejection::LineOfSight)]
+        );
+
+        // Target liveness is strictly present-tick: a dead target cannot be hit via rewind
+        // (2v2 keeps the match running via the living teammate).
+        let mut dead = close_quarters(2, 3_000);
+        dead.position_history.clear();
+        dead.position_history.push(&dead.fighters);
+        dead.fighters[1].health = 0;
+        assert_eq!(
+            dead.advance(&[ActorInput {
+                action: ActorInput::pulse(1),
+                rewind_ticks: 1,
+                ..ActorInput::default()
+            }]),
+            vec![rejected(0, Rejection::InvalidTarget)]
+        );
+
+        // Relayout clears position history so pre-relayout positions cannot be reused.
+        let mut relayout_arena = close_quarters(1, 5_800);
+        relayout_arena.position_history.clear();
+        relayout_arena
+            .position_history
+            .push(&relayout_arena.fighters);
+        relayout_arena.fighters[1].position.x = 6_500;
+        assert!(relayout_arena.relayout(layout));
+        assert_eq!(
+            relayout_arena.advance(&[ActorInput {
+                action: ActorInput::pulse(1),
+                rewind_ticks: 1,
+                ..ActorInput::default()
+            }]),
+            vec![rejected(0, Rejection::OutOfRange)]
+        );
+    }
+
+    #[test]
+    fn lag_comp_replay_is_deterministic() {
+        let mut a = close_quarters(1, 5_800);
+        let mut b = a.clone();
+        let flee = ActorInput {
+            movement: Some(Axes { x: 1000, z: 0 }),
+            ..ActorInput::default()
+        };
+        let cast = ActorInput {
+            action: ActorInput::pulse(1),
+            rewind_ticks: 3,
+            ..ActorInput::default()
+        };
+        for tick in 0..8 {
+            let slots = if tick == 3 {
+                [cast, flee]
+            } else {
+                [ActorInput::default(), flee]
+            };
+            assert_eq!(a.advance(&slots), b.advance(&slots));
+            assert_eq!(a.state_hash(), b.state_hash());
+            assert_eq!(a, b);
+            assert_eq!(a.position_history, b.position_history);
+        }
+    }
+
     const GOLDEN_STATE_HASH: u64 = 2_147_620_522_866_943_910;
 }

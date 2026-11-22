@@ -152,7 +152,11 @@ casts that actually reached geometry validation while client-perceived in-range
   positional gap.
 - **Recommendation:** Worth addressing in a dedicated follow-up ADR (server-side
   bounded range forgiveness / history-rewind lag compensation and/or adaptive
-  interpolation delay on low-jitter links).
+  interpolation delay on low-jitter links). **Follow-up (2026-11-21):**
+  implemented in [ADR 0049](../decisions/0049-bounded-targeting-lag-comp-and-adaptive-interp.md),
+  which reduced `OutOfRange` disagreements to **0.18–0.57%** across 0–100 ms RTT
+  (from 7.94–9.26%), **6.42%** at 200 ms RTT (from 15.46%), and **8.12%** under
+  2% TCP loss + 40 ms clumping (from 18.40%).
 
 ---
 

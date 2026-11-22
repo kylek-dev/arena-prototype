@@ -139,6 +139,7 @@ fn inputs_carry_this_seats_intent_with_targets_in_server_numbering() {
             jump: true,
             // Local 1 (the enemy) is server actor 0.
             action: InputFrame::pulse(0),
+            view_tick: 0,
         }))
     );
     // Non-Pulse spells translate local target indices through seat ordering too.
@@ -165,6 +166,7 @@ fn inputs_carry_this_seats_intent_with_targets_in_server_numbering() {
                 spell: arena_protocol::WireSpell::RiftBolt,
                 target: Some(0),
             },
+            view_tick: 0,
         }))
     );
     let mend = session
@@ -190,6 +192,7 @@ fn inputs_carry_this_seats_intent_with_targets_in_server_numbering() {
                 spell: arena_protocol::WireSpell::Mend,
                 target: Some(1),
             },
+            view_tick: 0,
         }))
     );
     // An acknowledgement 0.1 s later measures input latency.
@@ -429,6 +432,7 @@ fn forward() -> ActorInput {
         facing: Some(0),
         jump: false,
         action: None,
+        rewind_ticks: 0,
     }
 }
 
@@ -518,6 +522,7 @@ fn nothing_is_predicted_while_waiting_and_a_new_socket_starts_over() {
         facing: 0,
         jump: false,
         action: WireAction::None,
+        view_tick: 0,
     }
     .merge_into(&mut slot);
     server.advance(&[slot]);
@@ -814,5 +819,121 @@ fn cast_and_interrupt_events_and_active_cast_targets_translate_to_local_numberin
                 by: Some(0),
             },
         ]
+    );
+}
+
+#[test]
+fn adaptive_interp_delay_shrinks_on_clean_links_and_reports_monotonic_view_tick() {
+    use arena_protocol::prediction::MIN_INTERP_DELAY_TICKS;
+
+    let mut server = Arena::practice(layout(), 1).unwrap();
+    let mut session = joined(0, 1);
+    let mut prev_view_tick = 0u64;
+
+    // Deliver 120 steady 30 Hz snapshots: adaptive delay should relax down to
+    // MIN_INTERP_DELAY_TICKS (~41.7 ms) and emitted InputFrame.view_tick must
+    // stay monotonic and match the rendered view.
+    for tick in 1..=120u64 {
+        server.step(&[]);
+        let now = tick as f64 / 30.0;
+        session.receive(
+            &feed(1, vec![snapshot(&server, 0, vec![], &[true, true])]),
+            now,
+            &layout(),
+        );
+        let view = session.view(1.0 / 30.0, now).unwrap();
+        let frame = session.input([0, 0], 0, false, None, now).unwrap();
+        let Ok(ClientMessage::Input(input)) = ClientMessage::decode(&frame) else {
+            panic!("expected Input frame");
+        };
+        assert!(input.view_tick >= prev_view_tick);
+        assert!(input.view_tick >= view.tick);
+        assert!(input.view_tick <= tick);
+        prev_view_tick = input.view_tick;
+    }
+    assert!(
+        (session.interp_delay_ticks() - MIN_INTERP_DELAY_TICKS).abs() < 1e-6,
+        "expected clean link to relax to min delay, got {}",
+        session.interp_delay_ticks()
+    );
+    assert!(
+        session.stats.delay_ms < 55.0,
+        "delay_ms={}",
+        session.stats.delay_ms
+    );
+
+    // An abrupt stall that triggers a view underrun must expand the adaptive delay.
+    let before = session.interp_delay_ticks();
+    let _ = session.view(0.5, 120.0 / 30.0 + 0.5).unwrap();
+    assert!(session.stats.underruns >= 1);
+    assert!(session.interp_delay_ticks() > before);
+}
+
+#[test]
+fn waiting_frames_do_not_bump_interp_delay_and_rematch_resets_stale_view_tick() {
+    use arena_protocol::prediction::DEFAULT_INTERP_DELAY_TICKS;
+
+    // 1. Multiple rendered frames during Phase::Waiting (tick 0) must not bump
+    // adaptive interpolation delay above its initial default.
+    let waiting_server = Arena::practice(layout(), 1).unwrap();
+    let mut session = joined(0, 1);
+    session.receive(
+        &feed(
+            1,
+            vec![snapshot(&waiting_server, 0, vec![], &[true, false])],
+        ),
+        0.0,
+        &layout(),
+    );
+    assert_eq!(session.phase, Phase::Waiting);
+    for frame_idx in 1..=10 {
+        let now = f64::from(frame_idx) / 60.0;
+        let _ = session.view(1.0 / 60.0, now);
+    }
+    assert_eq!(session.interp_delay_ticks(), DEFAULT_INTERP_DELAY_TICKS);
+
+    // 2. Match 1 advances to tick 50; then a new match (generation 2, same seat 0
+    // and same team_size 1) greets with Welcome { tick: 0 }. Even if view() runs
+    // between Welcome and the first Snapshot, match 2 inputs must never leak
+    // match 1's stale view_tick.
+    let mut match1 = Arena::practice(layout(), 1).unwrap();
+    for tick in 1..=50u64 {
+        match1.step(&[]);
+        let now = tick as f64 / 30.0;
+        session.receive(
+            &feed(1, vec![snapshot(&match1, 0, vec![], &[true, true])]),
+            now,
+            &layout(),
+        );
+        let _ = session.view(1.0 / 30.0, now);
+    }
+    assert!(session.last_view_tick >= 40);
+
+    // Rematch on the exact same seat & team_size.
+    session.receive(&feed(2, vec![welcome(0, 1)]), 5.0, &layout());
+    assert!(session.view(1.0 / 60.0, 5.016).is_none());
+    let mut match2 = Arena::practice(layout(), 1).unwrap();
+    session.receive(
+        &feed(2, vec![snapshot(&match2, 0, vec![], &[true, false])]),
+        5.05,
+        &layout(),
+    );
+    let _ = session.view(1.0 / 60.0, 5.066);
+    match2.step(&[]);
+    session.receive(
+        &feed(2, vec![snapshot(&match2, 0, vec![], &[true, true])]),
+        5.10,
+        &layout(),
+    );
+    let _ = session.view(1.0 / 60.0, 5.116);
+    let frame = session.input([0, 0], 0, false, None, 5.116).unwrap();
+    let Ok(ClientMessage::Input(input)) = ClientMessage::decode(&frame) else {
+        panic!("expected Input frame");
+    };
+    assert!(
+        input.view_tick <= match2.tick(),
+        "stale view_tick {} leaked past match2 tick {}",
+        input.view_tick,
+        match2.tick()
     );
 }

@@ -139,6 +139,7 @@ fn inputs_apply_one_per_tick_in_order_and_only_to_their_seat() {
         facing: 77,
         jump: true,
         action: arena_protocol::WireAction::None,
+        view_tick: 0,
     };
     session.receive(0, conn(0), frame(1));
     session.receive(0, conn(0), second);
@@ -923,4 +924,360 @@ fn session_enforces_authoritative_casts_interrupts_lockout_and_reconnect_preserv
             .iter()
             .any(|e| matches!(e.event, WireEvent::Rejected(_)))
     );
+}
+
+#[test]
+fn session_enforces_monotonic_bounded_view_tick_for_targeting_lag_comp() {
+    use arena_sim::arena::{ATTACK_DAMAGE, ATTACK_RANGE, Combatant, Position};
+    let layout = arena_map::colosseum().layout;
+    // Start fighters at 5,800 mm apart (within Pulse 6,000 mm range).
+    let fighters = vec![
+        Combatant::new(Position { x: 0, z: 0 }, 0),
+        Combatant::new(Position { x: 5_800, z: 0 }, 0),
+    ];
+    let arena = Arena::restore(layout, 0, fighters, None).unwrap();
+    let mut session = Session::new(arena, 1, Limits::default(), Arc::default());
+    session.attach(0, conn(0));
+    session.attach(1, conn(1));
+    // Transition Waiting -> Running.
+    session.tick();
+    // Tick 1: record in-range position (5,800 mm) in Arena history.
+    session.tick();
+    assert_eq!(session.arena().tick(), 1);
+
+    // Seat 1 flees +X for 3 ticks (5,800 -> 6,040 -> 6,280 -> 6,520 mm).
+    for seq in 1..=3u32 {
+        session.receive(
+            1,
+            conn(1),
+            InputFrame {
+                seq,
+                movement: [1000, 0],
+                ..InputFrame::default()
+            },
+        );
+        session.tick();
+    }
+    assert_eq!(session.arena().tick(), 4);
+    assert_eq!(session.arena().fighters()[1].position.x, 6_520);
+
+    // 1. Future view_tick (u64::MAX) clamps to post_tick (zero rewind) -> OutOfRange!
+    session.receive(
+        0,
+        conn(0),
+        InputFrame {
+            seq: 1,
+            action: InputFrame::pulse(1),
+            view_tick: u64::MAX,
+            ..InputFrame::default()
+        },
+    );
+    let out = session.tick();
+    assert!(
+        snapshot(&out, conn(0))
+            .unwrap()
+            .events
+            .iter()
+            .any(|e| e.event == WireEvent::Rejected(WireRejection::OutOfRange))
+    );
+
+    // 2. Monotonic clamp: because seat 0 already claimed view_tick >= 5, attempting to
+    // shop backwards to tick 1 must NOT grant rewind -> still OutOfRange!
+    session.receive(
+        0,
+        conn(0),
+        InputFrame {
+            seq: 2,
+            action: InputFrame::pulse(1),
+            view_tick: 1,
+            ..InputFrame::default()
+        },
+    );
+    let out = session.tick();
+    assert!(
+        snapshot(&out, conn(0))
+            .unwrap()
+            .events
+            .iter()
+            .any(|e| e.event == WireEvent::Rejected(WireRejection::OutOfRange))
+    );
+
+    // 3. Reconnecting must NOT reset monotonic max_view_tick.
+    session.attach(0, 777);
+    session.receive(
+        0,
+        777,
+        InputFrame {
+            seq: 1,
+            action: InputFrame::pulse(1),
+            view_tick: 1,
+            ..InputFrame::default()
+        },
+    );
+    let out = session.tick();
+    assert!(
+        snapshot(&out, 777)
+            .unwrap()
+            .events
+            .iter()
+            .any(|e| e.event == WireEvent::Rejected(WireRejection::OutOfRange))
+    );
+
+    // 4. Honest lagged client (fresh session) reporting view_tick = 1 (when target
+    // was at 5,800 mm) hits cleanly within the 6-tick cap!
+    let fighters = vec![
+        Combatant::new(Position { x: 0, z: 0 }, 0),
+        Combatant::new(Position { x: 5_800, z: 0 }, 0),
+    ];
+    let arena = Arena::restore(arena_map::colosseum().layout, 0, fighters, None).unwrap();
+    let mut honest = Session::new(arena, 1, Limits::default(), Arc::default());
+    honest.attach(0, conn(0));
+    honest.attach(1, conn(1));
+    honest.tick(); // Waiting -> Running
+    honest.tick(); // Tick 1 records 5,800 mm
+    for seq in 1..=3u32 {
+        honest.receive(
+            1,
+            conn(1),
+            InputFrame {
+                seq,
+                movement: [1000, 0],
+                ..InputFrame::default()
+            },
+        );
+        honest.tick();
+    }
+    assert!(honest.arena().fighters()[1].position.x > ATTACK_RANGE);
+    honest.receive(
+        0,
+        conn(0),
+        InputFrame {
+            seq: 1,
+            action: InputFrame::pulse(1),
+            view_tick: 1,
+            ..InputFrame::default()
+        },
+    );
+    let out = honest.tick();
+    let snap0 = snapshot(&out, conn(0)).unwrap();
+    assert!(snap0.events.iter().any(|e| matches!(
+        e.event,
+        WireEvent::Hit {
+            actor: 0,
+            target: 1,
+            damage
+        } if damage == ATTACK_DAMAGE
+    )));
+}
+
+#[test]
+fn session_view_tick_zero_cap_and_backlog_folding_preserve_lag_comp_boundaries() {
+    use arena_sim::arena::{ATTACK_DAMAGE, Combatant, MAX_LAG_COMP_TICKS, Position};
+    let layout = arena_map::colosseum().layout;
+
+    // 1. view_tick == 0 yields 0 rewind without modifying max_view_tick, so a
+    // subsequent honest view_tick still works; fleeing past MAX_LAG_COMP_TICKS
+    // is strictly rejected even with view_tick = 1.
+    let fighters = vec![
+        Combatant::new(Position { x: 0, z: 0 }, 0),
+        Combatant::new(Position { x: 5_800, z: 0 }, 0),
+    ];
+    let arena = Arena::restore(layout.clone(), 0, fighters, None).unwrap();
+    let mut session = Session::new(arena, 1, Limits::default(), Arc::default());
+    session.attach(0, conn(0));
+    session.attach(1, conn(1));
+    session.tick(); // Waiting -> Running
+    session.tick(); // tick 1 records 5,800 mm
+    for seq in 1..=2u32 {
+        session.receive(
+            1,
+            conn(1),
+            InputFrame {
+                seq,
+                movement: [1000, 0],
+                ..InputFrame::default()
+            },
+        );
+        session.tick();
+    }
+    // At tick 3, target is at 6,280 mm (out of 6,000 mm range).
+    // view_tick = 0 must reject OutOfRange without poisoning max_view_tick.
+    session.receive(
+        0,
+        conn(0),
+        InputFrame {
+            seq: 1,
+            action: InputFrame::pulse(1),
+            view_tick: 0,
+            ..InputFrame::default()
+        },
+    );
+    let out = session.tick();
+    assert!(
+        snapshot(&out, conn(0))
+            .unwrap()
+            .events
+            .iter()
+            .any(|e| e.event == WireEvent::Rejected(WireRejection::OutOfRange))
+    );
+    // Honest view_tick = 1 on the next tick (rewind = 5 - 1 = 4 <= 6) still hits!
+    session.receive(
+        0,
+        conn(0),
+        InputFrame {
+            seq: 2,
+            action: InputFrame::pulse(1),
+            view_tick: 1,
+            ..InputFrame::default()
+        },
+    );
+    let out = session.tick();
+    assert!(snapshot(&out, conn(0)).unwrap().events.iter().any(|e| {
+        matches!(
+            e.event,
+            WireEvent::Hit {
+                actor: 0,
+                target: 1,
+                damage
+            } if damage == ATTACK_DAMAGE
+        )
+    }));
+
+    // Advance past MAX_LAG_COMP_TICKS + 2 ticks and reset Pulse cooldown so we test the cap.
+    for _ in 0..(arena_sim::spells::PULSE_COOLDOWN_TICKS + u32::from(MAX_LAG_COMP_TICKS)) {
+        session.tick();
+    }
+    session.receive(
+        0,
+        conn(0),
+        InputFrame {
+            seq: 3,
+            action: InputFrame::pulse(1),
+            view_tick: 1,
+            ..InputFrame::default()
+        },
+    );
+    let out = session.tick();
+    assert!(
+        snapshot(&out, conn(0))
+            .unwrap()
+            .events
+            .iter()
+            .any(|e| e.event == WireEvent::Rejected(WireRejection::OutOfRange))
+    );
+
+    // 2. Backlog folding: when [Cast(Pulse, view_tick=1), None(view_tick=post_tick)]
+    // fold into one tick after FOLD_AFTER ticks over MAX_BACKLOG, the cast keeps
+    // its originating frame's rewind_ticks and still lands!
+    let fighters = vec![
+        Combatant::new(Position { x: 0, z: 0 }, 0),
+        Combatant::new(Position { x: 5_800, z: 0 }, 0),
+    ];
+    let arena = Arena::restore(layout, 0, fighters, None).unwrap();
+    let mut folding = Session::new(arena, 1, Limits::default(), Arc::default());
+    folding.attach(0, conn(0));
+    folding.attach(1, conn(1));
+    folding.tick(); // Waiting -> Running
+    // Keep seat 0's queue above MAX_BACKLOG for FOLD_AFTER - 1 ticks so the next tick folds.
+    let mut seq0 = 0u32;
+    for _ in 0..=(MAX_BACKLOG + 1) {
+        seq0 += 1;
+        folding.receive(
+            0,
+            conn(0),
+            InputFrame {
+                seq: seq0,
+                ..InputFrame::default()
+            },
+        );
+    }
+    for _ in 0..FOLD_AFTER {
+        folding.tick();
+        seq0 += 1;
+        folding.receive(
+            0,
+            conn(0),
+            InputFrame {
+                seq: seq0,
+                ..InputFrame::default()
+            },
+        );
+    }
+    let in_range_tick = folding.arena().tick();
+    // Now move enemy out of range over 2 ticks while keeping seat 0's backlog full,
+    // and enqueue a Cast with view_tick = in_range_tick followed by a None frame
+    // with view_tick = in_range_tick + 2 that will fold together with it.
+    for seq1 in 1..=2u32 {
+        folding.receive(
+            1,
+            conn(1),
+            InputFrame {
+                seq: seq1,
+                movement: [1000, 0],
+                ..InputFrame::default()
+            },
+        );
+        // Drain one tick and push an extra frame to trigger folding on tick 2.
+        folding.tick();
+        seq0 += 1;
+        folding.receive(
+            0,
+            conn(0),
+            InputFrame {
+                seq: seq0,
+                ..InputFrame::default()
+            },
+        );
+    }
+    assert!(folding.arena().fighters()[1].position.x > arena_sim::arena::ATTACK_RANGE);
+    // Clear existing idle frames and set up exact fold: 2 frames to fold + MAX_BACKLOG trailing.
+    let drain = folding.seats[0].pending.len();
+    for _ in 0..drain {
+        folding.seats[0].pending.pop_front();
+    }
+    folding.seats[0].over_backlog_since = Some(folding.clock.saturating_sub(FOLD_AFTER));
+    seq0 += 1;
+    folding.receive(
+        0,
+        conn(0),
+        InputFrame {
+            seq: seq0,
+            action: InputFrame::pulse(1),
+            view_tick: in_range_tick,
+            ..InputFrame::default()
+        },
+    );
+    seq0 += 1;
+    folding.receive(
+        0,
+        conn(0),
+        InputFrame {
+            seq: seq0,
+            action: WireAction::None,
+            view_tick: folding.arena().tick() + 1,
+            ..InputFrame::default()
+        },
+    );
+    for _ in 0..MAX_BACKLOG {
+        seq0 += 1;
+        folding.receive(
+            0,
+            conn(0),
+            InputFrame {
+                seq: seq0,
+                ..InputFrame::default()
+            },
+        );
+    }
+    let out = folding.tick();
+    assert!(snapshot(&out, conn(0)).unwrap().events.iter().any(|e| {
+        matches!(
+            e.event,
+            WireEvent::Hit {
+                actor: 0,
+                target: 1,
+                damage
+            } if damage == ATTACK_DAMAGE
+        )
+    }));
 }

@@ -91,6 +91,148 @@ const LATE: f64 = 0.02;
 /// 9% off.
 pub const MAX_SKEW: f64 = 0.15;
 
+/// Default/initial remote-fighter interpolation delay in ticks (100 ms at 30 Hz).
+pub const DEFAULT_INTERP_DELAY_TICKS: f64 = 3.0;
+/// Lower bound for adaptive remote interpolation delay (~41.7 ms at 30 Hz):
+/// one full tick span plus a quarter-tick guard so clean links interpolate
+/// smoothly without underrunning while cutting ~58 ms of unnecessary staleness.
+pub const MIN_INTERP_DELAY_TICKS: f64 = 1.25;
+/// Upper bound for adaptive remote interpolation delay (~166.7 ms at 30 Hz).
+pub const MAX_INTERP_DELAY_TICKS: f64 = 5.0;
+/// Sliding window of fresh snapshot arrivals inspected for jitter (~2 s at 30 Hz).
+pub const INTERP_WINDOW: usize = 60;
+/// Minimum fresh samples (~0.5 s) required before relaxing below the initial delay.
+const INTERP_MIN_SAMPLES: usize = 15;
+/// Headroom multiplier over observed 2 s arrival spread.
+const INTERP_HEADROOM: f64 = 1.15;
+/// Fast upward adaptation factor when jitter or clumping spikes.
+const INTERP_RISE_ALPHA: f64 = 0.5;
+/// Smooth downward decay per fresh frame (~0.75 ticks/s at 30 Hz) when links calm down.
+const INTERP_DECAY_PER_FRAME: f64 = 0.025;
+/// Delay bump applied at most once per distinct stalled `newest_tick` on view underrun.
+const INTERP_UNDERRUN_STEP: f64 = 0.5;
+
+/// Adaptive remote-fighter interpolation delay estimator (ADR 0049).
+///
+/// Tracks the arrival offset spread `max(now - tick / rate) - min(now - tick / rate)`
+/// across a two-second sliding window of fresh (non-backlog) snapshots. Storing
+/// `(tick, now)` pairs makes the spread invariant to [`TickRate`] convergence.
+/// Delay expands quickly on jitter/clumping/loss stalls or view underruns and
+/// relaxes slowly back down to [`MIN_INTERP_DELAY_TICKS`] on steady links.
+#[derive(Clone, Debug)]
+pub struct InterpDelay {
+    samples: VecDeque<(u64, f64)>,
+    last_tick: Option<u64>,
+    last_underrun_tick: Option<u64>,
+    delay: f64,
+}
+impl Default for InterpDelay {
+    fn default() -> Self {
+        Self {
+            samples: VecDeque::new(),
+            last_tick: None,
+            last_underrun_tick: None,
+            delay: DEFAULT_INTERP_DELAY_TICKS,
+        }
+    }
+}
+impl InterpDelay {
+    /// Current target interpolation delay in server ticks.
+    pub fn delay_ticks(&self) -> f64 {
+        self.delay
+    }
+
+    /// Records the running snapshot ticks delivered in one frame at local `now`
+    /// under estimated server `rate` (ticks/s). Frames carrying more than
+    /// [`FRESH_PER_FRAME`] snapshots are treated as backlog bursts (startup or
+    /// background tab catch-up) and ignored as jitter evidence.
+    pub fn observe_frame(&mut self, now: f64, ticks: impl IntoIterator<Item = u64>, rate: f64) {
+        if !now.is_finite() || !rate.is_finite() || rate <= 0.0 {
+            return;
+        }
+        let mut fresh = [0u64; FRESH_PER_FRAME];
+        let mut count = 0usize;
+        let mut newest = None;
+        for tick in ticks {
+            if count < FRESH_PER_FRAME {
+                fresh[count] = tick;
+            }
+            count += 1;
+            newest = Some(newest.map_or(tick, |n: u64| n.max(tick)));
+        }
+        let Some(newest) = newest else {
+            return;
+        };
+        if count > FRESH_PER_FRAME {
+            if self.last_tick.is_some_and(|last| newest < last) {
+                self.samples.clear();
+                self.last_underrun_tick = None;
+            }
+            self.last_tick = Some(newest);
+            return;
+        }
+        if self.last_tick.is_some_and(|last| newest < last) {
+            self.samples.clear();
+            self.last_underrun_tick = None;
+            self.last_tick = None;
+        }
+        let mut recorded = false;
+        for &tick in &fresh[..count] {
+            if self.last_tick.is_none_or(|last| tick > last) {
+                self.samples.push_back((tick, now));
+                if self.samples.len() > INTERP_WINDOW {
+                    self.samples.pop_front();
+                }
+                self.last_tick = Some(tick);
+                recorded = true;
+            }
+        }
+        if !recorded || self.samples.len() < INTERP_MIN_SAMPLES {
+            return;
+        }
+        let mut min_offset = f64::INFINITY;
+        let mut max_offset = f64::NEG_INFINITY;
+        for &(tick, sample_now) in &self.samples {
+            let offset = sample_now - tick as f64 / rate;
+            if !offset.is_finite() {
+                return;
+            }
+            min_offset = min_offset.min(offset);
+            max_offset = max_offset.max(offset);
+        }
+        let spread_ticks = (max_offset - min_offset).max(0.0) * rate;
+        if !spread_ticks.is_finite() {
+            return;
+        }
+        let target = (MIN_INTERP_DELAY_TICKS + spread_ticks * INTERP_HEADROOM)
+            .clamp(MIN_INTERP_DELAY_TICKS, MAX_INTERP_DELAY_TICKS);
+        if target > self.delay {
+            self.delay = (self.delay + (target - self.delay) * INTERP_RISE_ALPHA)
+                .min(MAX_INTERP_DELAY_TICKS);
+        } else {
+            self.delay = (self.delay - INTERP_DECAY_PER_FRAME).max(target);
+        }
+    }
+
+    /// Records a view buffer underrun while waiting past `newest_tick`.
+    /// Ignored while waiting (`newest_tick == 0`) and deduplicated per distinct
+    /// `newest_tick` so high-refresh renders during one packet stall bump the
+    /// buffer at most once.
+    pub fn observe_underrun(&mut self, newest_tick: u64) {
+        if newest_tick == 0 {
+            return;
+        }
+        if self.last_underrun_tick != Some(newest_tick) {
+            self.last_underrun_tick = Some(newest_tick);
+            self.delay = (self.delay + INTERP_UNDERRUN_STEP).min(MAX_INTERP_DELAY_TICKS);
+        }
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Measures how fast the server's ticks advance on the client's own clock.
 ///
 /// A client must send one input per server tick, and its interpolated view
@@ -413,6 +555,7 @@ mod tests {
                 facing: Some(0),
                 jump: seq == 3,
                 action: ActorInput::pulse(1),
+                rewind_ticks: 0,
             },
         )
     }
@@ -749,5 +892,110 @@ mod tick_rate_tests {
         rate.reset();
         assert_eq!(rate.measured(), None);
         assert_eq!(rate.rate(), NOMINAL_TICK_RATE);
+    }
+}
+
+#[cfg(test)]
+mod interp_delay_tests {
+    use super::*;
+
+    #[test]
+    fn clean_link_relaxes_smoothly_to_minimum_delay() {
+        let mut interp = InterpDelay::default();
+        assert_eq!(interp.delay_ticks(), DEFAULT_INTERP_DELAY_TICKS);
+        // First 14 clean frames keep the safe default while gathering baseline.
+        for tick in 1..=14u64 {
+            interp.observe_frame(tick as f64 / NOMINAL_TICK_RATE, [tick], NOMINAL_TICK_RATE);
+        }
+        assert_eq!(interp.delay_ticks(), DEFAULT_INTERP_DELAY_TICKS);
+        // After ~3 seconds of steady 30 Hz arrivals, delay settles to MIN_INTERP_DELAY_TICKS.
+        for tick in 15..=120u64 {
+            interp.observe_frame(tick as f64 / NOMINAL_TICK_RATE, [tick], NOMINAL_TICK_RATE);
+        }
+        assert!(
+            (interp.delay_ticks() - MIN_INTERP_DELAY_TICKS).abs() < 1e-6,
+            "got {}",
+            interp.delay_ticks()
+        );
+    }
+
+    #[test]
+    fn jitter_clumping_and_underruns_expand_delay_within_bounds() {
+        let mut interp = InterpDelay::default();
+        // Settle on a clean link first.
+        for tick in 1..=120u64 {
+            interp.observe_frame(tick as f64 / NOMINAL_TICK_RATE, [tick], NOMINAL_TICK_RATE);
+        }
+        assert!((interp.delay_ticks() - MIN_INTERP_DELAY_TICKS).abs() < 1e-6);
+
+        // Introduce 40 ms clumping / jitter bursts: delay expands rapidly above 2.3 ticks.
+        for tick in 121..=150u64 {
+            let jitter_s = if tick % 2 == 0 { 0.040 } else { 0.0 };
+            interp.observe_frame(
+                tick as f64 / NOMINAL_TICK_RATE + jitter_s,
+                [tick],
+                NOMINAL_TICK_RATE,
+            );
+        }
+        assert!(
+            interp.delay_ticks() > 2.3 && interp.delay_ticks() <= MAX_INTERP_DELAY_TICKS,
+            "expected expanded delay, got {}",
+            interp.delay_ticks()
+        );
+
+        // Repeated underruns on the SAME newest_tick only bump once (framerate-independent).
+        let before = interp.delay_ticks();
+        for _ in 0..10 {
+            interp.observe_underrun(150);
+        }
+        assert!(
+            (interp.delay_ticks() - (before + INTERP_UNDERRUN_STEP).min(MAX_INTERP_DELAY_TICKS))
+                .abs()
+                < 1e-6
+        );
+
+        // Subsequent severe stalls clamp at MAX_INTERP_DELAY_TICKS.
+        for tick in 151..=170u64 {
+            interp.observe_underrun(tick);
+        }
+        assert_eq!(interp.delay_ticks(), MAX_INTERP_DELAY_TICKS);
+    }
+
+    #[test]
+    fn backlog_bursts_rewinds_and_skewed_clocks_are_handled_cleanly() {
+        let mut interp = InterpDelay::default();
+        // Startup backlog of 30 snapshots in one frame does not distort delay.
+        interp.observe_frame(1.0, 1..=30, NOMINAL_TICK_RATE);
+        assert_eq!(interp.delay_ticks(), DEFAULT_INTERP_DELAY_TICKS);
+
+        // Server running 9% slow: once TickRate supplies the true rate, offset spread
+        // is zero and delay relaxes cleanly to MIN_INTERP_DELAY_TICKS.
+        let true_rate = NOMINAL_TICK_RATE / 1.09;
+        let local_per_tick = 1.09 / NOMINAL_TICK_RATE;
+        for tick in 31..=150u64 {
+            interp.observe_frame(tick as f64 * local_per_tick, [tick], true_rate);
+        }
+        assert!(
+            (interp.delay_ticks() - MIN_INTERP_DELAY_TICKS).abs() < 1e-6,
+            "got {}",
+            interp.delay_ticks()
+        );
+
+        // Non-finite or subnormal-overflow inputs and waiting-tick underruns are ignored safely.
+        interp.observe_frame(f64::NAN, [151], true_rate);
+        interp.observe_frame(10.0, [151], 0.0);
+        interp.observe_frame(10.0, [152], f64::MIN_POSITIVE);
+        let before_wait_underrun = interp.delay_ticks();
+        interp.observe_underrun(0);
+        assert_eq!(interp.delay_ticks(), before_wait_underrun);
+        assert!(interp.delay_ticks().is_finite());
+
+        // Rewind (new round) keeps the current delay while rebuilding its sample window.
+        let held = interp.delay_ticks();
+        interp.observe_frame(20.0, [1], true_rate);
+        assert_eq!(interp.delay_ticks(), held);
+
+        interp.reset();
+        assert_eq!(interp.delay_ticks(), DEFAULT_INTERP_DELAY_TICKS);
     }
 }

@@ -47,16 +47,18 @@ yet.
   still waiting. Clients pace their input interval to keep the queue's
   lowest point over a second at one (`prediction::Pacer`).
 - Clients interpolate other fighters' snapshots behind the newest one
-  received (about 100 ms). A client predicts its own fighter by replaying
-  its unacknowledged inputs on the latest snapshot
-  (`arena_protocol::prediction`).
+  received, adapting smoothly from ~42 ms (`1.25` ticks) on low-jitter links up
+  to ~167 ms (`5` ticks) under jitter or stalls (`prediction::InterpDelay`,
+  [ADR 0049](decisions/0049-bounded-targeting-lag-comp-and-adaptive-interp.md)).
+  A client predicts its own fighter by replaying its unacknowledged inputs on
+  the latest snapshot (`arena_protocol::prediction`).
 
 ## Client → server
 
 | Message | Fields | Notes |
 | --- | --- | --- |
 | `Hello` | `protocol: u16`, `ticket: bytes (≤ 512)` | Must be the first message, within 5 s of connecting. Stays variant 0 with `protocol` first in every version; `peek_hello_protocol` reads it from any version so the server can answer `VersionMismatch`. |
-| `Input` | `seq: u32`, `movement: [i16; 2]`, `facing: u16`, `jump: bool`, `action: WireAction` | `seq` increases by 1 per message; gaps are allowed, repeats and regressions are dropped. Axes must lie in ±1000; the rules reject anything else. `action` is `None`, `Cast { spell, target }` (`Pulse`, `RiftBolt`, `Quell`, `Mend`), or `CancelCast`. |
+| `Input` | `seq: u32`, `movement: [i16; 2]`, `facing: u16`, `jump: bool`, `action: WireAction`, `view_tick: u64` | `seq` increases by 1 per message; gaps are allowed, repeats and regressions are dropped. Axes must lie in ±1000; the rules reject anything else. `action` is `None`, `Cast { spell, target }` (`Pulse`, `RiftBolt`, `Quell`, `Mend`), or `CancelCast`. `view_tick` is the monotonic server tick of remote fighters rendered on the client (`0` = unspecified / present tick only); the server never trusts coordinates and clamps `view_tick` monotonically to at most `MAX_LAG_COMP_TICKS` (6 ticks = 200 ms) behind the current tick for cast-start geometry validation ([ADR 0049](decisions/0049-bounded-targeting-lag-comp-and-adaptive-interp.md)). |
 | `Ping` | `nonce: u32` | Echoed in `Pong` for RTT measurement. |
 
 ## Server → client
@@ -74,7 +76,8 @@ confirm that full 30 Hz snapshots remain small enough to avoid delta-state
 complexity or rate reduction (which degrades targeting fairness):
 
 - Live 30 Hz active-combat payload sizes (2026-11-21, before WebSocket and TLS
-  framing): one `Input` is 15–16 bytes in ordinary play; snapshots average
+  framing): one `Input` is 15–16 bytes in v3 (+1–3 bytes in v4 for `view_tick`,
+  still ≤ 20 bytes); snapshots average
   **64.0 B** in 1v1 (1.92 KB/s), **110.5 B** in 2v2 (3.31 KB/s), and
   **156.6 B** in 3v3 (**4.70 KB/s** = 37.6 kbit/s per player, 140–190 B range).
 - Offline lossless field-mask + timer-decay delta encoding
@@ -99,13 +102,14 @@ complexity or rate reduction (which degrades targeting fairness):
 
 ## Versioning
 
-`PROTOCOL_VERSION` (currently 3: `InputFrame.action`, casting/resource state
-on `FighterState`, and cast/interrupt/heal events and rejections) changes with
-any incompatible layout change; the golden-frame test fails until it is bumped
-deliberately.
-`RULES_VERSION` (currently 4: server-authoritative casting, GCD, per-spell
-cooldowns, resources, and interrupts) changes when a rules change could alter
-a replayed outcome. `Welcome.map` identifies the layout.
+`PROTOCOL_VERSION` (currently 4: adds `InputFrame.view_tick` for bounded
+server-side targeting lag compensation per
+[ADR 0049](decisions/0049-bounded-targeting-lag-comp-and-adaptive-interp.md))
+changes with any incompatible layout change; the golden-frame test fails until
+it is bumped deliberately.
+`RULES_VERSION` (currently 5: bounded server-side target-position history rewind
+up to `MAX_LAG_COMP_TICKS = 6` ticks on cast starts) changes when a rules change
+could alter a replayed outcome. `Welcome.map` identifies the layout.
 
 ## Join tickets
 

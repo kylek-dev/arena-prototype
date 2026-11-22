@@ -1051,3 +1051,45 @@ async fn rapid_double_reconnect_and_takeover_preserves_seat_and_rejects_old_sock
 
     running.shut_down(Duration::ZERO).await.unwrap();
 }
+
+#[tokio::test]
+async fn live_ws_view_tick_round_trips_and_enforces_bounded_lag_comp() {
+    let running = server().await;
+    let addr = running.addr;
+    let created = new_match(addr, 1).await;
+    let (mut a, welcome_a) = Client::join(addr, &created.tickets[0]).await;
+    let (mut b, _) = Client::join(addr, &created.tickets[1]).await;
+    assert_eq!(welcome_a.protocol, PROTOCOL_VERSION);
+    assert_eq!(welcome_a.rules, arena_protocol::RULES_VERSION);
+
+    // Wait for running snapshots so `view_tick` is non-zero.
+    let s = a.snapshot_until(|s| s.tick >= 3).await;
+    let _ = b.snapshot_until(|s| s.tick >= 3).await;
+
+    // Submitting a future `view_tick` (u64::MAX) is clamped safely without errors or disconnects,
+    // and out-of-range spawns still reject `OutOfRange`.
+    a.input(InputFrame {
+        action: InputFrame::pulse(1),
+        view_tick: u64::MAX,
+        ..InputFrame::default()
+    })
+    .await;
+    let acked_seq = a.seq;
+    let snap = a.snapshot_until(|snap| snap.ack == acked_seq).await;
+    assert!(snap.tick > s.tick);
+    assert!(snap.events.iter().any(|e| e.event
+        == arena_protocol::WireEvent::Rejected(arena_protocol::WireRejection::OutOfRange)));
+
+    // Subsequent normal input with realistic `view_tick` continues cleanly.
+    a.input(InputFrame {
+        movement: [0, -1000],
+        view_tick: snap.tick.saturating_sub(2),
+        ..InputFrame::default()
+    })
+    .await;
+    let moved_seq = a.seq;
+    let moved = a.snapshot_until(|snap| snap.ack == moved_seq).await;
+    assert!(moved.fighters[0].z < snap.fighters[0].z);
+
+    running.shut_down(Duration::ZERO).await.unwrap();
+}

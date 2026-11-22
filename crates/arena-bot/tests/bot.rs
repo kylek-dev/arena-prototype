@@ -24,6 +24,7 @@ async fn scenario(rtt_ms: u64, jitter_ms: u64) -> (arena_server::Running, Scenar
         ),
         paced: true,
         interp_delay_ms: arena_bot::fairness::DEFAULT_INTERP_DELAY_MS,
+        adaptive_interp: false,
         reconnect_every: None,
         away: Duration::from_millis(200),
         seed: 7,
@@ -207,6 +208,7 @@ async fn bots_emit_structured_json_combat_telemetry_and_time_limit_draw_rate() {
         link: Link::round_trip(Duration::from_millis(20), Duration::ZERO),
         paced: true,
         interp_delay_ms: arena_bot::fairness::DEFAULT_INTERP_DELAY_MS,
+        adaptive_interp: false,
         reconnect_every: None,
         away: Duration::from_millis(200),
         seed: 13,
@@ -301,5 +303,28 @@ async fn bots_measure_targeting_fairness_bandwidth_deltas_and_server_profile() {
         assert!(profile.peak_rss_mib > 0.0);
         assert!(profile.threads >= 1);
     }
+    running.shut_down(Duration::ZERO).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bots_use_adaptive_interp_and_bounded_lag_comp_cleanly() {
+    let (running, mut scenario) = scenario(40, 5).await;
+    scenario.matches = 2;
+    scenario.team_size = 2;
+    scenario.duration = Duration::from_secs(9);
+    scenario.adaptive_interp = true;
+    let report = run(scenario).await.unwrap();
+    println!("{report}");
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.unexpected_closes, 0);
+    assert_eq!(report.hash_mismatches, 0);
+    assert!(report.adaptive_interp);
+    // On a low-jitter 5 ms link, adaptive interpolation should settle well below 100 ms.
+    assert!(
+        report.effective_interp_delay_ms[0] > 0 && report.effective_interp_delay_ms[0] < 95,
+        "expected adaptive p50 < 95 ms, got {:?}",
+        report.effective_interp_delay_ms
+    );
+    assert!(report.targeting_fairness.casts_resolved > 0);
     running.shut_down(Duration::ZERO).await.unwrap();
 }

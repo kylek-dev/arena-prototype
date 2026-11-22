@@ -140,6 +140,7 @@ pub(crate) async fn run_bot(
             link: scenario.link,
             paced: scenario.paced,
             interp_delay_ms: scenario.interp_delay_ms,
+            adaptive_interp: scenario.adaptive_interp,
             seed: rng.next_u64(),
             reconnect_every: scenario.reconnect_every,
             away: scenario.away,

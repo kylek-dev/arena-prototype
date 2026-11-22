@@ -23,12 +23,14 @@ use serde::{Deserialize, Serialize};
 /// 2: `Welcome.round_ticks` and `WireResult::TimeLimitDraw`.
 /// 3: `InputFrame.action` (`WireAction`), casting/resource fields on `FighterState`,
 ///    and cast/interrupt/heal events & rejections.
-pub const PROTOCOL_VERSION: u16 = 3;
+/// 4: `InputFrame.view_tick` for bounded server-side targeting lag compensation (ADR 0049).
+pub const PROTOCOL_VERSION: u16 = 4;
 /// Bumped whenever a rules change could alter a replayed outcome.
 /// 2: rounds end in a draw after twenty minutes (`MAX_ROUND_TICKS`).
 /// 3: time-limit draws are distinct from mutual-elimination draws and round limits are explicit.
 /// 4: server-authoritative casting, GCD, per-spell cooldowns, resources, and interrupts.
-pub const RULES_VERSION: u32 = 4;
+/// 5: bounded server-side target-position history rewind for cast starts (ADR 0049).
+pub const RULES_VERSION: u32 = 5;
 /// Largest frame a client may send.
 pub const MAX_CLIENT_FRAME: usize = 1024;
 /// Largest frame the server sends; a full 3v3 snapshot is far smaller.
@@ -109,6 +111,12 @@ pub struct InputFrame {
     pub jump: bool,
     /// Spell cast or explicit cast cancellation for this tick.
     pub action: WireAction,
+    /// Authoritative server tick of the remote fighters rendered on the client
+    /// when this intent was generated (`0` = unspecified / present tick only).
+    /// Never trusted directly: the server clamps it monotonically to at most
+    /// `MAX_LAG_COMP_TICKS` behind the current tick and validates only against
+    /// server-recorded target positions.
+    pub view_tick: u64,
 }
 impl InputFrame {
     /// Convenience action for the default Pulse attack against `target`.
