@@ -144,6 +144,18 @@ fn server_samples() -> Vec<ServerMessage> {
             round_ticks: MAX_ROUND_TICKS,
             rules: RULES_VERSION,
             map: u64::MAX,
+            spectator: false,
+        }),
+        ServerMessage::Welcome(Welcome {
+            protocol: PROTOCOL_VERSION,
+            actor: 0,
+            team_size: 2,
+            tick: 42,
+            tick_rate: 30,
+            round_ticks: MAX_ROUND_TICKS,
+            rules: RULES_VERSION,
+            map: 1,
+            spectator: true,
         }),
         ServerMessage::Snapshot(Snapshot::capture(
             &colosseum(1),
@@ -191,15 +203,15 @@ fn ordinary_traffic_is_small() {
 #[test]
 fn the_wire_layout_is_pinned() {
     // Golden frames: changing them requires a PROTOCOL_VERSION bump.
-    assert_eq!(PROTOCOL_VERSION, 6);
+    assert_eq!(PROTOCOL_VERSION, 7);
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 6,
+            protocol: 7,
             ticket: vec![0xAB, 0xCD],
             appearance: None,
         }
         .encode(),
-        [0, 6, 2, 0xAB, 0xCD, 0]
+        [0, 7, 2, 0xAB, 0xCD, 0]
     );
     let compact = WireAppearance {
         ancestry: "elf".into(),
@@ -213,13 +225,13 @@ fn the_wire_layout_is_pinned() {
     };
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 6,
+            protocol: 7,
             ticket: vec![0xAB, 0xCD],
             appearance: Some(compact),
         }
         .encode(),
         [
-            0, 6, 2, 0xAB, 0xCD, 1, // Hello variant 0, protocol 6, ticket, Some
+            0, 7, 2, 0xAB, 0xCD, 1, // Hello variant 0, protocol 7, ticket, Some
             3, b'e', b'l', b'f', // ancestry
             4, b'm', b'a', b'l', b'e', // body
             4, b'f', b'a', b'i', b'r', // skin_tone
@@ -231,6 +243,23 @@ fn the_wire_layout_is_pinned() {
             1, 6, b'R', b'a', b'n', b'g', b'e', b'r', 5, b'g', b'r', b'e', b'e',
             b'n', // variants
         ]
+    );
+    assert_eq!(
+        ServerMessage::Welcome(Welcome {
+            protocol: 7,
+            actor: 0,
+            team_size: 2,
+            tick: 10,
+            tick_rate: 30,
+            round_ticks: 600,
+            rules: RULES_VERSION,
+            map: 1,
+            spectator: true,
+        })
+        .encode(),
+        // variant 0, protocol 7, actor 0, team_size 2, tick 10, tick_rate 30,
+        // round_ticks 600 (0xD8 0x04), rules 5, map 1, spectator true (1).
+        [0, 7, 0, 2, 10, 30, 0xD8, 0x04, 5, 1, 1]
     );
     assert_eq!(
         ClientMessage::Input(InputFrame {
@@ -292,7 +321,8 @@ fn the_wire_layout_is_pinned() {
     }
     // Welcome is variant 0, which the runtime keeps when trimming a backlog.
     assert_eq!(server_samples()[0].encode()[0], 0);
-    assert_eq!(server_samples()[1].encode()[0], 1);
+    assert_eq!(server_samples()[1].encode()[0], 0);
+    assert_eq!(server_samples()[2].encode()[0], 1);
 }
 
 #[test]
@@ -491,6 +521,7 @@ fn malformed_frames_are_rejected_not_trusted() {
             round_ticks: invalid_round_ticks,
             rules: RULES_VERSION,
             map: 1,
+            spectator: false,
         });
         assert_eq!(
             ServerMessage::decode(&bad_welcome.encode()),
@@ -995,6 +1026,7 @@ fn welcome_and_snapshot_bounds_reject_invalid_teams_actors_and_results() {
         round_ticks: MAX_ROUND_TICKS,
         rules: RULES_VERSION,
         map: 1,
+        spectator: false,
     };
     let bad_welcomes = [
         Welcome {
@@ -1013,6 +1045,11 @@ fn welcome_and_snapshot_bounds_reject_invalid_teams_actors_and_results() {
         Welcome {
             actor: 6,
             team_size: 3,
+            ..base_welcome
+        },
+        Welcome {
+            actor: 1,
+            spectator: true,
             ..base_welcome
         },
         Welcome {
@@ -1035,6 +1072,22 @@ fn welcome_and_snapshot_bounds_reject_invalid_teams_actors_and_results() {
             "{welcome:?}"
         );
     }
+    // Spectators never receive private Rejected events.
+    assert_eq!(
+        WireEvent::for_spectator(&ArenaEvent::Rejected {
+            actor: 0,
+            reason: Rejection::OutOfRange,
+        }),
+        None
+    );
+    assert!(
+        WireEvent::for_spectator(&ArenaEvent::Hit {
+            actor: 0,
+            target: 1,
+            damage: 25,
+        })
+        .is_some()
+    );
 
     let base_snap = Snapshot::capture(&colosseum(1), 0, Vec::new(), &[true, true]);
     let bad_snapshots = vec![

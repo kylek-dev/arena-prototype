@@ -19,6 +19,27 @@ import {
   setPanel,
 } from "../state/session";
 export const input = new InputState();
+export function setSpectatorCamera(target: "free" | number) {
+  const s = engine.get();
+  if (!s?.spectating || error.get() || blocksGameplay()) return;
+  if (target === "free") {
+    input.requestSpectatorCamera("free");
+    return;
+  }
+  const count = s.roster?.length ?? 0;
+  if (Number.isInteger(target) && target >= 0 && target < count) {
+    input.requestSpectatorCamera(target);
+  }
+}
+export function cycleSpectatorCamera(step: 1 | -1) {
+  const s = engine.get();
+  if (!s?.spectating || error.get() || blocksGameplay()) return;
+  const count = s.roster?.length ?? 0;
+  if (count <= 0) return;
+  const current = s.spectatorFollow ?? null;
+  const next = current === null ? (step > 0 ? 0 : count - 1) : (current + step + count) % count;
+  input.requestSpectatorCamera(next);
+}
 export function unitRoster(s: Snapshot, focused: string | null): UnitRoster {
   return {
     player: s.player,
@@ -36,7 +57,7 @@ export function unitRoster(s: Snapshot, focused: string | null): UnitRoster {
 }
 export function interactUnit(tag: UnitTag, action: "target" | "focus") {
   const s = engine.get();
-  if (!s) return;
+  if (!s || s.spectating) return;
   const unit = resolveUnit(tag, unitRoster(s, focus.get()));
   if (unit) interactEntity(unit.id, action);
 }
@@ -44,7 +65,7 @@ export function interactUnit(tag: UnitTag, action: "target" | "focus") {
 export function interactEntity(id: string, action: "target" | "focus") {
   const s = engine.get();
   if (draggingSpell.get() || error.get() || blocksGameplay() || !isEngineReady(s)) return;
-  if (!s) return;
+  if (!s || s.spectating) return;
   const unit = s.roster?.find((unit) => unit.id === id);
   if (s.roster ? !unit : s.target.id !== id && s.player.id !== id) return;
   if (action === "focus") focus.set(id);
@@ -63,7 +84,8 @@ export function activateSlot(id: string) {
     .bars.flatMap((b) => b.slots)
     .find((s) => s.id === id);
   const state = engine.get();
-  if (!slot?.ability || !isAbilityId(slot.ability) || !isEngineReady(state)) return;
+  if (!slot?.ability || !isAbilityId(slot.ability) || !isEngineReady(state) || state?.spectating)
+    return;
   if (!canActivate(state, slot.ability)) {
     rejectCast(availability(state, slot.ability));
     return;
@@ -77,7 +99,33 @@ export function dispatch(action: string) {
   const s = engine.get();
   if (!interfaceAction && !isEngineReady(s)) return;
   if (action.startsWith("slot:")) {
-    activateSlot(action.slice(5));
+    if (!s?.spectating) activateSlot(action.slice(5));
+    return;
+  }
+  if (s?.spectating) {
+    switch (action) {
+      case "toggleEnemyNameplates":
+      case "toggleFriendlyNameplates": {
+        const side = action === "toggleEnemyNameplates" ? "enemy" : "friendly";
+        setNameplates(side, !config().nameplates[side]);
+        break;
+      }
+      case "jump":
+        input.jump = true;
+        break;
+      case "nextTarget":
+        cycleSpectatorCamera(1);
+        break;
+      case "clearTarget":
+        setSpectatorCamera("free");
+        break;
+      case "menu":
+        setPanel(interaction.get().panel === "menu" ? null : "menu");
+        break;
+      case "settings":
+        setPanel(interaction.get().panel === "settings" ? null : "settings");
+        break;
+    }
     return;
   }
   switch (action) {

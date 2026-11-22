@@ -65,7 +65,7 @@ yet.
 
 | Message | Fields | Notes |
 | --- | --- | --- |
-| `Welcome` | `protocol`, `actor: u8`, `team_size: u8`, `tick: u64`, `tick_rate: u8`, `round_ticks: u64`, `rules: u32`, `map: u64` | `round_ticks` is the round's tick limit (`1..=MAX_ROUND_TICKS`, default 20 minutes), `rules` is the rules version and `map` a digest of the layout, so the remaining clock, replays and mismatches are explainable. |
+| `Welcome` | `protocol`, `actor: u8`, `team_size: u8`, `tick: u64`, `tick_rate: u8`, `round_ticks: u64`, `rules: u32`, `map: u64`, `spectator: bool` | When `spectator` is `true`, `actor` is `0`, `tick` is the latest already-eligible delayed tick (or `0`, never the live tick), and the connection is watch-only. `round_ticks` is the round's tick limit (`1..=MAX_ROUND_TICKS`, default 20 minutes), `rules` is the rules version and `map` a digest of the layout, so the remaining clock, replays and mismatches are explainable. |
 | `Snapshot` | `tick: u64`, `ack: u32`, `queued: u8`, `hash: u64`, `result`, `fighters` (≤ 6), `scoreboard` (`Option<Vec<FighterScore>>`), `events` (≤ 256) | `ack` is the last input `seq` applied, and `queued` how many of the recipient's inputs are still waiting. `hash` is `Arena::state_hash()`. `result` is `None` while running, or `Won { team }`, `Draw` (simultaneous elimination) or `TimeLimitDraw` (round clock expired with both teams standing). `fighters` carries each fighter's full rule state in actor order (position, height, vertical velocity, momentum, health, resource, `gcd_remaining`, `lockout_remaining`, per-spell `cooldowns`, `active_cast`, facing), so a client can rebuild the arena and check `hash`, plus `connected`: whether that fighter's player is attached (not part of the rules or `hash`). `scoreboard` is `None` while the match runs (1 byte on the wire) and `Some(scores)` in server actor order on the final snapshot (`result.is_some()`), with one `FighterScore` (`damage_done`, `damage_taken`, `healing_done`, `healing_received`, `killing_blows`) per seat accumulated authoritatively by the match server (not part of `hash`). `events` are tick-tagged events since the previous snapshot: `Jumped`, `CastStarted`, `CastCompleted`, `CastInterrupted`, `Hit`, `Healed`, `Finished`, and `Rejected` only for the actor it names. `Moved` is not sent because positions show it. |
 | `Pong` | `nonce: u32` | |
 | `Error` | `code` | Sent before the server closes: `VersionMismatch`, `BadTicket`, `MatchFull`, `MatchOver`, `RateLimited`, `Malformed`, `HelloTimeout`, `ServerShutdown`, `Replaced` (a newer connection with the same ticket took the seat). Stays variant 3 (`[3, code]`). |
@@ -103,8 +103,7 @@ complexity or rate reduction (which degrades targeting fairness):
 
 ## Versioning
 
-`PROTOCOL_VERSION` (currently 6: adds bounded `WireAppearance` on `Hello` and
-`ServerMessage::Appearances` per-seat relay) changes with any
+`PROTOCOL_VERSION` (currently 7: adds `Welcome.spectator` watch-only handshake for live delayed spectating; [ADR 0050](decisions/0050-spectating-and-anti-ghosting-delay.md)) changes with any
 incompatible layout change; the golden-frame test fails until it is bumped
 deliberately.
 `RULES_VERSION` (currently 5: bounded server-side target-position history rewind
@@ -114,29 +113,29 @@ could alter a replayed outcome. `Welcome.map` identifies the layout.
 ## Join tickets
 
 A ticket is the postcard encoding of
-`{match_id, player, seat, team_size, expires, settings}` (`expires` in Unix
-seconds; optional versioned `MatchSettings { version: 1, map, round_seconds }`
+`{match_id, player, role, team_size, expires, settings}` (`role` is `Player { seat }` or `Spectator`, so player and spectator credentials are never interchangeable; `expires` in Unix
+seconds; optional versioned `MatchSettings { version: 1, map, round_seconds, allow_spectators }`
 for private custom matches) followed by a 32-byte HMAC-SHA256 tag over those
 bytes, under a key shared by whatever issues tickets and the match servers
 (`ARENA_TICKET_KEY`). The signature is checked in constant time before the
-claims are parsed. Tickets are about 58–65 bytes and valid for two hours,
+claims are parsed. Tickets are about 58–68 bytes and valid for two hours,
 which covers the match, so a client reconnects with the same ticket. Browsers
 treat tickets as opaque bytes.
 
 **A match starts with its first ticket** ([ADR 0045](decisions/0045-front-door-and-playtest-deployment.md)).
 A match server that receives a valid ticket for a match it does not host
 starts it, sized by `team_size` (and applying validated `settings` when
-present, such as the custom round time limit), so whatever holds the key
+present, such as the custom round time limit and spectator opt-in), so whatever holds the key
 creates matches without calling the server. Claims for a team size outside
-1–3, a seat outside the match, or invalid custom settings get `BadTicket` and
+1–3, a seat outside the match, a spectator ticket when `allow_spectators` is false, or invalid custom settings get `BadTicket` and
 start nothing. A match that has ended stays ended while its tickets are valid
 (`MatchOver`), as long as the process runs. A draining server answers the
 first ticket of a new match with `ServerShutdown`.
 
 There are no accounts. The front door (`arena-door`, `POST /api/matches`
 and the `/lobby/` page) issues one join link per seat, with the ticket in
-the URL fragment. With `--dev`, `POST /dev/match?team_size=1|2|3` on the
-match server returns the match id and one hex ticket per seat. It refuses
+the URL fragment. With `--dev`, `POST /dev/match?team_size=1|2|3&spectators=0..N` on the
+match server returns the match id, one hex ticket per seat, and optional watch-only `spectator_tickets`. It refuses
 to listen beyond loopback.
 
 **Before the handshake.** `/play` refuses a browser whose `Origin` is not
@@ -171,8 +170,8 @@ the connection with `error`.
 | `{"type":"kick_lobby_member","member":2}` | Host only: removes another member from the lobby (`lobby_left` `kicked`). |
 | `{"type":"transfer_lobby_host","member":2}` | Host only: passes the host role to another member. |
 | `{"type":"set_lobby_mode","mode":"1v1"\|"2v2"\|"3v3"}` | Host only: changes team size before starting (overflow moves to spectators or refuses `lobby_too_big`). |
-| `{"type":"set_lobby_settings","settings":{"version":1,"map":"colosseum","round_seconds":300\|600\|900\|1200}}` | Host only: updates versioned, allowlisted match settings enforced by the match server. |
-| `{"type":"start_lobby"}` | Host only: requires both teams full; rate-limited per address via `door.creations`; issues signed seat tickets while keeping the lobby open for rematches. |
+| `{"type":"set_lobby_settings","settings":{"version":1,"map":"colosseum","round_seconds":300\|600\|900\|1200,"allow_spectators":true\|false}}` | Host only: updates versioned, allowlisted match settings enforced by the match server. |
+| `{"type":"start_lobby"}` | Host only: requires both teams full; rate-limited per address via `door.creations`; issues signed seat tickets and signed watch-only spectator tickets (when allowed) while keeping the lobby open for rematches. |
 
 | From the door | Meaning |
 | --- | --- |
@@ -183,9 +182,8 @@ the connection with `error`.
 | `stopped` `{reason}` | `cancelled`, `member_left`, `declined`, `not_accepted`, `member_declined` or `member_not_accepted`. The connection stays open. |
 | `lobby` `{code, mode, settings, spectator_slots, you, host, can_start, members}` | Current custom lobby roster (`members`: `{id, slot, host, you}`), settings, and readiness. |
 | `lobby_left` `{reason}` | `left` or `kicked`. |
-| `lobby_started` `{mode, match_id}` | Sent to lobby spectators when a custom match starts. |
-| `refused` `{code}` | `not_leader`, `party_too_big`, `party_full`, `party_busy`, `no_such_party`, `in_lobby`, `no_such_lobby`, `lobby_full`, `not_host`, `slot_full`, `lobby_not_full`, `lobby_too_big`, `no_such_member`, `invalid_settings` or `rate_limited`; nothing changed. |
-| `match` `{mode, match_id, seat, server, ticket, expires}` | This player's seat ticket. The connection stays open. |
+| `refused` `{code}` | `not_leader`, `party_too_big`, `party_full`, `party_busy`, `no_such_party`, `in_lobby`, `no_such_lobby`, `lobby_full`, `not_host`, `slot_full`, `lobby_not_full`, `lobby_too_big`, `no_such_member`, `invalid_settings`, `spectators_disabled`, `spectators_occupied` or `rate_limited`; nothing changed. |
+| `match` `{mode, match_id, seat, spectator?, server, ticket, expires}` | This player's seat ticket (or watch-only spectator ticket when `spectator: true`). The connection stays open. |
 | `error` `{code, message}` | Then the door closes: `bad_request`, `rate_limited`, `replaced` or `shutdown`. |
 
 ## Match lifecycle
@@ -206,11 +204,13 @@ the connection with `error`.
   time while the match runs and the ticket is valid; the seat, health and
   position are kept, and `connected` turns back on for everyone.
 - **Finished:** after the snapshot carrying the result and `scoreboard`, the
-  match stays open for 5 s, then closes every connection with `MatchOver`.
+  match stays open for 5 s, then closes every seated player connection with `MatchOver`.
   The 5 s linger is intentionally kept short so server tasks and sockets free
   promptly while still giving lagging clients time to receive the final
   snapshot; the browser retains the scoreboard locally after the connection
   closes. Connecting to an ended match also yields `MatchOver`.
+- **Spectating ([ADR 0050](decisions/0050-spectating-and-anti-ghosting-delay.md)):**
+  a connection authenticated with `Role::Spectator` receives `Welcome { spectator: true, actor: 0, ... }`, never marks any seat joined, has all `ClientMessage::Input` frames strictly ignored, and receives zero private `ArenaEvent::Rejected` events. By default (`--spectator-delay-seconds 0`), live combat ticks deliver in real time and mid-match joins receive the live snapshot immediately; when a non-zero delay (`1..=60` s) is configured, waiting snapshots (`tick == 0`) deliver immediately while live combat ticks (`tick >= 1`) trail live play by that delay, mid-match joins never leak the live snapshot, and finished matches continue draining delayed frames (including final `result` and `scoreboard`) for up to `spectator_delay + linger` before closing spectators with `MatchOver`. Each snapshot is serialized once and fanned out zero-copy across up to `--max-spectators` (default **4**) spectators per match (excess distinct spectators get `MatchFull`; same spectator `player` id replaces the older connection with `Replaced`).
 - **Overload:** a match whose tick runs late delays the next one rather than
   bursting missed ticks, so the rules never run faster than real time;
   `arena_tick_overruns_total` counts it.

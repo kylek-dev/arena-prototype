@@ -35,7 +35,7 @@ use tokio::net::TcpStream;
 use tokio::time::Instant;
 
 use bandwidth::{BandwidthReport, BandwidthStats};
-use bot::{Seat, SeatStats};
+use bot::{Seat, SeatStats, Spectator, SpectatorStats};
 use fairness::{FairnessStats, TargetingFairnessReport};
 use link::{Link, Rng};
 use stats::{Samples, Summary};
@@ -46,6 +46,8 @@ pub struct Scenario {
     pub server: String,
     pub matches: usize,
     pub team_size: usize,
+    /// Watch-only spectator connections attached to each match (`0` = none).
+    pub spectators_per_match: usize,
     pub duration: Duration,
     pub link: Link,
     /// Use browser-parity `Pacer` + `TickRate` adaptive input pacing.
@@ -235,6 +237,8 @@ impl Shared {
 struct NewMatch {
     match_id: u64,
     tickets: Vec<String>,
+    #[serde(default)]
+    spectator_tickets: Vec<String>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -290,6 +294,7 @@ pub struct Report {
     pub matches: usize,
     pub team_size: usize,
     pub players: usize,
+    pub spectators: usize,
     pub seconds: f64,
     pub rtt_ms: f64,
     pub jitter_ms: f64,
@@ -319,6 +324,9 @@ pub struct Report {
     pub snapshots: u64,
     pub inputs: u64,
     pub kbit_per_s_in_per_player: f64,
+    pub spectator_snapshots: u64,
+    pub kbit_per_s_in_per_spectator: f64,
+    pub spectator_private_events: u64,
     pub hash_checks: u64,
     pub hash_mismatches: u64,
     pub errors: BTreeMap<String, u64>,
@@ -351,6 +359,9 @@ pub(crate) struct Totals {
     snapshots: u64,
     inputs: u64,
     bytes_in: u64,
+    spectator_snapshots: u64,
+    spectator_bytes_in: u64,
+    spectator_private_events: u64,
     errors: BTreeMap<String, u64>,
     unexpected_closes: u64,
     lost: BTreeMap<String, u64>,
@@ -397,6 +408,15 @@ impl Totals {
         self.fairness.merge(seat.fairness);
         self.bandwidth.merge(seat.bandwidth);
     }
+    fn add_spectator(&mut self, spec: SpectatorStats) {
+        self.spectator_snapshots += spec.snapshots;
+        self.spectator_bytes_in += spec.bytes_in;
+        self.spectator_private_events += spec.private_events_seen;
+        for (code, count) in spec.errors {
+            *self.errors.entry(code).or_default() += count;
+        }
+        self.unexpected_closes += spec.unexpected_closes;
+    }
     fn merge(&mut self, other: Totals) {
         self.rtt.extend(other.rtt);
         self.input_latency.extend(other.input_latency);
@@ -404,6 +424,9 @@ impl Totals {
         self.snapshots += other.snapshots;
         self.inputs += other.inputs;
         self.bytes_in += other.bytes_in;
+        self.spectator_snapshots += other.spectator_snapshots;
+        self.spectator_bytes_in += other.spectator_bytes_in;
+        self.spectator_private_events += other.spectator_private_events;
         for (code, count) in other.errors {
             *self.errors.entry(code).or_default() += count;
         }
@@ -490,7 +513,13 @@ pub async fn run(mut scenario: Scenario) -> Result<Report, String> {
                     .saturating_sub(start.tick_microseconds_total)
             });
     let server_profile = proc_start.zip(proc_end).map(|(start, end)| {
-        build_server_profile(start, end, delta_tick_us, totals.snapshots, seconds)
+        build_server_profile(
+            start,
+            end,
+            delta_tick_us,
+            totals.snapshots + totals.spectator_snapshots,
+            seconds,
+        )
     });
     let server_cpu_cores = server_profile
         .as_ref()
@@ -498,6 +527,11 @@ pub async fn run(mut scenario: Scenario) -> Result<Report, String> {
     let players = match &scenario.queue {
         Some(queue) => queue.bots,
         None => scenario.matches * scenario.team_size * 2,
+    };
+    let spectators = if scenario.queue.is_some() {
+        0
+    } else {
+        scenario.matches * scenario.spectators_per_match
     };
     let (outcomes, round_duration, mut combat) = shared.telemetry_summary();
     combat.merge(&totals.rejections);
@@ -516,6 +550,7 @@ pub async fn run(mut scenario: Scenario) -> Result<Report, String> {
         },
         team_size: scenario.team_size,
         players,
+        spectators,
         seconds,
         rtt_ms: (scenario.link.one_way * 2).as_secs_f64() * 1000.0,
         jitter_ms: scenario.link.jitter.as_secs_f64() * 1000.0,
@@ -544,6 +579,13 @@ pub async fn run(mut scenario: Scenario) -> Result<Report, String> {
         snapshots: totals.snapshots,
         inputs: totals.inputs,
         kbit_per_s_in_per_player: totals.bytes_in as f64 * 8.0 / 1000.0 / players as f64 / seconds,
+        spectator_snapshots: totals.spectator_snapshots,
+        kbit_per_s_in_per_spectator: if spectators == 0 {
+            0.0
+        } else {
+            totals.spectator_bytes_in as f64 * 8.0 / 1000.0 / spectators as f64 / seconds
+        },
+        spectator_private_events: totals.spectator_private_events,
         hash_checks: shared.checks.load(Ordering::Relaxed),
         hash_mismatches: shared.mismatches.load(Ordering::Relaxed),
         errors: totals.errors,
@@ -574,7 +616,14 @@ async fn run_group(
     let mut totals = Totals::default();
     let mut rng = Rng::new(scenario.seed ^ group.wrapping_mul(0xA24B_AED4_963E_E407));
     while Instant::now() < deadline {
-        let path = format!("/dev/match?team_size={}", scenario.team_size);
+        let path = if scenario.spectators_per_match > 0 {
+            format!(
+                "/dev/match?team_size={}&spectators={}",
+                scenario.team_size, scenario.spectators_per_match
+            )
+        } else {
+            format!("/dev/match?team_size={}", scenario.team_size)
+        };
         let (status, body) = http(&scenario.server, "POST", &path).await?;
         if status != 200 {
             return Err(format!("POST {path} answered {status}: {body}"));
@@ -605,11 +654,28 @@ async fn run_group(
                 tokio::spawn(bot::play(seat, deadline))
             })
             .collect();
+        let spectators: Vec<_> = created
+            .spectator_tickets
+            .iter()
+            .map(|ticket| {
+                let spec = Spectator {
+                    server: scenario.server.clone(),
+                    match_id: created.match_id,
+                    ticket: from_hex(ticket).unwrap_or_default(),
+                    shared: shared.clone(),
+                };
+                tokio::spawn(bot::spectate(spec, deadline))
+            })
+            .collect();
         let mut finished = false;
         for seat in seats {
             let stats = seat.await.map_err(|error| error.to_string())?;
             finished |= stats.round_finished;
             totals.add(stats);
+        }
+        for spec in spectators {
+            let stats = spec.await.map_err(|error| error.to_string())?;
+            totals.add_spectator(stats);
         }
         if !finished {
             break;
@@ -942,6 +1008,16 @@ impl fmt::Display for Report {
             "traffic        {} snapshots, {} inputs, {:.1} kbit/s in per bot (payload only)",
             self.snapshots, self.inputs, self.kbit_per_s_in_per_player
         )?;
+        if self.spectators > 0 {
+            writeln!(
+                f,
+                "spectators     {} watchers, {} snapshots, {:.1} kbit/s in per spectator, {} private events",
+                self.spectators,
+                self.spectator_snapshots,
+                self.kbit_per_s_in_per_spectator,
+                self.spectator_private_events
+            )?;
+        }
         writeln!(
             f,
             "consistency    {} cross-seat hash checks, {} mismatches, {} wrong round results",

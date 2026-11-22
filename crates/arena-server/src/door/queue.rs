@@ -25,11 +25,11 @@
 //!   and the time left. `requeued` when it failed because of someone else,
 //!   and `stopped` when the party's search ended.
 //! - `lobby` describes the player's private custom lobby whenever it changes;
-//!   `lobby_left` notes leaving or being removed; `lobby_started` notifies
-//!   lobby spectators when a custom match starts.
+//!   `lobby_left` notes leaving or being removed.
 //! - `refused` turns a request down; the connection stays open.
-//! - `match` carries the player's own seat ticket. The connection stays
-//!   open, so the party or custom lobby stays together when the match is over.
+//! - `match` carries the player's own seat ticket (or watch-only spectator
+//!   ticket when `spectator` is true). The connection stays open, so the party
+//!   or custom lobby stays together when the match is over.
 //! - `error` comes before the door closes the connection.
 //!
 //! One task owns the [`Matchmaker`]; connections talk to it over channels.
@@ -156,12 +156,15 @@ pub enum ToClient {
     Refused {
         code: String,
     },
-    /// This player's seat: join `server` with `ticket` (hex). The match id
-    /// (hex) and seat are for display and bug reports; the ticket decides.
+    /// This player's seat (or watch-only spectator pass): join `server` with
+    /// `ticket` (hex). The match id (hex), seat and spectator flag are for
+    /// display and bug reports; the signed ticket decides.
     Match {
         mode: String,
         match_id: String,
         seat: usize,
+        #[serde(default)]
+        spectator: bool,
         server: String,
         ticket: String,
         expires: u64,
@@ -171,12 +174,6 @@ pub enum ToClient {
     /// The player left or was removed from their private custom lobby.
     LobbyLeft {
         reason: String,
-    },
-    /// The custom lobby match started (sent to lobby spectators until live
-    /// spectating tickets are issued).
-    LobbyStarted {
-        mode: String,
-        match_id: String,
     },
     Error {
         code: String,
@@ -489,6 +486,7 @@ fn start_match(door: &Door, conns: &Senders, mode: Mode, seats: Vec<QueueConn>) 
                 mode: mode.id().into(),
                 match_id: format!("{:016x}", created.match_id),
                 seat,
+                spectator: false,
                 server: door.config.match_server.clone(),
                 ticket,
                 expires,
@@ -523,16 +521,28 @@ fn start_custom_match(
         return;
     }
     let expires = unix_now() + door.config.ticket_ttl.as_secs();
-    let created = ticket::issue_custom_match(&door.config.key, mode.team_size(), settings, expires)
-        .expect("validated custom lobby settings and mode");
+    let spectators = if settings.allow_spectators {
+        spectators
+    } else {
+        Vec::new()
+    };
+    let created = ticket::issue_custom_match_with_spectators(
+        &door.config.key,
+        mode.team_size(),
+        settings,
+        spectators.len(),
+        expires,
+    )
+    .expect("validated custom lobby settings and mode");
     Metrics::add(&door.metrics.issued, 1);
     Metrics::add(&door.metrics.custom_matches, 1);
     eprintln!(
-        "match {:016x}: started from a {} custom lobby (map={}, round={}s)",
+        "match {:016x}: started from a {} custom lobby (map={}, round={}s, spectators={})",
         created.match_id,
         mode.id(),
         settings.map.id(),
         settings.round_seconds,
+        spectators.len(),
     );
     let match_id = format!("{:016x}", created.match_id);
     for (seat, (conn, ticket)) in seats.into_iter().zip(created.tickets).enumerate() {
@@ -541,17 +551,23 @@ fn start_custom_match(
                 mode: mode.id().into(),
                 match_id: match_id.clone(),
                 seat,
+                spectator: false,
                 server: door.config.match_server.clone(),
                 ticket,
                 expires,
             });
         }
     }
-    for conn in spectators {
+    for (conn, ticket) in spectators.into_iter().zip(created.spectator_tickets) {
         if let Some(sender) = conns.get(&conn) {
-            let _ = sender.try_send(ToClient::LobbyStarted {
+            let _ = sender.try_send(ToClient::Match {
                 mode: mode.id().into(),
                 match_id: match_id.clone(),
+                seat: 0,
+                spectator: true,
+                server: door.config.match_server.clone(),
+                ticket,
+                expires,
             });
         }
     }

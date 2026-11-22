@@ -171,9 +171,6 @@ export function createQueue(deps: QueueDeps) {
           notice: message.reason === "kicked" ? "kicked" : null,
         });
         break;
-      case "lobby_started":
-        update({ notice: "lobby_started" });
-        break;
       case "error":
         end(message.code);
         break;

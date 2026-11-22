@@ -4,7 +4,7 @@ import { visibleNameplates } from "../../domain/units/nameplates";
 import { useConfigSelector } from "../../state/config";
 import { draggingSpell, error, interaction, nameplateScene } from "../../state/session";
 import { useStore } from "../../state/store";
-import { interactUnit, unitRoster } from "../../runtime/commands";
+import { interactUnit, setSpectatorCamera, unitRoster } from "../../runtime/commands";
 
 export function Nameplates() {
   const scene = useStore(nameplateScene, (s) => s);
@@ -25,21 +25,26 @@ export function Nameplates() {
   )
     return null;
   const roster = unitRoster(scene, null);
-  const selectedId = roster.target?.id;
+  const spectating = Boolean(scene.spectating);
+  const selectedId = spectating ? null : roster.target?.id;
   return (
     <div className="nameplates" aria-label="World health bars">
-      {visibleNameplates(scene.nameplates ?? [], roster, preferences).map(
+      {visibleNameplates(scene.nameplates ?? [], roster, preferences, spectating).map(
         ({ tag, unit, x, y, friendly }) => {
           const activeCast = unit.cast ?? null;
           const lockedOut = !unit.disconnected && !activeCast && (unit.lockoutRemaining ?? 0) > 0;
+          const actor = scene.roster?.find((entry) => entry.id === unit.id)?.actor ?? null;
+          const pressed = spectating
+            ? actor !== null && scene.spectatorFollow === actor
+            : unit.id === selectedId;
           return (
             <button
               key={tag}
               type="button"
               className={`nameplate ${friendly ? "friendly" : "enemy"}${unit.disconnected ? " disconnected" : ""}`}
               style={{ left: `${x * 100}%`, top: `${y * 100}%` }}
-              aria-label={`${unit.name}${unit.disconnected ? " (disconnected)" : ""} health ${unit.health}/${unit.maxHealth}${activeCast ? `, casting ${spellLabel(activeCast.spell)}` : ""}. Target; right-click to focus`}
-              aria-pressed={unit.id === selectedId}
+              aria-label={`${unit.name}${unit.disconnected ? " (disconnected)" : ""} health ${unit.health}/${unit.maxHealth}${activeCast ? `, casting ${spellLabel(activeCast.spell)}` : ""}. ${spectating ? "Follow fighter" : "Target; right-click to focus"}`}
+              aria-pressed={pressed}
               onMouseDown={(e) => {
                 press.current = { x: e.clientX, y: e.clientY };
               }}
@@ -47,13 +52,15 @@ export function Nameplates() {
                 if (
                   !press.current ||
                   Math.hypot(e.clientX - press.current.x, e.clientY - press.current.y) < 4
-                )
-                  interactUnit(tag, "target");
+                ) {
+                  if (spectating && actor !== null) setSpectatorCamera(actor);
+                  else interactUnit(tag, "target");
+                }
                 press.current = null;
               }}
               onContextMenu={(e) => {
                 e.preventDefault();
-                interactUnit(tag, "focus");
+                if (!spectating) interactUnit(tag, "focus");
               }}
             >
               <span

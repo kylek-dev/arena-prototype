@@ -270,7 +270,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
             Message::binary(hello(signed(Claims {
                 match_id: created.match_id,
                 player: 1,
-                seat: 0,
+                role: arena_server::ticket::Role::Player { seat: 0 },
                 team_size: 1,
                 expires: 1,
                 settings: None,
@@ -282,7 +282,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
             Message::binary(hello(signed(Claims {
                 match_id: created.match_id,
                 player: 1,
-                seat: 2,
+                role: arena_server::ticket::Role::Player { seat: 2 },
                 team_size: 1,
                 expires: far_future,
                 settings: None,
@@ -294,7 +294,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
             Message::binary(hello(signed(Claims {
                 match_id: created.match_id ^ 1,
                 player: 1,
-                seat: 0,
+                role: arena_server::ticket::Role::Player { seat: 0 },
                 team_size: 4,
                 expires: far_future,
                 settings: None,
@@ -306,13 +306,14 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
             Message::binary(hello(signed(Claims {
                 match_id: created.match_id ^ 2,
                 player: 1,
-                seat: 0,
+                role: arena_server::ticket::Role::Player { seat: 0 },
                 team_size: 1,
                 expires: far_future,
                 settings: Some(arena_server::ticket::MatchSettings {
                     version: arena_server::ticket::MATCH_SETTINGS_VERSION + 1,
                     map: arena_server::ticket::MapId::Colosseum,
                     round_seconds: 600,
+                    allow_spectators: true,
                 }),
             }))),
             ErrorCode::BadTicket,
@@ -322,13 +323,31 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
             Message::binary(hello(signed(Claims {
                 match_id: created.match_id ^ 3,
                 player: 1,
-                seat: 0,
+                role: arena_server::ticket::Role::Player { seat: 0 },
                 team_size: 1,
                 expires: far_future,
                 settings: Some(arena_server::ticket::MatchSettings {
                     version: arena_server::ticket::MATCH_SETTINGS_VERSION,
                     map: arena_server::ticket::MapId::Colosseum,
                     round_seconds: 123,
+                    allow_spectators: true,
+                }),
+            }))),
+            ErrorCode::BadTicket,
+        ),
+        (
+            "spectator ticket when spectators are disabled",
+            Message::binary(hello(signed(Claims {
+                match_id: created.match_id ^ 4,
+                player: 1,
+                role: arena_server::ticket::Role::Spectator,
+                team_size: 1,
+                expires: far_future,
+                settings: Some(arena_server::ticket::MatchSettings {
+                    version: arena_server::ticket::MATCH_SETTINGS_VERSION,
+                    map: arena_server::ticket::MapId::Colosseum,
+                    round_seconds: 600,
+                    allow_spectators: false,
                 }),
             }))),
             ErrorCode::BadTicket,
@@ -338,7 +357,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
             Message::binary(hello(TicketKey::random().issue(&Claims {
                 match_id: created.match_id,
                 player: 1,
-                seat: 0,
+                role: arena_server::ticket::Role::Player { seat: 0 },
                 team_size: 1,
                 expires: far_future,
                 settings: None,
@@ -392,7 +411,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
     assert_eq!(joined.error().await, ErrorCode::Malformed);
 
     let metrics = running.app.metrics();
-    assert_eq!(metrics.errors(ErrorCode::BadTicket), 7);
+    assert_eq!(metrics.errors(ErrorCode::BadTicket), 8);
     assert_eq!(metrics.errors(ErrorCode::Malformed), 4);
     assert_eq!(metrics.errors(ErrorCode::HelloTimeout), 1);
     // Refused tickets never start a match; only the valid one did.
@@ -1407,6 +1426,130 @@ async fn server_validates_locks_and_relays_player_appearances_across_reconnects(
     assert_eq!(a.error().await, ErrorCode::Replaced);
 
     a2.leave().await;
+    b.leave().await;
+    running.shut_down(Duration::ZERO).await.unwrap();
+}
+
+#[tokio::test]
+async fn live_ws_spectators_cannot_act_trail_by_delay_respect_cap_and_receive_no_private_events() {
+    let mut cfg = config(true);
+    cfg.limits.spectator_delay = 10;
+    cfg.limits.max_spectators = 2;
+    let running = start(cfg).await.unwrap();
+    let created = running.app.issue_match_with_spectators(1, 3).unwrap();
+
+    // Two players join and start the match.
+    let (mut a, welcome_a) = Client::join(running.addr, &created.tickets[0]).await;
+    let (b, welcome_b) = Client::join(running.addr, &created.tickets[1]).await;
+    assert!(!welcome_a.spectator && welcome_a.actor == 0);
+    assert!(!welcome_b.spectator && welcome_b.actor == 1);
+
+    // Two spectators join within the cap (max_spectators = 2).
+    let (mut spec1, w1) = Client::join(running.addr, &created.spectator_tickets[0]).await;
+    let (spec2, w2) = Client::join(running.addr, &created.spectator_tickets[1]).await;
+    assert!(w1.spectator && w1.actor == 0);
+    assert!(w2.spectator && w2.actor == 0);
+
+    // A third distinct spectator exceeds the cap -> MatchFull.
+    let mut spec3 = Client::open(running.addr).await;
+    spec3
+        .hello(from_hex(&created.spectator_tickets[2]).unwrap())
+        .await;
+    assert_eq!(spec3.error().await, ErrorCode::MatchFull);
+
+    // Wait until the match has ticked into Running so `a`'s OutOfRange Pulse is
+    // evaluated in live combat rather than discarded during the Waiting transition.
+    let mut seat0_spawn_x = loop {
+        if let Some(ServerMessage::Snapshot(snap)) = a.next().await
+            && snap.tick >= 1
+        {
+            break snap.fighters.first().map(|f| f.x);
+        }
+    };
+
+    // Spectator inputs are strictly ignored by the server (never move or attack any fighter),
+    // while Ping still gets Pong.
+    spec1
+        .send(&ClientMessage::Input(InputFrame {
+            seq: 1,
+            movement: [1000, 0],
+            action: InputFrame::pulse(1),
+            ..InputFrame::default()
+        }))
+        .await;
+    spec1.send(&ClientMessage::Ping { nonce: 77 }).await;
+    // Seat 0 also triggers an OutOfRange rejection so we verify spectators never see Rejected.
+    a.send(&ClientMessage::Input(InputFrame {
+        seq: 1,
+        action: InputFrame::pulse(1),
+        ..InputFrame::default()
+    }))
+    .await;
+
+    let mut saw_pong = false;
+    let mut saw_player_rejection = false;
+    let mut latest_player_tick = 0u64;
+    let mut latest_spec_tick = 0u64;
+    let mut seat0_moved = false;
+    for _ in 0..40 {
+        if let Some(ServerMessage::Snapshot(snap)) = a.next().await {
+            latest_player_tick = latest_player_tick.max(snap.tick);
+            if let Some(f0) = snap.fighters.first() {
+                let spawn_x = *seat0_spawn_x.get_or_insert(f0.x);
+                if f0.x != spawn_x {
+                    seat0_moved = true;
+                }
+            }
+            if snap
+                .events
+                .iter()
+                .any(|e| matches!(e.event, arena_protocol::WireEvent::Rejected(_)))
+            {
+                saw_player_rejection = true;
+            }
+            if latest_player_tick >= 16 && saw_player_rejection {
+                break;
+            }
+        }
+    }
+    assert!(saw_player_rejection, "player seat saw its own rejection");
+    assert!(
+        !seat0_moved,
+        "spectator movement input must never move seat 0"
+    );
+    assert!(latest_player_tick >= 16);
+
+    // Drain spectator messages: must receive Pong, delayed snapshots (never ahead of live - delay),
+    // and ZERO WireEvent::Rejected frames!
+    let mut spec_frames = 0usize;
+    while spec_frames < 30 {
+        match tokio::time::timeout(Duration::from_millis(200), spec1.next()).await {
+            Ok(Some(ServerMessage::Pong { nonce: 77 })) => saw_pong = true,
+            Ok(Some(ServerMessage::Snapshot(snap))) => {
+                assert!(
+                    !snap
+                        .events
+                        .iter()
+                        .any(|e| matches!(e.event, arena_protocol::WireEvent::Rejected(_))),
+                    "spectator must never receive private Rejected events"
+                );
+                assert_eq!(snap.ack, 0);
+                assert_eq!(snap.queued, 0);
+                latest_spec_tick = latest_spec_tick.max(snap.tick);
+                spec_frames += 1;
+            }
+            _ => break,
+        }
+    }
+    assert!(saw_pong, "spectator pings still receive pongs");
+    assert!(
+        latest_spec_tick > 0,
+        "spectator received delayed snapshots once the delay elapsed"
+    );
+
+    spec1.leave().await;
+    spec2.leave().await;
+    a.leave().await;
     b.leave().await;
     running.shut_down(Duration::ZERO).await.unwrap();
 }

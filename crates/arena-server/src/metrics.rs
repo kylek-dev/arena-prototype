@@ -25,6 +25,7 @@ pub struct Metrics {
     /// Matches that reached a rules result: won, draw, time_limit_draw.
     matches_finished: [AtomicU64; 3],
     pub connections_open: AtomicU64,
+    pub spectators_open: AtomicU64,
     /// Separate hot-path counters onto distinct cache lines to avoid cross-core
     /// false sharing under concurrent matches.
     _pad_ticks: [u64; 8],
@@ -152,6 +153,12 @@ impl Metrics {
             "gauge",
             "Open WebSocket connections.",
             get(&self.connections_open),
+        );
+        line(
+            "spectators_open",
+            "gauge",
+            "Open watch-only spectator connections.",
+            get(&self.spectators_open),
         );
         line(
             "connections_refused_origin_total",

@@ -42,6 +42,7 @@ function boardsEqual(a: MatchScoreboard | null, b: MatchScoreboard): boolean {
   return (
     a !== null &&
     a.result === b.result &&
+    Boolean(a.spectating) === Boolean(b.spectating) &&
     a.durationTicks === b.durationTicks &&
     a.tickRate === b.tickRate &&
     rowsEqual(a.allies, b.allies) &&

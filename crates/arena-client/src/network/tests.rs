@@ -20,6 +20,7 @@ fn welcome_with_limit(actor: u8, team_size: u8, round_ticks: u64) -> Vec<u8> {
         round_ticks,
         rules: arena_protocol::RULES_VERSION,
         map: 7,
+        spectator: false,
     })
     .encode()
 }
@@ -1006,6 +1007,7 @@ fn finished_scoreboard_is_renumbered_into_local_order_and_cleared_on_rematch() {
         round_ticks: arena_sim::arena::MAX_ROUND_TICKS,
         rules: arena_protocol::RULES_VERSION,
         map: 7,
+        spectator: false,
     })
     .encode();
     session.receive(&feed(2, vec![rematch_welcome]), 2.0, &layout());
@@ -1078,4 +1080,38 @@ fn relayed_appearances_renumber_into_local_order_and_serialize_to_json() {
     assert_eq!(session.appearances_version(), 2);
     assert!(session.appearances().is_empty());
     assert_eq!(session.appearances_json(), "null");
+}
+
+#[test]
+fn spectator_session_keeps_server_order_never_sends_inputs_and_reports_spectator_status() {
+    let mut session = Session::default();
+    let welcome = ServerMessage::Welcome(Welcome {
+        protocol: PROTOCOL_VERSION,
+        actor: 0,
+        team_size: 2,
+        tick: 0,
+        tick_rate: 30,
+        round_ticks: arena_sim::arena::MAX_ROUND_TICKS,
+        rules: arena_protocol::RULES_VERSION,
+        map: 7,
+        spectator: true,
+    })
+    .encode();
+    let arena = Arena::practice(layout(), 2).unwrap();
+    session.receive(
+        &feed(1, vec![welcome, snapshot(&arena, 0, vec![], &[true; 4])]),
+        0.5,
+        &layout(),
+    );
+    assert!(session.is_spectator());
+    assert!(!session.joined());
+    assert!(session.input([1000, 0], 0, true, Some(1), 0.5).is_none());
+    assert!(session.ping(0.5).is_some(), "spectators still measure RTT");
+    assert!(session.take_initial_heading().is_none());
+    let view = session.view(0.016, 0.55).unwrap();
+    assert_eq!(view.fighters.len(), 4);
+    assert_eq!(view.fighters, arena.fighters());
+    let status: serde_json::Value = serde_json::from_str(&session.status_json()).unwrap();
+    assert_eq!(status["spectator"], true);
+    assert_eq!(status["seat"], serde_json::Value::Null);
 }

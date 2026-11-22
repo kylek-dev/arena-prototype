@@ -212,14 +212,28 @@ describe("network match identity", () => {
       tone: "info",
       action: { kind: "rejoin", label: "Play here" },
     });
+    expect(
+      matchMessage({ ...ended, ended: "Replaced", spectator: true }, true, null, null),
+    ).toEqual({
+      text: "This spectator view is now open in another tab or window.",
+      tone: "info",
+      action: { kind: "rejoin", label: "Watch here" },
+    });
+    expect(
+      matchMessage({ ...ended, ended: "MatchFull", spectator: true }, false, null, null),
+    ).toEqual({
+      text: "Spectator slots are full.",
+      tone: "info",
+      action: { kind: "dismiss", label: "Dismiss" },
+    });
   });
 });
 
 describe("protocol corners the runtime speaks itself", () => {
   it("encodes Hello exactly as arena-protocol's golden frame", () => {
-    // arena-protocol: Hello { protocol: 6, ticket: [0xab, 0xcd], appearance: None }
-    expect([...encodeHello("abcd")]).toEqual([0, 6, 2, 0xab, 0xcd, 0]);
-    expect(PROTOCOL_VERSION).toBe(6);
+    // arena-protocol: Hello { protocol: 7, ticket: [0xab, 0xcd], appearance: None }
+    expect([...encodeHello("abcd")]).toEqual([0, 7, 2, 0xab, 0xcd, 0]);
+    expect(PROTOCOL_VERSION).toBe(7);
     // Lengths and versions past 127 use more varint bytes.
     const long = encodeHello("00".repeat(300), 300);
     expect([...long.slice(0, 5)]).toEqual([0, 0xac, 0x02, 0xac, 0x02]);
@@ -241,7 +255,7 @@ describe("protocol corners the runtime speaks itself", () => {
     const ascii = (s: string) => Array.from(s, (ch) => ch.charCodeAt(0));
     expect([...withLook]).toEqual([
       0,
-      6,
+      7,
       2,
       0xab,
       0xcd,
@@ -282,7 +296,7 @@ describe("protocol corners the runtime speaks itself", () => {
         groups: {},
         variants: {},
       }),
-    ]).toEqual([0, 6, 2, 0xab, 0xcd, 0]);
+    ]).toEqual([0, 7, 2, 0xab, 0xcd, 0]);
   });
 
   it("reads Error frames with arena-protocol's code order and nothing else", () => {

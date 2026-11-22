@@ -14,7 +14,14 @@ import {
   remoteAppearances,
 } from "../state/appearance";
 import { observeCastResult } from "./cast-feedback";
-import { customLobbyVisible, engine, error, focus, nameplateScene } from "../state/session";
+import {
+  customLobbyVisible,
+  engine,
+  error,
+  focus,
+  interaction,
+  nameplateScene,
+} from "../state/session";
 import { reconcileFocus } from "../domain/units/selection";
 import { installPointer } from "./pointer";
 import { installUnitHover } from "./unit-hover";
@@ -48,6 +55,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
   const queue = browserQueue((ticket) => {
     clearPostMatchScoreboard();
     customLobbyVisible.set(false);
+    interaction.set({ panel: null, quick: false, layout: false, hovered: null, capture: null });
     if (beforeMatch.get() || customizerVisible.get()) enterArena(() => {});
     link.join(ticket);
   });

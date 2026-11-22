@@ -134,6 +134,10 @@ pub enum Refused {
     NoSuchMember,
     /// Match settings failed server version or allowlist validation.
     InvalidSettings,
+    /// The lobby host disabled spectator slots.
+    SpectatorsDisabled,
+    /// Cannot disable spectator slots while spectators are in the lobby.
+    SpectatorsOccupied,
 }
 impl Refused {
     pub fn code(self) -> &'static str {
@@ -152,6 +156,8 @@ impl Refused {
             Refused::LobbyTooBig => "lobby_too_big",
             Refused::NoSuchMember => "no_such_member",
             Refused::InvalidSettings => "invalid_settings",
+            Refused::SpectatorsDisabled => "spectators_disabled",
+            Refused::SpectatorsOccupied => "spectators_occupied",
         }
     }
 }

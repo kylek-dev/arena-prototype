@@ -63,6 +63,7 @@ export type MatchScoreboard = {
   resultLabel: string;
   durationTicks: number;
   tickRate: number;
+  spectating?: boolean;
   allies: ScoreboardRow[];
   opponents: ScoreboardRow[];
   allyTotals: TeamTotals;
@@ -95,7 +96,10 @@ export function expectedActorTag(actor: number): UnitTag {
   return `Opponent${Math.floor(actor / 2) + 1}` as UnitTag;
 }
 
-function fallbackActorName(actor: number): string {
+function fallbackActorName(actor: number, spectating = false): string {
+  if (spectating) {
+    return actor % 2 === 0 ? `Team A ${actor / 2 + 1}` : `Team B ${Math.floor(actor / 2) + 1}`;
+  }
   if (actor === 0) return "Player";
   if (actor % 2 === 0) return `Teammate ${actor / 2}`;
   return `Opponent ${Math.floor(actor / 2) + 1}`;
@@ -184,6 +188,7 @@ export function formatMatchDuration(durationTicks: number, tickRate = 30): strin
 export type ScoreboardSource = {
   tick: number;
   tickRate?: number;
+  spectating?: boolean;
   roundResult?: RoundResult | null;
   roster?: readonly RosterEntry[];
   scoreboard?: readonly ScoreboardEntry[] | null;
@@ -196,7 +201,8 @@ export function buildMatchScoreboard(source: ScoreboardSource): MatchScoreboard 
   if (!result || !entries || !VALID_ROSTER_SIZES.has(entries.length)) {
     return null;
   }
-  const resultLabel = roundResultLabel(result);
+  const spectating = Boolean(source.spectating);
+  const resultLabel = roundResultLabel(result, spectating);
   if (!resultLabel) return null;
 
   const allies: ScoreboardRow[] = [];
@@ -212,9 +218,9 @@ export function buildMatchScoreboard(source: ScoreboardSource): MatchScoreboard 
       healingDone: entry.healingDone,
       healingReceived: entry.healingReceived,
       killingBlows: entry.killingBlows,
-      name: rosterUnit?.name ?? fallbackActorName(entry.actor),
+      name: rosterUnit?.name ?? fallbackActorName(entry.actor, spectating),
       team,
-      isLocalPlayer: entry.actor === 0,
+      isLocalPlayer: !spectating && entry.actor === 0,
       disconnected: Boolean(rosterUnit?.disconnected),
     };
     if (team === "allies") allies.push(row);
@@ -236,6 +242,7 @@ export function buildMatchScoreboard(source: ScoreboardSource): MatchScoreboard 
     resultLabel,
     durationTicks,
     tickRate,
+    ...(spectating ? { spectating: true } : {}),
     allies,
     opponents,
     allyTotals: sumTeamTotals(allies),

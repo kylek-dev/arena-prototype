@@ -38,6 +38,13 @@ export class InputState {
     if (spell === 'pulse') this.attack = true;
   }
   requestReset() { this.cancel(); this.reset = true; }
+  requestSpectatorCamera(target) {
+    if (target === 'free') {
+      this.spectatorCmd = -1;
+    } else if (Number.isInteger(target) && target >= 0 && target < 6) {
+      this.spectatorCmd = target;
+    }
+  }
   wheel(deltaY) { this.zoom += deltaY; }
 
   mouseDown({ button, buttons, x, y }) {
@@ -99,6 +106,7 @@ export class InputState {
     this.selectActor = -1;
     this.teamSize = 0;
     this.castSpell = 0;
+    this.spectatorCmd = -2;
   }
 
   readInput() {
@@ -110,6 +118,8 @@ export class InputState {
     input.push(this.focusClick?.[0] ?? -1, this.focusClick?.[1] ?? -1);
     input.push(this.selectActor, this.teamSize);
     input.push(this.castSpell);
+    input.push(this.spectatorCmd);
+    this.spectatorCmd = -2;
     this.castSpell = 0;
     this.selectActor = -1;
     this.teamSize = 0;

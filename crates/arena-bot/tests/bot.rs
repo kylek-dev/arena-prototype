@@ -17,6 +17,7 @@ async fn scenario(rtt_ms: u64, jitter_ms: u64) -> (arena_server::Running, Scenar
         server: running.addr.to_string(),
         matches: 2,
         team_size: 1,
+        spectators_per_match: 0,
         duration: Duration::from_millis(1500),
         link: Link::round_trip(
             Duration::from_millis(rtt_ms),
@@ -204,6 +205,7 @@ async fn bots_emit_structured_json_combat_telemetry_and_time_limit_draw_rate() {
         server: running.addr.to_string(),
         matches: 2,
         team_size: 1,
+        spectators_per_match: 0,
         duration: Duration::from_millis(2200),
         link: Link::round_trip(Duration::from_millis(20), Duration::ZERO),
         paced: true,
@@ -326,5 +328,42 @@ async fn bots_use_adaptive_interp_and_bounded_lag_comp_cleanly() {
         report.effective_interp_delay_ms
     );
     assert!(report.targeting_fairness.casts_resolved > 0);
+    running.shut_down(Duration::ZERO).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bots_measure_spectator_bandwidth_and_privacy_with_zero_mismatches() {
+    let mut config = Config::new(TicketKey::random());
+    config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
+    config.dev = true;
+    config.limits.spectator_delay = 10;
+    config.limits.max_spectators = 4;
+    let running = start(config).await.unwrap();
+    let scenario = Scenario {
+        server: running.addr.to_string(),
+        matches: 2,
+        team_size: 2,
+        spectators_per_match: 2,
+        duration: Duration::from_secs(3),
+        link: Link::round_trip(Duration::from_millis(20), Duration::ZERO),
+        paced: true,
+        interp_delay_ms: arena_bot::fairness::DEFAULT_INTERP_DELAY_MS,
+        adaptive_interp: false,
+        reconnect_every: None,
+        away: Duration::from_millis(200),
+        seed: 29,
+        server_pid: None,
+        queue: None,
+    };
+    let report = run(scenario).await.unwrap();
+    println!("{report}");
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.unexpected_closes, 0);
+    assert_eq!(report.wrong_results, 0);
+    assert_eq!(report.hash_mismatches, 0);
+    assert_eq!(report.spectators, 4);
+    assert!(report.spectator_snapshots > 20, "{report}");
+    assert!(report.kbit_per_s_in_per_spectator > 0.0, "{report}");
+    assert_eq!(report.spectator_private_events, 0);
     running.shut_down(Duration::ZERO).await.unwrap();
 }

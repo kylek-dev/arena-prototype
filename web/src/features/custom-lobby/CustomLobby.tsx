@@ -37,7 +37,8 @@ const LOBBY_NOTICES = new Set([
   "no_such_member",
   "invalid_settings",
   "rate_limited",
-  "lobby_started",
+  "spectators_disabled",
+  "spectators_occupied",
 ]);
 
 function LobbyInvite({ code }: { code: string }) {
@@ -203,10 +204,13 @@ function SlotColumn({
     lobby.host &&
     me &&
     ((me.slot === "team_a" && slot === "team_b") || (me.slot === "team_b" && slot === "team_a"));
-  const canJoin = !inSlot && (!full || hostCanSwap);
+  const spectateDisabled = slot === "spectator" && !lobby.settings.allowSpectators;
+  const canJoin = !inSlot && !spectateDisabled && (!full || hostCanSwap);
   const joinLabel =
     slot === "spectator"
-      ? "Join spectators"
+      ? spectateDisabled
+        ? "Spectators off"
+        : "Join spectators"
       : full && hostCanSwap
         ? `Swap to ${title}`
         : `Join ${title}`;
@@ -299,7 +303,8 @@ export function CustomLobby() {
   const spectators = lobby.members.filter((m) => m.slot === "spectator");
   const teamAFull = teamA.length >= teamSize;
   const teamBFull = teamB.length >= teamSize;
-  const spectatorsFull = spectators.length >= lobby.spectatorSlots;
+  const spectatorsFull =
+    !lobby.settings.allowSpectators || spectators.length >= lobby.spectatorSlots;
   const notice = LOBBY_NOTICES.has(state.notice ?? "") ? noticeText(state.notice) : null;
   const readiness = lobbyReadinessText(lobby);
 
@@ -317,7 +322,8 @@ export function CustomLobby() {
           <div className="custom-lobby-heading">
             <h2 id="custom-lobby-title">Custom match · {modeLabel(lobby.mode)}</h2>
             <Text size="1" color="gray">
-              Invite friends by code or link. Seat tickets are issued when the host starts.
+              Invite friends by code or link. Player and spectator tickets are issued when the host
+              starts.
             </Text>
           </div>
           <div className="custom-lobby-header-actions">
@@ -399,6 +405,23 @@ export function CustomLobby() {
                   {formatRoundLimit(seconds)}
                 </option>
               ))}
+            </select>
+          </label>
+          <label className="custom-lobby-field">
+            <span>Spectators</span>
+            <select
+              aria-label="Allow spectators"
+              value={lobby.settings.allowSpectators ? "allowed" : "off"}
+              disabled={!lobby.host}
+              onChange={(event) =>
+                queue.setLobbySettings({
+                  ...lobby.settings,
+                  allowSpectators: event.target.value === "allowed",
+                })
+              }
+            >
+              <option value="allowed">Allowed</option>
+              <option value="off">Off</option>
             </select>
           </label>
         </div>

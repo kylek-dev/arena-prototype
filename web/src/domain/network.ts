@@ -4,14 +4,16 @@ import type { RoundResult } from "../bridge/snapshot";
 import type { Appearance } from "./appearance";
 import { roundResultLabel } from "./round-clock";
 
-/** A seat in one match: where to connect and the bearer ticket for it. */
+/** A seat or spectator pass in one match: where to connect and the bearer ticket for it. */
 export type MatchTicket = {
   /** `ws://` or `wss://` URL of the server's `/play` endpoint. */
   server: string;
-  /** Hex-encoded join ticket. A credential for one seat only. */
+  /** Hex-encoded join ticket. A credential for one seat or spectator pass only. */
   ticket: string;
   /** Unix seconds after which the server refuses the ticket. */
   expires: number;
+  /** True when this ticket is a watch-only spectator pass. */
+  spectator?: boolean;
 };
 
 /** What Rust reports about the match through `onNetwork`. */
@@ -19,6 +21,8 @@ export type NetworkStatus = {
   phase: "connecting" | "waiting" | "playing" | "finished" | "closed";
   error: string | null;
   seat: number | null;
+  /** True when attached as a watch-only spectator. */
+  spectator?: boolean;
   mapDiffers: boolean;
   rttMs: number | null;
   inputMs: number | null;
@@ -53,6 +57,8 @@ export type LinkState = {
   attempt: number;
   /** Why the link ended: a server error code or `expired`. */
   ended: string | null;
+  /** True when the active or just-ended link was opened with a spectator ticket. */
+  spectator?: boolean;
   /** The latest status Rust reported, if any. */
   status: NetworkStatus | null;
 };
@@ -97,15 +103,20 @@ export function matchMessage(
         action: null,
       };
     case "ended": {
-      const outcome = state.ended === "MatchOver" ? roundResultLabel(lastResult) : null;
+      const spectating = Boolean(state.spectator || state.status?.spectator);
+      const outcome = state.ended === "MatchOver" ? roundResultLabel(lastResult, spectating) : null;
+      const endedText =
+        spectating && state.ended === "Replaced"
+          ? "This spectator view is now open in another tab or window."
+          : spectating && state.ended === "MatchFull"
+            ? "Spectator slots are full."
+            : (ENDED[state.ended ?? ""] ?? "You left the match.");
       return {
-        text: outcome
-          ? `${outcome} · ${ENDED.MatchOver}`
-          : (ENDED[state.ended ?? ""] ?? "You left the match."),
+        text: outcome ? `${outcome} · ${ENDED.MatchOver}` : endedText,
         tone: state.ended === "MatchOver" && lastResult === "time_limit_draw" ? "warning" : "info",
         action:
           state.ended === "Replaced" && rememberedMatch
-            ? { kind: "rejoin", label: "Play here" }
+            ? { kind: "rejoin", label: spectating ? "Watch here" : "Play here" }
             : { kind: "dismiss", label: "Dismiss" },
       };
     }
@@ -113,8 +124,15 @@ export function matchMessage(
       if (!state.status || state.status.phase === "connecting")
         return { text: "Joining the match…", tone: "info", action: null };
       if (state.status.phase === "waiting") {
-        const seat = state.status.seat === null ? "" : ` · you are seat ${state.status.seat + 1}`;
         const count = attendance ? ` (${attendance.joined} of ${attendance.seats} joined)` : "";
+        if (state.status.spectator) {
+          return {
+            text: `Spectating · waiting for every player to join${count}…`,
+            tone: "info",
+            action: null,
+          };
+        }
+        const seat = state.status.seat === null ? "" : ` · you are seat ${state.status.seat + 1}`;
         return {
           text: `Waiting for every player to join${count}${seat}…`,
           tone: "info",
@@ -148,7 +166,7 @@ export function endsLink(error: string | null) {
 // same bytes; everything else is decoded by the engine.
 
 /** Must match `arena_protocol::PROTOCOL_VERSION`. */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 /** `ServerMessage::Error` codes in declaration order (`[3, index]`). */
 export const ERROR_CODES = [
   "VersionMismatch",
@@ -284,7 +302,12 @@ export function parseTicket(value: unknown): MatchTicket | null {
     !/^[0-9a-f]+$/i.test(v.ticket)
   )
     return null;
-  return { server: url.href, ticket: v.ticket.toLowerCase(), expires: v.expires as number };
+  return {
+    server: url.href,
+    ticket: v.ticket.toLowerCase(),
+    expires: v.expires as number,
+    ...(v.spectator === true ? { spectator: true } : {}),
+  };
 }
 
 /**
@@ -317,6 +340,7 @@ export function parseStatus(value: unknown): NetworkStatus | null {
     !PHASES.has(v.phase) ||
     (v.error !== null && typeof v.error !== "string") ||
     (v.seat !== null && !(Number.isInteger(v.seat) && v.seat >= 0 && v.seat < 6)) ||
+    (v.spectator !== undefined && typeof v.spectator !== "boolean") ||
     typeof v.mapDiffers !== "boolean" ||
     !optionalNumber(v.rttMs) ||
     !optionalNumber(v.inputMs) ||

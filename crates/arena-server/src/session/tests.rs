@@ -7,6 +7,8 @@ const LIMITS: Limits = Limits {
     start_timeout: 10,
     grace: 5,
     linger: 3,
+    spectator_delay: DEFAULT_SPECTATOR_DELAY,
+    max_spectators: DEFAULT_MAX_SPECTATORS,
 };
 
 fn arena(team_size: usize) -> Arena {
@@ -761,6 +763,7 @@ fn tick_encoded_matches_tick_wire_bytes_including_per_seat_rejections() {
         let mut actual = Vec::new();
         b.tick_encoded(|out| match out {
             EncodedOut::Frame { conn, frame } => actual.push((conn, frame)),
+            EncodedOut::SharedFrame { conn, frame } => actual.push((conn, frame.to_vec())),
             EncodedOut::Close { .. } => panic!("unexpected close"),
         });
         assert_eq!(actual, expected, "step {step}");
@@ -1819,4 +1822,299 @@ fn session_locks_first_appearance_per_seat_and_relays_to_connected_players() {
     none_first.attach_with_appearance(0, conn(0), None);
     none_first.attach_with_appearance(0, 888, Some(look0));
     assert_eq!(none_first.appearances(), vec![None, None]);
+}
+
+#[test]
+fn session_spectators_enforce_anti_ghosting_delay_cap_privacy_and_finish_drain() {
+    let limits = Limits {
+        spectator_delay: 5,
+        max_spectators: 2,
+        linger: 3,
+        ..Limits::default()
+    };
+    let short = arena(1).with_round_limit(6).unwrap();
+    let mut session = Session::new(short, 1, limits, Arc::default());
+
+    // Two spectators join while Waiting: never start the match before players arrive!
+    let w1 = session.attach_spectator(10, 501);
+    assert!(w1.iter().any(|item| matches!(
+        item,
+        Out::Send {
+            conn: 501,
+            message: ServerMessage::Welcome(Welcome {
+                spectator: true,
+                actor: 0,
+                ..
+            }),
+        }
+    )));
+    session.tick();
+    assert_eq!(session.phase(), Phase::Waiting);
+
+    // Second spectator fits cap; third is refused with MatchFull; reconnecting with
+    // the same player id replaces the old connection instead of hitting the cap.
+    assert!(
+        session
+            .attach_spectator(20, 502)
+            .iter()
+            .any(|item| matches!(
+                item,
+                Out::Send {
+                    conn: 502,
+                    message: ServerMessage::Welcome(_)
+                }
+            ))
+    );
+    assert_eq!(
+        session.attach_spectator(30, 503),
+        vec![Out::Close {
+            conn: 503,
+            error: Some(ErrorCode::MatchFull),
+        }]
+    );
+    let replaced = session.attach_spectator(20, 504);
+    assert!(replaced.contains(&Out::Close {
+        conn: 502,
+        error: Some(ErrorCode::Replaced),
+    }));
+    assert_eq!(session.spectator_count(), 2);
+
+    // Players join and transition Waiting -> Running.
+    session.attach(0, conn(0));
+    session.attach(1, conn(1));
+    session.tick();
+    assert_eq!(session.phase(), Phase::Running);
+
+    // Tick 1..5: players get live ticks 1..5; spectators get NOTHING yet (5-tick delay)!
+    // Also trigger a private rejection on seat 0 on tick 1.
+    session.receive(
+        0,
+        conn(0),
+        InputFrame {
+            seq: 1,
+            action: InputFrame::pulse(1),
+            ..InputFrame::default()
+        },
+    );
+    for expected_live in 1..=5u64 {
+        let out = session.tick();
+        assert_eq!(snapshot(&out, conn(0)).unwrap().tick, expected_live);
+        assert!(
+            snapshot(&out, 501).is_none(),
+            "spectator must not receive live tick {expected_live} before delay expires"
+        );
+    }
+
+    // Reconnecting mid-match must NEVER leak live ticks 1..5 (at most tick 0).
+    let mid_reconnect = session.attach_spectator(10, 505);
+    assert!(
+        snapshot(&mid_reconnect, 505).is_none_or(|snap| snap.tick == 0),
+        "mid-match spectator reconnect must not leak un-delayed live snapshot"
+    );
+
+    // Tick 6: round hits 6-tick time limit (Finished) for players; spectator receives tick 1
+    // (6 - 5 = 1), with ZERO private Rejected events!
+    let out = session.tick();
+    assert!(matches!(session.phase(), Phase::Finished { .. }));
+    let live_final = snapshot(&out, conn(0)).unwrap();
+    assert_eq!(live_final.tick, 6);
+    assert!(live_final.result.is_some());
+    let spec_first = snapshot(&out, 505).unwrap();
+    assert_eq!(spec_first.tick, 1);
+    assert!(
+        !spec_first
+            .events
+            .iter()
+            .any(|e| matches!(e.event, WireEvent::Rejected(_))),
+        "private Rejected event must never reach spectators"
+    );
+
+    // Subsequent finish ticks: players close after linger (3 ticks), while spectators
+    // keep draining buffered delayed ticks 2..=6 (including final result & scoreboard)
+    // before closing with MatchOver!
+    let mut seats_closed = false;
+    let mut spec_saw_final = false;
+    let mut spec_closed = false;
+    for _ in 0..12 {
+        let out = session.tick();
+        if out.iter().any(|item| {
+            matches!(
+                item,
+                Out::Close {
+                    conn: c,
+                    error: Some(ErrorCode::MatchOver)
+                } if *c == conn(0)
+            )
+        }) {
+            seats_closed = true;
+        }
+        if let Some(snap) = snapshot(&out, 505)
+            && snap.result.is_some()
+        {
+            assert_eq!(snap.tick, 6);
+            assert!(snap.scoreboard.is_some());
+            spec_saw_final = true;
+        }
+        if out.iter().any(|item| {
+            matches!(
+                item,
+                Out::Close {
+                    conn: 505,
+                    error: Some(ErrorCode::MatchOver)
+                }
+            )
+        }) {
+            spec_closed = true;
+            break;
+        }
+    }
+    assert!(seats_closed, "seated players closed after normal linger");
+    assert!(
+        spec_saw_final,
+        "spectators received delayed final result and scoreboard"
+    );
+    assert!(
+        spec_closed,
+        "spectators closed cleanly with MatchOver after drain"
+    );
+    assert!(session.is_ended());
+}
+
+#[test]
+fn session_spectator_tick_encoded_drains_when_empty_refuses_stale_finished_and_handles_zero_linger()
+{
+    // 1. `tick_encoded` continues draining `spectator_queue` when all seats and spectators
+    // temporarily disconnect, preventing burst overflows when a spectator reconnects.
+    let limits = Limits {
+        spectator_delay: 3,
+        max_spectators: 2,
+        linger: 3,
+        grace: 30,
+        ..Limits::default()
+    };
+    let mut session = Session::new(arena(1), 1, limits, Arc::default());
+    session.attach(0, conn(0));
+    session.attach(1, conn(1));
+    session.attach_spectator(10, 501);
+    for _ in 0..4 {
+        session.tick_encoded(|_| {});
+    }
+    session.detach(0, conn(0));
+    session.detach(1, conn(1));
+    session.detach_spectator(501);
+    for _ in 0..5 {
+        session.tick_encoded(|_| {});
+    }
+    let _ = session.attach_spectator(10, 502);
+    let mut frames_on_next_tick = 0usize;
+    session.tick_encoded(|item| {
+        if matches!(item, EncodedOut::SharedFrame { conn: 502, .. }) {
+            frames_on_next_tick += 1;
+        }
+    });
+    assert!(
+        frames_on_next_tick <= 1,
+        "stale delayed entries must expire while empty, got {frames_on_next_tick}"
+    );
+
+    // 2. Stale `last_spectator_snapshot` (result: None) must NOT allow attaching during
+    // `Phase::Finished` when no final result/scoreboard is queued.
+    let short_limits = Limits {
+        spectator_delay: 2,
+        max_spectators: 2,
+        linger: 4,
+        ..Limits::default()
+    };
+    let short = arena(1).with_round_limit(6).unwrap();
+    let mut stale_session = Session::new(short, 1, short_limits, Arc::default());
+    stale_session.attach(0, conn(0));
+    stale_session.attach(1, conn(1));
+    stale_session.attach_spectator(10, 501);
+    for _ in 0..4 {
+        stale_session.tick();
+    }
+    stale_session.detach_spectator(501);
+    for _ in 0..5 {
+        stale_session.tick();
+    }
+    let late = stale_session.attach_spectator(11, 503);
+    assert!(
+        matches!(
+            late.as_slice(),
+            [Out::Close {
+                conn: 503,
+                error: Some(ErrorCode::MatchOver)
+            }]
+        ),
+        "stale non-finished snapshot must not admit new spectators after finish: {late:?}"
+    );
+
+    // 3. `linger == 0` with `spectator_delay > 0` still delivers the final result & scoreboard
+    // before closing spectators with `MatchOver`.
+    let zero_linger = Limits {
+        spectator_delay: 3,
+        max_spectators: 2,
+        linger: 0,
+        ..Limits::default()
+    };
+    let short_zero = arena(1).with_round_limit(3).unwrap();
+    let mut zsession = Session::new(short_zero, 1, zero_linger, Arc::default());
+    zsession.attach(0, conn(0));
+    zsession.attach(1, conn(1));
+    zsession.attach_spectator(10, 501);
+    let mut saw_final_board = false;
+    let mut saw_close = false;
+    for _ in 0..10 {
+        let out = zsession.tick();
+        if let Some(snap) = snapshot(&out, 501)
+            && snap.result == Some(WireResult::TimeLimitDraw)
+            && snap.scoreboard.is_some()
+        {
+            saw_final_board = true;
+        }
+        if out.iter().any(|item| {
+            matches!(
+                item,
+                Out::Close {
+                    conn: 501,
+                    error: Some(ErrorCode::MatchOver)
+                }
+            )
+        }) {
+            saw_close = true;
+            break;
+        }
+    }
+    assert!(
+        saw_final_board,
+        "final scoreboard delivered even with linger == 0"
+    );
+    assert!(
+        saw_close,
+        "spectator closed with MatchOver after final delivery"
+    );
+
+    // 4. Default spectator delay is 0 (live/real-time): snapshots deliver on the same tick
+    // and mid-match joins immediately receive the current live tick.
+    assert_eq!(Limits::default().spectator_delay, 0);
+    let mut live_session = Session::new(arena(1), 1, Limits::default(), Arc::default());
+    live_session.attach(0, conn(0));
+    live_session.attach(1, conn(1));
+    live_session.tick(); // Waiting -> Running (tick 0)
+    live_session.tick(); // tick 1
+    let mid = live_session.attach_spectator(42, 601);
+    assert!(mid.iter().any(|item| matches!(
+        item,
+        Out::Send {
+            conn: 601,
+            message: ServerMessage::Welcome(Welcome {
+                spectator: true,
+                tick: 1,
+                ..
+            })
+        }
+    )));
+    assert_eq!(snapshot(&mid, 601).unwrap().tick, 1);
+    let next = live_session.tick();
+    assert_eq!(snapshot(&next, 601).unwrap().tick, 2);
 }

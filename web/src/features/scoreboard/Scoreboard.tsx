@@ -181,14 +181,14 @@ function ScoreboardModal({
               </tr>
             </thead>
             <TeamRows
-              title="Your team"
+              title={board.spectating ? "Team A" : "Your team"}
               tone="allies"
               rows={board.allies}
               totals={board.allyTotals}
               sort={sort}
             />
             <TeamRows
-              title="Opponents"
+              title={board.spectating ? "Team B" : "Opponents"}
               tone="opponents"
               rows={board.opponents}
               totals={board.opponentTotals}
@@ -309,10 +309,10 @@ export function Scoreboard() {
       onLeave={onLeave}
       onQueueAgain={onQueueAgain}
       queueAction={{
-        visible: inCustomLobby || (queue !== null && targetMode !== null),
+        visible: inCustomLobby || (!board.spectating && queue !== null && targetMode !== null),
         disabled: !inCustomLobby && Boolean(blocked || searching || connectingQueue),
         label: queueLabel,
-        hint: queueHint,
+        hint: inCustomLobby || !board.spectating ? queueHint : null,
       }}
     />
   );

@@ -20,13 +20,18 @@ export function GameMenu() {
   const link = useStore(networkLink, (l) => l);
   const phase = useStore(link?.state ?? NO_LINK, (s) => s.phase);
   const seat = useStore(link?.state ?? NO_LINK, (s) => s.status?.seat ?? null);
+  const statusSpectator = useStore(link?.state ?? NO_LINK, (s) => Boolean(s.status?.spectator));
+  const engineSpectating = useStore(engine, (s) => Boolean(s?.spectating));
+  const spectating = statusSpectator || engineSpectating;
   const inMatch = phase !== "idle" && phase !== "ended";
   const remembered = !inMatch ? link?.remembered() : null;
   return (
     <div className="stack game-menu">
       <Text size="2" color="gray">
         {inMatch
-          ? `Network match${seat === null ? "" : ` · seat ${seat + 1}`}`
+          ? spectating
+            ? "Spectating match"
+            : `Network match${seat === null ? "" : ` · seat ${seat + 1}`}`
           : "Local solo practice"}
       </Text>
       <Button onClick={() => setPanel(null)}>Resume</Button>
@@ -94,9 +99,11 @@ export function GameMenu() {
       <Button variant="surface" color="gray" onClick={() => setPanel("settings")}>
         Settings
       </Button>
-      <Button variant="surface" color="gray" onClick={() => setPanel("spellbook")}>
-        Spells
-      </Button>
+      {!spectating && (
+        <Button variant="surface" color="gray" onClick={() => setPanel("spellbook")}>
+          Spells
+        </Button>
+      )}
       <Button
         variant="surface"
         color="gray"
@@ -117,19 +124,23 @@ export function GameMenu() {
       >
         Map editor
       </Button>
-      <Button
-        variant="surface"
-        color="gray"
-        onClick={() => {
-          selectedLayout.set(null);
-          setMode("layout");
-        }}
-      >
-        Edit layout
-      </Button>
-      <Button variant="surface" color="gray" onClick={() => setMode("quick")}>
-        Quick binding
-      </Button>
+      {!spectating && (
+        <>
+          <Button
+            variant="surface"
+            color="gray"
+            onClick={() => {
+              selectedLayout.set(null);
+              setMode("layout");
+            }}
+          >
+            Edit layout
+          </Button>
+          <Button variant="surface" color="gray" onClick={() => setMode("quick")}>
+            Quick binding
+          </Button>
+        </>
+      )}
       {!inMatch && (
         <>
           <Separator size="4" />
