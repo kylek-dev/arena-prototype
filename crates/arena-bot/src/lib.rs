@@ -23,6 +23,10 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use arena_headless::telemetry::{CombatMetrics, DurationSummary, OutcomeSummary};
+use arena_protocol::{Snapshot, WireEvent};
+use arena_sim::TICKS_PER_SECOND;
+use arena_sim::arena::RoundResult;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -52,33 +56,155 @@ pub struct Scenario {
     pub queue: Option<queue::QueueScenario>,
 }
 
-/// State hashes seen per match and tick, to catch any divergence between
-/// what different players are told.
+#[derive(Debug, Default)]
+struct MatchHistory {
+    /// `tick -> (state_hash, public_events_recorded)`.
+    /// Tracking `public_events_recorded` separately from the hash prevents an
+    /// empty-events reconnect `attach()` snapshot arriving ahead of a peer's
+    /// regular tick snapshot from silently dropping that tick's public events.
+    hashes: BTreeMap<u64, (u64, bool)>,
+    /// Highest tick evicted from `hashes`; any tick at or below this was
+    /// already seen by another seat and must not be re-counted.
+    evicted_up_to: Option<u64>,
+}
+
+#[derive(Debug, Default)]
+struct SharedState {
+    matches: HashMap<u64, MatchHistory>,
+    /// Public combat events deduplicated per `(match_id, snapshot.tick)`.
+    public_combat: CombatMetrics,
+    /// Finished match outcomes deduplicated per `match_id`: `(result, duration_ticks, tick_rate)`.
+    finished_matches: HashMap<u64, (RoundResult, u64, u32)>,
+}
+
+/// State hashes and deduplicated combat telemetry seen per match and tick,
+/// catching any divergence between what different players are told while
+/// counting public combat events and round outcomes exactly once per match.
 #[derive(Debug, Default)]
 pub struct Shared {
-    hashes: Mutex<HashMap<u64, BTreeMap<u64, u64>>>,
+    state: Mutex<SharedState>,
     checks: AtomicU64,
     mismatches: AtomicU64,
 }
 impl Shared {
-    pub fn check_hash(&self, match_id: u64, tick: u64, hash: u64) {
-        let mut all = self.hashes.lock().expect("hash table lock");
-        let ticks = all.entry(match_id).or_default();
-        match ticks.get(&tick) {
-            Some(seen) => {
+    fn record_hash_and_check_events_locked(
+        &self,
+        state: &mut SharedState,
+        match_id: u64,
+        tick: u64,
+        hash: u64,
+        has_public_events: bool,
+    ) -> bool {
+        let entry = state.matches.entry(match_id).or_default();
+        if entry.evicted_up_to.is_some_and(|cut| tick <= cut) {
+            return false;
+        }
+        match entry.hashes.get_mut(&tick) {
+            Some((seen, recorded)) => {
                 self.checks.fetch_add(1, Ordering::Relaxed);
                 if *seen != hash {
                     self.mismatches.fetch_add(1, Ordering::Relaxed);
                 }
+                if has_public_events && !*recorded {
+                    *recorded = true;
+                    true
+                } else {
+                    false
+                }
             }
             None => {
-                ticks.insert(tick, hash);
+                entry.hashes.insert(tick, (hash, has_public_events));
                 // About 20 s of history covers any lagging seat.
-                while ticks.len() > 600 {
-                    ticks.pop_first();
+                while entry.hashes.len() > 600 {
+                    if let Some((oldest, _)) = entry.hashes.pop_first() {
+                        entry.evicted_up_to =
+                            Some(entry.evicted_up_to.map_or(oldest, |prev| prev.max(oldest)));
+                    }
+                }
+                has_public_events
+            }
+        }
+    }
+
+    pub fn check_hash(&self, match_id: u64, tick: u64, hash: u64) {
+        let mut state = self.state.lock().expect("shared state lock");
+        let _ = self.record_hash_and_check_events_locked(&mut state, match_id, tick, hash, false);
+    }
+
+    /// Cross-checks `snapshot.hash` across seats and deduplicates public
+    /// combat events and finished-match outcomes per `match_id`.
+    pub fn observe_snapshot(&self, match_id: u64, tick_rate: u32, snapshot: &Snapshot) {
+        let mut state = self.state.lock().expect("shared state lock");
+        if snapshot.tick > 0 {
+            let has_public_events = snapshot.events.iter().any(|tick_event| {
+                !matches!(
+                    tick_event.event,
+                    WireEvent::Finished(_) | WireEvent::Rejected(_)
+                )
+            });
+            if self.record_hash_and_check_events_locked(
+                &mut state,
+                match_id,
+                snapshot.tick,
+                snapshot.hash,
+                has_public_events,
+            ) {
+                for tick_event in &snapshot.events {
+                    match tick_event.event {
+                        WireEvent::Jumped { .. } => state.public_combat.record_jump(),
+                        WireEvent::CastStarted { spell, .. } => {
+                            state.public_combat.record_cast_started(spell.into());
+                        }
+                        WireEvent::CastCompleted { spell, .. } => {
+                            state.public_combat.record_cast_completed(spell.into());
+                        }
+                        WireEvent::CastInterrupted { spell, reason, .. } => {
+                            state
+                                .public_combat
+                                .record_cast_interrupted(spell.into(), reason.into());
+                        }
+                        WireEvent::Hit { actor, damage, .. } => {
+                            state.public_combat.record_hit(usize::from(actor), damage);
+                        }
+                        WireEvent::Healed { actor, amount, .. } => {
+                            state.public_combat.record_heal(usize::from(actor), amount);
+                        }
+                        // `Finished` is tracked per `match_id` below; `Rejected` is private per seat.
+                        WireEvent::Finished(_) | WireEvent::Rejected(_) => {}
+                    }
                 }
             }
         }
+        if let Some(result) = snapshot.result {
+            state.finished_matches.entry(match_id).or_insert((
+                RoundResult::from(result),
+                snapshot.tick,
+                tick_rate.max(1),
+            ));
+        }
+    }
+
+    /// Returns deduplicated match outcomes, round durations, and public combat counters.
+    pub fn telemetry_summary(&self) -> (OutcomeSummary, DurationSummary, CombatMetrics) {
+        let state = self.state.lock().expect("shared state lock");
+        let outcomes = OutcomeSummary::from_results(
+            state
+                .finished_matches
+                .values()
+                .map(|(result, _, _)| *result),
+        );
+        let tick_rate = state
+            .finished_matches
+            .values()
+            .next()
+            .map_or(TICKS_PER_SECOND, |(_, _, rate)| u64::from(*rate));
+        let durations: Vec<u64> = state
+            .finished_matches
+            .values()
+            .map(|(_, ticks, _)| *ticks)
+            .collect();
+        let duration = DurationSummary::from_ticks(durations, tick_rate);
+        (outcomes, duration, state.public_combat.clone())
     }
 }
 
@@ -93,11 +219,16 @@ pub struct ServerMetrics {
     pub ticks_total: u64,
     pub tick_overruns_total: u64,
     pub tick_max_microseconds: u64,
+    pub tick_microseconds_total: u64,
+    pub tick_mean_microseconds: f64,
     pub frames_dropped_total: u64,
     pub inputs_overflow_total: u64,
     pub inputs_stale_total: u64,
     pub inputs_folded_total: u64,
     pub inputs_starved_total: u64,
+    pub matches_finished_won: u64,
+    pub matches_finished_draw: u64,
+    pub matches_finished_time_limit_draw: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -117,6 +248,12 @@ pub struct Report {
     pub reconnect_every_s: Option<f64>,
     pub rounds_started: u64,
     pub rounds_finished: u64,
+    /// Deduplicated finished-match outcomes and win/draw rates.
+    pub outcomes: OutcomeSummary,
+    /// Distribution of completed match durations in ticks and seconds.
+    pub round_duration: DurationSummary,
+    /// Aggregated combat telemetry (LOS blocks, hits, damage, heals, casts, interrupts).
+    pub combat: CombatMetrics,
     pub rtt: Summary,
     pub input_latency: Summary,
     pub snapshot_gap: Summary,
@@ -164,6 +301,7 @@ pub(crate) struct Totals {
     predicted_inputs: u64,
     corrections: u64,
     correction_mm: Vec<u32>,
+    rejections: CombatMetrics,
     rounds_started: u64,
     rounds_finished: u64,
 }
@@ -190,6 +328,7 @@ impl Totals {
         self.predicted_inputs += seat.predicted_inputs;
         self.corrections += seat.corrections;
         self.correction_mm.extend(seat.correction_mm);
+        self.rejections.merge(&seat.rejections);
     }
     fn merge(&mut self, other: Totals) {
         self.rtt.extend(other.rtt);
@@ -213,6 +352,7 @@ impl Totals {
         self.predicted_inputs += other.predicted_inputs;
         self.corrections += other.corrections;
         self.correction_mm.extend(other.correction_mm);
+        self.rejections.merge(&other.rejections);
         self.rounds_started += other.rounds_started;
         self.rounds_finished += other.rounds_finished;
     }
@@ -282,6 +422,8 @@ pub async fn run(mut scenario: Scenario) -> Result<Report, String> {
         Some(queue) => queue.bots,
         None => scenario.matches * scenario.team_size * 2,
     };
+    let (outcomes, round_duration, mut combat) = shared.telemetry_summary();
+    combat.merge(&totals.rejections);
     Ok(Report {
         server: scenario.server,
         queue: scenario
@@ -304,6 +446,9 @@ pub async fn run(mut scenario: Scenario) -> Result<Report, String> {
         reconnect_every_s: scenario.reconnect_every.map(|every| every.as_secs_f64()),
         rounds_started: totals.rounds_started,
         rounds_finished: totals.rounds_finished,
+        outcomes,
+        round_duration,
+        combat,
         rtt: totals.rtt.summary(),
         input_latency: totals.input_latency.summary(),
         snapshot_gap: totals.snapshot_gap.summary(),
@@ -429,15 +574,29 @@ fn parse_metrics(text: &str) -> ServerMetrics {
             .find_map(|line| line.strip_prefix(name)?.strip_prefix(' ')?.parse().ok())
             .unwrap_or(0)
     };
+    let ticks_total = value("arena_ticks_total");
+    let tick_microseconds_total = value("arena_tick_microseconds_total");
+    let tick_mean_microseconds = if ticks_total == 0 {
+        0.0
+    } else {
+        tick_microseconds_total as f64 / ticks_total as f64
+    };
     ServerMetrics {
-        ticks_total: value("arena_ticks_total"),
+        ticks_total,
         tick_overruns_total: value("arena_tick_overruns_total"),
         tick_max_microseconds: value("arena_tick_max_microseconds"),
+        tick_microseconds_total,
+        tick_mean_microseconds,
         frames_dropped_total: value("arena_frames_dropped_total"),
         inputs_overflow_total: value("arena_inputs_overflow_total"),
         inputs_stale_total: value("arena_inputs_stale_total"),
         inputs_folded_total: value("arena_inputs_folded_total"),
         inputs_starved_total: value("arena_inputs_starved_total"),
+        matches_finished_won: value("arena_matches_finished_total{result=\"won\"}"),
+        matches_finished_draw: value("arena_matches_finished_total{result=\"draw\"}"),
+        matches_finished_time_limit_draw: value(
+            "arena_matches_finished_total{result=\"time_limit_draw\"}",
+        ),
     }
 }
 
@@ -502,6 +661,39 @@ impl fmt::Display for Report {
             "rounds         {} started, {} finished",
             self.rounds_started, self.rounds_finished
         )?;
+        writeln!(
+            f,
+            "outcomes       {} resolved: team0 {} ({:.1}%), team1 {} ({:.1}%), draws {} ({:.1}%)",
+            self.outcomes.matches_finished,
+            self.outcomes.team0_wins,
+            self.outcomes.team0_win_rate * 100.0,
+            self.outcomes.team1_wins,
+            self.outcomes.team1_win_rate * 100.0,
+            self.outcomes.total_draws,
+            self.outcomes.draw_rate * 100.0
+        )?;
+        if self.round_duration.count > 0 {
+            writeln!(
+                f,
+                "duration       mean {:.1} ticks ({:.2} s)  p50 {} ({:.2} s)  max {} ({:.2} s)",
+                self.round_duration.mean_ticks,
+                self.round_duration.mean_s,
+                self.round_duration.p50_ticks,
+                self.round_duration.p50_s,
+                self.round_duration.max_ticks,
+                self.round_duration.max_s
+            )?;
+        }
+        writeln!(
+            f,
+            "combat         {} hits ({} dmg), {} heals ({} hp), {} LOS blocks, {} interrupts landed",
+            self.combat.hits,
+            self.combat.total_damage,
+            self.combat.heals,
+            self.combat.total_healing,
+            self.combat.los_blocks,
+            self.combat.interrupts_landed
+        )?;
         writeln!(f, "rtt (ping)     {}", self.rtt)?;
         writeln!(f, "input → ack    {}", self.input_latency)?;
         writeln!(f, "snapshot gap   {}", self.snapshot_gap)?;
@@ -542,9 +734,10 @@ impl fmt::Display for Report {
         if let Some(server) = &self.server_metrics {
             writeln!(
                 f,
-                "server         {} ticks, {} overruns, slowest tick {} µs, {} frames dropped, {} inputs overflowed, {} folded, {} starved",
+                "server         {} ticks, {} overruns, mean tick {:.1} µs, slowest tick {} µs, {} frames dropped, {} inputs overflowed, {} folded, {} starved",
                 server.ticks_total,
                 server.tick_overruns_total,
+                server.tick_mean_microseconds,
                 server.tick_max_microseconds,
                 server.frames_dropped_total,
                 server.inputs_overflow_total,
@@ -575,24 +768,162 @@ mod tests {
         for tick in 0..1_000 {
             shared.check_hash(3, tick, tick);
         }
-        assert_eq!(shared.hashes.lock().unwrap()[&3].len(), 600);
+        assert_eq!(shared.state.lock().unwrap().matches[&3].hashes.len(), 600);
+        // An already-evicted tick from a lagging seat must not be re-inserted or miscounted.
+        shared.check_hash(3, 0, 999);
+        assert_eq!(shared.mismatches.load(Ordering::Relaxed), 1);
+        assert_eq!(shared.state.lock().unwrap().matches[&3].hashes.len(), 600);
+    }
+
+    #[test]
+    fn observe_snapshot_deduplicates_public_events_and_outcomes_across_seats() {
+        use arena_protocol::{
+            TickEvent, WireInterruptReason, WireRejection, WireResult, WireSpell,
+        };
+        let shared = Shared::default();
+        let snap = Snapshot {
+            tick: 45,
+            ack: 1,
+            queued: 0,
+            hash: 0x1234,
+            result: Some(WireResult::TimeLimitDraw),
+            fighters: Vec::new(),
+            events: vec![
+                TickEvent {
+                    tick: 44,
+                    event: WireEvent::Hit {
+                        actor: 0,
+                        target: 1,
+                        damage: 25,
+                    },
+                },
+                TickEvent {
+                    tick: 44,
+                    event: WireEvent::CastInterrupted {
+                        actor: 1,
+                        spell: WireSpell::RiftBolt,
+                        reason: WireInterruptReason::LineOfSight,
+                        by: None,
+                    },
+                },
+                TickEvent {
+                    tick: 44,
+                    event: WireEvent::Rejected(WireRejection::LineOfSight),
+                },
+            ],
+        };
+        // Both seats observe the same tick and finish snapshot.
+        shared.observe_snapshot(7, 30, &snap);
+        shared.observe_snapshot(7, 30, &snap);
+        assert_eq!(shared.checks.load(Ordering::Relaxed), 1);
+        assert_eq!(shared.mismatches.load(Ordering::Relaxed), 0);
+
+        let (outcomes, duration, combat) = shared.telemetry_summary();
+        assert_eq!(outcomes.matches_finished, 1);
+        assert_eq!(outcomes.time_limit_draws, 1);
+        assert!((outcomes.draw_rate - 1.0).abs() < 1e-12);
+        assert_eq!(duration.count, 1);
+        assert_eq!(duration.p50_ticks, 45);
+        assert_eq!(combat.hits, 1);
+        assert_eq!(combat.total_damage, 25);
+        assert_eq!(combat.los_cast_interrupts, 1);
+        // Private rejections are counted per seat, not in Shared's public events.
+        assert_eq!(combat.los_rejections, 0);
+        assert_eq!(combat.los_blocks, 1);
+
+        // Reconnect attach() race: an empty-events snapshot arriving ahead of regular
+        // seat snapshots for tick 46 must not drop tick 46's public combat events.
+        let attach_snap = Snapshot {
+            tick: 46,
+            ack: 1,
+            queued: 0,
+            hash: 0x5678,
+            result: None,
+            fighters: Vec::new(),
+            events: Vec::new(),
+        };
+        let regular_snap = Snapshot {
+            tick: 46,
+            ack: 2,
+            queued: 0,
+            hash: 0x5678,
+            result: None,
+            fighters: Vec::new(),
+            events: vec![TickEvent {
+                tick: 45,
+                event: WireEvent::Hit {
+                    actor: 1,
+                    target: 0,
+                    damage: 30,
+                },
+            }],
+        };
+        shared.observe_snapshot(8, 30, &attach_snap);
+        shared.observe_snapshot(8, 30, &regular_snap);
+        shared.observe_snapshot(8, 30, &regular_snap);
+        assert_eq!(shared.mismatches.load(Ordering::Relaxed), 0);
+        let (_, _, combat_after_attach) = shared.telemetry_summary();
+        assert_eq!(combat_after_attach.hits, 2);
+        assert_eq!(combat_after_attach.total_damage, 55);
+
+        // Evicted ticks from lagging seats must not double-count public combat events.
+        for tick in 1..=650 {
+            let s = Snapshot {
+                tick,
+                ack: 0,
+                queued: 0,
+                hash: tick,
+                result: None,
+                fighters: Vec::new(),
+                events: Vec::new(),
+            };
+            shared.observe_snapshot(9, 30, &s);
+        }
+        let lagging = Snapshot {
+            tick: 1,
+            ack: 0,
+            queued: 0,
+            hash: 1,
+            result: None,
+            fighters: Vec::new(),
+            events: vec![TickEvent {
+                tick: 0,
+                event: WireEvent::Hit {
+                    actor: 0,
+                    target: 1,
+                    damage: 99,
+                },
+            }],
+        };
+        shared.observe_snapshot(9, 30, &lagging);
+        let (_, _, combat_after_eviction) = shared.telemetry_summary();
+        assert_eq!(combat_after_eviction.hits, 2);
+        assert_eq!(combat_after_eviction.total_damage, 55);
     }
 
     #[test]
     fn metrics_text_is_parsed_by_exact_name() {
-        let text = "# HELP arena_ticks_total x\narena_ticks_total 12\narena_tick_overruns_total 3\narena_tick_max_microseconds 450\narena_inputs_folded_total 7\narena_inputs_starved_total 11\n";
+        let text = "# HELP arena_ticks_total x\narena_ticks_total 12\narena_tick_overruns_total 3\narena_tick_max_microseconds 450\narena_tick_microseconds_total 600\narena_inputs_folded_total 7\narena_inputs_starved_total 11\narena_matches_finished_total{result=\"won\"} 4\narena_matches_finished_total{result=\"draw\"} 1\narena_matches_finished_total{result=\"time_limit_draw\"} 2\n";
         let metrics = parse_metrics(text);
         assert_eq!(
             (
                 metrics.ticks_total,
                 metrics.tick_overruns_total,
                 metrics.tick_max_microseconds,
+                metrics.tick_microseconds_total,
                 metrics.inputs_folded_total,
                 metrics.inputs_starved_total,
+                metrics.matches_finished_won,
+                metrics.matches_finished_draw,
+                metrics.matches_finished_time_limit_draw,
             ),
-            (12, 3, 450, 7, 11)
+            (12, 3, 450, 600, 7, 11, 4, 1, 2)
         );
+        assert!((metrics.tick_mean_microseconds - 50.0).abs() < 1e-12);
         assert_eq!(metrics.frames_dropped_total, 0);
+        // Zero ticks yields finite 0.0 mean instead of NaN.
+        let empty = parse_metrics("");
+        assert_eq!(empty.tick_mean_microseconds, 0.0);
         assert_eq!(from_hex("0aff"), Some(vec![10, 255]));
         assert_eq!(from_hex("0"), None);
     }

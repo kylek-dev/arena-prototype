@@ -305,7 +305,7 @@ async fn run_match(
     let mut report_at = Instant::now() + Duration::from_secs(5);
     let mut report_from = Instant::now();
     loop {
-        let mut ticked = None;
+        let mut ticked: Option<(Instant, bool)> = None;
         tokio::select! {
             biased;
             _ = shutdown.wait_for(|stop| *stop) => {
@@ -313,7 +313,8 @@ async fn run_match(
                 deliver(&app, id, &mut conns, out);
             }
             _ = interval.tick() => {
-                ticked = Some(Instant::now());
+                let was_running = session.phase() == session::Phase::Running;
+                ticked = Some((Instant::now(), was_running));
                 if app.config.debug_json {
                     let out = session.tick();
                     deliver(&app, id, &mut conns, out);
@@ -361,9 +362,13 @@ async fn run_match(
                 }
             }
         }
-        if let Some(started) = ticked {
-            app.metrics
-                .record_tick(started.elapsed().as_micros() as u64, interval_us);
+        if let Some((started, was_running)) = ticked {
+            let elapsed_us = started.elapsed().as_micros() as u64;
+            if was_running {
+                app.metrics.record_running_tick(elapsed_us, interval_us);
+            } else {
+                app.metrics.record_tick(elapsed_us, interval_us);
+            }
             if app.config.dev && started >= report_at {
                 let seconds = started.duration_since(report_from).as_secs_f64();
                 for (seat, window) in session.take_windows() {

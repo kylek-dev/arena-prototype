@@ -188,3 +188,61 @@ async fn bots_recover_across_aggressive_reconnect_jitter_and_loss_matrix() {
     assert_eq!(report.hash_mismatches, 0);
     running.shut_down(Duration::ZERO).await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bots_emit_structured_json_combat_telemetry_and_time_limit_draw_rate() {
+    let mut config = Config::new(TicketKey::random());
+    config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
+    config.dev = true;
+    // 1-second rounds guarantee deterministic time-limit draws so outcome,
+    // duration, and server tick-mean telemetry are all populated.
+    config.round_ticks = 30;
+    let running = start(config).await.unwrap();
+    let scenario = Scenario {
+        server: running.addr.to_string(),
+        matches: 2,
+        team_size: 1,
+        duration: Duration::from_millis(2200),
+        link: Link::round_trip(Duration::from_millis(20), Duration::ZERO),
+        paced: true,
+        reconnect_every: None,
+        away: Duration::from_millis(200),
+        seed: 13,
+        server_pid: None,
+        queue: None,
+    };
+    let report = run(scenario).await.unwrap();
+    println!("{report}");
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.unexpected_closes, 0);
+    assert_eq!(report.wrong_results, 0);
+    assert_eq!(report.hash_mismatches, 0);
+    assert!(report.outcomes.matches_finished >= 2);
+    assert_eq!(
+        report.outcomes.time_limit_draws,
+        report.outcomes.matches_finished
+    );
+    assert!((report.outcomes.draw_rate - 1.0).abs() < 1e-12);
+    assert_eq!(
+        report.round_duration.count as u64,
+        report.outcomes.matches_finished
+    );
+    assert_eq!(report.round_duration.p50_ticks, 30);
+
+    let server = report.server_metrics.as_ref().unwrap();
+    assert!(server.ticks_total > 0);
+    assert!(server.tick_mean_microseconds.is_finite());
+    assert!(server.matches_finished_time_limit_draw >= 2);
+
+    let json = serde_json::to_string_pretty(&report).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        parsed["outcomes"]["matches_finished"],
+        report.outcomes.matches_finished
+    );
+    assert_eq!(parsed["round_duration"]["p50_ticks"], 30);
+    assert!(parsed["combat"]["los_blocks"].is_u64());
+    assert!(parsed["server_metrics"]["tick_mean_microseconds"].is_f64());
+
+    running.shut_down(Duration::ZERO).await.unwrap();
+}

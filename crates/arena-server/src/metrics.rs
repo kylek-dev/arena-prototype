@@ -29,6 +29,8 @@ pub struct Metrics {
     /// false sharing under concurrent matches.
     _pad_ticks: [u64; 8],
     pub ticks: AtomicU64,
+    /// Cumulative compute time of Running rule ticks, microseconds (1-to-1 with `ticks`).
+    pub tick_total_us: AtomicU64,
     /// Ticks whose processing took longer than one tick interval.
     pub tick_overruns: AtomicU64,
     /// Slowest single tick, microseconds.
@@ -107,6 +109,8 @@ impl Metrics {
     pub fn arrivals(&self) -> [u64; 5] {
         std::array::from_fn(|index| Self::get(&self.arrivals[index]))
     }
+    /// Records tick overrun and max duration for any session interval tick
+    /// (including waiting/linger ticks that do not advance `arena_ticks_total`).
     pub fn record_tick(&self, micros: u64, interval_micros: u64) {
         if micros > self.tick_max_us.load(Ordering::Relaxed) {
             self.tick_max_us.fetch_max(micros, Ordering::Relaxed);
@@ -114,6 +118,13 @@ impl Metrics {
         if micros > interval_micros {
             Self::add(&self.tick_overruns, 1);
         }
+    }
+    /// Records a `Phase::Running` rule tick's compute time into
+    /// `arena_tick_microseconds_total` (matching `arena_ticks_total` 1-to-1)
+    /// as well as overrun and max gauges.
+    pub fn record_running_tick(&self, micros: u64, interval_micros: u64) {
+        Self::add(&self.tick_total_us, micros);
+        self.record_tick(micros, interval_micros);
     }
 
     pub fn render(&self) -> String {
@@ -171,6 +182,12 @@ impl Metrics {
             "gauge",
             "Slowest single tick since start.",
             get(&self.tick_max_us),
+        );
+        line(
+            "tick_microseconds_total",
+            "counter",
+            "Cumulative compute time of running rule ticks in microseconds.",
+            get(&self.tick_total_us),
         );
         line(
             "inputs_total",
@@ -268,8 +285,10 @@ mod tests {
         metrics.record_error(ErrorCode::RateLimited);
         metrics.record_result(RoundResult::Won { team: 0 });
         metrics.record_result(RoundResult::TimeLimitDraw);
+        // Non-running ticks update max/overruns without inflating tick_microseconds_total.
         metrics.record_tick(40_000, 33_333);
-        metrics.record_tick(10, 33_333);
+        metrics.record_running_tick(150, 33_333);
+        metrics.record_running_tick(50, 33_333);
         let text = metrics.render();
         assert!(text.contains("arena_inputs_total 3\n"));
         assert!(text.contains("arena_matches_finished_total{result=\"won\"} 1\n"));
@@ -278,6 +297,7 @@ mod tests {
         assert!(text.contains("arena_errors_total{code=\"RateLimited\"} 1\n"));
         assert!(text.contains("arena_tick_overruns_total 1\n"));
         assert!(text.contains("arena_tick_max_microseconds 40000\n"));
+        assert!(text.contains("arena_tick_microseconds_total 200\n"));
         assert_eq!(metrics.errors(ErrorCode::RateLimited), 1);
         assert_eq!(metrics.errors(ErrorCode::BadTicket), 0);
         assert_eq!(metrics.finished(RoundResult::TimeLimitDraw), 1);
