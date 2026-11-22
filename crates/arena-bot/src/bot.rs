@@ -21,6 +21,10 @@ use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::Shared;
+use crate::bandwidth::{BandwidthStats, BandwidthTracker};
+use crate::fairness::{
+    CastSubmission, FairnessStats, FairnessTracker, ViewBuffer, interp_delay_ticks,
+};
 use crate::link::{Link, Rng, delay_line};
 use crate::stats::Samples;
 
@@ -33,6 +37,8 @@ pub struct Seat {
     pub link: Link,
     /// Use browser-parity `Pacer` + `TickRate` adaptive input cadence.
     pub paced: bool,
+    /// Remote-fighter view delay (ms), matching browser interpolation (default 100 ms).
+    pub interp_delay_ms: u64,
     pub seed: u64,
     /// Drop the connection and rejoin this often (staggered per seat).
     pub reconnect_every: Option<Duration>,
@@ -75,6 +81,10 @@ pub struct SeatStats {
     pub rejections: CombatMetrics,
     /// Next event tick eligible for per-seat rejection recording (deduplicates reconnects).
     pub(crate) next_rejection_tick: u64,
+    /// Targeting-fairness / lag-compensation disagreement counters.
+    pub fairness: FairnessStats,
+    /// Online full vs delta / rate-reduced snapshot bandwidth counters.
+    pub bandwidth: BandwidthStats,
     pub round_finished: bool,
 }
 
@@ -189,7 +199,9 @@ async fn session(
 
     let mut tick_rate = 30u32;
     let mut round_ticks = MAX_ROUND_TICKS;
-    let mut latest: Option<Snapshot> = None;
+    let mut view_buffer = ViewBuffer::default();
+    let mut fairness = FairnessTracker::default();
+    let mut bandwidth = BandwidthTracker::default();
     let mut last_snapshot_at: Option<Instant> = None;
     let mut seq = 0u32;
     let mut pending_cast_ack: Option<u32> = None;
@@ -223,7 +235,8 @@ async fn session(
                 let mut frame_ticks = Vec::new();
                 let mut stop = None;
                 for frame in batch {
-                    stats.bytes_in += frame.len() as u64;
+                    let frame_len = frame.len();
+                    stats.bytes_in += frame_len as u64;
                     let Ok(message) = ServerMessage::decode(&frame) else {
                         stop = Some(End::Lost("undecodable frame"));
                         break;
@@ -235,6 +248,9 @@ async fn session(
                             predictor.set_round_limit(round_ticks);
                             pacer.reset();
                             measured_rate.reset();
+                            view_buffer.clear();
+                            fairness.reset_connection();
+                            bandwidth.reset_connection();
                             if rejoining {
                                 stats.rejoins_succeeded += 1;
                             }
@@ -258,6 +274,13 @@ async fn session(
                             }
                             seat.shared
                                 .observe_snapshot(seat.match_id, tick_rate, &snapshot);
+                            bandwidth.observe(&mut stats.bandwidth, &snapshot, frame_len);
+                            fairness.on_snapshot(
+                                &mut stats.fairness,
+                                seat.actor,
+                                &snapshot,
+                                &seat.layout,
+                            );
                             if snapshot.tick > 0 {
                                 frame_ticks.push(snapshot.tick);
                                 pacer.observe(snapshot.queued);
@@ -306,7 +329,7 @@ async fn session(
                             if pending_cast_ack.is_some_and(|pending| snapshot.ack >= pending) {
                                 pending_cast_ack = None;
                             }
-                            latest = Some(snapshot);
+                            view_buffer.push(snapshot);
                         }
                         ServerMessage::Pong { nonce } => {
                             if let Some(sent) = pings.remove(&nonce) {
@@ -343,9 +366,17 @@ async fn session(
                 } else {
                     now + step
                 };
-                let Some(snapshot) = &latest else { continue };
+                let delay_ticks = interp_delay_ticks(seat.interp_delay_ms, tick_rate);
+                let Some(decision_view) =
+                    view_buffer.decision_view(seat.actor, predictor.predicted(), delay_ticks)
+                else {
+                    continue;
+                };
+                let running = view_buffer
+                    .latest()
+                    .is_some_and(|snapshot| snapshot.tick > 0 && snapshot.result.is_none());
                 seq += 1;
-                let mut frame = InputFrame { seq, ..decide(seat.actor, snapshot, rng) };
+                let mut frame = InputFrame { seq, ..decide(seat.actor, &decision_view, rng) };
                 // Hold still while a newly submitted timed cast is still in flight so the
                 // next tick's movement frame never cancels it before the server acknowledges it.
                 if pending_cast_ack.is_some() {
@@ -366,11 +397,29 @@ async fn session(
                     continue;
                 }
                 stats.inputs += 1;
+                if running
+                    && let WireAction::Cast {
+                        spell,
+                        target: Some(target),
+                    } = frame.action
+                {
+                    fairness.record_cast(
+                        &mut stats.fairness,
+                        CastSubmission {
+                            seq,
+                            actor: seat.actor,
+                            spell: spell.into(),
+                            target: usize::from(target),
+                        },
+                        &decision_view,
+                        &seat.layout,
+                    );
+                }
                 // Recorded from the start, as the browser client does.
                 let mut slot = ActorInput::default();
                 frame.merge_into(&mut slot);
                 predictor.apply(seq, slot);
-                if snapshot.tick > 0 && snapshot.result.is_none() {
+                if running {
                     stats.predicted_inputs += 1;
                 }
                 unacked.push_back((seq, now));

@@ -68,15 +68,22 @@ yet.
 | `Pong` | `nonce: u32` | |
 | `Error` | `code` | Sent before the server closes: `VersionMismatch`, `BadTicket`, `MatchFull`, `MatchOver`, `RateLimited`, `Malformed`, `HelloTimeout`, `ServerShutdown`, `Replaced` (a newer connection with the same ticket took the seat). |
 
-Snapshots go out every tick to start with. Bandwidth will be measured before
-switching to deltas or a lower rate.
+Snapshots go out every tick to start with. Live `PROTOCOL_VERSION = 3` combat
+measurements ([netcode-measurements-2026-11-21.md](research/netcode-measurements-2026-11-21.md))
+confirm that full 30 Hz snapshots remain small enough to avoid delta-state
+complexity or rate reduction (which degrades targeting fairness):
 
-Encoded sizes from the crate's tests on 2026-11-15, before WebSocket and TLS
-framing: one `Input` is 14 bytes. An event-free snapshot at the spawn
-positions is 43 bytes for 1v1 and 99 bytes for 3v3, about 3 KB/s per
-player at 30 Hz for 3v3. A worst-case snapshot (6 fighters, 256 events,
-maximal integers) is 3,582 bytes, well under the 16 KiB server frame limit.
-These are message sizes, not network measurements.
+- Live 30 Hz active-combat payload sizes (2026-11-21, before WebSocket and TLS
+  framing): one `Input` is 15–16 bytes in ordinary play; snapshots average
+  **64.0 B** in 1v1 (1.92 KB/s), **110.5 B** in 2v2 (3.31 KB/s), and
+  **156.6 B** in 3v3 (**4.70 KB/s** = 37.6 kbit/s per player, 140–190 B range).
+- Offline lossless field-mask + timer-decay delta encoding
+  (`arena_protocol::delta::SnapshotDelta`) cuts 3v3 payload bandwidth by 57.9%
+  (to 1.98 KB/s keeping `hash`), providing a verified option if future Effects
+  or larger rosters push full snapshots higher.
+- A worst-case snapshot (6 fighters, 256 events, maximal integers) stays well
+  under the 16 KiB server frame limit. These are message payload sizes, not
+  network-layer measurements.
 
 ## Limits (initial values)
 

@@ -12,7 +12,9 @@
 //! With [`Scenario::queue`], bots instead queue through the front door's
 //! solo queues ([`queue`]) and play whatever match they are put in.
 
+pub mod bandwidth;
 pub mod bot;
+pub mod fairness;
 pub mod link;
 pub mod queue;
 pub mod stats;
@@ -32,7 +34,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::Instant;
 
+use bandwidth::{BandwidthReport, BandwidthStats};
 use bot::{Seat, SeatStats};
+use fairness::{FairnessStats, TargetingFairnessReport};
 use link::{Link, Rng};
 use stats::{Samples, Summary};
 
@@ -46,11 +50,13 @@ pub struct Scenario {
     pub link: Link,
     /// Use browser-parity `Pacer` + `TickRate` adaptive input pacing.
     pub paced: bool,
+    /// Remote-fighter view delay (ms), matching browser interpolation (default 100 ms).
+    pub interp_delay_ms: u64,
     pub reconnect_every: Option<Duration>,
     /// How long a dropped seat stays away before rejoining.
     pub away: Duration,
     pub seed: u64,
-    /// Linux only: measure this process's CPU time over the run.
+    /// Linux only: measure this process's CPU, memory and context switches over the run.
     pub server_pid: Option<u32>,
     /// Queue through a front door instead of creating matches.
     pub queue: Option<queue::QueueScenario>,
@@ -231,6 +237,34 @@ pub struct ServerMetrics {
     pub matches_finished_time_limit_draw: u64,
 }
 
+/// Linux `/proc/<pid>` + `/metrics` breakdown of `arena-server` CPU, memory,
+/// and scheduler wake-up activity during the scenario window.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ServerProfile {
+    /// Total process CPU cores in use (`cpu_user_cores + cpu_sys_cores`).
+    pub cpu_total_cores: f64,
+    /// Userspace CPU cores (Tokio scheduling, WebSocket framing, decode, match ticks).
+    pub cpu_user_cores: f64,
+    /// Kernel CPU cores (TCP/loopback reads & writes, epoll, futex wake-ups).
+    pub cpu_sys_cores: f64,
+    /// Match-task tick compute cores (`delta(arena_tick_microseconds_total) / wall_us`).
+    pub match_tick_cpu_cores: f64,
+    /// Non-tick userspace CPU cores (`(cpu_user_cores - match_tick_cpu_cores).max(0)`).
+    pub non_tick_user_cores: f64,
+    /// Peak resident set size (`VmHWM`) in MiB.
+    pub peak_rss_mib: f64,
+    /// Current OS thread count (`Threads`) at end of run.
+    pub threads: u32,
+    /// Voluntary context switches per second across all server threads.
+    pub voluntary_ctxt_switches_per_s: f64,
+    /// Non-voluntary context switches per second across all server threads.
+    pub nonvoluntary_ctxt_switches_per_s: f64,
+    /// Total server CPU microseconds divided by total snapshots delivered in this run.
+    pub cpu_us_per_snapshot_sent: f64,
+    /// Voluntary server context switches divided by total snapshots delivered in this run.
+    pub voluntary_switches_per_snapshot: f64,
+}
+
 #[derive(Debug, Serialize)]
 pub struct Report {
     pub server: String,
@@ -244,6 +278,7 @@ pub struct Report {
     pub jitter_ms: f64,
     pub loss_pct: f64,
     pub clump_ms: f64,
+    pub interp_delay_ms: u64,
     pub paced: bool,
     pub reconnect_every_s: Option<f64>,
     pub rounds_started: u64,
@@ -254,6 +289,10 @@ pub struct Report {
     pub round_duration: DurationSummary,
     /// Aggregated combat telemetry (LOS blocks, hits, damage, heals, casts, interrupts).
     pub combat: CombatMetrics,
+    /// Targeting-fairness / lag-compensation disagreement metrics.
+    pub targeting_fairness: TargetingFairnessReport,
+    /// Full 30 Hz vs lossless delta & 20 Hz / 15 Hz snapshot bandwidth analysis.
+    pub bandwidth: BandwidthReport,
     pub rtt: Summary,
     pub input_latency: Summary,
     pub snapshot_gap: Summary,
@@ -280,6 +319,8 @@ pub struct Report {
     pub server_metrics: Option<ServerMetrics>,
     /// Server CPU time divided by wall time: cores in use on average.
     pub server_cpu_cores: Option<f64>,
+    /// Detailed Linux process CPU/memory/context-switch breakdown when `--server-pid` is set.
+    pub server_profile: Option<ServerProfile>,
 }
 
 #[derive(Default)]
@@ -302,6 +343,8 @@ pub(crate) struct Totals {
     corrections: u64,
     correction_mm: Vec<u32>,
     rejections: CombatMetrics,
+    fairness: FairnessStats,
+    bandwidth: BandwidthStats,
     rounds_started: u64,
     rounds_finished: u64,
 }
@@ -329,6 +372,8 @@ impl Totals {
         self.corrections += seat.corrections;
         self.correction_mm.extend(seat.correction_mm);
         self.rejections.merge(&seat.rejections);
+        self.fairness.merge(seat.fairness);
+        self.bandwidth.merge(seat.bandwidth);
     }
     fn merge(&mut self, other: Totals) {
         self.rtt.extend(other.rtt);
@@ -353,6 +398,8 @@ impl Totals {
         self.corrections += other.corrections;
         self.correction_mm.extend(other.correction_mm);
         self.rejections.merge(&other.rejections);
+        self.fairness.merge(other.fairness);
+        self.bandwidth.merge(other.bandwidth);
         self.rounds_started += other.rounds_started;
         self.rounds_finished += other.rounds_finished;
     }
@@ -375,9 +422,10 @@ pub async fn run(mut scenario: Scenario) -> Result<Report, String> {
     }
     let shared = std::sync::Arc::new(Shared::default());
     let layout = std::sync::Arc::new(arena_map::colosseum().layout);
+    let metrics_start = fetch_metrics(&scenario.server).await;
     let started = Instant::now();
     let deadline = started + scenario.duration;
-    let cpu_start = scenario.server_pid.and_then(cpu_seconds);
+    let proc_start = scenario.server_pid.and_then(sample_proc);
     let groups: Vec<_> = match scenario.queue.clone() {
         Some(queue) => (0..queue.bots)
             .map(|bot| {
@@ -408,22 +456,30 @@ pub async fn run(mut scenario: Scenario) -> Result<Report, String> {
         totals.merge(group.await.map_err(|error| error.to_string())??);
     }
     let seconds = started.elapsed().as_secs_f64();
-    let server_cpu_cores = scenario
-        .server_pid
-        .and_then(cpu_seconds)
-        .zip(cpu_start)
-        .map(|(end, start)| (end - start) / seconds);
-    let server_metrics = http(&scenario.server, "GET", "/metrics")
-        .await
-        .ok()
-        .filter(|(status, _)| *status == 200)
-        .map(|(_, body)| parse_metrics(&body));
+    let proc_end = scenario.server_pid.and_then(sample_proc);
+    let server_metrics = fetch_metrics(&scenario.server).await;
+    let delta_tick_us =
+        metrics_start
+            .as_ref()
+            .zip(server_metrics.as_ref())
+            .map_or(0, |(start, end)| {
+                end.tick_microseconds_total
+                    .saturating_sub(start.tick_microseconds_total)
+            });
+    let server_profile = proc_start.zip(proc_end).map(|(start, end)| {
+        build_server_profile(start, end, delta_tick_us, totals.snapshots, seconds)
+    });
+    let server_cpu_cores = server_profile
+        .as_ref()
+        .map(|profile| profile.cpu_total_cores);
     let players = match &scenario.queue {
         Some(queue) => queue.bots,
         None => scenario.matches * scenario.team_size * 2,
     };
     let (outcomes, round_duration, mut combat) = shared.telemetry_summary();
     combat.merge(&totals.rejections);
+    let targeting_fairness = totals.fairness.summarize();
+    let bandwidth = totals.bandwidth.summarize(TICKS_PER_SECOND as u32);
     Ok(Report {
         server: scenario.server,
         queue: scenario
@@ -442,6 +498,7 @@ pub async fn run(mut scenario: Scenario) -> Result<Report, String> {
         jitter_ms: scenario.link.jitter.as_secs_f64() * 1000.0,
         loss_pct: scenario.link.loss_rate * 100.0,
         clump_ms: scenario.link.clump.as_secs_f64() * 1000.0,
+        interp_delay_ms: scenario.interp_delay_ms,
         paced: scenario.paced,
         reconnect_every_s: scenario.reconnect_every.map(|every| every.as_secs_f64()),
         rounds_started: totals.rounds_started,
@@ -449,6 +506,8 @@ pub async fn run(mut scenario: Scenario) -> Result<Report, String> {
         outcomes,
         round_duration,
         combat,
+        targeting_fairness,
+        bandwidth,
         rtt: totals.rtt.summary(),
         input_latency: totals.input_latency.summary(),
         snapshot_gap: totals.snapshot_gap.summary(),
@@ -470,6 +529,7 @@ pub async fn run(mut scenario: Scenario) -> Result<Report, String> {
         correction_mm: percentiles(totals.correction_mm),
         server_metrics,
         server_cpu_cores,
+        server_profile,
     })
 }
 
@@ -504,6 +564,7 @@ async fn run_group(
                     ticket: from_hex(ticket).unwrap_or_default(),
                     link: scenario.link,
                     paced: scenario.paced,
+                    interp_delay_ms: scenario.interp_delay_ms,
                     seed: rng.next_u64(),
                     reconnect_every: scenario.reconnect_every,
                     away: scenario.away,
@@ -556,7 +617,7 @@ pub async fn http(server: &str, method: &str, path: &str) -> Result<(u16, String
 }
 
 /// Nearest-rank p50, p99 and maximum; zeros when empty.
-fn percentiles(mut values: Vec<u32>) -> [u32; 3] {
+pub(crate) fn percentiles(mut values: Vec<u32>) -> [u32; 3] {
     if values.is_empty() {
         return [0; 3];
     }
@@ -600,13 +661,125 @@ fn parse_metrics(text: &str) -> ServerMetrics {
     }
 }
 
-/// User plus system CPU seconds of a Linux process (100 clock ticks/s).
-fn cpu_seconds(pid: u32) -> Option<f64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+async fn fetch_metrics(server: &str) -> Option<ServerMetrics> {
+    http(server, "GET", "/metrics")
+        .await
+        .ok()
+        .filter(|(status, _)| *status == 200)
+        .map(|(_, body)| parse_metrics(&body))
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct ProcSample {
+    user_s: f64,
+    sys_s: f64,
+    peak_rss_kib: u64,
+    threads: u32,
+    voluntary_ctxt_switches: u64,
+    nonvoluntary_ctxt_switches: u64,
+}
+
+fn parse_proc_stat(stat: &str) -> Option<(f64, f64)> {
     let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
     let user: f64 = fields.get(11)?.parse().ok()?;
     let system: f64 = fields.get(12)?.parse().ok()?;
-    Some((user + system) / 100.0)
+    Some((user / 100.0, system / 100.0))
+}
+
+fn parse_proc_status_field(status: &str, key: &str) -> Option<u64> {
+    status.lines().find_map(|line| {
+        line.strip_prefix(key)?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()
+    })
+}
+
+fn sample_proc(pid: u32) -> Option<ProcSample> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (user_s, sys_s) = parse_proc_stat(&stat)?;
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+    let peak_rss_kib = parse_proc_status_field(&status, "VmHWM:").unwrap_or(0);
+    let threads = parse_proc_status_field(&status, "Threads:")
+        .and_then(|v| u32::try_from(v).ok())
+        .unwrap_or(1);
+    let (voluntary_ctxt_switches, nonvoluntary_ctxt_switches) = sum_task_switches(pid)
+        .unwrap_or_else(|| {
+            (
+                parse_proc_status_field(&status, "voluntary_ctxt_switches:").unwrap_or(0),
+                parse_proc_status_field(&status, "nonvoluntary_ctxt_switches:").unwrap_or(0),
+            )
+        });
+    Some(ProcSample {
+        user_s,
+        sys_s,
+        peak_rss_kib,
+        threads,
+        voluntary_ctxt_switches,
+        nonvoluntary_ctxt_switches,
+    })
+}
+
+fn sum_task_switches(pid: u32) -> Option<(u64, u64)> {
+    let entries = std::fs::read_dir(format!("/proc/{pid}/task")).ok()?;
+    let (mut vol, mut nonvol, mut saw_any) = (0u64, 0u64, false);
+    for entry in entries.flatten() {
+        let Ok(text) = std::fs::read_to_string(entry.path().join("status")) else {
+            continue;
+        };
+        saw_any = true;
+        vol = vol.saturating_add(
+            parse_proc_status_field(&text, "voluntary_ctxt_switches:").unwrap_or(0),
+        );
+        nonvol = nonvol.saturating_add(
+            parse_proc_status_field(&text, "nonvoluntary_ctxt_switches:").unwrap_or(0),
+        );
+    }
+    saw_any.then_some((vol, nonvol))
+}
+
+fn build_server_profile(
+    start: ProcSample,
+    end: ProcSample,
+    delta_tick_us: u64,
+    snapshots: u64,
+    seconds: f64,
+) -> ServerProfile {
+    let wall = seconds.max(1e-9);
+    let cpu_user_cores = (end.user_s - start.user_s).max(0.0) / wall;
+    let cpu_sys_cores = (end.sys_s - start.sys_s).max(0.0) / wall;
+    let cpu_total_cores = cpu_user_cores + cpu_sys_cores;
+    let match_tick_cpu_cores = (delta_tick_us as f64 / 1_000_000.0) / wall;
+    let non_tick_user_cores = (cpu_user_cores - match_tick_cpu_cores).max(0.0);
+    let vol_delta = end
+        .voluntary_ctxt_switches
+        .saturating_sub(start.voluntary_ctxt_switches);
+    let nonvol_delta = end
+        .nonvoluntary_ctxt_switches
+        .saturating_sub(start.nonvoluntary_ctxt_switches);
+    let snaps = snapshots.max(1) as f64;
+    ServerProfile {
+        cpu_total_cores,
+        cpu_user_cores,
+        cpu_sys_cores,
+        match_tick_cpu_cores,
+        non_tick_user_cores,
+        peak_rss_mib: end.peak_rss_kib as f64 / 1024.0,
+        threads: end.threads,
+        voluntary_ctxt_switches_per_s: vol_delta as f64 / wall,
+        nonvoluntary_ctxt_switches_per_s: nonvol_delta as f64 / wall,
+        cpu_us_per_snapshot_sent: if snapshots == 0 {
+            0.0
+        } else {
+            (cpu_total_cores * wall * 1_000_000.0) / snaps
+        },
+        voluntary_switches_per_snapshot: if snapshots == 0 {
+            0.0
+        } else {
+            vol_delta as f64 / snaps
+        },
+    }
 }
 
 pub(crate) fn from_hex(text: &str) -> Option<Vec<u8>> {
@@ -653,8 +826,8 @@ impl fmt::Display for Report {
         }
         writeln!(
             f,
-            "link           base RTT {:.0} ms, jitter up to {:.0} ms per direction{link_notes}",
-            self.rtt_ms, self.jitter_ms
+            "link           base RTT {:.0} ms, jitter up to {:.0} ms per direction, interp delay {} ms{link_notes}",
+            self.rtt_ms, self.jitter_ms, self.interp_delay_ms
         )?;
         writeln!(
             f,
@@ -693,6 +866,35 @@ impl fmt::Display for Report {
             self.combat.total_healing,
             self.combat.los_blocks,
             self.combat.interrupts_landed
+        )?;
+        let tf = &self.targeting_fairness;
+        let [de_p50, de_p99, de_max] = tf.distance_error_mm;
+        writeln!(
+            f,
+            "fairness       {} casts resolved ({} reached geom, {} accepted, {} folded), OOR disagree {}/{} ({:.2}%), LoS disagree {}/{} ({:.2}%), dist err p50 {de_p50} p99 {de_p99} max {de_max} mm",
+            tf.casts_resolved,
+            tf.casts_reached_geometry,
+            tf.casts_accepted,
+            tf.casts_folded_or_skipped,
+            tf.disagreed_out_of_range,
+            tf.casts_reached_geometry_in_range,
+            tf.out_of_range_disagreement_rate * 100.0,
+            tf.disagreed_los,
+            tf.casts_reached_geometry_has_los,
+            tf.los_disagreement_rate * 100.0,
+        )?;
+        let bw = &self.bandwidth;
+        writeln!(
+            f,
+            "bandwidth      30Hz full {:.1} kbit/s ({:.1} B/snap), 30Hz delta {:.1} (-{:.1}%), 20Hz full {:.1} / delta {:.1}, 15Hz full {:.1} / delta {:.1}",
+            bw.full_30hz_kbit_per_s_per_player,
+            bw.full_30hz_mean_bytes,
+            bw.delta_30hz_kbit_per_s_per_player,
+            bw.delta_30hz_savings_pct,
+            bw.full_20hz_kbit_per_s_per_player,
+            bw.delta_20hz_kbit_per_s_per_player,
+            bw.full_15hz_kbit_per_s_per_player,
+            bw.delta_15hz_kbit_per_s_per_player,
         )?;
         writeln!(f, "rtt (ping)     {}", self.rtt)?;
         writeln!(f, "input → ack    {}", self.input_latency)?;
@@ -745,7 +947,22 @@ impl fmt::Display for Report {
                 server.inputs_starved_total
             )?;
         }
-        if let Some(cores) = self.server_cpu_cores {
+        if let Some(profile) = &self.server_profile {
+            writeln!(
+                f,
+                "server cpu     {:.2} cores (user {:.2} = tick {:.2} + non-tick {:.2}, sys {:.2}), peak RSS {:.1} MiB, {} threads, {:.0} vol-cs/s ({:.2}/snap), {:.1} µs/snap",
+                profile.cpu_total_cores,
+                profile.cpu_user_cores,
+                profile.match_tick_cpu_cores,
+                profile.non_tick_user_cores,
+                profile.cpu_sys_cores,
+                profile.peak_rss_mib,
+                profile.threads,
+                profile.voluntary_ctxt_switches_per_s,
+                profile.voluntary_switches_per_snapshot,
+                profile.cpu_us_per_snapshot_sent,
+            )?;
+        } else if let Some(cores) = self.server_cpu_cores {
             writeln!(f, "server cpu     {cores:.2} cores on average")?;
         }
         Ok(())
@@ -926,5 +1143,52 @@ mod tests {
         assert_eq!(empty.tick_mean_microseconds, 0.0);
         assert_eq!(from_hex("0aff"), Some(vec![10, 255]));
         assert_eq!(from_hex("0"), None);
+    }
+
+    #[test]
+    fn proc_stat_and_status_parsers_extract_cpu_memory_and_context_switches() {
+        let stat = "1234 (arena-server) S 1 2 3 4 5 6 7 8 9 10 250 150 0 0 20 0 8 0";
+        assert_eq!(parse_proc_stat(stat), Some((2.5, 1.5)));
+        assert_eq!(parse_proc_stat("malformed"), None);
+
+        let status = "Name:\tarena-server\nThreads:\t9\nVmHWM:\t   32768 kB\nvoluntary_ctxt_switches:\t4200\nnonvoluntary_ctxt_switches:\t31\n";
+        assert_eq!(parse_proc_status_field(status, "VmHWM:"), Some(32768));
+        assert_eq!(parse_proc_status_field(status, "Threads:"), Some(9));
+        assert_eq!(
+            parse_proc_status_field(status, "voluntary_ctxt_switches:"),
+            Some(4200)
+        );
+        assert_eq!(
+            parse_proc_status_field(status, "nonvoluntary_ctxt_switches:"),
+            Some(31)
+        );
+        assert_eq!(parse_proc_status_field(status, "Missing:"), None);
+
+        let start = ProcSample {
+            user_s: 1.0,
+            sys_s: 0.5,
+            peak_rss_kib: 10 * 1024,
+            threads: 9,
+            voluntary_ctxt_switches: 1_000,
+            nonvoluntary_ctxt_switches: 10,
+        };
+        let end = ProcSample {
+            user_s: 3.0,
+            sys_s: 1.5,
+            peak_rss_kib: 20 * 1024,
+            threads: 9,
+            voluntary_ctxt_switches: 6_000,
+            nonvoluntary_ctxt_switches: 60,
+        };
+        let profile = build_server_profile(start, end, 500_000, 10_000, 2.0);
+        assert!((profile.cpu_user_cores - 1.0).abs() < 1e-9);
+        assert!((profile.cpu_sys_cores - 0.5).abs() < 1e-9);
+        assert!((profile.cpu_total_cores - 1.5).abs() < 1e-9);
+        assert!((profile.match_tick_cpu_cores - 0.25).abs() < 1e-9);
+        assert!((profile.non_tick_user_cores - 0.75).abs() < 1e-9);
+        assert!((profile.peak_rss_mib - 20.0).abs() < 1e-9);
+        assert!((profile.voluntary_ctxt_switches_per_s - 2500.0).abs() < 1e-9);
+        assert!((profile.voluntary_switches_per_snapshot - 0.5).abs() < 1e-9);
+        assert!((profile.cpu_us_per_snapshot_sent - 300.0).abs() < 1e-9);
     }
 }

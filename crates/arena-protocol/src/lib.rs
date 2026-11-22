@@ -7,6 +7,7 @@
 //! actor or claim a position, health, resource, cast progress or cooldown.
 //! The JSON rendering is for diagnostics and is never accepted on the wire.
 
+pub mod delta;
 pub mod prediction;
 
 use arena_sim::arena::{
