@@ -50,7 +50,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 
 use super::{Door, unix_now};
 use crate::RateWindow;
-use crate::ingress::{self, OpenSlot};
+use crate::ingress;
 use crate::matchmaker::{
     CODE_LENGTH, Closed, Guest, LobbySlot, LobbyView, Matchmaker, Mode, Out, PartyView, QueueConn,
 };
@@ -594,7 +594,12 @@ pub(super) async fn upgrade(
     };
     ws.max_message_size(MAX_MESSAGE)
         .max_frame_size(MAX_MESSAGE)
-        .on_upgrade(move |socket| connection(socket, door, slot, address))
+        .on_upgrade(move |mut socket| async move {
+            connection(&mut socket, door, address).await;
+            // The address keeps its slot until the socket is really gone.
+            crate::linger(socket).await;
+            drop(slot);
+        })
 }
 
 async fn say(socket: &mut WebSocket, message: &ToClient) -> bool {
@@ -666,7 +671,7 @@ fn command(conn: QueueConn, message: FromClient) -> Result<Command, &'static str
     })
 }
 
-async fn connection(mut socket: WebSocket, door: Arc<Door>, _slot: OpenSlot, address: IpAddr) {
+async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr) {
     let conn = door.next_conn.fetch_add(1, Ordering::Relaxed);
     let mut rate = RateWindow::new(MESSAGES_PER_SECOND, Instant::now());
     let mut stop = door.shutdown.subscribe();
@@ -692,16 +697,16 @@ async fn connection(mut socket: WebSocket, door: Arc<Door>, _slot: OpenSlot, add
     })
     .await;
     let guest = match first {
-        Err(_) => return refuse(&mut socket, "bad_request", "Send hello within 5 s.").await,
+        Err(_) => return refuse(socket, "bad_request", "Send hello within 5 s.").await,
         Ok(None) => return,
         Ok(Some(Err(FirstError::RateLimited))) => {
-            return refuse(&mut socket, "rate_limited", "Too many messages.").await;
+            return refuse(socket, "rate_limited", "Too many messages.").await;
         }
         Ok(Some(Ok(FromClient::Hello { guest }))) => match parse_guest(&guest) {
             Some(guest) => guest,
-            None => return refuse(&mut socket, "bad_request", "Unreadable guest id.").await,
+            None => return refuse(socket, "bad_request", "Unreadable guest id.").await,
         },
-        Ok(Some(_)) => return refuse(&mut socket, "bad_request", "Send hello first.").await,
+        Ok(Some(_)) => return refuse(socket, "bad_request", "Send hello first.").await,
     };
     let (sender, mut outbox) = mpsc::channel(OUTBOUND_QUEUE);
     let hello = Command::Hello {
@@ -711,20 +716,20 @@ async fn connection(mut socket: WebSocket, door: Arc<Door>, _slot: OpenSlot, add
         out: sender,
     };
     if door.queue.send(hello).await.is_err() {
-        return refuse(&mut socket, "shutdown", "The matchmaker is not running.").await;
+        return refuse(socket, "shutdown", "The matchmaker is not running.").await;
     }
     loop {
         tokio::select! {
             // Drop the borrow `wait_for` returns before awaiting the refusal.
             _ = async { let _ = stop.wait_for(|stop| *stop).await; } => {
-                refuse(&mut socket, "shutdown", "The matchmaker is restarting. Try again in a moment.").await;
+                refuse(socket, "shutdown", "The matchmaker is restarting. Try again in a moment.").await;
                 break;
             }
             incoming = socket.recv() => {
                 let message = match incoming {
                     Some(Ok(message)) => {
                         if !rate.allow(Instant::now()) {
-                            refuse(&mut socket, "rate_limited", "Too many messages.").await;
+                            refuse(socket, "rate_limited", "Too many messages.").await;
                             break;
                         }
                         match decode(message) {
@@ -737,7 +742,7 @@ async fn connection(mut socket: WebSocket, door: Arc<Door>, _slot: OpenSlot, add
                 let command = match message.map_err(|()| "Unreadable message.").and_then(|m| command(conn, m)) {
                     Ok(command) => command,
                     Err(why) => {
-                        refuse(&mut socket, "bad_request", why).await;
+                        refuse(socket, "bad_request", why).await;
                         break;
                     }
                 };
@@ -750,7 +755,7 @@ async fn connection(mut socket: WebSocket, door: Arc<Door>, _slot: OpenSlot, add
                 // The connection stays open after a match is found, so the
                 // party can queue again when the match is over.
                 let last = matches!(message, ToClient::Error { .. });
-                if !say(&mut socket, &message).await {
+                if !say(socket, &message).await {
                     break;
                 }
                 if last {

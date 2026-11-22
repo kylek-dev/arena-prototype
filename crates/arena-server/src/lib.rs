@@ -40,7 +40,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
 
-use ingress::{Cidr, OpenPerAddress, OpenSlot, Origins};
+use ingress::{Cidr, OpenPerAddress, Origins};
 use metrics::Metrics;
 use session::{ConnId, EncodedOut, Limits, Out, Session};
 use ticket::{Claims, TicketKey};
@@ -614,7 +614,31 @@ async fn play(
     };
     ws.max_message_size(arena_protocol::MAX_CLIENT_FRAME)
         .max_frame_size(arena_protocol::MAX_CLIENT_FRAME)
-        .on_upgrade(move |socket| connection(socket, app, slot))
+        .on_upgrade(move |mut socket| async move {
+            connection(&mut socket, app).await;
+            // The address keeps its slot until the socket is really gone.
+            linger(socket).await;
+            drop(slot);
+        })
+}
+
+/// How long a finished connection keeps reading while it closes.
+const CLOSE_LINGER: Duration = Duration::from_secs(1);
+
+/// Completes the WebSocket close handshake before the TCP socket is dropped.
+///
+/// Sends Close (an error if one was already sent, which is ignored), then
+/// reads and discards whatever the peer had already sent until it answers
+/// the Close, hangs up, or [`CLOSE_LINGER`] passes. Dropping a TCP socket
+/// with unread data makes the kernel reset the connection instead of
+/// closing it, and a reset can discard our final `Error` frame before the
+/// peer reads it, so a flooding client would never learn why it was cut off.
+pub(crate) async fn linger(mut socket: WebSocket) {
+    let _ = socket.send(Message::Close(None)).await;
+    let _ = tokio::time::timeout(CLOSE_LINGER, async {
+        while let Some(Ok(_)) = socket.recv().await {}
+    })
+    .await;
 }
 
 /// Fixed one-second message budget for a connection.
@@ -697,7 +721,7 @@ async fn forward(socket: &mut WebSocket, app: &App, outgoing: Outbound) -> bool 
     }
 }
 
-async fn connection(mut socket: WebSocket, app: Arc<App>, _slot: OpenSlot) {
+async fn connection(socket: &mut WebSocket, app: Arc<App>) {
     Metrics::add(&app.metrics.connections_open, 1);
     let _open = OpenConnection(&app.metrics);
     let conn = app.next_conn.fetch_add(1, Ordering::Relaxed);
@@ -720,18 +744,18 @@ async fn connection(mut socket: WebSocket, app: Arc<App>, _slot: OpenSlot) {
     })
     .await;
     let frame = match first {
-        Err(_) => return reject(&mut socket, &app, ErrorCode::HelloTimeout).await,
+        Err(_) => return reject(socket, &app, ErrorCode::HelloTimeout).await,
         Ok(None) => return,
-        Ok(Some(Err(code))) => return reject(&mut socket, &app, code).await,
+        Ok(Some(Err(code))) => return reject(socket, &app, code).await,
         Ok(Some(Ok(frame))) => frame,
     };
     let (ticket, appearance) = match read_hello(&frame) {
         Ok(hello) => hello,
-        Err(code) => return reject(&mut socket, &app, code).await,
+        Err(code) => return reject(socket, &app, code).await,
     };
     let claims = match app.config.key.verify(&ticket, unix_now()) {
         Ok(claims) => claims,
-        Err(_) => return reject(&mut socket, &app, ErrorCode::BadTicket).await,
+        Err(_) => return reject(socket, &app, ErrorCode::BadTicket).await,
     };
     if app.config.debug_json {
         eprintln!(
@@ -741,7 +765,7 @@ async fn connection(mut socket: WebSocket, app: Arc<App>, _slot: OpenSlot) {
     }
     let commands = match app.match_for(&claims) {
         Ok(commands) => commands,
-        Err(code) => return reject(&mut socket, &app, code).await,
+        Err(code) => return reject(socket, &app, code).await,
     };
     let (out_sender, mut outbound) = mpsc::channel(OUTBOUND_QUEUE);
     let _spec_open = if claims.is_spectator() {
@@ -764,7 +788,7 @@ async fn connection(mut socket: WebSocket, app: Arc<App>, _slot: OpenSlot) {
         },
     };
     if commands.send(attach).await.is_err() {
-        return reject(&mut socket, &app, ErrorCode::MatchOver).await;
+        return reject(socket, &app, ErrorCode::MatchOver).await;
     }
 
     loop {
@@ -774,26 +798,26 @@ async fn connection(mut socket: WebSocket, app: Arc<App>, _slot: OpenSlot) {
                     Some(Ok(Message::Binary(frame))) => frame,
                     Some(Ok(Message::Ping(_) | Message::Pong(_))) => {
                         if !rate.allow(Instant::now()) {
-                            reject(&mut socket, &app, ErrorCode::RateLimited).await;
+                            reject(socket, &app, ErrorCode::RateLimited).await;
                             break;
                         }
                         continue;
                     }
                     Some(Ok(Message::Text(_))) => {
-                        reject(&mut socket, &app, ErrorCode::Malformed).await;
+                        reject(socket, &app, ErrorCode::Malformed).await;
                         break;
                     }
                     // Closed, or a transport error such as an oversized frame.
                     _ => break,
                 };
                 if !rate.allow(Instant::now()) {
-                    reject(&mut socket, &app, ErrorCode::RateLimited).await;
+                    reject(socket, &app, ErrorCode::RateLimited).await;
                     break;
                 }
                 let message = match ClientMessage::decode(&frame) {
                     Ok(message) => message,
                     Err(_) => {
-                        reject(&mut socket, &app, ErrorCode::Malformed).await;
+                        reject(socket, &app, ErrorCode::Malformed).await;
                         break;
                     }
                 };
@@ -810,7 +834,7 @@ async fn connection(mut socket: WebSocket, app: Arc<App>, _slot: OpenSlot) {
                             // The match task has ended; it queued its last
                             // word (usually `MatchOver`) before exiting.
                             while let Some(outgoing) = outbound.recv().await {
-                                if !forward(&mut socket, &app, outgoing).await {
+                                if !forward(socket, &app, outgoing).await {
                                     break;
                                 }
                             }
@@ -824,14 +848,14 @@ async fn connection(mut socket: WebSocket, app: Arc<App>, _slot: OpenSlot) {
                         }
                     }
                     ClientMessage::Hello { .. } => {
-                        reject(&mut socket, &app, ErrorCode::Malformed).await;
+                        reject(socket, &app, ErrorCode::Malformed).await;
                         break;
                     }
                 }
             }
             outgoing = outbound.recv() => match outgoing {
                 Some(outgoing) => {
-                    if !forward(&mut socket, &app, outgoing).await {
+                    if !forward(socket, &app, outgoing).await {
                         break;
                     }
                 }
