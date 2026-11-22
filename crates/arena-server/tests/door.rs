@@ -625,4 +625,39 @@ mod queue {
         stopping.await.unwrap().unwrap();
         server.stop().await.unwrap();
     }
+
+    #[tokio::test]
+    async fn the_queue_rate_limits_websocket_control_ping_floods() {
+        let (door, server) = door_and_server(Duration::from_secs(5)).await;
+        // Pre-hello control Ping flood is rate-limited (10/s budget -> 11th trips it).
+        let mut pre = Player::open(door.addr).await;
+        for byte in 0..11u8 {
+            if pre
+                .sink
+                .send(Message::Ping(vec![byte].into()))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+        assert_eq!(pre.error().await, "rate_limited");
+
+        // Post-hello control Ping flood is rate-limited.
+        let mut joined = Player::hello(door.addr, 42).await;
+        for byte in 0..11u8 {
+            if joined
+                .sink
+                .send(Message::Ping(vec![byte].into()))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+        assert_eq!(joined.error().await, "rate_limited");
+
+        door.stop().await.unwrap();
+        server.stop().await.unwrap();
+    }
 }

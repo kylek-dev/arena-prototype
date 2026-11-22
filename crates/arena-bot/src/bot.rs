@@ -7,7 +7,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
-use arena_protocol::prediction::Predictor;
+use arena_protocol::prediction::{Pacer, Predictor, TickRate};
 use arena_protocol::{
     ClientMessage, ErrorCode, FighterState, InputFrame, PROTOCOL_VERSION, ServerMessage, Snapshot,
     WireAction, WireSpell,
@@ -18,7 +18,7 @@ use arena_sim::spells::{
     PULSE_COST, QUELL_COST, QUELL_RANGE, RIFT_BOLT_COST, RIFT_BOLT_RANGE, SpellId,
 };
 use futures_util::{SinkExt, StreamExt};
-use tokio::time::{Instant, MissedTickBehavior};
+use tokio::time::Instant;
 use tokio_tungstenite::connect_async_with_config;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -33,6 +33,8 @@ pub struct Seat {
     pub actor: usize,
     pub ticket: Vec<u8>,
     pub link: Link,
+    /// Use browser-parity `Pacer` + `TickRate` adaptive input cadence.
+    pub paced: bool,
     pub seed: u64,
     /// Drop the connection and rejoin this often (staggered per seat).
     pub reconnect_every: Option<Duration>,
@@ -193,109 +195,150 @@ async fn session(
     let mut pings: HashMap<u32, Instant> = HashMap::new();
     let mut nonce = 0u32;
     let mut welcomed = false;
-    // Predicts this seat's movement exactly as the browser client does, to
-    // measure how often the server corrects it.
+    // Predicts this seat's movement and paces inputs like the browser client does,
+    // to measure how real clients behave under latency, jitter, clumps, and loss.
     let mut predictor = Predictor::default();
+    let mut pacer = Pacer::default();
+    let mut measured_rate = TickRate::default();
+    let session_start = Instant::now();
     // Once the socket refuses writes, stop sending and let the incoming side
     // deliver what the server said last (usually an `Error`), which the
     // simulated delay may still be holding.
     let mut writable = true;
-    let mut inputs = tokio::time::interval(Duration::from_secs(1) / tick_rate);
-    inputs.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut next_input = Instant::now();
     let mut pinger = tokio::time::interval(Duration::from_secs(1));
     let welcome_deadline = Instant::now() + Duration::from_secs(10);
 
     let end = loop {
         tokio::select! {
             frame = inbox.recv() => {
-                let Some(frame) = frame else { break End::Lost("closed without an error") };
-                stats.bytes_in += frame.len() as u64;
-                let Ok(message) = ServerMessage::decode(&frame) else { break End::Lost("undecodable frame") };
-                match message {
-                    ServerMessage::Welcome(welcome) => {
-                        welcomed = true;
-                        round_ticks = welcome.round_ticks;
-                        predictor.set_round_limit(round_ticks);
-                        if rejoining {
-                            stats.rejoins_succeeded += 1;
+                let Some(first) = frame else { break End::Lost("closed without an error") };
+                let now = Instant::now();
+                let mut batch = vec![first];
+                while let Ok(more) = inbox.try_recv() {
+                    batch.push(more);
+                }
+                let mut frame_ticks = Vec::new();
+                let mut stop = None;
+                for frame in batch {
+                    stats.bytes_in += frame.len() as u64;
+                    let Ok(message) = ServerMessage::decode(&frame) else {
+                        stop = Some(End::Lost("undecodable frame"));
+                        break;
+                    };
+                    match message {
+                        ServerMessage::Welcome(welcome) => {
+                            welcomed = true;
+                            round_ticks = welcome.round_ticks;
+                            predictor.set_round_limit(round_ticks);
+                            pacer.reset();
+                            measured_rate.reset();
+                            if rejoining {
+                                stats.rejoins_succeeded += 1;
+                            }
+                            if u32::from(welcome.tick_rate) != tick_rate && welcome.tick_rate > 0 {
+                                tick_rate = u32::from(welcome.tick_rate);
+                            }
+                            next_input = now;
                         }
-                        if u32::from(welcome.tick_rate) != tick_rate && welcome.tick_rate > 0 {
-                            tick_rate = u32::from(welcome.tick_rate);
-                            inputs = tokio::time::interval(Duration::from_secs(1) / tick_rate);
-                            inputs.set_missed_tick_behavior(MissedTickBehavior::Delay);
-                        }
-                    }
-                    ServerMessage::Snapshot(snapshot) => {
-                        let now = Instant::now();
-                        stats.snapshots += 1;
-                        if let Some(previous) = last_snapshot_at.replace(now) {
-                            stats.snapshot_gap.record(now - previous);
-                        }
-                        // Inputs before the match starts are acknowledged
-                        // without acting; measure only a running match.
-                        while unacked.front().is_some_and(|(sent, _)| *sent <= snapshot.ack) {
-                            let (_, at) = unacked.pop_front().expect("checked front");
+                        ServerMessage::Snapshot(snapshot) => {
+                            stats.snapshots += 1;
+                            if let Some(previous) = last_snapshot_at.replace(now) {
+                                stats.snapshot_gap.record(now - previous);
+                            }
+                            // Inputs before the match starts are acknowledged
+                            // without acting; measure only a running match.
+                            while unacked.front().is_some_and(|(sent, _)| *sent <= snapshot.ack) {
+                                let (_, at) = unacked.pop_front().expect("checked front");
+                                if snapshot.tick > 0 {
+                                    stats.input_latency.record(now - at);
+                                }
+                            }
                             if snapshot.tick > 0 {
-                                stats.input_latency.record(now - at);
+                                seat.shared.check_hash(seat.match_id, snapshot.tick, snapshot.hash);
+                                frame_ticks.push(snapshot.tick);
+                                pacer.observe(snapshot.queued);
                             }
-                        }
-                        if snapshot.tick > 0 {
-                            seat.shared.check_hash(seat.match_id, snapshot.tick, snapshot.hash);
-                        }
-                        if let Some(result) = snapshot.result
-                            && !result_matches(
-                                result,
-                                &snapshot.fighters,
-                                snapshot.tick,
-                                round_ticks,
-                            )
-                        {
-                            stats.wrong_results += 1;
-                        }
-                        if snapshot.result.is_some() {
-                            predictor.reset();
-                        } else if snapshot.tick == 0 {
-                            // Waiting: discarded inputs are acknowledged;
-                            // ones in flight may act once the match starts.
-                            predictor.acknowledge(snapshot.ack);
-                        } else {
-                            let fighters =
-                                snapshot.fighters.iter().map(FighterState::combatant).collect();
-                            if let Some(moved) = predictor.reconcile(
-                                &seat.layout,
-                                snapshot.tick,
-                                fighters,
-                                None,
-                                seat.actor,
-                                snapshot.ack,
-                            ) && moved > 0
+                            if let Some(result) = snapshot.result
+                                && !result_matches(
+                                    result,
+                                    &snapshot.fighters,
+                                    snapshot.tick,
+                                    round_ticks,
+                                )
                             {
-                                stats.corrections += 1;
-                                stats.correction_mm.push(u32::try_from(moved).unwrap_or(u32::MAX));
+                                stats.wrong_results += 1;
+                            }
+                            if snapshot.result.is_some() {
+                                predictor.reset();
+                            } else if snapshot.tick == 0 {
+                                // Waiting: discarded inputs are acknowledged;
+                                // ones in flight may act once the match starts.
+                                predictor.acknowledge(snapshot.ack);
+                            } else {
+                                let fighters =
+                                    snapshot.fighters.iter().map(FighterState::combatant).collect();
+                                if let Some(moved) = predictor.reconcile(
+                                    &seat.layout,
+                                    snapshot.tick,
+                                    fighters,
+                                    None,
+                                    seat.actor,
+                                    snapshot.ack,
+                                ) && moved > 0
+                                {
+                                    stats.corrections += 1;
+                                    stats.correction_mm.push(u32::try_from(moved).unwrap_or(u32::MAX));
+                                }
+                            }
+                            if snapshot
+                                .fighters
+                                .iter()
+                                .enumerate()
+                                .any(|(index, fighter)| index != seat.actor && !fighter.connected)
+                            {
+                                stats.saw_disconnected += 1;
+                            }
+                            if pending_cast_ack.is_some_and(|pending| snapshot.ack >= pending) {
+                                pending_cast_ack = None;
+                            }
+                            latest = Some(snapshot);
+                        }
+                        ServerMessage::Pong { nonce } => {
+                            if let Some(sent) = pings.remove(&nonce) {
+                                stats.rtt.record(now - sent);
                             }
                         }
-                        if snapshot
-                            .fighters
-                            .iter()
-                            .enumerate()
-                            .any(|(index, fighter)| index != seat.actor && !fighter.connected)
-                        {
-                            stats.saw_disconnected += 1;
-                        }
-                        if pending_cast_ack.is_some_and(|pending| snapshot.ack >= pending) {
-                            pending_cast_ack = None;
-                        }
-                        latest = Some(snapshot);
-                    }
-                    ServerMessage::Pong { nonce } => {
-                        if let Some(sent) = pings.remove(&nonce) {
-                            stats.rtt.record(Instant::now() - sent);
+                        ServerMessage::Error(code) => {
+                            stop = Some(End::Error(code));
+                            break;
                         }
                     }
-                    ServerMessage::Error(code) => break End::Error(code),
+                }
+                if !frame_ticks.is_empty() {
+                    measured_rate.observe_frame(
+                        now.saturating_duration_since(session_start).as_secs_f64(),
+                        frame_ticks,
+                    );
+                }
+                if let Some(end) = stop {
+                    break end;
                 }
             }
-            _ = inputs.tick(), if welcomed && writable => {
+            _ = tokio::time::sleep_until(next_input), if welcomed && writable => {
+                let step_secs = if seat.paced {
+                    (pacer.factor() / measured_rate.rate()).clamp(0.005, 0.25)
+                } else {
+                    1.0 / f64::from(tick_rate.max(1))
+                };
+                let step = Duration::from_secs_f64(step_secs);
+                let now = Instant::now();
+                let scheduled = next_input + step;
+                next_input = if scheduled > now {
+                    scheduled
+                } else {
+                    now + step
+                };
                 let Some(snapshot) = &latest else { continue };
                 seq += 1;
                 let mut frame = InputFrame { seq, ..decide(seat.actor, snapshot, rng) };
@@ -326,7 +369,7 @@ async fn session(
                 if snapshot.tick > 0 && snapshot.result.is_none() {
                     stats.predicted_inputs += 1;
                 }
-                unacked.push_back((seq, Instant::now()));
+                unacked.push_back((seq, now));
                 // A stalled server must not grow this without bound.
                 if unacked.len() > 1024 {
                     unacked.pop_front();

@@ -1,5 +1,6 @@
 //! `arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3]
-//!            [--seconds S] [--rtt MS] [--jitter MS] [--reconnect-every S] [--away-ms MS]
+//!            [--seconds S] [--rtt MS] [--jitter MS] [--loss-pct PCT] [--clump-ms MS]
+//!            [--unpaced] [--reconnect-every S] [--away-ms MS]
 //!            [--seed N] [--server-pid PID] [--json]
 //!            [--queue 1v1|2v2|3v3 --door HOST:PORT [--bots N]]`
 //!
@@ -17,7 +18,7 @@ use arena_bot::link::Link;
 use arena_bot::queue::QueueScenario;
 use arena_bot::{Scenario, run};
 
-const USAGE: &str = "usage: arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3] [--seconds S] [--rtt MS] [--jitter MS] [--reconnect-every S] [--away-ms MS] [--seed N] [--server-pid PID] [--json] [--queue MODE --door HOST:PORT [--bots N]]";
+const USAGE: &str = "usage: arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3] [--seconds S] [--rtt MS] [--jitter MS] [--loss-pct PCT] [--clump-ms MS] [--unpaced] [--reconnect-every S] [--away-ms MS] [--seed N] [--server-pid PID] [--json] [--queue MODE --door HOST:PORT [--bots N]]";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -64,13 +65,15 @@ fn parse() -> Result<(Option<Scenario>, bool), String> {
         team_size: 1,
         duration: Duration::from_secs(10),
         link: Link::default(),
+        paced: true,
         reconnect_every: None,
         away: Duration::from_secs(1),
         seed: 1,
         server_pid: None,
         queue: None,
     };
-    let (mut rtt, mut jitter, mut json) = (0u64, 0u64, false);
+    let (mut rtt, mut jitter, mut loss_pct, mut clump_ms, mut json) =
+        (0u64, 0u64, 0.0f64, 0u64, false);
     let (mut queue, mut door, mut bots) = (None, None, 1usize);
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -92,6 +95,28 @@ fn parse() -> Result<(Option<Scenario>, bool), String> {
             }
             "--rtt" => rtt = number("--rtt", value("--rtt")?)?,
             "--jitter" => jitter = number("--jitter", value("--jitter")?)?,
+            "--loss-pct" => {
+                let raw = value("--loss-pct")?;
+                let parsed: f64 = raw
+                    .parse()
+                    .map_err(|_| format!("invalid --loss-pct {raw}"))?;
+                if !parsed.is_finite() || !(0.0..=50.0).contains(&parsed) {
+                    return Err(format!(
+                        "--loss-pct must be between 0 and 50, got {raw}\n{USAGE}"
+                    ));
+                }
+                loss_pct = parsed;
+            }
+            "--clump-ms" => {
+                let parsed = number("--clump-ms", value("--clump-ms")?)?;
+                if parsed > 10_000 {
+                    return Err(format!(
+                        "--clump-ms must be at most 10000, got {parsed}\n{USAGE}"
+                    ));
+                }
+                clump_ms = parsed;
+            }
+            "--unpaced" => scenario.paced = false,
             "--away-ms" => {
                 scenario.away = Duration::from_millis(number("--away-ms", value("--away-ms")?)?);
             }
@@ -116,7 +141,9 @@ fn parse() -> Result<(Option<Scenario>, bool), String> {
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
     }
-    scenario.link = Link::round_trip(Duration::from_millis(rtt), Duration::from_millis(jitter));
+    scenario.link = Link::round_trip(Duration::from_millis(rtt), Duration::from_millis(jitter))
+        .with_loss(loss_pct / 100.0)
+        .with_clump(Duration::from_millis(clump_ms));
     scenario.queue = match (queue, door) {
         (Some(mode), Some(door)) => Some(QueueScenario { door, mode, bots }),
         (None, None) => None,

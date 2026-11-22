@@ -431,12 +431,21 @@ async fn connection(mut socket: WebSocket, door: Arc<Door>, _slot: OpenSlot) {
     let conn = door.next_conn.fetch_add(1, Ordering::Relaxed);
     let mut rate = RateWindow::new(MESSAGES_PER_SECOND, Instant::now());
     let mut stop = door.shutdown.subscribe();
+    enum FirstError {
+        RateLimited,
+        BadRequest,
+    }
     let first = tokio::time::timeout(HELLO_TIMEOUT, async {
         loop {
             match socket.recv().await {
                 Some(Ok(message)) => match decode(message) {
-                    None => continue,
-                    Some(decoded) => return Some(decoded),
+                    None => {
+                        if !rate.allow(Instant::now()) {
+                            return Some(Err(FirstError::RateLimited));
+                        }
+                        continue;
+                    }
+                    Some(decoded) => return Some(decoded.map_err(|()| FirstError::BadRequest)),
                 },
                 _ => return None,
             }
@@ -446,6 +455,9 @@ async fn connection(mut socket: WebSocket, door: Arc<Door>, _slot: OpenSlot) {
     let guest = match first {
         Err(_) => return refuse(&mut socket, "bad_request", "Send hello within 5 s.").await,
         Ok(None) => return,
+        Ok(Some(Err(FirstError::RateLimited))) => {
+            return refuse(&mut socket, "rate_limited", "Too many messages.").await;
+        }
         Ok(Some(Ok(FromClient::Hello { guest }))) => match parse_guest(&guest) {
             Some(guest) => guest,
             None => return refuse(&mut socket, "bad_request", "Unreadable guest id.").await,
@@ -470,16 +482,18 @@ async fn connection(mut socket: WebSocket, door: Arc<Door>, _slot: OpenSlot) {
             }
             incoming = socket.recv() => {
                 let message = match incoming {
-                    Some(Ok(message)) => match decode(message) {
-                        None => continue,
-                        Some(message) => message,
-                    },
+                    Some(Ok(message)) => {
+                        if !rate.allow(Instant::now()) {
+                            refuse(&mut socket, "rate_limited", "Too many messages.").await;
+                            break;
+                        }
+                        match decode(message) {
+                            None => continue,
+                            Some(message) => message,
+                        }
+                    }
                     _ => break,
                 };
-                if !rate.allow(Instant::now()) {
-                    refuse(&mut socket, "rate_limited", "Too many messages.").await;
-                    break;
-                }
                 let command = match message.map_err(|()| "Unreadable message.").and_then(|m| command(conn, m)) {
                     Ok(command) => command,
                     Err(why) => {

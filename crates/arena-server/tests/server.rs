@@ -862,3 +862,192 @@ async fn server_judges_timed_casts_resources_cooldowns_and_interrupts_over_webso
 
     running.shut_down(Duration::ZERO).await.unwrap();
 }
+
+#[tokio::test]
+async fn websocket_control_ping_flood_is_rate_limited_before_and_after_hello() {
+    let mut cfg = config(true);
+    cfg.messages_per_second = 10;
+    let running = start(cfg).await.unwrap();
+    let addr = running.addr;
+    let created = new_match(addr, 1).await;
+
+    // Pre-Hello WebSocket control Ping flood cannot bypass RateWindow.
+    let mut pre_hello = Client::open(addr).await;
+    for byte in 0..30u8 {
+        pre_hello.raw(Message::Ping(vec![byte].into())).await;
+    }
+    assert_eq!(pre_hello.error().await, ErrorCode::RateLimited);
+
+    // Post-Hello WebSocket control Ping flood is also rate-limited.
+    let (mut joined, _) = Client::join(addr, &created.tickets[0]).await;
+    for byte in 0..30u8 {
+        joined.raw(Message::Ping(vec![byte].into())).await;
+    }
+    assert_eq!(joined.error().await, ErrorCode::RateLimited);
+
+    assert_eq!(running.app.metrics().errors(ErrorCode::RateLimited), 2);
+    running.shut_down(Duration::ZERO).await.unwrap();
+}
+
+#[tokio::test]
+async fn malformed_frames_and_invalid_intents_mid_match_isolate_offender_without_disrupting_peer() {
+    let running = server().await;
+    let addr = running.addr;
+    let created = new_match(addr, 1).await;
+    let (mut offender, _) = Client::join(addr, &created.tickets[0]).await;
+    let (mut peer, _) = Client::join(addr, &created.tickets[1]).await;
+
+    let start_snap = offender.snapshot_until(|s| s.tick > 0).await;
+    let spawn_pos = (start_snap.fighters[0].x, start_snap.fighters[0].z);
+
+    // Out-of-bounds movement axes and impossible targets are rejected only to the sender.
+    offender
+        .input(InputFrame {
+            movement: [i16::MAX, i16::MIN],
+            action: InputFrame::pulse(u8::MAX),
+            ..InputFrame::default()
+        })
+        .await;
+    let rejected = offender
+        .snapshot_until(|s| {
+            s.events
+                .iter()
+                .any(|e| e.event == WireEvent::Rejected(WireRejection::InvalidMovement))
+        })
+        .await;
+    assert!(
+        rejected
+            .events
+            .iter()
+            .any(|e| e.event == WireEvent::Rejected(WireRejection::InvalidTarget)),
+        "expected impossible target rejection alongside invalid movement: {:?}",
+        rejected.events
+    );
+    assert_eq!((rejected.fighters[0].x, rejected.fighters[0].z), spawn_pos);
+
+    // Peer must never observe the offender's rejections on that tick.
+    let peer_at_reject = peer.snapshot_until(|s| s.tick >= rejected.tick).await;
+    assert!(
+        !peer_at_reject
+            .events
+            .iter()
+            .any(|e| matches!(e.event, WireEvent::Rejected(_))),
+        "peer should not receive offender rejections: {:?}",
+        peer_at_reject.events
+    );
+
+    // Stale/regressed sequence numbers are dropped without moving seat 0.
+    let seq_before = offender.seq;
+    offender
+        .send(&ClientMessage::Input(InputFrame {
+            seq: seq_before,
+            movement: [0, -1000],
+            ..InputFrame::default()
+        }))
+        .await;
+    offender
+        .send(&ClientMessage::Input(InputFrame {
+            seq: 0,
+            movement: [0, -1000],
+            ..InputFrame::default()
+        }))
+        .await;
+    let after_stale = offender
+        .snapshot_until(|s| s.tick >= rejected.tick + 4)
+        .await;
+    assert_eq!(
+        (after_stale.fighters[0].x, after_stale.fighters[0].z),
+        spawn_pos
+    );
+    assert!(
+        arena_server::metrics::Metrics::get(&running.app.metrics().inputs_stale) >= 2,
+        "stale/regressed inputs must be counted and dropped"
+    );
+
+    // A malformed binary payload mid-match closes only the offender with Malformed.
+    offender
+        .raw(Message::binary(vec![1, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]))
+        .await;
+    assert_eq!(offender.error().await, ErrorCode::Malformed);
+
+    // Peer continues playing cleanly and observes seat 0 disconnected and still at spawn.
+    let gone = peer
+        .snapshot_until(|s| !s.fighters[0].connected && s.fighters[1].connected)
+        .await;
+    assert_eq!(gone.result, None);
+    assert_eq!((gone.fighters[0].x, gone.fighters[0].z), spawn_pos);
+    let peer_z_before = gone.fighters[1].z;
+    peer.input(InputFrame {
+        movement: [0, 1000],
+        ..InputFrame::default()
+    })
+    .await;
+    let peer_seq = peer.seq;
+    let moved = peer.snapshot_until(|s| s.ack == peer_seq).await;
+    assert_ne!(moved.fighters[1].z, peer_z_before);
+
+    // Offender can still reconnect with their valid ticket and resume from spawn.
+    let (mut rejoined, welcome) = Client::join(addr, &created.tickets[0]).await;
+    assert_eq!(welcome.actor, 0);
+    let back = rejoined.snapshot_until(|s| s.fighters[0].connected).await;
+    assert!(back.fighters[1].connected);
+    assert_eq!((back.fighters[0].x, back.fighters[0].z), spawn_pos);
+
+    running.shut_down(Duration::ZERO).await.unwrap();
+}
+
+#[tokio::test]
+async fn rapid_double_reconnect_and_takeover_preserves_seat_and_rejects_old_socket_inputs() {
+    let running = server().await;
+    let addr = running.addr;
+    let created = new_match(addr, 1).await;
+    let (mut first, _) = Client::join(addr, &created.tickets[0]).await;
+    let (mut peer, _) = Client::join(addr, &created.tickets[1]).await;
+
+    let start = first.snapshot_until(|s| s.tick > 0).await;
+    let start_z = start.fighters[0].z;
+
+    // Rapid back-to-back takeovers of seat 0 while old sockets still try to send backward movement.
+    let (mut second, welcome_two) = Client::join(addr, &created.tickets[0]).await;
+    assert_eq!(welcome_two.actor, 0);
+    first
+        .input(InputFrame {
+            movement: [0, 1000],
+            ..InputFrame::default()
+        })
+        .await;
+    assert_eq!(first.error().await, ErrorCode::Replaced);
+
+    let (mut third, welcome_three) = Client::join(addr, &created.tickets[0]).await;
+    assert_eq!(welcome_three.actor, 0);
+    second
+        .input(InputFrame {
+            movement: [0, 1000],
+            ..InputFrame::default()
+        })
+        .await;
+    assert_eq!(second.error().await, ErrorCode::Replaced);
+
+    // Dropping/closing both replaced sockets must not detach the active third connection.
+    first.leave().await;
+    second.leave().await;
+
+    // Wait a few ticks: replaced sockets' backward inputs must never move seat 0 or advance ack.
+    let settled = third
+        .snapshot_until(|s| s.tick >= start.tick + 4 && s.fighters[0].connected)
+        .await;
+    assert_eq!(settled.ack, 0);
+    assert_eq!(settled.fighters[0].z, start_z);
+
+    // Seat 0 remains connected and controlled exclusively by `third`.
+    third.input(forward()).await;
+    let after = third.snapshot_until(|s| s.ack == 1).await;
+    assert!(after.fighters[0].z < start_z);
+    assert!(after.fighters[0].connected);
+
+    let peer_view = peer.snapshot_until(|s| s.tick >= after.tick).await;
+    assert!(peer_view.fighters[0].connected);
+    assert_eq!(peer_view.fighters[0].z, after.fighters[0].z);
+
+    running.shut_down(Duration::ZERO).await.unwrap();
+}
