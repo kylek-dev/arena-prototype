@@ -14,8 +14,9 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use arena_protocol::{
-    EncodedSnapshotBody, ErrorCode, FighterState, InputFrame, MAX_FIGHTERS, PROTOCOL_VERSION,
-    RULES_VERSION, ServerMessage, Snapshot, TickEvent, Welcome, WireAction, WireEvent, WireResult,
+    EncodedSnapshotBody, ErrorCode, FighterScore, FighterState, InputFrame, MAX_FIGHTERS,
+    PROTOCOL_VERSION, RULES_VERSION, ServerMessage, Snapshot, TickEvent, Welcome, WireAction,
+    WireEvent, WireResult,
 };
 use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::{ActorInput, Arena, ArenaEvent, MAX_LAG_COMP_TICKS};
@@ -96,6 +97,9 @@ struct Seat {
     /// Inputs that arrived since the previous tick, for the jitter metric.
     arrived: u32,
     window: SeatWindow,
+    /// Authoritative combat totals accumulated for this seat across the match
+    /// (retained across disconnects and reconnects).
+    score: FighterScore,
 }
 
 /// One seat's input flow since the last report (development diagnostics).
@@ -141,6 +145,10 @@ impl Session {
     }
     pub fn arena(&self) -> &Arena {
         &self.arena
+    }
+    /// Authoritative per-seat combat totals accumulated so far, in server actor order.
+    pub fn scoreboard(&self) -> Vec<FighterScore> {
+        self.seats.iter().map(|seat| seat.score).collect()
     }
     /// Each connected seat's input flow since the previous call, which
     /// starts a new window.
@@ -312,11 +320,19 @@ impl Session {
                         .map(|event| TickEvent { tick, event })
                         .collect()
                 };
+                let mut scoreboard_buf = [FighterScore::default(); MAX_FIGHTERS];
+                let scoreboard = result.map(|_| {
+                    for (dst, seat) in scoreboard_buf[..count].iter_mut().zip(&self.seats) {
+                        *dst = seat.score;
+                    }
+                    &scoreboard_buf[..count]
+                });
                 let body = EncodedSnapshotBody::new(
                     self.arena.tick(),
                     hash,
                     result,
                     &fighters[..count],
+                    scoreboard,
                     (!has_rejections).then_some(shared_events.as_slice()),
                 );
                 let mut seat_events = Vec::new();
@@ -433,8 +449,13 @@ impl Session {
                     Metrics::add(&self.metrics.inputs_folded, folded);
                 }
                 self.metrics.record_arrivals_batch(arrivals);
+                let mut pre_health = [0u16; MAX_FIGHTERS];
+                for (dst, fighter) in pre_health[..count].iter_mut().zip(self.arena.fighters()) {
+                    *dst = fighter.health;
+                }
                 let tick = self.arena.tick();
                 let events = self.arena.advance(&inputs[..count]);
+                self.record_tick_scores(&pre_health[..count], &events);
                 Metrics::add(&self.metrics.ticks, 1);
                 if let Some(result) = self.arena.result() {
                     self.phase = Phase::Finished { at: self.clock };
@@ -466,6 +487,54 @@ impl Session {
     /// The server is stopping: tell every connection and end.
     pub fn shut_down(&mut self) -> Vec<Out> {
         self.end(Some(ErrorCode::ServerShutdown))
+    }
+
+    fn record_tick_scores(&mut self, pre_health: &[u16], events: &[ArenaEvent]) {
+        let count = self.seats.len();
+        let mut remaining = [0u16; MAX_FIGHTERS];
+        remaining[..count].copy_from_slice(pre_health);
+        let mut kill_credited = [false; MAX_FIGHTERS];
+        for event in events {
+            match *event {
+                ArenaEvent::Hit {
+                    actor,
+                    target,
+                    damage,
+                } if actor < count && target < count => {
+                    let amount = u32::from(damage);
+                    self.seats[actor].score.damage_done =
+                        self.seats[actor].score.damage_done.saturating_add(amount);
+                    self.seats[target].score.damage_taken =
+                        self.seats[target].score.damage_taken.saturating_add(amount);
+                    if damage > 0
+                        && pre_health[target] > 0
+                        && self.arena.fighters()[target].health == 0
+                        && !kill_credited[target]
+                    {
+                        remaining[target] = remaining[target].saturating_sub(damage);
+                        if remaining[target] == 0 {
+                            kill_credited[target] = true;
+                            self.seats[actor].score.killing_blows =
+                                self.seats[actor].score.killing_blows.saturating_add(1);
+                        }
+                    }
+                }
+                ArenaEvent::Healed {
+                    actor,
+                    target,
+                    amount,
+                } if actor < count && target < count => {
+                    let value = u32::from(amount);
+                    self.seats[actor].score.healing_done =
+                        self.seats[actor].score.healing_done.saturating_add(value);
+                    self.seats[target].score.healing_received = self.seats[target]
+                        .score
+                        .healing_received
+                        .saturating_add(value);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn end(&mut self, error: Option<ErrorCode>) -> Vec<Out> {
@@ -507,6 +576,7 @@ impl Session {
                 .map(|event| TickEvent { tick, event })
                 .collect()
         };
+        let scoreboard = result.map(|_| self.scoreboard());
         let arena_tick = self.arena.tick();
         self.seats
             .iter()
@@ -531,6 +601,7 @@ impl Session {
                         hash,
                         result,
                         fighters: fighters.clone(),
+                        scoreboard: scoreboard.clone(),
                         events,
                     }),
                 })

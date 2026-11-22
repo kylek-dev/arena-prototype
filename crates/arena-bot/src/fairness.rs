@@ -535,6 +535,7 @@ mod tests {
             hash: 0,
             result: None,
             fighters,
+            scoreboard: None,
             events,
         }
     }

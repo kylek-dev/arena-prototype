@@ -295,12 +295,15 @@ async fn session(
                             }
                             record_seat_rejections(stats, &snapshot.events);
                             if let Some(result) = snapshot.result
-                                && !result_matches(
+                                && (!result_matches(
                                     result,
                                     &snapshot.fighters,
                                     snapshot.tick,
                                     round_ticks,
-                                )
+                                ) || snapshot
+                                    .scoreboard
+                                    .as_ref()
+                                    .is_none_or(|scores| scores.len() != snapshot.fighters.len()))
                             {
                                 stats.wrong_results += 1;
                             }
@@ -575,6 +578,7 @@ mod tests {
             hash: 0,
             result: None,
             fighters,
+            scoreboard: None,
             events: Vec::new(),
         }
     }

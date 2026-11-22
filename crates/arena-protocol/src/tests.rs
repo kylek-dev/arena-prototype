@@ -82,6 +82,17 @@ fn busy_snapshot() -> Snapshot {
         });
     }
     let mut snapshot = Snapshot::capture(&arena, u32::MAX, events, &[true; MAX_FIGHTERS]);
+    snapshot.result = Some(WireResult::Won { team: 1 });
+    snapshot.scoreboard = Some(vec![
+        FighterScore {
+            damage_done: u32::MAX,
+            damage_taken: u32::MAX,
+            healing_done: u32::MAX,
+            healing_received: u32::MAX,
+            killing_blows: u16::MAX,
+        };
+        MAX_FIGHTERS
+    ]);
     for fighter in &mut snapshot.fighters {
         // Worst-case varints everywhere while respecting valid invariants.
         fighter.x = i32::MIN;
@@ -155,14 +166,14 @@ fn ordinary_traffic_is_small() {
 #[test]
 fn the_wire_layout_is_pinned() {
     // Golden frames: changing them requires a PROTOCOL_VERSION bump.
-    assert_eq!(PROTOCOL_VERSION, 4);
+    assert_eq!(PROTOCOL_VERSION, 5);
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 4,
+            protocol: 5,
             ticket: vec![0xAB, 0xCD],
         }
         .encode(),
-        [0, 4, 2, 0xAB, 0xCD]
+        [0, 5, 2, 0xAB, 0xCD]
     );
     assert_eq!(
         ClientMessage::Input(InputFrame {
@@ -175,6 +186,35 @@ fn the_wire_layout_is_pinned() {
         [
             1, 0xAC, 0x02, 0xCF, 0x0F, 0x86, 0x0B, 0x80, 0x80, 0x03, 1, 1, 0, 1, 3, 120
         ]
+    );
+    // Scoreboard golden suffix: `scoreboard: None, events: []` ends in `[0, 0]`;
+    // `scoreboard: Some([s0, s1]), events: []` pins exact `FighterScore` field order.
+    let mut base_finished = Snapshot::capture(&colosseum(1), 0, Vec::new(), &[true, true]);
+    base_finished.result = Some(WireResult::Won { team: 0 });
+    let without_board = ServerMessage::Snapshot(base_finished.clone()).encode();
+    assert_eq!(&without_board[without_board.len() - 2..], &[0, 0]);
+    let with_board = ServerMessage::Snapshot(base_finished.with_scoreboard(vec![
+        FighterScore {
+            damage_done: 125,
+            damage_taken: 40,
+            healing_done: 30,
+            healing_received: 0,
+            killing_blows: 1,
+        },
+        FighterScore {
+            damage_done: 40,
+            damage_taken: 125,
+            healing_done: 0,
+            healing_received: 0,
+            killing_blows: 0,
+        },
+    ]))
+    .encode();
+    let prefix_len = without_board.len() - 2;
+    assert_eq!(&with_board[..prefix_len], &without_board[..prefix_len]);
+    assert_eq!(
+        &with_board[prefix_len..],
+        &[1, 2, 125, 40, 30, 0, 1, 40, 125, 0, 0, 0, 0]
     );
     // The browser runtime reads these two-byte error frames itself (so a
     // tab whose engine is paused still stops on a final error); its tests
@@ -707,6 +747,7 @@ fn the_debug_dump_is_readable_json() {
     let snapshot = ServerMessage::Snapshot(busy_snapshot()).to_debug_json();
     let value: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
     assert_eq!(value["Snapshot"]["fighters"].as_array().unwrap().len(), 6);
+    assert_eq!(value["Snapshot"]["scoreboard"].as_array().unwrap().len(), 6);
 }
 
 #[test]
@@ -726,6 +767,17 @@ fn encoded_snapshot_body_matches_full_server_message_bytes() {
     );
     with_queued.queued = 9;
     with_queued.result = Some(WireResult::Draw);
+    with_queued.scoreboard = Some(
+        (0..MAX_FIGHTERS as u32)
+            .map(|i| FighterScore {
+                damage_done: i * 25,
+                damage_taken: (5 - i) * 20,
+                healing_done: i * 10,
+                healing_received: i * 5,
+                killing_blows: u16::from(i == 0),
+            })
+            .collect(),
+    );
     snapshots.push(with_queued);
 
     for snapshot in snapshots {
@@ -735,6 +787,7 @@ fn encoded_snapshot_body_matches_full_server_message_bytes() {
             snapshot.hash,
             snapshot.result,
             &snapshot.fighters,
+            snapshot.scoreboard.as_deref(),
             Some(&snapshot.events),
         );
         assert_eq!(
@@ -746,6 +799,7 @@ fn encoded_snapshot_body_matches_full_server_message_bytes() {
             snapshot.hash,
             snapshot.result,
             &snapshot.fighters,
+            snapshot.scoreboard.as_deref(),
             None,
         );
         assert_eq!(
@@ -887,6 +941,33 @@ fn welcome_and_snapshot_bounds_reject_invalid_teams_actors_and_results() {
             }],
             ..base_snap.clone()
         },
+        // Scoreboard cannot appear on an unfinished snapshot.
+        Snapshot {
+            result: None,
+            scoreboard: Some(vec![FighterScore::default(); 2]),
+            ..base_snap.clone()
+        },
+        // Scoreboard length must match the roster count.
+        Snapshot {
+            result: Some(WireResult::Draw),
+            scoreboard: Some(Vec::new()),
+            ..base_snap.clone()
+        },
+        Snapshot {
+            result: Some(WireResult::Draw),
+            scoreboard: Some(vec![FighterScore::default(); 1]),
+            ..base_snap.clone()
+        },
+        Snapshot {
+            result: Some(WireResult::Draw),
+            scoreboard: Some(vec![FighterScore::default(); 3]),
+            ..base_snap.clone()
+        },
+        Snapshot {
+            result: Some(WireResult::TimeLimitDraw),
+            scoreboard: Some(vec![FighterScore::default(); MAX_FIGHTERS + 1]),
+            ..base_snap.clone()
+        },
         // Instant spells cannot produce CastInterrupted.
         Snapshot {
             events: vec![TickEvent {
@@ -971,6 +1052,37 @@ fn adversarial_postcard_wire_corpus_never_panics_or_ooms() {
     huge_events.extend_from_slice(&huge_len_varint);
     assert_eq!(
         ServerMessage::decode(&huge_events),
+        Err(DecodeError::Malformed)
+    );
+    // Snapshot with scoreboard Option = Some (1) and Vec len = u64::MAX must fail without OOM.
+    let mut huge_scoreboard = ServerMessage::Snapshot(Snapshot::capture(
+        &colosseum(1),
+        0,
+        Vec::new(),
+        &[true, true],
+    ))
+    .encode();
+    // Pop trailing `[0 (scoreboard None), 0 (events len)]` and inject `Some` + huge Vec len.
+    assert_eq!(huge_scoreboard.pop(), Some(0));
+    assert_eq!(huge_scoreboard.pop(), Some(0));
+    huge_scoreboard.push(1);
+    huge_scoreboard.extend_from_slice(&huge_len_varint);
+    assert_eq!(
+        ServerMessage::decode(&huge_scoreboard),
+        Err(DecodeError::Malformed)
+    );
+    // Invalid Option tag (2) for scoreboard.
+    let mut bad_scoreboard_tag = ServerMessage::Snapshot(Snapshot::capture(
+        &colosseum(1),
+        0,
+        Vec::new(),
+        &[true, true],
+    ))
+    .encode();
+    let tag_idx = bad_scoreboard_tag.len() - 2;
+    bad_scoreboard_tag[tag_idx] = 2;
+    assert_eq!(
+        ServerMessage::decode(&bad_scoreboard_tag),
         Err(DecodeError::Malformed)
     );
 
@@ -1104,6 +1216,10 @@ fn fuzz_client_and_server_frames_preserve_all_wire_invariants() {
                     if let Some(WireResult::Won { team }) = snapshot.result {
                         assert!(team <= 1);
                     }
+                    if let Some(scores) = &snapshot.scoreboard {
+                        assert!(snapshot.result.is_some());
+                        assert_eq!(scores.len(), count);
+                    }
                     for fighter in &snapshot.fighters {
                         assert!(fighter.combatant().is_valid(count));
                     }
@@ -1146,6 +1262,7 @@ fn fuzz_client_and_server_frames_preserve_all_wire_invariants() {
                         snapshot.hash,
                         snapshot.result,
                         &snapshot.fighters,
+                        snapshot.scoreboard.as_deref(),
                         Some(&snapshot.events),
                     );
                     assert_eq!(
