@@ -59,3 +59,20 @@ Automated DOM tests, frontend checks and the frontend build passed locally. No b
 - **Multi-spell action bar & Spellbook.** Default 4-spell kit on slots 1–4 (`1` Pulse, `2` Rift Bolt, `3` Quell, `4` Mend) with additive migration for existing profiles, all 4 spells draggable in the Spellbook, per-spell cooldown sweeps & tooltips, and auto-self-casting Mend when targeting an enemy or nobody.
 
 Automated DOM tests, Rust unit tests, frontend checks, WASM Clippy, and the complete web build passed locally. No browser was launched by the agent, and no rendered pass is claimed.
+
+## 2026-11-21 — all pending UI reviews marked complete by the user
+
+The user confirmed: “mark all pending ui reviews as complete”.
+
+This closes all outstanding human UI/rendered-interaction review gates recorded above through [ADR 0048](decisions/0048-server-authoritative-casting-and-resources.md):
+
+- Through-pillar world health nameplates ([ADR 0022](decisions/0022-world-health-nameplates.md#through-pillar-correction--2026-11-08)).
+- Character customization kits and start-screen customization flow ([ADR 0040](decisions/0040-character-customization-kits.md), [BROWSER.md](BROWSER.md)).
+- Network match UI ([ADR 0044](decisions/0044-authoritative-match-server.md), Phase 5).
+- Home screen, parties, and Play online panel ([ADR 0046](decisions/0046-queues-parties-and-home-screen.md)).
+- Queue bar, match-ready window, and three-queue layout ([ADR 0047](decisions/0047-accepting-matches-and-queue-status.md)).
+- Live unit-frame resources, unit-frame and overhead nameplate cast bars and lockout indicators, raised-arms 3D casting poses and multi-bolt lightning VFX, and the 4-spell action bar and Spellbook ([ADR 0048](decisions/0048-server-authoritative-casting-and-resources.md)).
+
+**Evidence:** the user's confirmation in this conversation (following local 1v1 and 2v2 browser playtests), not an agent-run browser session. This dated approval supersedes earlier pending human UI-review statements in `docs/UI-REVIEW.md`, `docs/BROWSER.md`, `docs/ARCHITECTURE.md`, and ADRs 0022–0048; earlier pending entries remain as historical record.
+
+Browser/version, device/OS/GPU, viewport, individual scenario logs, and console results were not supplied. Do not invent them or treat this as a measured performance benchmark, exhaustive cross-browser/accessibility certification, hosted CI result, binary-asset license approval, or authorization to publish/merge. Future UI changes still require their own human review.

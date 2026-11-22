@@ -6,8 +6,8 @@ Date: 2026-11-16. **Status: accepted and implemented**, with automated tests.
 everyone), and players now accept or decline found matches within 15 s
 instead of the game confirming for them. The sections below describe the
 original decision.
-Human browser review of the home screen and the Play online panel is
-pending; see [UI review](../UI-REVIEW.md).
+Human browser review of the home screen and the Play online panel was marked
+complete by the user on 2026-11-21; see [UI review](../UI-REVIEW.md).
 
 Builds on [ADR 0045](0045-front-door-and-playtest-deployment.md): the
 front door signs tickets, and a match starts on its first ticket.

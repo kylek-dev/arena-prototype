@@ -1,6 +1,6 @@
 # Browser development
 
-**Human UI review: verified and approved by the user on 2026-11-08 for all implemented UI changes, including earlier pending revisions and nameplates.** See [review record](UI-REVIEW.md). Earlier pending-review statements below are historical and superseded by that confirmation; the manual scenarios remain a regression checklist. Browser/device details, individual console results and performance measurements were not supplied.
+**Human UI review: verified and approved by the user on 2026-11-21 for all implemented UI changes through ADR 0048 (superseding the 2026-11-08 approval and all subsequent pending UI reviews).** See [review record](UI-REVIEW.md). Earlier pending-review statements below are historical and superseded by that confirmation; the manual scenarios remain a regression checklist. Browser/device details, individual console results and performance measurements were not supplied.
 
 This is a local solo practice scene. Start the original Rust headless example with `cargo run -p arena-headless`, or build the browser client below. The player defaults to the animated Quaternius female human when its curated sources are installed; otherwise it uses a procedural fallback without credentials. See [character setup](#quaternius-default-female-2026-11-14) and [asset provenance](../assets/README.md) before redistributing binary art. Rebuild the complete client after changing character sources.
 
@@ -242,7 +242,7 @@ hidden meanwhile and movement is ignored. Rebuild with `scripts/build-web.sh`
 after changing Quaternius sources. See
 [ADR 0040](decisions/0040-character-customization-kits.md).
 
-Manual check (pending human review): every option visibly changes the model;
+Manual regression checklist (approved by the user on 2026-11-21; see [review record](UI-REVIEW.md)): every option visibly changes the model;
 no skin gaps or clipping at hems for mixed outfit pieces; cross-body
 hairstyles sit on the head; switching body type/ancestry swaps without a flash
 of every part; face view framing in the starting room; HUD returns on close; start screen
