@@ -101,6 +101,13 @@ complexity or rate reduction (which degrades targeting fairness):
 | Undecodable message (truncated, unknown variant, invalid tag, trailing bytes) | — | Close with `Malformed` |
 | Over a field limit (ticket, `Welcome` team/seat/rate/`round_ticks`, fighters, `scoreboard` present without `result` or length ≠ fighters, events, result team, or combat/cast invariants) | — | Close with `Malformed` |
 
+Closing completes the WebSocket close handshake: after its `Error` and Close
+frames the server keeps reading, and discards, whatever the client had
+already sent until the client answers the Close, hangs up, or 1 s passes. The
+door's `/queue` socket closes the same way. Dropping the TCP socket while a
+flooding client's frames are still unread would make the kernel reset the
+connection, which can discard the `Error` before the client reads it.
+
 ## Versioning
 
 `PROTOCOL_VERSION` (currently 7: adds `Welcome.spectator` watch-only handshake for live delayed spectating; [ADR 0050](decisions/0050-spectating-and-anti-ghosting-delay.md)) changes with any
