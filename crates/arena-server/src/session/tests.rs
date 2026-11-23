@@ -836,13 +836,16 @@ fn round_clock_expiry_finishes_session_as_time_limit_draw_lingers_and_closes() {
 fn session_enforces_authoritative_casts_interrupts_lockout_and_reconnect_preservation() {
     use arena_protocol::{WireAction, WireInterruptReason, WireSpell};
     use arena_sim::arena::{Combatant, Position};
-    use arena_sim::spells::{
-        INTERRUPT_LOCKOUT_TICKS, MAX_RESOURCE, RIFT_BOLT_CAST_TICKS, RIFT_BOLT_COST,
-    };
+    use arena_sim::spells::{INTERRUPT_LOCKOUT_TICKS, RIFT_BOLT_CAST_TICKS};
 
+    // A part-spent pool, so the reconnect check below proves it is preserved
+    // verbatim rather than merely refilled.
+    const POOL: u16 = 70;
     let layout = arena_map::colosseum().layout;
+    let mut caster = Combatant::new(Position { x: 0, z: 2_500 }, 0);
+    caster.resource = POOL;
     let fighters = vec![
-        Combatant::new(Position { x: 0, z: 2_500 }, 0),
+        caster,
         Combatant::new(Position { x: 0, z: -2_500 }, arena_sim::arena::HALF_TURN),
     ];
     let close = Arena::restore(layout, 0, fighters, None).unwrap();
@@ -865,7 +868,8 @@ fn session_enforces_authoritative_casts_interrupts_lockout_and_reconnect_preserv
     let snap0 = snapshot(&out, conn(0)).unwrap();
     let snap1 = snapshot(&out, conn(1)).unwrap();
     assert_eq!(snap0.hash, snap1.hash);
-    assert_eq!(snap0.fighters[0].resource, MAX_RESOURCE - RIFT_BOLT_COST);
+    // Timed casts charge on completion, so starting spends nothing (rules v6).
+    assert_eq!(snap0.fighters[0].resource, POOL);
     assert_eq!(
         snap0.fighters[0].active_cast.unwrap().remaining_ticks,
         RIFT_BOLT_CAST_TICKS
@@ -917,7 +921,8 @@ fn session_enforces_authoritative_casts_interrupts_lockout_and_reconnect_preserv
         restored.fighters[0].lockout_remaining,
         INTERRUPT_LOCKOUT_TICKS - 1
     );
-    assert_eq!(restored.fighters[0].resource, MAX_RESOURCE - RIFT_BOLT_COST);
+    // The interrupted cast spent nothing.
+    assert_eq!(restored.fighters[0].resource, POOL);
 
     // Attempting to cast while locked out returns Silenced to Seat 0 ONLY.
     session.receive(

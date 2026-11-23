@@ -108,6 +108,11 @@ impl CastingState {
     // Some = instant spell ready to resolve.
     // None = timed cast started.
     // Validation happens before resources or timers are changed.
+    //
+    // Costs (resources and health) are checked here but only charged for
+    // instant spells. A timed cast re-checks and charges them on its
+    // completion tick in [`Self::tick`], so an interrupted, cancelled, moved
+    // or failed cast spends nothing (ADR 0048 amendment, rules version 6).
     pub fn try_cast(
         &mut self,
         combat: &mut CombatState,
@@ -125,18 +130,11 @@ impl CastingState {
 
         let started = combat.start_cast(spell).map_err(CastError::Timing)?;
 
-        // Pay once, at cast start.
-        // Interruptions do not refund these costs.
-        *caster.health -= spell.health_cost;
-
-        for (resource, amount) in costs {
-            if let Some(current) = caster.resources.get_mut(&resource) {
-                *current = current.saturating_sub(amount as u16);
-            }
-        }
-
         match started {
-            CastStart::Instant(_) => Ok(Some(prepared)),
+            CastStart::Instant(_) => {
+                pay_costs(caster, spell, &costs);
+                Ok(Some(prepared))
+            }
 
             CastStart::Casting => {
                 self.pending = Some(prepared);
@@ -200,29 +198,7 @@ impl CastingState {
             return Err(CastError::ConditionNotMet);
         }
 
-        // Combine repeated costs for the same resource.
-        let mut costs = BTreeMap::<Resource, u32>::new();
-
-        for cost in &spell.resource_costs {
-            let total = costs.entry(cost.resource).or_insert(0);
-
-            *total = total
-                .checked_add(u32::from(cost.amount))
-                .ok_or(CastError::InvalidResourceCost)?;
-        }
-
-        for (resource, amount) in &costs {
-            let available = caster.resources.get(resource).copied().unwrap_or(0);
-
-            if u32::from(available) < *amount {
-                return Err(CastError::NotEnoughResource(*resource));
-            }
-        }
-
-        // HP costs must leave at least 1 HP.
-        if spell.health_cost >= *caster.health && spell.health_cost > 0 {
-            return Err(CastError::NotEnoughHealth);
-        }
+        let costs = check_costs(spell, caster)?;
 
         Ok((resolved.map(|target| target.id), costs))
     }
@@ -232,10 +208,13 @@ impl CastingState {
     //
     // Look up pending_target_id() in the arena instead of using
     // whichever target the player currently has selected.
+    //
+    // On the completion tick the spell's costs are re-checked and, only if the
+    // cast resolves, charged to `caster`.
     pub fn tick(
         &mut self,
         combat: &mut CombatState,
-        caster: &CasterContext<'_>,
+        caster: &mut CasterContext<'_>,
         target: Option<&TargetContext<'_>>,
     ) -> Result<Option<PreparedCast>, CastError> {
         if self.pending.is_none() && combat.is_casting() {
@@ -244,6 +223,8 @@ impl CastingState {
 
             return Err(CastError::StateMismatch);
         }
+
+        let mut completion_costs = None;
 
         if let Some(pending) = self.pending.as_ref() {
             let active = combat.active_cast();
@@ -260,15 +241,20 @@ impl CastingState {
             // These can interrupt the cast immediately.
             let mut validation = check_caster(&pending.spell, caster);
 
-            // Recheck the target and conditions before completion.
+            // Recheck the target, conditions and costs before completion.
             if validation.is_ok() && active.is_some_and(|cast| cast.remaining_ticks <= 1) {
-                validation = validate_cast(&pending.spell, caster, target).and_then(|target_id| {
-                    if target_id == pending.target_id {
+                validation = validate_cast(&pending.spell, caster, target)
+                    .and_then(|target_id| {
+                        if target_id == pending.target_id {
+                            Ok(())
+                        } else {
+                            Err(CastError::InvalidTarget)
+                        }
+                    })
+                    .and_then(|()| {
+                        completion_costs = Some(check_costs(&pending.spell, caster)?);
                         Ok(())
-                    } else {
-                        Err(CastError::InvalidTarget)
-                    }
-                });
+                    });
             }
 
             if let Err(error) = validation {
@@ -279,6 +265,20 @@ impl CastingState {
             }
         }
 
+        // A cast about to complete must have passed the cost re-check above;
+        // refuse before `combat.tick()` would start its cooldown.
+        if self.pending.is_some()
+            && completion_costs.is_none()
+            && combat
+                .active_cast()
+                .is_some_and(|cast| cast.remaining_ticks <= 1)
+        {
+            self.interrupt_cast(combat);
+            let _ = combat.tick();
+
+            return Err(CastError::StateMismatch);
+        }
+
         match combat.tick() {
             Some(id) => {
                 let finished = self.pending.take().ok_or(CastError::StateMismatch)?;
@@ -286,6 +286,10 @@ impl CastingState {
                 if finished.spell.id != id {
                     return Err(CastError::StateMismatch);
                 }
+
+                // Costs were re-checked above on this same tick.
+                let costs = completion_costs.ok_or(CastError::StateMismatch)?;
+                pay_costs(caster, &finished.spell, &costs);
 
                 Ok(Some(finished))
             }
@@ -303,6 +307,49 @@ impl CastingState {
     pub fn reset(&mut self, combat: &mut CombatState) {
         self.pending = None;
         combat.reset();
+    }
+}
+
+/// Combines repeated costs per resource and confirms the caster can afford
+/// them (and keep at least 1 HP after any health cost) without charging.
+fn check_costs(
+    spell: &Spell,
+    caster: &CasterContext<'_>,
+) -> Result<BTreeMap<Resource, u32>, CastError> {
+    let mut costs = BTreeMap::<Resource, u32>::new();
+
+    for cost in &spell.resource_costs {
+        let total = costs.entry(cost.resource).or_insert(0);
+
+        *total = total
+            .checked_add(u32::from(cost.amount))
+            .ok_or(CastError::InvalidResourceCost)?;
+    }
+
+    for (resource, amount) in &costs {
+        let available = caster.resources.get(resource).copied().unwrap_or(0);
+
+        if u32::from(available) < *amount {
+            return Err(CastError::NotEnoughResource(*resource));
+        }
+    }
+
+    // HP costs must leave at least 1 HP.
+    if spell.health_cost >= *caster.health && spell.health_cost > 0 {
+        return Err(CastError::NotEnoughHealth);
+    }
+
+    Ok(costs)
+}
+
+/// Charges costs already confirmed by [`check_costs`] on the same state.
+fn pay_costs(caster: &mut CasterContext<'_>, spell: &Spell, costs: &BTreeMap<Resource, u32>) {
+    *caster.health = caster.health.saturating_sub(spell.health_cost);
+
+    for (resource, &amount) in costs {
+        if let Some(current) = caster.resources.get_mut(resource) {
+            *current = current.saturating_sub(u16::try_from(amount).unwrap_or(u16::MAX));
+        }
     }
 }
 
@@ -503,7 +550,145 @@ mod tests {
     }
 
     #[test]
-    fn timed_cast_pays_once_and_rechecks_range_and_los_at_completion() {
+    fn timed_cast_charges_nothing_at_start_and_pays_once_on_completion() {
+        let mut combat = CombatState::new();
+        let mut casting = CastingState::new();
+        let bolt = SpellId::RiftBolt.definition();
+        let mut health = 100u16;
+        let mut pool = resources(100);
+        let target = enemy_target(6_000, true);
+
+        let mut caster = CasterContext {
+            id: 0,
+            class: ARENA_CLASS,
+            health: &mut health,
+            max_health: 100,
+            resources: &mut pool,
+            known_spells: &SpellId::ALL,
+            active_effects: &[],
+            is_stunned: false,
+            silence_blocks_spell: false,
+            is_moving: false,
+        };
+
+        assert_eq!(
+            casting.try_cast(&mut combat, &mut caster, &bolt, Some(&target)),
+            Ok(None)
+        );
+        assert_eq!(caster.resources.get(&ARENA_RESOURCE), Some(&100));
+        for _ in 1..RIFT_BOLT_CAST_TICKS {
+            assert_eq!(
+                casting.tick(&mut combat, &mut caster, Some(&target)),
+                Ok(None)
+            );
+            assert_eq!(caster.resources.get(&ARENA_RESOURCE), Some(&100));
+        }
+        let finished = casting
+            .tick(&mut combat, &mut caster, Some(&target))
+            .unwrap()
+            .expect("cast completes");
+        assert_eq!(finished.spell.id, SpellId::RiftBolt);
+        assert_eq!(caster.resources.get(&ARENA_RESOURCE), Some(&65));
+        assert_eq!(*caster.health, 100);
+        assert!(casting.pending_cast().is_none());
+    }
+
+    #[test]
+    fn completion_rechecks_costs_and_spends_nothing_when_unaffordable() {
+        let mut combat = CombatState::new();
+        let mut casting = CastingState::new();
+        let mut spell = SpellId::RiftBolt.definition();
+        spell.health_cost = 30;
+        let mut health = 100u16;
+        let mut pool = resources(100);
+        let target = enemy_target(6_000, true);
+
+        let mut caster = CasterContext {
+            id: 0,
+            class: ARENA_CLASS,
+            health: &mut health,
+            max_health: 100,
+            resources: &mut pool,
+            known_spells: &SpellId::ALL,
+            active_effects: &[],
+            is_stunned: false,
+            silence_blocks_spell: false,
+            is_moving: false,
+        };
+
+        // Resource drained mid-cast: completion fails and spends nothing.
+        assert_eq!(
+            casting.try_cast(&mut combat, &mut caster, &spell, Some(&target)),
+            Ok(None)
+        );
+        for _ in 1..RIFT_BOLT_CAST_TICKS {
+            assert_eq!(
+                casting.tick(&mut combat, &mut caster, Some(&target)),
+                Ok(None)
+            );
+        }
+        *caster.resources.get_mut(&ARENA_RESOURCE).unwrap() = 34;
+        assert_eq!(
+            casting.tick(&mut combat, &mut caster, Some(&target)),
+            Err(CastError::NotEnoughResource(ARENA_RESOURCE))
+        );
+        assert!(casting.pending_cast().is_none());
+        assert!(!combat.is_casting());
+        assert_eq!(caster.resources.get(&ARENA_RESOURCE), Some(&34));
+        assert_eq!(*caster.health, 100);
+        assert_eq!(combat.cooldown_remaining(SpellId::RiftBolt), 0);
+
+        // Health dropped mid-cast so the health cost would be lethal.
+        *caster.resources.get_mut(&ARENA_RESOURCE).unwrap() = 100;
+        while combat.gcd_remaining() > 0 {
+            let _ = casting.tick(&mut combat, &mut caster, Some(&target));
+        }
+        assert_eq!(
+            casting.try_cast(&mut combat, &mut caster, &spell, Some(&target)),
+            Ok(None)
+        );
+        assert_eq!(*caster.health, 100);
+        for _ in 1..RIFT_BOLT_CAST_TICKS {
+            assert_eq!(
+                casting.tick(&mut combat, &mut caster, Some(&target)),
+                Ok(None)
+            );
+        }
+        *caster.health = 30;
+        assert_eq!(
+            casting.tick(&mut combat, &mut caster, Some(&target)),
+            Err(CastError::NotEnoughHealth)
+        );
+        assert!(casting.pending_cast().is_none());
+        assert!(!combat.is_casting());
+        assert_eq!(combat.cooldown_remaining(SpellId::RiftBolt), 0);
+        assert_eq!(*caster.health, 30);
+        assert_eq!(caster.resources.get(&ARENA_RESOURCE), Some(&100));
+
+        // Affordable at completion: both costs are charged exactly once.
+        *caster.health = 100;
+        while combat.gcd_remaining() > 0 {
+            let _ = casting.tick(&mut combat, &mut caster, Some(&target));
+        }
+        assert_eq!(
+            casting.try_cast(&mut combat, &mut caster, &spell, Some(&target)),
+            Ok(None)
+        );
+        for _ in 1..RIFT_BOLT_CAST_TICKS {
+            let _ = casting.tick(&mut combat, &mut caster, Some(&target));
+        }
+        assert!(
+            casting
+                .tick(&mut combat, &mut caster, Some(&target))
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(*caster.health, 70);
+        assert_eq!(caster.resources.get(&ARENA_RESOURCE), Some(&65));
+    }
+
+    #[test]
+    fn timed_cast_spends_nothing_and_rechecks_range_and_los_at_completion() {
         let mut combat = CombatState::new();
         combat.set_haste_percentage(23);
         let mut casting = CastingState::new();
@@ -529,39 +714,46 @@ mod tests {
             casting.try_cast(&mut combat, &mut caster, &bolt, Some(&target)),
             Ok(None)
         );
-        assert_eq!(caster.resources.get(&ARENA_RESOURCE), Some(&65));
+        assert_eq!(caster.resources.get(&ARENA_RESOURCE), Some(&100));
         assert_eq!(casting.pending_target_id(), Some(1));
 
-        // Walk out of range on the final tick: cast fails, resource is NOT refunded,
+        // Walk out of range on the final tick: cast fails, no resource is spent,
         // and Rift Bolt's personal cooldown does NOT start.
         for _ in 1..RIFT_BOLT_CAST_TICKS {
-            assert_eq!(casting.tick(&mut combat, &caster, Some(&target)), Ok(None));
+            assert_eq!(
+                casting.tick(&mut combat, &mut caster, Some(&target)),
+                Ok(None)
+            );
         }
         let far = enemy_target(12_001, true);
         assert_eq!(
-            casting.tick(&mut combat, &caster, Some(&far)),
+            casting.tick(&mut combat, &mut caster, Some(&far)),
             Err(CastError::OutOfRange)
         );
         assert!(casting.pending_cast().is_none());
-        assert_eq!(caster.resources.get(&ARENA_RESOURCE), Some(&65));
+        assert_eq!(caster.resources.get(&ARENA_RESOURCE), Some(&100));
         assert_eq!(combat.cooldown_remaining(SpellId::RiftBolt), 0);
 
         // Start again and lose LoS on the completion tick.
         while combat.gcd_remaining() > 0 {
-            let _ = casting.tick(&mut combat, &caster, Some(&target));
+            let _ = casting.tick(&mut combat, &mut caster, Some(&target));
         }
         assert_eq!(
             casting.try_cast(&mut combat, &mut caster, &bolt, Some(&target)),
             Ok(None)
         );
         for _ in 1..RIFT_BOLT_CAST_TICKS {
-            assert_eq!(casting.tick(&mut combat, &caster, Some(&target)), Ok(None));
+            assert_eq!(
+                casting.tick(&mut combat, &mut caster, Some(&target)),
+                Ok(None)
+            );
         }
         let blocked = enemy_target(6_000, false);
         assert_eq!(
-            casting.tick(&mut combat, &caster, Some(&blocked)),
+            casting.tick(&mut combat, &mut caster, Some(&blocked)),
             Err(CastError::NoLineOfSight)
         );
+        assert_eq!(caster.resources.get(&ARENA_RESOURCE), Some(&100));
         assert_eq!(combat.cooldown_remaining(SpellId::RiftBolt), 0);
     }
 
@@ -609,11 +801,11 @@ mod tests {
         );
         caster.is_moving = true;
         assert_eq!(
-            casting.tick(&mut combat, &caster, Some(&target)),
+            casting.tick(&mut combat, &mut caster, Some(&target)),
             Err(CastError::Moving)
         );
         assert!(!combat.is_casting());
-        assert_eq!(caster.resources.get(&ARENA_RESOURCE), Some(&65));
+        assert_eq!(caster.resources.get(&ARENA_RESOURCE), Some(&100));
     }
 
     #[test]
@@ -691,7 +883,7 @@ mod tests {
         let mut health = 100u16;
         let mut pool = resources(100);
         let target = enemy_target(5_000, true);
-        let caster = CasterContext {
+        let mut caster = CasterContext {
             id: 0,
             class: ARENA_CLASS,
             health: &mut health,
@@ -707,7 +899,7 @@ mod tests {
         // Start cast directly on combat without going through casting.
         combat.start_cast(&bolt).unwrap();
         assert_eq!(
-            casting.tick(&mut combat, &caster, Some(&target)),
+            casting.tick(&mut combat, &mut caster, Some(&target)),
             Err(CastError::StateMismatch)
         );
         assert!(!combat.is_casting());

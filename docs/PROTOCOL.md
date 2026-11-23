@@ -113,8 +113,9 @@ connection, which can discard the `Error` before the client reads it.
 `PROTOCOL_VERSION` (currently 7: adds `Welcome.spectator` watch-only handshake for live delayed spectating; [ADR 0050](decisions/0050-spectating-and-anti-ghosting-delay.md)) changes with any
 incompatible layout change; the golden-frame test fails until it is bumped
 deliberately.
-`RULES_VERSION` (currently 5: bounded server-side target-position history rewind
-up to `MAX_LAG_COMP_TICKS = 6` ticks on cast starts) changes when a rules change
+`RULES_VERSION` (currently 6: timed casts charge their resource and health costs
+on completion instead of at cast start; [ADR 0048](decisions/0048-server-authoritative-casting-and-resources.md))
+changes when a rules change
 could alter a replayed outcome. `Welcome.map` identifies the layout.
 
 ## Join tickets
