@@ -310,7 +310,7 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 
 ## 2026-11-22 — Charge cast costs on completion (Lane A, playtest inbox)
 - **Branch / Commit:** `auto/cast-cost-on-completion`
-- **Base / PR:** `main` (base of the 2026-11-22 playtest-inbox stack)
+- **Base / PR:** `main` — https://github.com/kylek-dev/arena-prototype/pull/82 (base of the 2026-11-22 playtest-inbox stack)
 - **Lane:** A (machine-verified)
 - **Task:** Playtest Inbox — "Spend the resource when a cast finishes, not when it starts" ([ADR 0048 amendment](../docs/decisions/0048-server-authoritative-casting-and-resources.md))
 - **Changes:**
@@ -327,3 +327,24 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fresh-Eyes Review:** No Critical or Important findings. Addressed Minors: refuse a completing cast without a cost re-check before `combat.tick()` starts its cooldown, extra health-failure assertions, restored mid-cast test, ADR balance consequences and wording, `ABILITIES.md` decided items.
 - **Learnings:** The practice client, HUD `spell_status` and predictor all route through `arena-sim`, so rule changes need no separate client parity code; the golden Welcome frame pins the `RULES_VERSION` byte.
 - **Next Recommended Slice:** Playtest inbox — practice-mode regeneration while the tab is hidden.
+
+## 2026-11-22 — Practice catches up on ticks missed in a hidden tab (Lane A investigation + client fix)
+- **Branch / Commit:** `auto/practice-hidden-tab-regen`
+- **Base / PR:** `auto/cast-cost-on-completion` (stacked on PR #82)
+- **Lane:** A investigation with a client fix (pending human browser check in `docs/UI-REVIEW.md`)
+- **Task:** Playtest Inbox — "Resource regeneration stops while the tab is hidden" ([ADR 0051](../docs/decisions/0051-practice-catches-up-hidden-tab-ticks.md))
+- **Changes:**
+  - Confirmed online keeps regenerating: new `idle_seats_keep_regenerating_on_the_servers_clock` session test (90 ticks, no input).
+  - Root cause in practice: `FixedUpdate` is fed by `Time<Virtual>`, which Bevy 0.20.1 clamps to 250 ms per frame, so withheld browser frames pause the practice sim.
+  - Decision (ADR 0051, proposed): practice catches up, capped at 60 s (1,800 ticks), with an idle local player. `practice_catch_up` (chained before `network_receive`) skips network sessions and frames behind the startup overlay; `CatchUp::take_ticks` keeps the sub-tick remainder; `apply_practice_events` and `fighter_positions` are shared with `simulate`.
+  - Tests: `CatchUp` arithmetic/cap/guards, and a Bevy `TimeUpdateStrategy::ManualDuration` app test (10 s gap → ~300 ticks and a refilled pool; no catch-up behind the overlay or in a session). Manual scenario 11 added to `docs/BROWSER.md`.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/cast-cost-on-completion` (`smoke=true web_build=false wasm=true`): pass
+    - `./scripts/check.sh`: pass (402 Rust tests, 1 pre-existing ignored; 52 Python; 42 Node; 39 Vitest files / 292 tests).
+    - `cargo run -p arena-headless --locked`: pass (`winner=Some(0)`).
+    - `./scripts/server-smoke.sh`: pass (1,142 cross-seat hash checks, 0 mismatches, 17/17 rejoins, 0 overruns).
+    - WASM clippy: pass.
+  - `./scripts/build-web.sh`: pass (55 static resources; no browser launched).
+- **Fresh-Eyes Review:** No Critical or Important findings. Addressed Minors: moved catch-up before `network_receive` so a match ending in a hidden tab never ages the fresh practice round, gated catch-up on the startup overlay, deduplicated position collection, and tightened ADR wording (any >250 ms frame triggers it, test length, cited perf figure, browser behaviour stated as expected rather than observed).
+- **Learnings:** In `bevy_time` 0.20.1 `Time<Virtual>::effective_speed` already includes the `max_delta` clamp; compare `Time<Real>` × `relative_speed` with the virtual delta to measure lost time.
+- **Next Recommended Slice:** Playtest inbox — smooth cast bars.
