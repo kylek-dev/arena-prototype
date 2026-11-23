@@ -158,7 +158,7 @@ export function GameMenu() {
       )}
       {debugEnabled && (
         <Button
-          variant="ghost"
+          variant="surface"
           color="gray"
           onClick={() => diagnosticsVisible.set(!diagnosticsVisible.get())}
         >

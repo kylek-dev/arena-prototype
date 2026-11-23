@@ -181,10 +181,10 @@ function NewMapForm({ dirty, close }: { dirty: boolean; close: () => void }) {
         </p>
       )}
       <div className="map-actions">
-        <Button size="1" onClick={create}>
+        <Button size="1" className="action-button" onClick={create}>
           Create map
         </Button>
-        <Button size="1" variant="ghost" color="gray" onClick={close}>
+        <Button size="1" className="action-button" variant="surface" color="gray" onClick={close}>
           Cancel
         </Button>
       </div>
@@ -216,10 +216,22 @@ function OpenMap({ dirty }: { dirty: boolean }) {
       {pending && (
         <span role="alert" className="map-notice error">
           Discard unsaved changes?{" "}
-          <Button size="1" color="red" variant="soft" onClick={() => open(pending)}>
+          <Button
+            size="1"
+            className="action-button"
+            color="red"
+            variant="soft"
+            onClick={() => open(pending)}
+          >
             Open {pending}
           </Button>{" "}
-          <Button size="1" variant="ghost" color="gray" onClick={() => setPending(null)}>
+          <Button
+            size="1"
+            className="action-button"
+            variant="surface"
+            color="gray"
+            onClick={() => setPending(null)}
+          >
             Keep editing
           </Button>
         </span>
@@ -436,7 +448,7 @@ export function MapEditor() {
               <Button size="1" variant="surface" color="gray" onClick={() => file.current?.click()}>
                 Import…
               </Button>
-              <Button size="1" variant="ghost" color="gray" onClick={() => loadMap()}>
+              <Button size="1" variant="surface" color="gray" onClick={() => loadMap()}>
                 Reload file
               </Button>
               <input

@@ -390,7 +390,7 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 
 ## 2026-11-22 — Player cast bar as its own movable frame (Lane B, playtest inbox)
 - **Branch / Commit:** `auto/player-cast-bar`
-- **Base / PR:** `auto/stop-casting` (stacked on PR #85)
+- **Base / PR:** `auto/stop-casting` — https://github.com/kylek-dev/arena-prototype/pull/86 (stacked on PR #85)
 - **Lane:** B (pending human browser review in `docs/UI-REVIEW.md`)
 - **Task:** Playtest Inbox — "Make the player's cast bar its own movable frame"
 - **Changes:**
@@ -407,3 +407,23 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Learnings:** Vitest stubs CSS (`?raw` CSS is empty), so stylesheet rules are asserted from `tests/unit/*.mjs` with `node:fs`. Any new `Placed` HUD element over the arena needs `pointer-events: none` when not editing, since game mouse input listens on the canvas only.
 - **Next Recommended Slice:** Playtest inbox — overlapping and non-clickable buttons (custom lobby first).
 - **Playtest Follow-Up (2026-11-22 on `auto/player-cast-bar`):** User saw the player cast bar flash in a different spot before appearing at its final location on each cast. Root cause: `web/src/ui/useMovable.ts` measured frame size in a passive `useEffect` (after paint) from a 260×110 placeholder, so a frame that mounts mid-game was first painted ~67 px higher (1024×768). Fixed by measuring in `useLayoutEffect`; added a `flushSync` first-paint regression test in `tests/ui/combat-hud.test.tsx` (verified to fail without the fix). Merged up into `auto/button-styles`.
+
+## 2026-11-22 — Overlapping and non-clickable buttons (Lane B, playtest inbox)
+- **Branch / Commit:** `auto/button-styles`
+- **Base / PR:** `auto/player-cast-bar` (stacked on PR #86)
+- **Lane:** B (pending human browser review in `docs/UI-REVIEW.md`)
+- **Task:** Playtest Inbox — "Fix overlapping buttons and buttons that don't look clickable" (last inbox item; the 2026-11-22 Playtest Inbox is now empty)
+- **Changes:**
+  - Root cause (verified in Radix Themes 3.3.0 CSS): `variant="ghost"` buttons have no border/fill and negative margins (−8 px/−4 px at size 1), so the lobby's slot actions overlapped by ~12 px at a 4 px gap and read as text.
+  - Shared `.action-button` in `web/src/styles/base.css` (28×28 px minimum hit size, no label wrapping) used with Radix `surface` for every custom-lobby slot action (rows wrap with a 6 px gap) and for the small rows elsewhere (play-online Join/Cancel, map editor Create/Cancel and Open/Keep editing, customizer Randomize/Reset). Map editor Reload file and menu Toggle diagnostics moved from ghost to surface.
+  - Audit of play online/party, scoreboard, settings, keybindings, customizer, map editor and spectator HUD: plain buttons already get border/fill/hover/focus from `base.css`; added a zero-specificity pressed fill for them and a hover colour for customizer tabs; sort headers, segmented controls and framed unit entries were already fine. Only × close/back icon buttons remain ghost.
+  - Tests: `tests/unit/buttons.test.mjs` (ghost reserved for close/back, robust to arrow-function props and quoting; hit size; pressed rule can't override component backgrounds), lobby slot-action class/variant assertions in `tests/ui/custom-lobby.test.tsx`. Docs: `docs/FRONTEND.md` "Buttons".
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/player-cast-bar` (`smoke=false web_build=true wasm=false`): pass
+    - `./scripts/check.sh`: pass (403 Rust tests, 1 pre-existing ignored; 52 Python; 50 Node; 41 Vitest files / 311 tests).
+    - `cargo run -p arena-headless --locked`: pass. `npm run build`: pass (371 modules).
+    - Server smoke / WASM clippy: not applicable (no crate changes).
+  - `./scripts/build-web.sh`: pass (55 static resources; no browser launched).
+- **Fresh-Eyes Review:** One Important finding fixed: the first pressed rule (`button:not(.rt-Button):active…`, specificity 0,3,1) would have greyed action-bar slots and unit entries while pressed; it is now wrapped in `:where()`. Minors addressed: guard-test bypasses, mixed 24/28 px heights within rows, dead tab-hover border, UI-REVIEW note that host rows wrap to two lines. Not built: a per-slot overflow menu (wrapping satisfies "wrap or collapse").
+- **Learnings:** `base.css` element rules with `:not()`/pseudo-classes reach (0,3,1) specificity and beat feature classes; new global button states belong in `:where()`. Vitest cannot see CSS, so style invariants are guarded with node source scans in `tests/unit`.
+- **Next Recommended Slice:** Playtest Inbox is empty — human browser review of the six stacked PRs (#82–#87), then the Lane A observability queue.

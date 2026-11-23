@@ -87,10 +87,16 @@ function JoinParty({ queue }: { queue: Queue }) {
         onChange={(event) => setCode(event.target.value.toUpperCase())}
         onKeyDown={(event) => event.key === "Enter" && join()}
       />
-      <Button size="1" onClick={join} disabled={!code.trim()}>
+      <Button size="1" className="action-button" onClick={join} disabled={!code.trim()}>
         Join
       </Button>
-      <Button size="1" variant="ghost" color="gray" onClick={() => setOpen(false)}>
+      <Button
+        size="1"
+        className="action-button"
+        variant="surface"
+        color="gray"
+        onClick={() => setOpen(false)}
+      >
         Cancel
       </Button>
     </div>
@@ -124,10 +130,16 @@ function JoinLobby({ queue }: { queue: Queue }) {
         onChange={(event) => setCode(event.target.value.toUpperCase())}
         onKeyDown={(event) => event.key === "Enter" && join()}
       />
-      <Button size="1" onClick={join} disabled={!code.trim()}>
+      <Button size="1" className="action-button" onClick={join} disabled={!code.trim()}>
         Join
       </Button>
-      <Button size="1" variant="ghost" color="gray" onClick={() => setOpen(false)}>
+      <Button
+        size="1"
+        className="action-button"
+        variant="surface"
+        color="gray"
+        onClick={() => setOpen(false)}
+      >
         Cancel
       </Button>
     </div>

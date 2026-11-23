@@ -188,6 +188,19 @@ it("hosts a custom lobby from the game menu, controls teams/settings/host, and s
     ],
   });
 
+  // Every slot action shares one bordered, clickable style (never ghost text).
+  for (const name of [
+    "Move Player 2 to Team A",
+    "Move Player 2 to Spectators",
+    "Make Player 2 host",
+    "Remove Player 2",
+  ]) {
+    const action = within(dialog).getByRole("button", { name });
+    expect(action.classList.contains("action-button"), name).toBe(true);
+    expect(action.classList.contains("rt-variant-surface"), name).toBe(true);
+    expect(action.classList.contains("rt-variant-ghost"), name).toBe(false);
+  }
+
   // Host moves player 2, passes host, and removes player 2.
   fireEvent.click(within(dialog).getByRole("button", { name: "Move Player 2 to Team A" }));
   expect(fake.sent().at(-1)).toEqual({ type: "move_lobby_member", member: 2, slot: "team_a" });
