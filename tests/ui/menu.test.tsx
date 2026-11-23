@@ -1,10 +1,11 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { App } from "../../web/src/app/App";
 import { initial } from "../../web/src/domain/preferences/schema";
 import { engine, error, focus, interaction, selectedLayout } from "../../web/src/state/session";
-import { preferences, persistence, saveMessage } from "../../web/src/state/config";
+import { preferences, persistence, saveMessage, updateConfig } from "../../web/src/state/config";
+import { chord } from "../../web/src/domain/bindings/model";
 import { pendingBinding } from "../../web/src/state/binding-capture";
 import { installInput } from "../../web/src/runtime/input-router";
 import { endDrag } from "../../web/src/runtime/spell-drag";
@@ -111,4 +112,76 @@ it("opens Spells with the existing P binding and names it in binding settings", 
   await user.type(screen.getByLabelText("Search actions"), "spells");
   expect(screen.getByRole("button", { name: "Bind Spells primary" })).toBeTruthy();
   expect(preferences.get().profiles[0].config.bindings.spellbook[0]?.code).toBe("KeyP");
+});
+
+it("stops the current cast with Escape before closing or opening anything", async () => {
+  let now = 10_000;
+  vi.spyOn(performance, "now").mockImplementation(() => now);
+  const user = userEvent.setup();
+  render(<App />);
+  const casting = snapshot({
+    player: {
+      ...snapshot().player,
+      cast: { spell: "rift_bolt", remainingTicks: 30, totalTicks: 45 },
+    },
+  });
+  act(() => engine.set(casting));
+  await user.keyboard("{Escape}");
+  expect(interaction.get().panel).toBeNull();
+  expect(screen.queryByRole("dialog", { name: "Game menu" })).toBeNull();
+  expect(router.sample()[21]).toBe(1);
+
+  // A fast second Escape (server has not confirmed the stop yet) opens the menu.
+  now += 100;
+  await user.keyboard("{Escape}");
+  expect(interaction.get().panel).toBe("menu");
+  expect(router.sample()[21]).toBe(0);
+
+  // Still casting later with a panel open: Escape stops the cast, the panel stays.
+  now += 1_000;
+  act(() => interaction.set({ ...interaction.get(), panel: "settings" }));
+  await user.keyboard("{Escape}");
+  expect(interaction.get().panel).toBe("settings");
+  expect(router.sample()[21]).toBe(1);
+
+  // Not casting: Escape closes the top panel, then opens the menu.
+  now += 1_000;
+  act(() => engine.set(snapshot()));
+  await user.keyboard("{Escape}");
+  expect(interaction.get().panel).toBeNull();
+  await user.keyboard("{Escape}");
+  expect(interaction.get().panel).toBe("menu");
+  expect(router.sample()[21]).toBe(0);
+});
+
+it("offers a rebindable Stop casting action that cancels a cast", async () => {
+  const user = userEvent.setup();
+  render(<App />);
+  expect(preferences.get().profiles[0].config.bindings.stopCasting).toEqual([null, null]);
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByRole("button", { name: "Settings" }));
+  await user.type(screen.getByLabelText("Search actions"), "stop");
+  expect(screen.getAllByText("Stop casting").length).toBeGreaterThan(0);
+  act(() => {
+    interaction.set({ ...interaction.get(), panel: null });
+    updateConfig((c) => ({
+      ...c,
+      bindings: { ...c.bindings, stopCasting: [chord({ code: "KeyX" }), null] },
+    }));
+    engine.set(
+      snapshot({
+        player: {
+          ...snapshot().player,
+          cast: { spell: "mend", remainingTicks: 20, totalTicks: 45 },
+        },
+      }),
+    );
+  });
+  (document.getElementById("arena") as HTMLCanvasElement).focus();
+  await user.keyboard("x");
+  expect(router.sample()[21]).toBe(1);
+  // Idle: the binding is a harmless no-op.
+  act(() => engine.set(snapshot()));
+  await user.keyboard("x");
+  expect(router.sample()[21]).toBe(0);
 });

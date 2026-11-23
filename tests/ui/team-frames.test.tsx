@@ -84,7 +84,7 @@ it("changes practice mode with a reset and drains the request once", () => {
     const sample = router.sample();
     expect(sample[5]).toBe(1);
     expect(sample[18]).toBe(3);
-    expect(router.sample().slice(17)).toEqual([-1, 0, 0, -2]);
+    expect(router.sample().slice(17)).toEqual([-1, 0, 0, -2, 0]);
     expect(interaction.get().panel).toBeNull();
     expect(focus.get()).toBeNull();
   } finally {

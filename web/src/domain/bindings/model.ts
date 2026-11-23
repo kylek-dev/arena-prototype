@@ -6,6 +6,7 @@ export const actions = [
   ...movement,
   "autorun",
   "jump",
+  "stopCasting",
   "nextTarget",
   "menu",
   "clearTarget",

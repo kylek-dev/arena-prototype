@@ -47,6 +47,8 @@ struct Practice {
     facings: Vec<f32>,
     selected: Option<usize>,
     cast: Option<SpellId>,
+    /// "Stop casting" was pressed: cancel the active cast on the next tick.
+    stop_cast: bool,
     jump: bool,
     feedback: &'static str,
     /// Active spell lightning bolts currently on screen.
@@ -83,6 +85,7 @@ impl Practice {
             facings,
             selected: None,
             cast: None,
+            stop_cast: false,
             jump: false,
             feedback: "Select the opponent to begin",
             zaps: Vec::new(),
@@ -610,16 +613,18 @@ fn read_controls(
         }
         practice.selected = None;
         practice.cast = None;
+        practice.stop_cast = false;
         practice.jump = false;
         practice.movement = Vec2::ZERO;
         return;
     }
     if preview.open {
         // The character stands still for the close-up; only a reset or mode
-        // change from the menu still applies.
+        // change from the menu, or stopping a cast begun before it, applies.
         input = Input {
             team_size: input.team_size,
             reset: input.reset,
+            stop_cast: input.stop_cast,
             ..default()
         };
     }
@@ -661,6 +666,7 @@ fn read_controls(
     if let Some(spell) = input.cast.or(input.attack.then_some(SpellId::Pulse)) {
         practice.cast = Some(spell);
     }
+    practice.stop_cast |= input.stop_cast;
     practice.jump |= input.jump;
 }
 // Both buttons use the same rendered-unit/pillar picker. Focus is browser-owned
@@ -734,7 +740,7 @@ fn simulate(mut practice: ResMut<Practice>, mut net: ResMut<Net>) {
         // Only intent leaves the client; the server's snapshots come back
         // through `network_receive`.
         let jump = std::mem::take(&mut practice.jump);
-        let mut action = None;
+        let mut action = take_stop_cast(&mut practice);
         if let Some(spell) = std::mem::take(&mut practice.cast) {
             if let Some(target) = resolve_cast_target(spell, practice.selected) {
                 action = Some(CastAction::Cast {
@@ -766,7 +772,7 @@ fn simulate(mut practice: ResMut<Practice>, mut net: ResMut<Net>) {
         }),
         facing: Some(binary_angle(practice.facing)),
         jump: std::mem::take(&mut practice.jump),
-        action: None,
+        action: take_stop_cast(&mut practice),
         rewind_ticks: 0,
     };
     if let Some(spell) = std::mem::take(&mut practice.cast) {
@@ -781,6 +787,12 @@ fn simulate(mut practice: ResMut<Practice>, mut net: ResMut<Net>) {
     }
     let events = practice.arena.advance(&[input]);
     apply_practice_events(&mut practice, events);
+}
+
+/// A pending "Stop casting" press as this tick's cancel intent. A spell
+/// pressed on the same tick replaces it (one combat action per tick).
+fn take_stop_cast(practice: &mut Practice) -> Option<CastAction> {
+    std::mem::take(&mut practice.stop_cast).then_some(CastAction::Cancel)
 }
 
 /// Most practice ticks replayed at once after the tab was hidden: one minute
@@ -1759,6 +1771,8 @@ struct Input {
     steer: bool,
     /// Spectator camera command: `-1` = free camera, `0..=5` = follow actor.
     spectator_cmd: Option<i8>,
+    /// "Stop casting" pressed (Esc while casting, or its own binding).
+    stop_cast: bool,
 }
 #[cfg(target_arch = "wasm32")]
 mod platform {
@@ -1911,6 +1925,8 @@ mod platform {
                 .as_f64()
                 .filter(|n| n.is_finite() && *n >= -1.0 && *n < 6.0 && n.fract() == 0.0)
                 .map(|n| n as i8),
+            // Older shells have no field 21: never a stop.
+            stop_cast: a.get(21).as_f64() == Some(1.0),
         }
     }
     pub fn focus_unit(unit: usize) {
@@ -1929,6 +1945,60 @@ fn focus_cursor(x: f32, y: f32) -> Option<Vec2> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_casting_cancels_the_active_cast_and_is_harmless_when_idle() {
+        let mut app = App::new();
+        app.init_resource::<Practice>()
+            .init_resource::<Net>()
+            .add_systems(FixedUpdate, simulate);
+        // Mend on self (no target needed); the pool is not spent at start.
+        app.world_mut().resource_mut::<Practice>().cast = Some(SpellId::Mend);
+        app.world_mut().run_schedule(FixedUpdate);
+        app.world_mut().run_schedule(FixedUpdate);
+        let practice = app.world().resource::<Practice>();
+        assert!(practice.arena.fighters()[0].active_cast.is_some());
+        let pool = practice.arena.fighters()[0].resource;
+
+        app.world_mut().resource_mut::<Practice>().stop_cast = true;
+        app.world_mut().run_schedule(FixedUpdate);
+        let practice = app.world().resource::<Practice>();
+        assert!(practice.arena.fighters()[0].active_cast.is_none());
+        assert_eq!(practice.arena.fighters()[0].resource, pool);
+        assert_eq!(practice.feedback, "Cast cancelled");
+        assert!(!practice.stop_cast, "the press is consumed");
+
+        // Stopping while idle is a quiet no-op.
+        app.world_mut().resource_mut::<Practice>().stop_cast = true;
+        app.world_mut().run_schedule(FixedUpdate);
+        let practice = app.world().resource::<Practice>();
+        assert_eq!(practice.feedback, "Cast cancelled");
+        assert!(!practice.stop_cast);
+
+        // A spell pressed on the same tick wins over the stop.
+        {
+            let mut practice = app.world_mut().resource_mut::<Practice>();
+            practice.stop_cast = true;
+            practice.cast = Some(SpellId::Mend);
+        }
+        for _ in 0..30 {
+            app.world_mut().run_schedule(FixedUpdate);
+            if app.world().resource::<Practice>().arena.fighters()[0]
+                .active_cast
+                .is_some()
+            {
+                break;
+            }
+            let mut practice = app.world_mut().resource_mut::<Practice>();
+            practice.stop_cast = true;
+            practice.cast = Some(SpellId::Mend);
+        }
+        assert!(
+            app.world().resource::<Practice>().arena.fighters()[0]
+                .active_cast
+                .is_some()
+        );
+    }
 
     #[test]
     fn catch_up_repays_whole_ticks_keeps_the_remainder_and_caps_long_gaps() {
