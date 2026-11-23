@@ -371,7 +371,7 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 
 ## 2026-11-22 — Stop casting keybind and Esc stops casting (Lane B, playtest inbox)
 - **Branch / Commit:** `auto/stop-casting`
-- **Base / PR:** `auto/smooth-cast-bars` (stacked on PR #84)
+- **Base / PR:** `auto/smooth-cast-bars` — https://github.com/kylek-dev/arena-prototype/pull/85 (stacked on PR #84)
 - **Lane:** B (pending human browser review in `docs/UI-REVIEW.md`)
 - **Task:** Playtest Inbox — "Add a 'Stop casting' keybind, and make Esc stop casting"
 - **Changes:**
@@ -387,3 +387,23 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fresh-Eyes Review:** No Critical or Important findings. Addressed Minors: stop survives the customizer close-up, narrowed the pure helper to `escapeStopsCast` (the full close/open order is exercised by the UI test), double-Escape grace, binding group, docs (rebuild WASM and frontend together).
 - **Learnings:** Node 24 (CI and local) imports erasable-syntax `.ts` modules from `tests/unit/*.mjs` directly, so pure web helpers without imports can be unit-tested there. Input ABI changes break `tests/unit/input.test.mjs` and `tests/ui/team-frames.test.tsx`, which pin the array.
 - **Next Recommended Slice:** Playtest inbox — the player's cast bar as its own movable frame.
+
+## 2026-11-22 — Player cast bar as its own movable frame (Lane B, playtest inbox)
+- **Branch / Commit:** `auto/player-cast-bar`
+- **Base / PR:** `auto/stop-casting` (stacked on PR #85)
+- **Lane:** B (pending human browser review in `docs/UI-REVIEW.md`)
+- **Task:** Playtest Inbox — "Make the player's cast bar its own movable frame"
+- **Changes:**
+  - `web/src/domain/preferences/schema.ts`: `castBar` frame role (default `layout(0.5, 0.78)`) and `castBarAttached` (default `false`), both defaulted for older/imported profiles.
+  - `web/src/features/cast-bar/PlayerCastBar.tsx` + `cast-bar.css`: a `Placed` frame shown only while casting, with a layout-editor sample (move/scale/hide/lock/reset through the existing editor); the live bar is pointer-transparent. `UnitFrame` gains `showCast`; `Frames` shows the player's bar only when attached and previews it there in the editor; the **Attach player cast bar to the player frame** checkbox in layout settings clears a stale `castBar` selection. Target/focus/nameplate bars unchanged.
+  - Tests: `tests/ui/combat-hud.test.tsx` (default separate frame, attach/detach, idle, editor sample, legacy profiles, live vs editing class, attached preview + selection), `tests/unit/hud-css.test.mjs` (pointer-events rule). Docs: `docs/FRONTEND.md`, `docs/BROWSER.md` scenario 13.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/stop-casting` (`smoke=false web_build=true wasm=false`): pass
+    - `./scripts/check.sh`: pass (403 Rust tests, 1 pre-existing ignored; 52 Python; 47 Node; 41 Vitest files / 311 tests).
+    - `cargo run -p arena-headless --locked`: pass. `npm run build`: pass (371 modules).
+    - Server smoke / WASM clippy: not applicable (no crate changes).
+  - `./scripts/build-web.sh`: pass (55 static resources; no browser launched).
+- **Fresh-Eyes Review:** One Important finding fixed: the live bar's `Placed` wrapper swallowed pointer input over the arena; it is now pointer-transparent outside layout editing (as the live unit tooltip is). Minors addressed: documented the default gap growing with screen height (computed ~10/22/73 px at 800×600/1280×720/1920×1080), stale selection on attach, attached preview, import order. Not done: friendly labels for raw layout ids ("castBar", "unitTooltip", "bar-1") — existing pattern, queue if wanted.
+- **Learnings:** Vitest stubs CSS (`?raw` CSS is empty), so stylesheet rules are asserted from `tests/unit/*.mjs` with `node:fs`. Any new `Placed` HUD element over the arena needs `pointer-events: none` when not editing, since game mouse input listens on the canvas only.
+- **Next Recommended Slice:** Playtest inbox — overlapping and non-clickable buttons (custom lobby first).
+- **Playtest Follow-Up (2026-11-22 on `auto/player-cast-bar`):** User saw the player cast bar flash in a different spot before appearing at its final location on each cast. Root cause: `web/src/ui/useMovable.ts` measured frame size in a passive `useEffect` (after paint) from a 260×110 placeholder, so a frame that mounts mid-game was first painted ~67 px higher (1024×768). Fixed by measuring in `useLayoutEffect`; added a `flushSync` first-paint regression test in `tests/ui/combat-hud.test.tsx` (verified to fail without the fix). Merged up into `auto/button-styles`.

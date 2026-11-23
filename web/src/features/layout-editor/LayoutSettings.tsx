@@ -8,6 +8,7 @@ import { MovableWindow } from "../../ui/MovableWindow";
 
 export function LayoutSettings() {
   const frames = useConfigSelector((c) => c.frames);
+  const castBarAttached = useConfigSelector((c) => c.castBarAttached);
   const bars = useConfigSelector((c) => c.bars);
   const selected = useStore(selectedLayout, (s) => s);
   const editing = useStore(interaction, (s) => s.layout);
@@ -74,6 +75,18 @@ export function LayoutSettings() {
           {editing ? "No frame selected." : "Open canvas editing to select frames directly."}
         </Text>
       )}
+      <label>
+        <input
+          type="checkbox"
+          checked={castBarAttached}
+          onChange={(e) => {
+            // The separate bar disappears when attached: drop a stale selection.
+            if (e.target.checked && selectedLayout.get() === "castBar") selectedLayout.set(null);
+            updateConfig((c) => ({ ...c, castBarAttached: e.target.checked }));
+          }}
+        />
+        Attach player cast bar to the player frame
+      </label>
       <Button
         variant="surface"
         color="gray"

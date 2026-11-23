@@ -5,9 +5,15 @@ import type { FrameRole } from "../../domain/preferences/schema";
 export function UnitFrame({
   role,
   unit,
+  showCast = true,
 }: {
-  role: Exclude<FrameRole, "opponents" | "team" | "unitTooltip"> | "opponent" | "teammate";
+  role:
+    | Exclude<FrameRole, "opponents" | "team" | "unitTooltip" | "castBar">
+    | "opponent"
+    | "teammate";
   unit: Entity | null;
+  /** False when the player's cast bar is shown in its own frame instead. */
+  showCast?: boolean;
 }) {
   const hasResource = unit !== null && typeof unit.resource === "number";
   const maxResource = unit?.maxResource ?? 100;
@@ -18,7 +24,7 @@ export function UnitFrame({
       ? 100
       : 0;
   const lockedOut = !unit?.disconnected && (unit?.lockoutRemaining ?? 0) > 0;
-  const activeCast = unit?.cast ?? null;
+  const activeCast = showCast ? (unit?.cast ?? null) : null;
   return (
     <section
       className={`unit-frame ${role}${unit?.disconnected ? " disconnected" : ""}`}

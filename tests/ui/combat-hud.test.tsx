@@ -1,11 +1,16 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { flushSync } from "react-dom";
+import { createRoot } from "react-dom/client";
 import { CombatErrors } from "../../web/src/features/combat-errors/CombatErrors";
 import { Frames } from "../../web/src/features/unit-frames/Frames";
-import { initial } from "../../web/src/domain/preferences/schema";
-import { preferences } from "../../web/src/state/config";
-import { engine, error, focus, interaction } from "../../web/src/state/session";
+import { defaultConfig, initial, validateConfig } from "../../web/src/domain/preferences/schema";
+import { layout } from "../../web/src/domain/layout/model";
+import { preferences, updateConfig } from "../../web/src/state/config";
+import { PlayerCastBar } from "../../web/src/features/cast-bar/PlayerCastBar";
+import { engine, error, focus, interaction, selectedLayout } from "../../web/src/state/session";
+import { LayoutSettings } from "../../web/src/features/layout-editor/LayoutSettings";
 import { snapshot } from "./fixtures";
 import { activateSlot, dispatch, input } from "../../web/src/runtime/commands";
 import {
@@ -69,7 +74,12 @@ it("renders live unit resources, active cast bars, and lockout badges when prese
       },
     }),
   );
-  render(<Frames />);
+  render(
+    <>
+      <Frames />
+      <PlayerCastBar />
+    </>,
+  );
   const playerResource = screen.getByRole("meter", { name: "player resource" });
   expect(within(playerResource).getByText("65/100")).toBeTruthy();
   expect(playerResource.getAttribute("aria-valuenow")).toBe("65");
@@ -78,6 +88,10 @@ it("renders live unit resources, active cast bars, and lockout badges when prese
   expect(castBar.getAttribute("aria-valuenow")).toBe("67");
   expect(within(castBar).getByText("Rift Bolt")).toBeTruthy();
   expect(within(castBar).getByText("0.5s")).toBeTruthy();
+  // By default it is its own movable frame, not part of the player frame.
+  expect(castBar.closest(".player-cast-bar")).toBeTruthy();
+  expect(castBar.closest(".unit-frame")).toBeNull();
+  expect(screen.getAllByRole("progressbar")).toHaveLength(1);
   const targetResource = screen.getByRole("meter", { name: "target resource" });
   expect(within(targetResource).getByText("40/100")).toBeTruthy();
   expect(screen.getAllByText("Locked out").length).toBeGreaterThanOrEqual(1);
@@ -175,4 +189,120 @@ it("activates all four default action-bar spells and allows Mend without an enem
   engine.set(snapshot({ selected: false }));
   activateSlot("bar-1-s4");
   expect(input.readInput()[19]).toBe(4);
+});
+
+it("moves the player's cast bar into the player frame when attached, leaving other bars alone", () => {
+  const casting = { spell: "mend", remainingTicks: 30, totalTicks: 45 } as const;
+  engine.set(
+    snapshot({
+      player: { ...snapshot().player, cast: casting },
+      target: { ...snapshot().target, cast: { ...casting, spell: "rift_bolt" } },
+    }),
+  );
+  render(
+    <>
+      <Frames />
+      <PlayerCastBar />
+    </>,
+  );
+  const own = screen.getByRole("progressbar", { name: "player casting Mend" });
+  expect(own.closest(".player-cast-bar")).toBeTruthy();
+  const target = screen.getByRole("progressbar", { name: "target casting Rift Bolt" });
+  expect(target.closest(".unit-frame.target")).toBeTruthy();
+
+  act(() => updateConfig((c) => ({ ...c, castBarAttached: true })));
+  const attached = screen.getByRole("progressbar", { name: "player casting Mend" });
+  expect(attached.closest(".unit-frame.player")).toBeTruthy();
+  expect(document.querySelector(".player-cast-bar")).toBeNull();
+  expect(screen.getByRole("progressbar", { name: "target casting Rift Bolt" })).toBeTruthy();
+
+  // Idle: nothing is shown in either place.
+  act(() => {
+    updateConfig((c) => ({ ...c, castBarAttached: false }));
+    engine.set(snapshot());
+  });
+  expect(screen.queryAllByRole("progressbar")).toHaveLength(0);
+});
+
+it("shows a movable, scalable sample cast bar in the layout editor", () => {
+  engine.set(snapshot());
+  interaction.set({ panel: null, capture: null, quick: false, layout: true, hovered: null });
+  render(<PlayerCastBar />);
+  const placed = screen.getByRole("button", { name: "Edit castBar" });
+  expect(placed.querySelector(".player-cast-bar .cast-track")).toBeTruthy();
+  expect(defaultConfig().frames.castBar).toEqual(layout(0.5, 0.78));
+  expect(defaultConfig().castBarAttached).toBe(false);
+  act(() => interaction.set({ ...interaction.get(), layout: false }));
+  expect(screen.queryByRole("button", { name: "Edit castBar" })).toBeNull();
+});
+
+it("keeps older saved profiles valid with the new frame and setting defaults", () => {
+  const legacy = structuredClone(defaultConfig()) as Partial<ReturnType<typeof defaultConfig>>;
+  delete (legacy.frames as Record<string, unknown>).castBar;
+  delete legacy.castBarAttached;
+  const restored = validateConfig(legacy);
+  expect(restored.frames.castBar).toEqual(layout(0.5, 0.78));
+  expect(restored.castBarAttached).toBe(false);
+  expect(validateConfig({ ...defaultConfig(), castBarAttached: "yes" }).castBarAttached).toBe(
+    false,
+  );
+});
+
+it("keeps the live player cast bar pointer-transparent but draggable while editing", () => {
+  // The pointer-events rule itself is checked in tests/unit/hud-css.test.mjs.
+  engine.set(
+    snapshot({
+      player: { ...snapshot().player, cast: { spell: "mend", remainingTicks: 30, totalTicks: 45 } },
+    }),
+  );
+  render(<PlayerCastBar />);
+  expect(document.querySelector(".player-cast-bar-live")).toBeTruthy();
+  act(() => interaction.set({ ...interaction.get(), layout: true }));
+  expect(document.querySelector(".player-cast-bar")).toBeTruthy();
+  expect(document.querySelector(".player-cast-bar-live")).toBeNull();
+});
+
+it("previews the attached bar in the player frame and drops a stale castBar selection", () => {
+  engine.set(snapshot());
+  interaction.set({ panel: null, capture: null, quick: false, layout: true, hovered: null });
+  selectedLayout.set("castBar");
+  render(
+    <>
+      <Frames />
+      <PlayerCastBar />
+      <LayoutSettings />
+    </>,
+  );
+  expect(screen.getByText("Editing castBar")).toBeTruthy();
+  fireEvent.click(screen.getByLabelText("Attach player cast bar to the player frame"));
+  expect(selectedLayout.get()).toBeNull();
+  expect(document.querySelector(".player-cast-bar")).toBeNull();
+  const preview = screen.getByRole("progressbar", { name: "player casting Rift Bolt" });
+  expect(preview.closest(".unit-frame.player")).toBeTruthy();
+});
+
+it("places the player cast bar at its final position in the very first paint", () => {
+  // Regression (playtest 2026-11-22): the bar flashed higher up for a frame
+  // because it was measured after paint from a 260×110 placeholder size.
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(280);
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(24);
+  engine.set(
+    snapshot({
+      player: { ...snapshot().player, cast: { spell: "mend", remainingTicks: 30, totalTicks: 45 } },
+    }),
+  );
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  // flushSync commits and runs layout effects synchronously; passive effects
+  // (where the old measurement lived) have not run yet, as at first paint.
+  flushSync(() => root.render(<PlayerCastBar />));
+  const placed = host.querySelector<HTMLElement>(".placed")!;
+  const expected = 0.78 * (innerHeight - 24 - 24) + 12;
+  expect(parseFloat(placed.style.top)).toBeCloseTo(expected, 1);
+  expect(parseFloat(placed.style.left)).toBeCloseTo(0.5 * (innerWidth - 24 - 280) + 12, 1);
+  act(() => root.unmount());
+  host.remove();
+  width.mockRestore();
+  height.mockRestore();
 });

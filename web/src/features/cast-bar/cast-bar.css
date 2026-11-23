@@ -1,0 +1,13 @@
+.player-cast-bar {
+  width: 280px;
+}
+.player-cast-bar .cast-track {
+  height: 24px;
+  margin-top: 0;
+  box-shadow: var(--shadow-3);
+}
+/* Like the live unit tooltip: a live bar over the arena never swallows
+   camera drags, world clicks or nameplate clicks. Editing keeps it draggable. */
+.placed:has(.player-cast-bar-live) {
+  pointer-events: none;
+}

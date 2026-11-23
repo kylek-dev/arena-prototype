@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { move, position, type Layout } from "../domain/layout/model";
 
 // Shared viewport-bounded positioning for HUD frames and floating editor windows.
@@ -25,7 +25,10 @@ export function useMovable(value: Layout, onChange: (next: Layout) => void, enab
     height: usable.height - size.height * scale,
   };
 
-  useEffect(() => {
+  // Measure before the browser paints: a frame that mounts mid-game (the
+  // player cast bar appears with each cast) must not flash at a position
+  // computed from the placeholder size first.
+  useLayoutEffect(() => {
     const resize = () => setViewport({ width: innerWidth, height: innerHeight });
     addEventListener("resize", resize);
     const element = ref.current;
