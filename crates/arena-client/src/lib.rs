@@ -26,14 +26,14 @@ mod weapons;
 use arena_map::MapFile;
 use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::{
-    ATTACK_COOLDOWN, ATTACK_DAMAGE, ATTACK_RANGE, ActiveCastState, ActorInput, Arena, ArenaEvent,
-    Axes, CastAction, Combatant, Position,
+    ARENA_HASTE_PERCENTAGE, ATTACK_COOLDOWN, ATTACK_DAMAGE, ATTACK_RANGE, ActiveCastState,
+    ActorInput, Arena, ArenaEvent, Axes, CastAction, Combatant, Position,
 };
 use arena_sim::spells::{
     MAX_RESOURCE, MEND_CAST_TICKS, MEND_COOLDOWN_TICKS, MEND_COST, MEND_HEAL, MEND_RANGE,
     PULSE_COOLDOWN_TICKS, PULSE_COST, QUELL_COOLDOWN_TICKS, QUELL_COST, QUELL_RANGE,
     RIFT_BOLT_CAST_TICKS, RIFT_BOLT_COOLDOWN_TICKS, RIFT_BOLT_COST, RIFT_BOLT_DAMAGE,
-    RIFT_BOLT_RANGE, SpellId,
+    RIFT_BOLT_RANGE, SpellId, calculate_gcd_ticks,
 };
 use bevy::{asset::AssetMetaCheck, core_pipeline::tonemapping::Tonemapping, prelude::*};
 
@@ -1641,6 +1641,25 @@ fn spell_key_str(spell: SpellId) -> &'static str {
     }
 }
 
+/// Remaining and full duration of the timer gating `spell` on the action bar.
+/// While the global cooldown outlasts the spell's own cooldown, the GCD is the
+/// timer shown, so its full length (not the spell's cooldown) scales the sweep;
+/// otherwise every button would sweep a different fraction of the same GCD.
+fn effective_cooldown(
+    player: &Combatant,
+    spell: SpellId,
+    spell_cooldown_ticks: u32,
+    uses_gcd: bool,
+) -> (u32, u32) {
+    let raw_cd = player.cooldown_remaining(spell);
+    if uses_gcd && player.gcd_remaining > raw_cd {
+        let gcd_ticks = calculate_gcd_ticks(ARENA_HASTE_PERCENTAGE, 100);
+        (player.gcd_remaining, gcd_ticks.max(player.gcd_remaining))
+    } else {
+        (raw_cd, spell_cooldown_ticks)
+    }
+}
+
 fn write_spells_json(json: &mut String, arena: &Arena, selected: Option<usize>) {
     use std::fmt::Write;
     let player = arena.fighters()[0];
@@ -1689,12 +1708,8 @@ fn write_spells_json(json: &mut String, arena: &Arena, selected: Option<usize>) 
         if idx > 0 {
             json.push(',');
         }
-        let raw_cd = player.cooldown_remaining(spell);
-        let effective_cd = if uses_gcd {
-            raw_cd.max(player.gcd_remaining)
-        } else {
-            raw_cd
-        };
+        let (effective_cd, max_cd_ticks) =
+            effective_cooldown(&player, spell, max_cd_ticks, uses_gcd);
         let status = spell_status(arena, spell, selected);
         let _ = write!(
             json,
@@ -1945,6 +1960,35 @@ fn focus_cursor(x: f32, y: f32) -> Option<Vec2> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gcd_sweep_uses_the_gcd_duration_for_every_spell() {
+        let gcd = calculate_gcd_ticks(ARENA_HASTE_PERCENTAGE, 100);
+        let mut player = Combatant::new(Position { x: 0, z: 0 }, 0);
+        player.gcd_remaining = gcd - 5;
+        // Each GCD spell reports the same remaining/full pair, so their sweeps match.
+        for (spell, own) in [
+            (SpellId::Pulse, PULSE_COOLDOWN_TICKS),
+            (SpellId::RiftBolt, RIFT_BOLT_COOLDOWN_TICKS),
+            (SpellId::Mend, MEND_COOLDOWN_TICKS),
+        ] {
+            assert_eq!(
+                effective_cooldown(&player, spell, own, true),
+                (gcd - 5, gcd)
+            );
+        }
+        // Off-GCD spells ignore it.
+        assert_eq!(
+            effective_cooldown(&player, SpellId::Quell, QUELL_COOLDOWN_TICKS, false),
+            (0, QUELL_COOLDOWN_TICKS)
+        );
+        // A personal cooldown longer than the GCD keeps its own full length.
+        player.cooldowns[SpellId::Mend.index()] = MEND_COOLDOWN_TICKS - 1;
+        assert_eq!(
+            effective_cooldown(&player, SpellId::Mend, MEND_COOLDOWN_TICKS, true),
+            (MEND_COOLDOWN_TICKS - 1, MEND_COOLDOWN_TICKS)
+        );
+    }
 
     #[test]
     fn stop_casting_cancels_the_active_cast_and_is_harmless_when_idle() {

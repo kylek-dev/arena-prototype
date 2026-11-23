@@ -71,8 +71,19 @@
   display: grid;
   place-items: center;
   color: var(--pal-night-12);
-  font-size: 16px;
+  /* Scales with the slot; a dark outline keeps it readable over the icon and
+     across the sweep edge, where the background behind it changes. */
+  font-size: max(14px, calc(var(--action-slot-size, 64px) * 0.34));
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
+  text-shadow:
+    -1px -1px 0 var(--pal-night-1),
+    1px -1px 0 var(--pal-night-1),
+    -1px 1px 0 var(--pal-night-1),
+    1px 1px 0 var(--pal-night-1),
+    0 0 4px var(--pal-night-1);
   background: conic-gradient(
     from 0deg,
     transparent var(--cooldown-sweep, 0deg),
