@@ -1,9 +1,5 @@
-import {
-  castProgress,
-  castRemainingSeconds,
-  resourcePercent,
-  spellLabel,
-} from "../../domain/casting";
+import { resourcePercent, spellLabel } from "../../domain/casting";
+import { CastBar } from "../cast-bar/CastBar";
 import type { Entity } from "../../domain/units/selection";
 import type { FrameRole } from "../../domain/preferences/schema";
 export function UnitFrame({
@@ -67,20 +63,13 @@ export function UnitFrame({
         <span className="bar-value">{unit ? `${resourceValue}/${maxResource}` : "—"}</span>
       </div>
       {activeCast && (
-        <div
-          className="cast-track"
-          role="progressbar"
-          aria-label={`${role} casting ${spellLabel(activeCast.spell)}`}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={Math.round(castProgress(activeCast) * 100)}
-        >
-          <div className="cast-fill" style={{ width: `${castProgress(activeCast) * 100}%` }} />
-          <span className="cast-label">
-            <span>{spellLabel(activeCast.spell)}</span>
-            <span>{castRemainingSeconds(activeCast).toFixed(1)}s</span>
-          </span>
-        </div>
+        <CastBar
+          // A different unit in this frame (a new target) always snaps.
+          key={unit?.id}
+          variant="frame"
+          cast={activeCast}
+          label={`${role} casting ${spellLabel(activeCast.spell)}`}
+        />
       )}
     </section>
   );
