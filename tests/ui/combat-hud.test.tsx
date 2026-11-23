@@ -1,6 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { flushSync } from "react-dom";
+import { createRoot } from "react-dom/client";
 import { CombatErrors } from "../../web/src/features/combat-errors/CombatErrors";
 import { Frames } from "../../web/src/features/unit-frames/Frames";
 import { defaultConfig, initial, validateConfig } from "../../web/src/domain/preferences/schema";
@@ -277,4 +279,30 @@ it("previews the attached bar in the player frame and drops a stale castBar sele
   expect(document.querySelector(".player-cast-bar")).toBeNull();
   const preview = screen.getByRole("progressbar", { name: "player casting Rift Bolt" });
   expect(preview.closest(".unit-frame.player")).toBeTruthy();
+});
+
+it("places the player cast bar at its final position in the very first paint", () => {
+  // Regression (playtest 2026-11-22): the bar flashed higher up for a frame
+  // because it was measured after paint from a 260×110 placeholder size.
+  const width = vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(280);
+  const height = vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(24);
+  engine.set(
+    snapshot({
+      player: { ...snapshot().player, cast: { spell: "mend", remainingTicks: 30, totalTicks: 45 } },
+    }),
+  );
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  // flushSync commits and runs layout effects synchronously; passive effects
+  // (where the old measurement lived) have not run yet, as at first paint.
+  flushSync(() => root.render(<PlayerCastBar />));
+  const placed = host.querySelector<HTMLElement>(".placed")!;
+  const expected = 0.78 * (innerHeight - 24 - 24) + 12;
+  expect(parseFloat(placed.style.top)).toBeCloseTo(expected, 1);
+  expect(parseFloat(placed.style.left)).toBeCloseTo(0.5 * (innerWidth - 24 - 280) + 12, 1);
+  act(() => root.unmount());
+  host.remove();
+  width.mockRestore();
+  height.mockRestore();
 });
