@@ -20,7 +20,8 @@ import { engine, interaction } from "../../state/session";
 import { createStore, useStore } from "../../state/store";
 import { accountService } from "../../state/account";
 import { LOADING_ACCOUNT } from "../../runtime/account";
-
+import { pageCommandContext, runSlash } from "../../runtime/chat-commands";
+import { unescapeSlash } from "../../domain/commands";
 import { AdminTag } from "../../ui/AdminTag";
 import { Placed } from "../../ui/Placed";
 import "./chat.css";
@@ -32,22 +33,22 @@ const SHOWN = 100;
 /** Whisper or (un)ignore a player from their name in the log. */
 function NameMenu({
   queue,
-  message,
+  handle,
   ignored,
   close,
 }: {
   queue: Queue;
-  message: ChatMessage;
+  handle: string;
   ignored: boolean;
   close: () => void;
 }) {
   return (
-    <span className="chat-name-menu" role="menu" aria-label={`${message.from} actions`}>
+    <span className="chat-name-menu" role="menu" aria-label={`${handle} actions`}>
       <button
         type="button"
         role="menuitem"
         onClick={() => {
-          queue.whisperTo(message.from);
+          queue.whisperTo(handle);
           queue.showChat("whisper");
           close();
         }}
@@ -58,7 +59,7 @@ function NameMenu({
         type="button"
         role="menuitem"
         onClick={() => {
-          queue.ignore(message.from, !ignored);
+          queue.ignore(handle, !ignored);
           close();
         }}
       >
@@ -78,12 +79,14 @@ function Line({
 }: {
   queue: Queue;
   message: ChatMessage;
-  ignored: boolean;
+  ignored: (handle: string) => boolean;
   menu: boolean;
   setMenu: (id: number | null) => void;
   /** This player's handle, if known: their own lines get no menu. */
   me: string | null;
 }) {
+  // The page's own lines: styled apart, and nobody to whisper or ignore.
+  if (message.channel === "system") return <li className="chat-line system">{message.text}</li>;
   // One's own whisper names the recipient; other lines name the sender.
   const who = message.to ?? message.from;
   const own = !!me && message.to === null && message.from.toLowerCase() === me.toLowerCase();
@@ -105,12 +108,7 @@ function Line({
       {message.admin && message.to === null && <AdminTag compact />}
       <span className="chat-text">: {message.text}</span>
       {menu && (
-        <NameMenu
-          queue={queue}
-          message={{ ...message, from: who }}
-          ignored={ignored}
-          close={() => setMenu(null)}
-        />
+        <NameMenu queue={queue} handle={who} ignored={ignored(who)} close={() => setMenu(null)} />
       )}
     </li>
   );
@@ -130,7 +128,7 @@ function Box({ queue, editing }: { queue: Queue; editing: boolean }) {
   const [needsTarget, setNeedsTarget] = useState(false);
   const field = useRef<HTMLInputElement>(null);
   const log = useRef<HTMLOListElement>(null);
-  const focusRequest = useStore(chatFocusRequest, (n) => n);
+  const focusRequest = useStore(chatFocusRequest, (r) => r);
   const lines = tabMessages(chat, active).slice(-SHOWN);
   // The tab follows where the player is: a seated player on Team (players
   // in a live match never hear Public), a spectator on Spectators (the only
@@ -145,10 +143,15 @@ function Box({ queue, editing }: { queue: Queue; editing: boolean }) {
   }, [queue, place]);
   // Enter (from the input router) opens the field: requests after this box
   // appeared, never the ones before it (a remount must not take the keys).
-  const seenRequest = useRef(focusRequest);
+  const seenRequest = useRef(focusRequest.count);
   useEffect(() => {
-    if (focusRequest > seenRequest.current) field.current?.focus();
-    seenRequest.current = focusRequest;
+    if (focusRequest.count > seenRequest.current) {
+      // `/` starts a command (keeping a draft already begun with one).
+      // `/` starts a command in an empty field; a draft already typed stays.
+      if (focusRequest.prefill) setDraft((d) => d || focusRequest.prefill);
+      field.current?.focus();
+    }
+    seenRequest.current = focusRequest.count;
   }, [focusRequest]);
   // Keep the newest line in view, unless the reader scrolled up.
   const newest = lines.at(-1)?.id ?? 0;
@@ -166,13 +169,20 @@ function Box({ queue, editing }: { queue: Queue; editing: boolean }) {
       return;
     }
     if (tooLong) return;
+    // Commands run here (`/help` and the rest); `//` sends a line with one `/`.
+    if (runSlash(text, pageCommandContext(queue))) {
+      setDraft("");
+      leave();
+      return;
+    }
+    const message = unescapeSlash(text);
     if (active === "whisper") {
       if (!whisperTo || !isHandle(whisperTo)) {
         setNeedsTarget(true);
         return;
       }
-      queue.whisper(whisperTo, text);
-    } else queue.say(active, text);
+      queue.whisper(whisperTo, message);
+    } else queue.say(active, message);
     setDraft("");
     leave();
   };
@@ -238,7 +248,7 @@ function Box({ queue, editing }: { queue: Queue; editing: boolean }) {
               key={message.id}
               queue={queue}
               message={message}
-              ignored={isIgnored(chat, message.to ?? message.from)}
+              ignored={(handle) => isIgnored(chat, handle)}
               menu={menu === message.id}
               setMenu={setMenu}
               me={me}

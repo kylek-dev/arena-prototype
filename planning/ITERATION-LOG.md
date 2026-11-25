@@ -720,3 +720,19 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fresh-Eyes Review:** no Critical. Important (fixed): a remounted box took focus after any earlier Enter; re-sending every ignore on reconnect could trip the door's 10/s limit, showed false `no_such_player` errors and could undo the wrong name; the default position covered the action bars below ~1500 px. Minor taken: scroll pinning by newest id, Team tab when seated, whisper target hint, no menu on own lines, narrower shared-code routing, IME and Enter-repeat guards, PROTOCOL's 4 KiB message size, more negative tests.
 - **Learnings:** the door answers queue requests from two places (socket-task chat checks, matchmaker-outbox refusals) and successful ignores get no reply, so a refusal can only be matched to a request by its code plus what was asked last; anything replayed on reconnect must stay inside the 10 messages/s budget.
 - **Next Recommended Slice:** system messages and slash commands (stacked on this branch).
+
+## 2026-11-25 — Slash commands and system messages
+- **Branch / Commit:** `auto/chat-commands`
+- **Base / PR:** `auto/chat-box` (stacked on PR #104); last of the Lane B stack
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Lane B "System messages & slash commands" ([chat](issues/chat.md))
+- **Changes:**
+  - `domain/commands.ts` (parse, lookup, help from the registry) and `runtime/chat-commands.ts` (the registry: every panel, chat commands, admin-only `/mute`, `/unmute`, `/clearname` through the door's admin routes); `/queue` and `/lobby` apply the buttons' guards; `/scoreboard` reopens the last match's board (`reopenPostMatchScoreboard`).
+  - A page-only `system` chat kind (never parsed from the wire), gold italic in every tab; `domain/system-events.ts` + `runtime/system-events.ts` for match found/joining, lobby and party changes, friends online/requests/accepts, disconnects/reconnects, round start and result (quiet across dropped connections and rejoins).
+  - `/` (by character or numpad, when unbound) opens chat with a slash, keeping a draft; `//` sends a literal slash; a bare `/` sends nothing.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/chat-box` (`smoke=false web_build=true wasm=false`): pass — 483 Rust tests (1 pre-existing ignored), 58 Python, 50 Node, 52 Vitest files / 415 tests, headless pass, `npm run build` pass.
+  - Server smoke and WASM: not applicable (web only).
+- **Fresh-Eyes Review:** no Critical. Important (fixed): `/lobby` opened over a live match and beside the customizer; `/queue <mode>` skipped `queueBlocked` and the phase check. Minor taken: no false lobby/party lines on a dropped connection, no repeated round start on reconnect, draft kept on `/`, bare `/`, layout-independent `/`, the menu's in-match/spectating definitions, admin errors worded from the body, party-leave lines, doc notes. Open for the user: `/mapeditor` is not admin-only (the menu's editor is open to all).
+- **Learnings:** commands must reuse the guards of the buttons they stand for (`queueBlocked`, the menu's in-match test), or they open windows the UI never allows together.
+- **Next Recommended Slice:** human browser review of the six Lane B entries (scenarios 14–19), or a critic audit to refill Lane A.

@@ -31,6 +31,7 @@ import {
   SHARED_CHAT_REFUSALS,
   receiveChat,
   showChatTab,
+  systemChat,
   withIgnored,
   type ChatChannel,
   type ChatState,
@@ -393,6 +394,14 @@ export function createQueue(deps: QueueDeps) {
       pendingIgnore = message;
       chat.set({ ...withIgnored(chat.get(), handle, on), error: null });
       request(message, "chat");
+    },
+    /** Adds a system line (written by the page, never sent). */
+    system(text: string) {
+      chat.set(systemChat(chat.get(), text));
+    },
+    /** Empties the chat log (ignores stay). */
+    clearChat() {
+      chat.set({ ...chat.get(), messages: [], unread: {} });
     },
     showChat(tab: ChatChannel) {
       chat.set(showChatTab(chat.get(), tab));

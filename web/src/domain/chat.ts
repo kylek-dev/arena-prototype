@@ -21,7 +21,13 @@ export type ChatLine = {
   admin: boolean;
   text: string;
 };
-export type ChatMessage = ChatLine & { id: number };
+/** System lines: written by the page itself (match found, a player left,
+ * command output), never received: the door refuses `system` and the parser
+ * above never yields it, so no player can fake one. */
+export type SystemLine = { channel: "system"; text: string };
+export type ChatMessage = (ChatLine | (SystemLine & { from: null; to: null; admin: false })) & {
+  id: number;
+};
 
 /** The door keeps 1–200 characters; a little room for any script. */
 export const MAX_CHAT_CHARS = 200;
@@ -119,7 +125,8 @@ export function chatErrorText(code: string) {
 }
 
 /** The line as shown: `[Team] Name#number: hi`, `To Name#number: hi`. */
-export function chatPrefix(message: ChatLine) {
+export function chatPrefix(message: ChatLine | SystemLine) {
+  if (message.channel === "system") return "";
   if (message.channel === "whisper")
     return message.to ? `To ${message.to}` : `${message.from} whispers`;
   return `[${TAB_LABELS[message.channel]}] ${message.from}`;
@@ -156,7 +163,7 @@ export const EMPTY_CHAT: ChatState = {
 /** Adds a message: unread in its tab unless shown (or one's own whisper),
  * and the whisper tab answers whoever whispered last if nobody was picked. */
 export function receiveChat(state: ChatState, line: ChatLine): ChatState {
-  const message = { ...line, id: state.nextId };
+  const message: ChatMessage = { ...line, id: state.nextId };
   const own = line.channel === "whisper" && line.to !== null;
   const unread =
     line.channel === state.active || own
@@ -167,6 +174,23 @@ export function receiveChat(state: ChatState, line: ChatLine): ChatState {
     messages: [...state.messages, message].slice(-MAX_CHAT_LOG),
     unread,
     whisperTo: line.channel === "whisper" && !own && !state.whisperTo ? line.from : state.whisperTo,
+    nextId: state.nextId + 1,
+  };
+}
+
+/** Adds a system line, shown in every tab and never unread. */
+export function systemChat(state: ChatState, text: string): ChatState {
+  const message: ChatMessage = {
+    channel: "system",
+    from: null,
+    to: null,
+    admin: false,
+    text,
+    id: state.nextId,
+  };
+  return {
+    ...state,
+    messages: [...state.messages, message].slice(-MAX_CHAT_LOG),
     nextId: state.nextId + 1,
   };
 }
@@ -182,11 +206,13 @@ const sameHandle = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
 export function isIgnored(state: Pick<ChatState, "ignored">, handle: string) {
   return state.ignored.some((other) => sameHandle(other, handle));
 }
-/** The tab's messages, without ignored players' earlier lines. */
+/** The tab's messages, with system lines, without ignored players' earlier
+ * lines. */
 export function tabMessages(state: ChatState, tab: ChatChannel) {
   return state.messages.filter(
     (message) =>
-      message.channel === tab && !(message.to === null && isIgnored(state, message.from)),
+      message.channel === "system" ||
+      (message.channel === tab && !(message.to === null && isIgnored(state, message.from))),
   );
 }
 export function withIgnored(state: ChatState, handle: string, on: boolean): ChatState {
