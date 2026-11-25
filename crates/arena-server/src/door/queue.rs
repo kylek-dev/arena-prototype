@@ -204,6 +204,9 @@ pub(super) enum Command {
         conn: QueueConn,
         guest: Guest,
         address: IpAddr,
+        /// The logged-in account (ADR 0055), signed into this player's
+        /// tickets; `None` for guests.
+        account: Option<u64>,
         out: mpsc::Sender<ToClient>,
     },
     CreateParty {
@@ -270,6 +273,11 @@ pub(super) enum Command {
     },
     Gone {
         conn: QueueConn,
+    },
+    /// The account was deleted or logged out everywhere: its open queue
+    /// connections stop signing it into tickets at once (ADR 0055).
+    Revoke {
+        account: u64,
     },
 }
 
@@ -360,6 +368,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
     let mut mm = Matchmaker::new(door.config.ready_timeout, random_below);
     let mut conns: Senders = HashMap::new();
     let mut addresses: HashMap<QueueConn, IpAddr> = HashMap::new();
+    let mut accounts: HashMap<QueueConn, u64> = HashMap::new();
     let mut searches = Searches::default();
     let mut tick = tokio::time::interval(TICK_EVERY);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -376,9 +385,12 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
             _ = tick.tick() => mm.tick(now),
             command = commands.recv() => match command {
                 None => break,
-                Some(Command::Hello { conn, guest, address, out }) => {
+                Some(Command::Hello { conn, guest, address, account, out }) => {
                     conns.insert(conn, out);
                     addresses.insert(conn, address);
+                    if let Some(account) = account {
+                        accounts.insert(conn, account);
+                    }
                     mm.connect(conn, guest, now)
                 }
                 // Never record the invite code: it lets anyone join.
@@ -422,10 +434,15 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     mm.set_lobby_settings(conn, settings)
                 }
                 Some(Command::StartLobby { conn }) => mm.start_lobby(conn),
+                Some(Command::Revoke { account }) => {
+                    accounts.retain(|_, held| *held != account);
+                    Vec::new()
+                }
                 Some(Command::Gone { conn }) => {
                     searches.end(conn, "left");
                     conns.remove(&conn);
                     addresses.remove(&conn);
+                    accounts.remove(&conn);
                     mm.disconnect(conn, now)
                 }
             },
@@ -482,9 +499,10 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     );
                     conns.remove(&conn);
                     addresses.remove(&conn);
+                    accounts.remove(&conn);
                 }
                 Out::Start { mode, seats } => {
-                    let match_id = start_match(&door, &conns, mode, &seats);
+                    let match_id = start_match(&door, &conns, &accounts, mode, &seats);
                     for conn in seats {
                         searches.matched(conn, match_id);
                     }
@@ -504,7 +522,8 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     seats,
                     spectators,
                 } => start_custom_match(
-                    &door, &conns, &addresses, now, host, mode, settings, seats, spectators,
+                    &door, &conns, &addresses, &accounts, now, host, mode, settings, seats,
+                    spectators,
                 ),
             }
         }
@@ -598,10 +617,27 @@ fn publish_metrics(door: &Door, mm: &mut Matchmaker, connections: usize) {
 }
 
 /// Issues a queue match's tickets; returns its id.
-fn start_match(door: &Door, conns: &Senders, mode: Mode, seats: &[QueueConn]) -> u64 {
+fn start_match(
+    door: &Door,
+    conns: &Senders,
+    accounts: &HashMap<QueueConn, u64>,
+    mode: Mode,
+    seats: &[QueueConn],
+) -> u64 {
     let expires = unix_now() + door.config.ticket_ttl.as_secs();
-    let created = ticket::issue_match(&door.config.key, mode.team_size(), expires)
-        .expect("queue modes have playable team sizes");
+    let seat_accounts: Vec<Option<u64>> = seats
+        .iter()
+        .map(|conn| accounts.get(conn).copied())
+        .collect();
+    let created = ticket::issue_seats(
+        &door.config.key,
+        mode.team_size(),
+        None,
+        &seat_accounts,
+        &[],
+        expires,
+    )
+    .expect("queue modes have playable team sizes");
     Metrics::add(&door.metrics.issued, 1);
     Metrics::add(&door.metrics.queue_matches, 1);
     Metrics::add(&door.metrics.tickets, created.tickets.len() as u64);
@@ -632,6 +668,7 @@ fn start_custom_match(
     door: &Door,
     conns: &Senders,
     addresses: &HashMap<QueueConn, IpAddr>,
+    accounts: &HashMap<QueueConn, u64>,
     now: Instant,
     host: QueueConn,
     mode: Mode,
@@ -658,11 +695,13 @@ fn start_custom_match(
     } else {
         Vec::new()
     };
-    let created = ticket::issue_custom_match_with_spectators(
+    let account_of = |conn: &QueueConn| accounts.get(conn).copied();
+    let created = ticket::issue_seats(
         &door.config.key,
         mode.team_size(),
-        settings,
-        spectators.len(),
+        Some(settings),
+        &seats.iter().map(account_of).collect::<Vec<_>>(),
+        &spectators.iter().map(account_of).collect::<Vec<_>>(),
         expires,
     )
     .expect("validated custom lobby settings and mode");
@@ -737,10 +776,12 @@ pub(super) async fn upgrade(
         )
             .into_response();
     };
+    // A logged-in player's account, when the page's origin says it is ours.
+    let account = super::auth::account(&door, &headers, true).await;
     ws.max_message_size(MAX_MESSAGE)
         .max_frame_size(MAX_MESSAGE)
         .on_upgrade(move |mut socket| async move {
-            connection(&mut socket, door, address).await;
+            connection(&mut socket, door, address, account).await;
             // The address keeps its slot until the socket is really gone.
             crate::linger(socket).await;
             drop(slot);
@@ -830,7 +871,12 @@ fn command(conn: QueueConn, message: FromClient) -> Result<Command, &'static str
     })
 }
 
-async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr) {
+async fn connection(
+    socket: &mut WebSocket,
+    door: Arc<Door>,
+    address: IpAddr,
+    account: Option<u64>,
+) {
     let conn = door.next_conn.fetch_add(1, Ordering::Relaxed);
     let mut rate = RateWindow::new(MESSAGES_PER_SECOND, Instant::now());
     let mut stop = door.shutdown.subscribe();
@@ -874,6 +920,7 @@ async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr) {
         conn,
         guest,
         address,
+        account,
         out: sender,
     };
     if door.queue.send(hello).await.is_err() {

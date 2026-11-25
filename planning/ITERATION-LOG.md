@@ -489,7 +489,7 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 
 ## 2026-11-25 — Accounts research and login decision
 - **Branch / Commit:** `auto/accounts-decision`
-- **Base / PR:** `auto/observability-rum` (stacked on PR #92)
+- **Base / PR:** `auto/observability-rum` (stacked on PR #92) — PR #93
 - **Lane:** A (documentation only)
 - **Task:** [social-identity](issues/social-identity.md) step 1
 - **Changes:**
@@ -499,4 +499,26 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fresh-Eyes Review:** No Critical. Important fixed in the ADR and the note: the door was not stateless and had no volume (a `door-data` volume, online backups and doc follow-ups are now consequences); a deleted account could keep using its cookie (sessions are checked against the database with a generation counter; ticket, backup and log retention are stated); the CSRF design was underspecified (`__Host-` cookies, required `Origin` on cookie POSTs and the queue handshake, cookie auth off under `--any-origin`, state and PKCE in a signed short-lived cookie, fixed redirects); identity keys and linking were not decided (permanent numeric ids, no auto-merge, linking out of scope, the WorkOS migration caveat); privacy and provider limits were understated (a privacy notice, Google's 100-test-user Testing mode). Minors: admin from config only, minimal scopes, sources for Google and GitHub, community-report labels, wording.
 - **Learnings:** At our scale every hosted option is free, so the choice turns on lock-in, privacy and what runs next to the match loop. Supabase free projects pause after a week idle, which would lock players out between playtests.
 - **Next Recommended Slice:** Identity service & signed account ids (social-identity step 2).
+
+## 2026-11-25 — Identity service and signed account ids
+- **Branch / Commit:** `auto/identity-service`
+- **Base / PR:** `auto/accounts-decision` (stacked on PR #93)
+- **Lane:** A (machine-verified; the login UI is queued as Lane B)
+- **Task:** [social-identity](issues/social-identity.md) step 2; [ADR 0055](../docs/decisions/0055-accounts-oauth-login-in-arena-door.md)
+- **Changes:**
+  - `crates/arena-server/src/identity/`: SQLite `Store` (one account per provider + permanent subject, random non-zero ids, session generation, delete), `cookie` (domain-separated HMAC session and login cookies, `__Host-` names, PKCE S256, base64url), `provider` (Discord `identify`, Google `openid`, GitHub no scope; Discord id / Google `sub` / GitHub numeric id; HTTPS via rustls + `ring`), `Identity` (store checks on every session use, `Origin` rules, admins from `ARENA_ADMIN_ACCOUNTS`).
+  - `door/auth.rs`: `/api/auth/me`, `<provider>/login`, `<provider>/callback`, `logout`, `logout_everywhere`, `delete`; per-address limit; fixed redirect to the game page; login/failure/deletion metrics.
+  - `ticket::Claims.account` and `ticket::issue_seats`; the queue resolves the session at the WebSocket handshake (allowed `Origin` required) and signs each seat's or spectator's account into their ticket.
+  - `arena-door --identity-db`, `ARENA_SESSION_KEY`, `ARENA_OAUTH_*`; Dockerfile CA certificates and `/var/lib/arena`; Compose `door-data` volume and variables; PROTOCOL "Accounts", DEPLOYMENT "Accounts" (setup, privacy notice, backups), ARCHITECTURE.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/accounts-decision` (`smoke=true web_build=false wasm=true`): pass (`./scripts/check.sh`: 445 Rust tests, 1 pre-existing ignored; 58 Python; 50 Node; 42 Vitest files / 334 tests; headless pass; server smoke 496 ticks, 0 overruns, mean 14.2 µs, drained cleanly; WASM clippy pass).
+  - `tests/identity.rs` against a fake provider; the forged-state case was mutation-checked (it first passed for the wrong reason, because the fake's PKCE check refused it; the test now lets only the state check stop it).
+  - Docker image: accounts on with a key (SQLite on the volume as `arena`, Discord redirect with the right callback), guest-only without a key despite `--identity-db`, CA bundle present, the WAL folded into the file after `docker stop`.
+- **Fresh-Eyes Review:** No Critical. Important fixed:
+  - Open queue connections kept signing a deleted or logged-out-everywhere account into new tickets. They now get `Command::Revoke`, with an integration test and a mutation check.
+  - Backups copied only the main file of a WAL-mode database. They now copy every `identity.sqlite3*` file; the clean-stop fold was checked live.
+
+  Minors fixed: negative tests (no `Origin` on the queue handshake, a login replayed at another provider's callback, delete without `Origin`, the login rate limit, `issue_seats` and account 0); the upgrade note for the ticket format; a Caddy log filter dropping `code` and `state` (validated with `caddy validate` and a live request); SQLite subject conflicts now error instead of looping; a session key equal to the ticket key is refused; every `Cookie` header is read; the account lookup moved after the connection limit. Not done: capping provider response bodies (fixed, trusted endpoints with a 10 s timeout).
+- **Learnings:** A forged-state test can pass for the wrong reason when a later check (here the fake provider's PKCE check) also refuses; make only the check under test able to stop it, then mutation-check. A clean `docker stop` closes SQLite and folds its WAL. Caddy's `format filter` can delete query keys from `request>uri` and still writes JSON.
+- **Next Recommended Slice:** `Name#1234` display names (social-identity step 3).
 

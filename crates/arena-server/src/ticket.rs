@@ -102,6 +102,10 @@ pub struct Claims {
     pub expires: u64,
     /// Optional custom match settings enforced by the match server.
     pub settings: Option<MatchSettings>,
+    /// The logged-in player's account (ADR 0055); `None` for guests and
+    /// for links handed out by the lobby. Signed, not encrypted: only the
+    /// holder's own id, never shown to other players.
+    pub account: Option<u64>,
 }
 impl Claims {
     /// The seat this ticket grants, or `None` for a spectator ticket.
@@ -120,6 +124,7 @@ impl Claims {
     pub fn is_valid(&self) -> bool {
         if !(1..=MAX_TEAM).contains(&usize::from(self.team_size))
             || !self.settings.is_none_or(MatchSettings::is_valid)
+            || self.account == Some(0)
         {
             return false;
         }
@@ -200,9 +205,36 @@ fn issue_match_full(
     spectators: usize,
     expires: u64,
 ) -> Option<NewMatch> {
-    if !(1..=MAX_TEAM).contains(&team_size) {
+    issue_seats(
+        key,
+        team_size,
+        settings,
+        &[],
+        &vec![None; spectators],
+        expires,
+    )
+}
+
+/// Issues a ticket per seat, carrying `seats[i]`'s account (guests and
+/// missing entries get none), and one spectator ticket per entry of
+/// `spectators`. `None` when the team size or settings are invalid, or when
+/// spectators are asked for while `settings` forbids them.
+pub fn issue_seats(
+    key: &TicketKey,
+    team_size: usize,
+    settings: Option<MatchSettings>,
+    seats: &[Option<u64>],
+    spectators: &[Option<u64>],
+    expires: u64,
+) -> Option<NewMatch> {
+    if !(1..=MAX_TEAM).contains(&team_size)
+        || !settings.is_none_or(MatchSettings::is_valid)
+        || (!spectators.is_empty() && settings.is_some_and(|s| !s.allow_spectators))
+    {
         return None;
     }
+    // Account 0 is never issued; treat it as a guest.
+    let account = |slot: Option<&Option<u64>>| slot.copied().flatten().filter(|id| *id != 0);
     let match_id = random_u64();
     let tickets = (0..2 * team_size)
         .map(|seat| {
@@ -213,11 +245,13 @@ fn issue_match_full(
                 team_size: team_size as u8,
                 expires,
                 settings,
+                account: account(seats.get(seat)),
             }))
         })
         .collect();
-    let spectator_tickets = (0..spectators)
-        .map(|_| {
+    let spectator_tickets = spectators
+        .iter()
+        .map(|spectator| {
             to_hex(&key.issue(&Claims {
                 match_id,
                 player: random_u64(),
@@ -225,6 +259,7 @@ fn issue_match_full(
                 team_size: team_size as u8,
                 expires,
                 settings,
+                account: account(Some(spectator)),
             }))
         })
         .collect();
@@ -343,6 +378,7 @@ mod tests {
         team_size: 2,
         expires: 1_000,
         settings: None,
+        account: None,
     };
 
     #[test]
@@ -379,6 +415,52 @@ mod tests {
         mac.update(&body);
         body.extend_from_slice(&mac.finalize().into_bytes());
         assert_eq!(key(1).verify(&body, 0), Err(TicketError::Malformed));
+    }
+
+    #[test]
+    fn seat_tickets_carry_their_players_accounts() {
+        let created = issue_seats(
+            &key(1),
+            1,
+            None,
+            &[Some(0xabc), Some(0)],
+            &[Some(0xdef), None],
+            10,
+        )
+        .unwrap();
+        let claims = |ticket: &String| key(1).verify(&from_hex(ticket).unwrap(), 0).unwrap();
+        assert_eq!(claims(&created.tickets[0]).account, Some(0xabc));
+        assert_eq!(
+            claims(&created.tickets[1]).account,
+            None,
+            "0 is never an account"
+        );
+        assert_eq!(claims(&created.spectator_tickets[0]).account, Some(0xdef));
+        assert_eq!(claims(&created.spectator_tickets[1]).account, None);
+        assert!(
+            !Claims {
+                account: Some(0),
+                ..CLAIMS
+            }
+            .is_valid()
+        );
+        assert!(
+            Claims {
+                account: Some(1),
+                ..CLAIMS
+            }
+            .is_valid()
+        );
+        // Accounts fit the ticket limit with room to spare.
+        let longest = key(1).issue(&Claims {
+            account: Some(u64::MAX),
+            match_id: u64::MAX,
+            player: u64::MAX,
+            expires: u64::MAX,
+            settings: Some(MatchSettings::default()),
+            ..CLAIMS
+        });
+        assert!(longest.len() < MAX_TICKET / 4, "{}", longest.len());
     }
 
     #[test]

@@ -33,10 +33,18 @@ tower-http = { version = "=0.7.1", default-features = false, features = ["trace"
 # Pyroscope server sits on the private network.
 pyroscope = { version = "=2.1.5", default-features = false, features = ["backend-pprof-rs"], optional = true }
 
+# Accounts (ADR 0055): the account store, and HTTPS to OAuth providers with
+# rustls on `ring` and the system certificate store.
+rusqlite = { version = "=0.43.0", features = ["bundled"] }
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls-no-provider", "json", "form"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std"] }
+
 [features]
 profiling = ["dep:pyroscope"]
 
 [dev-dependencies]
+# The fake OAuth provider in tests/identity.rs reads form bodies.
+axum = { version = "=0.8.9", default-features = false, features = ["form"] }
 opentelemetry_sdk = { version = "=0.33.1", default-features = false, features = ["trace", "testing"] }
 tokio-tungstenite = "=0.30.0"
 futures-util = "=0.3.34"
