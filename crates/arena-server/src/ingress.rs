@@ -173,14 +173,19 @@ impl OpenPerAddress {
     }
 }
 
-/// A token bucket per address: up to `burst` actions at once, refilling
-/// one every `every`. Used for match creation.
+/// A token bucket: up to `burst` actions at once, refilling
+/// one every `every`, per key: client addresses (match creation, login
+/// routes) or accounts (friend requests and invites).
 #[derive(Debug)]
-pub struct RatePerAddress {
+pub struct RateLimit<K> {
     burst: u32,
     every: Duration,
-    buckets: Mutex<HashMap<IpAddr, Bucket>>,
+    buckets: Mutex<HashMap<K, Bucket>>,
 }
+/// Per client address.
+pub type RatePerAddress = RateLimit<IpAddr>;
+/// Per account (friend requests and invites, social-identity step 4).
+pub type RatePerAccount = RateLimit<u64>;
 #[derive(Clone, Copy, Debug)]
 struct Bucket {
     tokens: u32,
@@ -190,7 +195,23 @@ struct Bucket {
 /// Buckets kept before full ones are forgotten.
 const BUCKETS_BEFORE_PRUNING: usize = 4096;
 
-impl RatePerAddress {
+/// What a rate limit counts by: addresses group IPv6 by /64, as
+/// `limit_key` does; accounts count alone.
+pub trait RateKey: Eq + std::hash::Hash + Copy {
+    fn bucket(self) -> Self;
+}
+impl RateKey for IpAddr {
+    fn bucket(self) -> Self {
+        limit_key(self)
+    }
+}
+impl RateKey for u64 {
+    fn bucket(self) -> Self {
+        self
+    }
+}
+
+impl<K: RateKey> RateLimit<K> {
     pub fn new(burst: u32, every: Duration) -> Self {
         assert!(burst > 0 && !every.is_zero());
         Self {
@@ -209,7 +230,7 @@ impl RatePerAddress {
         }
     }
     /// Takes one token; `Err` with how long until the next one otherwise.
-    pub fn take(&self, address: IpAddr, now: Instant) -> Result<(), Duration> {
+    pub fn take(&self, address: K, now: Instant) -> Result<(), Duration> {
         let mut buckets = self.buckets.lock().expect("rate bucket lock");
         if buckets.len() >= BUCKETS_BEFORE_PRUNING {
             buckets.retain(|_, bucket| {
@@ -217,7 +238,7 @@ impl RatePerAddress {
                 bucket.tokens < self.burst
             });
         }
-        let bucket = buckets.entry(limit_key(address)).or_insert(Bucket {
+        let bucket = buckets.entry(address.bucket()).or_insert(Bucket {
             tokens: self.burst,
             refill_at: now + self.every,
         });

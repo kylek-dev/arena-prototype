@@ -152,6 +152,12 @@ impl Matchmaker {
         self.in_lobby.contains_key(&conn)
     }
 
+    /// The invite code of `conn`'s custom lobby, if it is in one.
+    pub fn lobby_code(&self, conn: QueueConn) -> Option<String> {
+        let id = self.in_lobby.get(&conn)?;
+        self.lobbies.get(id).map(|lobby| lobby.code.clone())
+    }
+
     fn announce_lobby(&self, id: u64, out: &mut Vec<Out>) {
         if let Some(lobby) = self.lobbies.get(&id) {
             for member in &lobby.members {

@@ -524,7 +524,7 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 
 ## 2026-11-25 — `Name#1234` display names
 - **Branch / Commit:** `auto/display-names`
-- **Base / PR:** `auto/identity-service` (stacked on PR #94)
+- **Base / PR:** `auto/identity-service` (stacked on PR #94) — PR #95
 - **Lane:** A (machine-verified; HUD display and the name picker queued as Lane B)
 - **Task:** [social-identity](issues/social-identity.md) step 3
 - **Changes:**
@@ -537,4 +537,25 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fresh-Eyes Review:** No Critical. Important fixed: `arena-client` never cleared relayed handles on a new connection or match, so a rejoin or a lobby-link match could show stale or no handles; they are now cleared on every new generation and Welcome for another match (unconditionally, not only when looks were relayed), with a test. Minors fixed: misplaced doc comment; docs now say the first pick starts the 7-day clock, that `None` also means "not joined yet", and that guest handles repeat; `1` is folded as both `i` and `l`; tests document the substring trade-off (`Badminton`, `Quarterstaff`, `Scunthorpe` are refused); handle endpoint tests for a missing `Origin` (403) and malformed bodies (422). Noted for the admin step: no way yet to clear a stored handle that a later blocklist covers.
 - **Learnings:** The palette guard (`tests/unit/palette.test.mjs`) treats any `#` followed by 3, 4, 6 or 8 hex digits in web sources as a colour, comments included. Clear per-match client state outside "only if non-empty" guards that belong to a sibling field.
 - **Next Recommended Slice:** Friends & friend invites (social-identity step 4).
+
+## 2026-11-25 — Friends and friend invites
+- **Branch / Commit:** `auto/friends`
+- **Base / PR:** `auto/display-names` (stacked on PR #95)
+- **Lane:** A (machine-verified; friends UI queued as Lane B)
+- **Task:** [social-identity](issues/social-identity.md) step 4
+- **Changes:**
+  - `identity/friends.rs`: `friends` (unordered pair, requester, accepted) and `blocks` tables beside the accounts; request (crossed requests become friendships), accept, remove (decline/withdraw/unfriend), block (ends the edge), unblock, `friends_of` with handles; caps of 50 waiting requests and 200 friends; blocks look like missing players; account deletion forgets everything. `Store::find_handle` (exactly `Name#NNNN`, case-insensitive).
+  - `door/friends.rs`: `GET /api/friends` (relations, presence for friends, blocked handles) and `POST /api/friends/<action>`; `Origin` and login rules as for accounts; `pick_a_name_first`; `friends_changed` pushes (a block tells only the blocker).
+  - Queue: `invite` checked in the connection task (logged in, per-account limit, friendship in the store) then delivered by the matchmaker task with the inviter's lobby or party code (`Matchmaker::invite_code`, creating a party for a solo player), `invite_sent`, `offline`/`no_such_friend` refusals; presence computed from holders, searches, lobbies and recent match tickets; `ingress::RateLimit<K>` with `RatePerAccount`; `DoorConfig::auth_burst`.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/display-names` (`smoke=true web_build=false wasm=true`): pass (`./scripts/check.sh`: 463 Rust tests, 1 pre-existing ignored; 58 Python; 50 Node; 43 Vitest files / 337 tests; headless pass; server smoke 496 ticks, 0 overruns, mean 16.5 µs, drained cleanly; WASM clippy pass).
+  - End-to-end test: request, `friends_changed` push, accept, presence online/offline/searching, one-click invite and join by code, offline/stranger/self refusals, nameless requester, blocks, request and invite spam limits, login and Origin rules.
+- **Fresh-Eyes Review:** No Critical. Important fixed:
+  - A blocked player could detect the block by comparing `request` (404) with `unblock`/`accept` (409) answers. Every action now answers unknown handles exactly as it would a blocker, and an unblock notifies nobody (tested pairwise).
+  - A connection logged out everywhere could still invite friends from its stale copy of the account. `Command::Invite` now carries the account and the matchmaker task refuses `not_logged_in` unless the connection still holds it (test, mutation-checked).
+  - Polling `GET /api/friends` could flood the single matchmaker task with O(friends × connections) scans. It now has a per-account read limit, and the task keeps an account → connections index.
+
+  Minors fixed: the friend cap is counted for both sides; friend actions have their own per-account limit; unreadable bodies answer `bad_request`; the presence comment; spectators of lobbies that forbid them no longer count as in a match; plain-logout behaviour documented; the rate limiter comment. Tests added: a stranger never receives the code, requests carry no presence, a block sends nothing. Not done: `in_lobby`/`in_match` presence and lobby invites end to end (covered by the presence ordering code but not by a test), blocks of accounts without a handle cannot be listed or undone by handle.
+- **Learnings:** "Indistinguishable" privacy claims have to hold across every endpoint that takes the same input, not just the obvious one. A connection task's copy of the account goes stale; authority belongs to the task that sees `Revoke`.
+- **Next Recommended Slice:** Admin role & tag (social-identity step 5).
 

@@ -135,10 +135,11 @@ impl Store {
             }
         }
         connection.execute(HANDLE_INDEX, [])?;
+        connection.execute_batch(super::friends::SCHEMA)?;
         Ok(Self(Mutex::new(connection)))
     }
 
-    fn connection(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub(super) fn connection(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.0.lock().unwrap_or_else(|poison| poison.into_inner())
     }
 
@@ -295,12 +296,42 @@ impl Store {
         Ok(changed == 1)
     }
 
-    /// Deletes the account and everything stored about it.
+    /// Deletes the account and everything stored about it: its handle,
+    /// friendships, requests and blocks, both ways.
     pub fn delete(&self, id: u64) -> rusqlite::Result<bool> {
-        let changed = self
-            .connection()
-            .execute("DELETE FROM accounts WHERE id = ?1", params![id as i64])?;
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        super::friends::forget(&transaction, id)?;
+        let changed =
+            transaction.execute("DELETE FROM accounts WHERE id = ?1", params![id as i64])?;
+        transaction.commit()?;
         Ok(changed == 1)
+    }
+
+    /// The account holding `handle` (`Name#1234`, name compared without
+    /// case), if any.
+    pub fn find_handle(&self, handle: &str) -> rusqlite::Result<Option<u64>> {
+        let Some((name, number)) = handle.split_once('#') else {
+            return Ok(None);
+        };
+        // Exactly four digits, as handles are written.
+        if number.len() != 4 || !number.bytes().all(|b| b.is_ascii_digit()) {
+            return Ok(None);
+        }
+        let Ok(number) = number.parse::<u16>() else {
+            return Ok(None);
+        };
+        if Handle::new(name, number).is_none() {
+            return Ok(None);
+        }
+        self.connection()
+            .query_row(
+                "SELECT id FROM accounts WHERE handle_key = ?1 AND handle_number = ?2",
+                params![name.to_ascii_lowercase(), number],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map(|id| id.map(|id| id as u64))
     }
 
     /// Accounts stored (tests and metrics).

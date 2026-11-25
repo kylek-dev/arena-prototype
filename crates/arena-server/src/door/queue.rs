@@ -115,6 +115,10 @@ enum FromClient {
         settings: MatchSettings,
     },
     StartLobby {},
+    /// Invite a friend (by `Name#1234`) to this player's lobby or party.
+    Invite {
+        handle: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,6 +186,19 @@ pub enum ToClient {
         code: String,
         message: String,
     },
+    /// A friend invites this player: `kind` is `party` or `lobby`, and
+    /// `code` joins it with `join_party` / `join_lobby`.
+    Invite {
+        from: String,
+        kind: String,
+        code: String,
+    },
+    /// The invite reached `to` (on at least one open connection).
+    InviteSent {
+        to: String,
+    },
+    /// Friend requests or friendships changed: fetch `/api/friends`.
+    FriendsChanged {},
 }
 impl ToClient {
     fn error(code: &str, message: &str) -> Self {
@@ -285,6 +302,25 @@ pub(super) enum Command {
         account: u64,
         handle: Handle,
     },
+    /// Deliver an invite from `conn` to the friend `to` (already checked).
+    Invite {
+        conn: QueueConn,
+        /// The inviter's account as the connection last knew it; refused
+        /// unless the connection still holds it (logged out everywhere).
+        from: u64,
+        to: u64,
+        to_handle: String,
+    },
+    /// Tell every open connection of `account`.
+    Notify {
+        account: u64,
+        message: ToClient,
+    },
+    /// Where these accounts are now, in order.
+    Presence {
+        accounts: Vec<u64>,
+        reply: tokio::sync::oneshot::Sender<Vec<Presence>>,
+    },
 }
 
 /// The guest id: 32 hex digits.
@@ -375,6 +411,10 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
     let mut conns: Senders = HashMap::new();
     let mut addresses: HashMap<QueueConn, IpAddr> = HashMap::new();
     let mut holders: HashMap<QueueConn, Holder> = HashMap::new();
+    // When each connection last got a match ticket (for presence).
+    let mut matched_at: HashMap<QueueConn, Instant> = HashMap::new();
+    // Each logged-in account's open connections, kept with `holders`.
+    let mut by_account: HashMap<u64, Vec<QueueConn>> = HashMap::new();
     let mut searches = Searches::default();
     let mut tick = tokio::time::interval(TICK_EVERY);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -394,6 +434,9 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 Some(Command::Hello { conn, guest, address, holder, out }) => {
                     conns.insert(conn, out);
                     addresses.insert(conn, address);
+                    if let Some(account) = holder.account {
+                        by_account.entry(account).or_default().push(conn);
+                    }
                     holders.insert(conn, holder);
                     mm.connect(conn, guest, now)
                 }
@@ -439,6 +482,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 }
                 Some(Command::StartLobby { conn }) => mm.start_lobby(conn),
                 Some(Command::Revoke { account }) => {
+                    by_account.remove(&account);
                     for holder in holders.values_mut() {
                         if holder.account == Some(account) {
                             *holder = Holder {
@@ -457,11 +501,35 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     }
                     Vec::new()
                 }
+                Some(Command::Invite { conn, from, to, to_handle }) => {
+                    if holders.get(&conn).and_then(|h| h.account) == Some(from) {
+                        invite(&mut mm, &conns, &holders, &by_account, now, conn, to, to_handle)
+                    } else {
+                        send(&conns, conn, ToClient::Refused { code: "not_logged_in".into() });
+                        Vec::new()
+                    }
+                }
+                Some(Command::Notify { account, message }) => {
+                    for conn in by_account.get(&account).into_iter().flatten() {
+                        send(&conns, *conn, message.clone());
+                    }
+                    Vec::new()
+                }
+                Some(Command::Presence { accounts, reply }) => {
+                    let presence = accounts
+                        .iter()
+                        .map(|account| presence(&mm, &by_account, &matched_at, now, *account))
+                        .collect();
+                    let _ = reply.send(presence);
+                    Vec::new()
+                }
                 Some(Command::Gone { conn }) => {
                     searches.end(conn, "left");
                     conns.remove(&conn);
                     addresses.remove(&conn);
+                    unindex(&mut by_account, &holders, conn);
                     holders.remove(&conn);
+                    matched_at.remove(&conn);
                     mm.disconnect(conn, now)
                 }
             },
@@ -518,10 +586,15 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     );
                     conns.remove(&conn);
                     addresses.remove(&conn);
+                    unindex(&mut by_account, &holders, conn);
                     holders.remove(&conn);
+                    matched_at.remove(&conn);
                 }
                 Out::Start { mode, seats } => {
                     let match_id = start_match(&door, &conns, &holders, mode, &seats);
+                    for conn in &seats {
+                        matched_at.insert(*conn, now);
+                    }
                     for conn in seats {
                         searches.matched(conn, match_id);
                     }
@@ -540,10 +613,23 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     settings,
                     seats,
                     spectators,
-                } => start_custom_match(
-                    &door, &conns, &addresses, &holders, now, host, mode, settings, seats,
-                    spectators,
-                ),
+                } => {
+                    // Spectators count only when the lobby lets them watch.
+                    let watchers: &[QueueConn] = if settings.allow_spectators {
+                        &spectators
+                    } else {
+                        &[]
+                    };
+                    let players: Vec<QueueConn> = seats.iter().chain(watchers).copied().collect();
+                    if start_custom_match(
+                        &door, &conns, &addresses, &holders, now, host, mode, settings, seats,
+                        spectators,
+                    ) {
+                        for conn in players {
+                            matched_at.insert(conn, now);
+                        }
+                    }
+                }
             }
         }
         if now >= status_at {
@@ -635,6 +721,141 @@ fn publish_metrics(door: &Door, mm: &mut Matchmaker, connections: usize) {
     }
 }
 
+/// Where a player is, for their friends (social-identity step 4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Presence {
+    Offline,
+    Online,
+    Searching,
+    InLobby,
+    /// Got a match ticket within [`IN_MATCH`] (shown unless searching right
+    /// now; the door never hears when a match ends).
+    InMatch,
+}
+
+impl Presence {
+    pub(super) fn id(self) -> &'static str {
+        match self {
+            Presence::Offline => "offline",
+            Presence::Online => "online",
+            Presence::Searching => "searching",
+            Presence::InLobby => "in_lobby",
+            Presence::InMatch => "in_match",
+        }
+    }
+}
+
+/// How long after a match ticket a player counts as in a match: a round
+/// (20 min) and a little. The door never hears when a match ends.
+const IN_MATCH: Duration = Duration::from_secs(21 * 60);
+
+/// Drops `conn` from the account index.
+fn unindex(
+    by_account: &mut HashMap<u64, Vec<QueueConn>>,
+    holders: &HashMap<QueueConn, Holder>,
+    conn: QueueConn,
+) {
+    let Some(account) = holders.get(&conn).and_then(|holder| holder.account) else {
+        return;
+    };
+    if let Some(conns) = by_account.get_mut(&account) {
+        conns.retain(|held| *held != conn);
+        if conns.is_empty() {
+            by_account.remove(&account);
+        }
+    }
+}
+
+fn presence(
+    mm: &Matchmaker,
+    by_account: &HashMap<u64, Vec<QueueConn>>,
+    matched_at: &HashMap<QueueConn, Instant>,
+    now: Instant,
+    account: u64,
+) -> Presence {
+    by_account
+        .get(&account)
+        .into_iter()
+        .flatten()
+        .map(|conn| {
+            if mm.is_searching(*conn) {
+                Presence::Searching
+            } else if matched_at
+                .get(conn)
+                .is_some_and(|at| now.saturating_duration_since(*at) < IN_MATCH)
+            {
+                Presence::InMatch
+            } else if mm.in_custom_lobby(*conn) {
+                Presence::InLobby
+            } else {
+                Presence::Online
+            }
+        })
+        .max_by_key(|presence| match presence {
+            Presence::Offline => 0,
+            Presence::Online => 1,
+            Presence::InLobby => 2,
+            Presence::Searching => 3,
+            Presence::InMatch => 4,
+        })
+        .unwrap_or(Presence::Offline)
+}
+
+/// Delivers a friend's invite: the inviter's lobby or party code, to every
+/// open connection of `to`. Refuses `offline` when there is none.
+#[allow(clippy::too_many_arguments)]
+fn invite(
+    mm: &mut Matchmaker,
+    conns: &Senders,
+    holders: &HashMap<QueueConn, Holder>,
+    by_account: &HashMap<u64, Vec<QueueConn>>,
+    now: Instant,
+    conn: QueueConn,
+    to: u64,
+    to_handle: String,
+) -> Vec<Out> {
+    let targets: Vec<QueueConn> = by_account
+        .get(&to)
+        .into_iter()
+        .flatten()
+        .copied()
+        .filter(|target| *target != conn)
+        .collect();
+    let from = holders.get(&conn).and_then(|holder| holder.handle);
+    let (Some(from), false) = (from, targets.is_empty()) else {
+        send(
+            conns,
+            conn,
+            ToClient::Refused {
+                code: "offline".into(),
+            },
+        );
+        return Vec::new();
+    };
+    let (code, out) = mm.invite_code(conn, now);
+    let Some(code) = code else {
+        // The matchmaker said why (in a ready check, in a lobby, ...).
+        return out;
+    };
+    let (kind, code) = match code {
+        crate::matchmaker::Invite::Party(code) => ("party", code),
+        crate::matchmaker::Invite::Lobby(code) => ("lobby", code),
+    };
+    for target in targets {
+        send(
+            conns,
+            target,
+            ToClient::Invite {
+                from: from.to_string(),
+                kind: kind.into(),
+                code: code.clone(),
+            },
+        );
+    }
+    send(conns, conn, ToClient::InviteSent { to: to_handle });
+    out
+}
+
 /// Issues a queue match's tickets; returns its id.
 fn start_match(
     door: &Door,
@@ -694,7 +915,7 @@ fn start_custom_match(
     settings: MatchSettings,
     seats: Vec<QueueConn>,
     spectators: Vec<QueueConn>,
-) {
+) -> bool {
     if let Some(&address) = addresses.get(&host)
         && door.creations.take(address, now).is_err()
     {
@@ -706,7 +927,7 @@ fn start_custom_match(
                 code: "rate_limited".into(),
             },
         );
-        return;
+        return false;
     }
     let expires = unix_now() + door.config.ticket_ttl.as_secs();
     let spectators = if settings.allow_spectators {
@@ -774,6 +995,7 @@ fn start_custom_match(
             });
         }
     }
+    true
 }
 
 pub(super) async fn upgrade(
@@ -896,7 +1118,48 @@ fn command(conn: QueueConn, message: FromClient) -> Result<Command, &'static str
         },
         FromClient::SetLobbySettings { settings } => Command::SetLobbySettings { conn, settings },
         FromClient::StartLobby {} => Command::StartLobby { conn },
+        // Needs the store; checked by the connection first.
+        FromClient::Invite { .. } => return Err("Invite through the connection."),
     })
+}
+
+/// Checks an invite before it reaches the matchmaker: the inviter is logged
+/// in and under its invite limit, and `handle` is a friend of theirs. A
+/// stranger and a missing handle get the same refusal.
+async fn check_invite(
+    door: &Door,
+    conn: QueueConn,
+    account: Option<u64>,
+    handle: String,
+) -> Result<Command, &'static str> {
+    let (Some(identity), Some(account)) = (door.identity.as_ref(), account) else {
+        return Err("not_logged_in");
+    };
+    if door.invites.take(account, Instant::now()).is_err() {
+        return Err("rate_limited");
+    }
+    if handle.len() > 32 {
+        return Err("no_such_friend");
+    }
+    let store = identity.store.clone();
+    let lookup = handle.clone();
+    let friend = tokio::task::spawn_blocking(move || -> rusqlite::Result<Option<u64>> {
+        let Some(other) = store.find_handle(&lookup)? else {
+            return Ok(None);
+        };
+        Ok(store.are_friends(account, other)?.then_some(other))
+    })
+    .await;
+    match friend {
+        Ok(Ok(Some(to))) => Ok(Command::Invite {
+            conn,
+            from: account,
+            to,
+            to_handle: handle,
+        }),
+        Ok(Ok(None)) => Err("no_such_friend"),
+        _ => Err("unavailable"),
+    }
 }
 
 async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr, holder: Holder) {
@@ -970,6 +1233,25 @@ async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr, ho
                         }
                     }
                     _ => break,
+                };
+                // Invites need the store, so they are checked here.
+                let message = match message {
+                    Ok(FromClient::Invite { handle }) => {
+                        match check_invite(&door, conn, holder.account, handle).await {
+                            Ok(command) => {
+                                if door.queue.send(command).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(code) => {
+                                if !say(socket, &ToClient::Refused { code: code.into() }).await {
+                                    break;
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    other => other,
                 };
                 let command = match message.map_err(|()| "Unreadable message.").and_then(|m| command(conn, m)) {
                     Ok(command) => command,

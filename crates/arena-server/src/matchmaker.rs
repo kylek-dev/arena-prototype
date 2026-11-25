@@ -309,6 +309,13 @@ struct Forming {
     deadline: Instant,
 }
 
+/// What a friend is invited to, with the code that joins it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Invite {
+    Party(String),
+    Lobby(String),
+}
+
 /// Players waiting per queue, indexed by [`Mode::index`].
 pub type Waiting = [usize; 3];
 
@@ -625,6 +632,34 @@ impl Matchmaker {
                 return code;
             }
         }
+    }
+
+    /// Whether `conn`'s party is searching or in a ready check.
+    pub fn is_searching(&self, conn: QueueConn) -> bool {
+        self.of
+            .get(&conn)
+            .is_some_and(|id| self.parties[id].state != State::Idle)
+    }
+
+    /// The code a friend can join `conn` with (social-identity step 4): its
+    /// custom lobby's, else its party's, giving a player on their own a
+    /// party first. `None` (with the refusal) when that is not possible now.
+    pub fn invite_code(&mut self, conn: QueueConn, now: Instant) -> (Option<Invite>, Vec<Out>) {
+        if let Some(code) = self.lobby_code(conn) {
+            return (Some(Invite::Lobby(code)), Vec::new());
+        }
+        let Some(&id) = self.of.get(&conn) else {
+            return (None, Vec::new());
+        };
+        if let Some(code) = self.parties[&id].code.clone() {
+            return (Some(Invite::Party(code)), Vec::new());
+        }
+        let out = self.create_party(conn, now);
+        let code = self
+            .of
+            .get(&conn)
+            .and_then(|id| self.parties[id].code.clone());
+        (code.map(Invite::Party), out)
     }
 
     /// Gives `conn` a party with an invite code: its own party, or a new

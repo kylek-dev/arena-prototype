@@ -50,7 +50,7 @@ pub struct Me {
     pub rename_at: Option<u64>,
 }
 
-fn no_store(mut response: Response) -> Response {
+pub(super) fn no_store(mut response: Response) -> Response {
     response
         .headers_mut()
         .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -95,7 +95,7 @@ pub(super) fn guest_handle() -> Handle {
 }
 
 /// Whether the per-address limit on login routes refuses this request.
-fn limited(door: &Door, peer: SocketAddr, headers: &HeaderMap) -> bool {
+pub(super) fn limited(door: &Door, peer: SocketAddr, headers: &HeaderMap) -> bool {
     let address = ingress::client_address(peer, headers, &door.config.trusted_proxies);
     door.auth_rate.take(address, Instant::now()).is_err()
 }
@@ -406,7 +406,7 @@ pub(super) async fn choose_handle(
     }
 }
 
-fn refusal(status: StatusCode, code: &str, rename_at: Option<u64>) -> Response {
+pub(super) fn refusal(status: StatusCode, code: &str, rename_at: Option<u64>) -> Response {
     let mut body = serde_json::json!({ "error": code });
     if let Some(at) = rename_at {
         body["rename_at"] = at.into();

@@ -40,7 +40,8 @@ async fn token(
     Form(form): Form<HashMap<String, String>>,
 ) -> Json<serde_json::Value> {
     let expected = fake.0.lock().unwrap().clone();
-    let ok = form.get("code").map(String::as_str) == Some("good-code")
+    let code = form.get("code").cloned().unwrap_or_default();
+    let ok = code.starts_with("good-")
         && form.get("grant_type").map(String::as_str) == Some("authorization_code")
         && form.get("client_secret").map(String::as_str) == Some("shh")
         && expected.is_some()
@@ -49,7 +50,7 @@ async fn token(
             .map(|verifier| pkce_challenge(verifier))
             == expected;
     Json(if ok {
-        serde_json::json!({"access_token": "tok", "token_type": "Bearer"})
+        serde_json::json!({"access_token": format!("tok:{code}"), "token_type": "Bearer"})
     } else {
         serde_json::json!({"error": "invalid_grant"})
     })
@@ -57,11 +58,14 @@ async fn token(
 
 async fn user(headers: HeaderMap) -> Json<serde_json::Value> {
     let bearer = headers.get("authorization").and_then(|v| v.to_str().ok());
-    Json(if bearer == Some("Bearer tok") {
-        serde_json::json!({"id": SUBJECT, "username": "someone"})
-    } else {
-        serde_json::json!({})
-    })
+    // "good-code" is the default player; "good-<who>" another one.
+    Json(
+        match bearer.and_then(|b| b.strip_prefix("Bearer tok:good-")) {
+            Some("code") => serde_json::json!({"id": SUBJECT, "username": "someone"}),
+            Some(who) => serde_json::json!({"id": format!("sub-{who}")}),
+            None => serde_json::json!({}),
+        },
+    )
 }
 
 async fn fake_provider(fake: Fake) -> SocketAddr {
@@ -125,6 +129,15 @@ async fn request(addr: SocketAddr, method: &str, path: &str, extra: &str) -> Rep
 }
 
 async fn door_with(origins: Origins, provider: SocketAddr) -> (door::DoorRunning, TicketKey) {
+    door_tuned(origins, provider, |_| {}).await
+}
+
+/// A door with `tune` applied to its configuration.
+async fn door_tuned(
+    origins: Origins,
+    provider: SocketAddr,
+    tune: impl FnOnce(&mut DoorConfig),
+) -> (door::DoorRunning, TicketKey) {
     let key = TicketKey::random();
     let mut discord = Provider::new(ProviderId::Discord, "client".into(), "shh".into());
     discord.authorize_url = format!("http://{provider}/authorize");
@@ -144,6 +157,7 @@ async fn door_with(origins: Origins, provider: SocketAddr) -> (door::DoorRunning
         admins: HashSet::new(),
         blocked: Blocklist::new(""),
     });
+    tune(&mut config);
     (door::start(config).await.unwrap(), key)
 }
 
@@ -164,6 +178,11 @@ fn query(link: &reqwest::Url) -> HashMap<String, String> {
 /// Logs in through the door and the fake provider; returns the session
 /// cookie value.
 async fn log_in(addr: SocketAddr, fake: &Fake) -> String {
+    log_in_as(addr, fake, "code").await
+}
+
+/// Logs in as another player of the fake provider.
+async fn log_in_as(addr: SocketAddr, fake: &Fake, who: &str) -> String {
     let (oauth, link) = start_login(addr).await;
     let query = query(&link);
     assert_eq!(query["scope"], "identify");
@@ -177,7 +196,7 @@ async fn log_in(addr: SocketAddr, fake: &Fake) -> String {
         addr,
         "GET",
         &format!(
-            "/api/auth/discord/callback?code=good-code&state={}",
+            "/api/auth/discord/callback?code=good-{who}&state={}",
             query["state"]
         ),
         &format!("Cookie: __Host-arena_oauth={oauth}\r\n"),
@@ -597,6 +616,407 @@ async fn cookies_never_act_for_a_door_open_to_any_origin() {
     assert_eq!(
         key.verify(&from_hex(&ticket).unwrap(), 0).unwrap().account,
         None
+    );
+    door.stop().await.unwrap();
+}
+
+/// `POST /api/friends/<action>` with our Origin.
+async fn friend(
+    addr: SocketAddr,
+    cookie: &str,
+    action: &str,
+    handle: &str,
+) -> (u16, serde_json::Value) {
+    let body = format!(r#"{{"handle":"{handle}"}}"#);
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let request = format!(
+        "POST /api/friends/{action} HTTP/1.1\r\nHost: test\r\nCookie: __Host-arena_session={cookie}\r\n{ORIGIN}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    let status = response[9..12].parse().unwrap();
+    let json = response.split_once("\r\n\r\n").unwrap().1;
+    (
+        status,
+        serde_json::from_str(json).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+async fn friends_of(addr: SocketAddr, cookie: &str) -> serde_json::Value {
+    let reply = request(
+        addr,
+        "GET",
+        "/api/friends",
+        &format!("Cookie: __Host-arena_session={cookie}\r\n"),
+    )
+    .await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    serde_json::from_str(&reply.body).unwrap()
+}
+
+/// A queue connection that says hello and nothing else.
+async fn connect_queue(door: SocketAddr, guest: u128, cookie: &str) -> Socket {
+    let mut request = format!("ws://{door}/api/queue")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("origin", "https://arena.example.com".parse().unwrap());
+    request.headers_mut().insert(
+        "cookie",
+        format!("__Host-arena_session={cookie}").parse().unwrap(),
+    );
+    let (mut socket, _) = connect_async(request).await.unwrap();
+    socket
+        .send(Message::text(format!(
+            r#"{{"type":"hello","guest":"{guest:032x}"}}"#
+        )))
+        .await
+        .unwrap();
+    socket
+}
+
+/// Reads until a message `wanted` accepts.
+async fn until<T>(socket: &mut Socket, wanted: impl Fn(QueueMessage) -> Option<T>) -> T {
+    loop {
+        let frame = tokio::time::timeout(WAIT, socket.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let Message::Text(text) = frame else { continue };
+        if let Some(found) = wanted(serde_json::from_str(&text).unwrap()) {
+            return found;
+        }
+    }
+}
+
+/// Whether a message `wanted` accepts arrives within `ms`.
+async fn hears(socket: &mut Socket, ms: u64, wanted: impl Fn(&QueueMessage) -> bool) -> bool {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(ms);
+    while let Ok(Some(Ok(frame))) = tokio::time::timeout_at(deadline, socket.next()).await {
+        if let Message::Text(text) = frame
+            && wanted(&serde_json::from_str(&text).unwrap())
+        {
+            return true;
+        }
+    }
+    false
+}
+
+async fn say(socket: &mut Socket, json: String) {
+    socket.send(Message::text(json)).await.unwrap();
+}
+
+#[tokio::test]
+async fn friends_ask_accept_see_each_other_and_invite_with_one_click() {
+    let fake = Fake::default();
+    let provider = fake_provider(fake.clone()).await;
+    // Many account calls from one test address: lift the per-address limit
+    // (the per-account limits under test stay as deployed).
+    let (door, _) = door_tuned(
+        Origins::Only(vec!["https://arena.example.com".into()]),
+        provider,
+        |config| config.auth_burst = 1000,
+    )
+    .await;
+    let addr = door.addr;
+    let mut players = Vec::new();
+    for who in ["alice", "bob", "carol", "dave"] {
+        let session = log_in_as(addr, &fake, who).await;
+        let (status, picked) = choose(addr, &session, &format!("{}x", who)).await;
+        assert_eq!(status, 200, "{picked}");
+        players.push((session, picked["handle"].as_str().unwrap().to_owned()));
+    }
+    let [
+        (alice, alice_h),
+        (bob, bob_h),
+        (carol, carol_h),
+        (dave, dave_h),
+    ] = <[(String, String); 4]>::try_from(players).unwrap();
+
+    // Bob is online and hears about Alice's request at once.
+    let mut bob_socket = connect_queue(addr, 2, &bob).await;
+    assert_eq!(
+        friend(addr, &alice, "request", &bob_h).await,
+        (200, serde_json::json!({"relation": "outgoing"}))
+    );
+    until(&mut bob_socket, |m| {
+        matches!(m, QueueMessage::FriendsChanged {}).then_some(())
+    })
+    .await;
+    // Requests show no presence: only friends learn where you are.
+    assert_eq!(
+        friends_of(addr, &bob).await["friends"][0],
+        serde_json::json!({"handle": alice_h, "relation": "incoming"})
+    );
+    assert_eq!(friend(addr, &bob, "accept", &alice_h).await.0, 204);
+    let listed = friends_of(addr, &alice).await;
+    assert_eq!(
+        listed["friends"][0],
+        serde_json::json!({"handle": bob_h, "relation": "friend", "presence": "online"})
+    );
+    // Carol becomes a friend too, but stays offline.
+    friend(addr, &carol, "request", &alice_h).await;
+    assert_eq!(
+        friend(addr, &alice, "request", &carol_h).await.1["relation"],
+        "friend"
+    );
+    let carol_presence = friends_of(addr, &alice).await["friends"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["handle"] == carol_h.as_str())
+        .unwrap()["presence"]
+        .clone();
+    assert_eq!(carol_presence, "offline");
+
+    // A friend searching a queue shows as searching.
+    say(
+        &mut bob_socket,
+        r#"{"type":"queue","mode":"3v3"}"#.to_owned(),
+    )
+    .await;
+    until(&mut bob_socket, |m| {
+        matches!(m, QueueMessage::Queued { .. }).then_some(())
+    })
+    .await;
+    let presence_of_bob = |listed: serde_json::Value| {
+        listed["friends"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["handle"] == bob_h.as_str())
+            .unwrap()["presence"]
+            .clone()
+    };
+    assert_eq!(presence_of_bob(friends_of(addr, &alice).await), "searching");
+    say(&mut bob_socket, r#"{"type":"cancel"}"#.to_owned()).await;
+    until(&mut bob_socket, |m| {
+        matches!(m, QueueMessage::Stopped { .. }).then_some(())
+    })
+    .await;
+    assert_eq!(presence_of_bob(friends_of(addr, &alice).await), "online");
+
+    // One-click invite: Alice (on her own) invites Bob; she gets a party,
+    // Bob gets its code and joins with it. Dave, online but no friend,
+    // hears nothing.
+    let mut dave_socket = connect_queue(addr, 4, &dave).await;
+    let mut alice_socket = connect_queue(addr, 1, &alice).await;
+    say(
+        &mut alice_socket,
+        format!(r#"{{"type":"invite","handle":"{bob_h}"}}"#),
+    )
+    .await;
+    let (from, kind, code) = until(&mut bob_socket, |m| match m {
+        QueueMessage::Invite { from, kind, code } => Some((from, kind, code)),
+        _ => None,
+    })
+    .await;
+    assert_eq!((from.as_str(), kind.as_str()), (alice_h.as_str(), "party"));
+    until(&mut alice_socket, |m| {
+        matches!(m, QueueMessage::InviteSent { ref to } if *to == bob_h).then_some(())
+    })
+    .await;
+    say(
+        &mut bob_socket,
+        format!(r#"{{"type":"join_party","code":"{code}"}}"#),
+    )
+    .await;
+    let members = until(&mut alice_socket, |m| match m {
+        QueueMessage::Party { members, .. } if members == 2 => Some(members),
+        _ => None,
+    })
+    .await;
+    assert_eq!(members, 2);
+
+    // Offline friends, strangers and yourself cannot be invited.
+    for (handle, code) in [
+        (&carol_h, "offline"),
+        (&dave_h, "no_such_friend"),
+        (&alice_h, "no_such_friend"),
+    ] {
+        say(
+            &mut alice_socket,
+            format!(r#"{{"type":"invite","handle":"{handle}"}}"#),
+        )
+        .await;
+        let refused = until(&mut alice_socket, |m| match m {
+            QueueMessage::Refused { code } => Some(code),
+            _ => None,
+        })
+        .await;
+        assert_eq!(refused, code, "{handle}");
+    }
+    // Asking yourself or nobody, and asking without a name, are refused.
+    assert_eq!(friend(addr, &alice, "request", &alice_h).await.0, 422);
+    assert_eq!(
+        friend(addr, &alice, "request", "Nobody#0001").await,
+        (404, serde_json::json!({"error": "no_such_player"}))
+    );
+    let nameless = log_in_as(addr, &fake, "erin").await;
+    assert_eq!(
+        friend(addr, &nameless, "request", &alice_h).await,
+        (409, serde_json::json!({"error": "pick_a_name_first"}))
+    );
+
+    assert!(
+        !hears(&mut dave_socket, 200, |m| matches!(
+            m,
+            QueueMessage::Invite { .. }
+        ))
+        .await,
+        "a stranger never receives the code"
+    );
+
+    // Blocking: Dave blocks Alice, who cannot tell him from nobody, and
+    // hears nothing about it.
+    assert_eq!(friend(addr, &dave, "block", &alice_h).await.0, 204);
+    assert!(
+        !hears(&mut alice_socket, 200, |m| matches!(
+            m,
+            QueueMessage::FriendsChanged {}
+        ))
+        .await,
+        "a block tells the blocked player nothing"
+    );
+    for action in ["unblock", "accept", "decline", "remove"] {
+        assert_eq!(
+            friend(addr, &alice, action, &dave_h).await,
+            friend(addr, &alice, action, "Nobody#0001").await,
+            "{action} answers alike for a blocker and for nobody"
+        );
+    }
+    assert_eq!(
+        friend(addr, &alice, "block", "Nobody#0001").await.0,
+        friend(addr, &carol, "block", &dave_h).await.0,
+        "blocking nobody looks like blocking someone"
+    );
+    friend(addr, &carol, "unblock", &dave_h).await;
+    assert_eq!(
+        friend(addr, &alice, "request", &dave_h).await,
+        (404, serde_json::json!({"error": "no_such_player"}))
+    );
+    assert_eq!(
+        friends_of(addr, &dave).await["blocked"],
+        serde_json::json!([alice_h])
+    );
+    // Blocking a friend ends the friendship and their invites.
+    assert_eq!(friend(addr, &bob, "block", &alice_h).await.0, 204);
+    say(
+        &mut alice_socket,
+        format!(r#"{{"type":"invite","handle":"{bob_h}"}}"#),
+    )
+    .await;
+    let refused = until(&mut alice_socket, |m| match m {
+        QueueMessage::Refused { code } => Some(code),
+        _ => None,
+    })
+    .await;
+    assert_eq!(refused, "no_such_friend");
+
+    // Spam: requests and invites are limited per account.
+    let mut statuses = Vec::new();
+    for n in 0..12 {
+        statuses.push(
+            friend(addr, &alice, "request", &format!("Ghost{n}#0001"))
+                .await
+                .0,
+        );
+    }
+    assert!(statuses.contains(&429), "{statuses:?}");
+    // Alice already sent five invites (the burst); stay under the queue's
+    // per-connection message rate while asking for more.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    let mut refusals = Vec::new();
+    for _ in 0..4 {
+        say(
+            &mut alice_socket,
+            format!(r#"{{"type":"invite","handle":"{carol_h}"}}"#),
+        )
+        .await;
+        let refused = until(&mut alice_socket, |m| match m {
+            QueueMessage::Refused { code } => Some(code),
+            _ => None,
+        })
+        .await;
+        let limited = refused == "rate_limited";
+        refusals.push(refused);
+        if limited {
+            break;
+        }
+    }
+    assert!(
+        refusals.contains(&"rate_limited".to_owned()),
+        "{refusals:?}"
+    );
+    // Friends lists need a login; acting needs our Origin.
+    assert_eq!(request(addr, "GET", "/api/friends", "").await.status, 401);
+    let no_origin = request(
+        addr,
+        "POST",
+        "/api/friends/remove",
+        &format!("Cookie: __Host-arena_session={alice}\r\n"),
+    )
+    .await;
+    assert_eq!(no_origin.status, 403);
+    door.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_connection_logged_out_everywhere_cannot_invite() {
+    let fake = Fake::default();
+    let provider = fake_provider(fake.clone()).await;
+    let (door, _) = door_tuned(
+        Origins::Only(vec!["https://arena.example.com".into()]),
+        provider,
+        |config| config.auth_burst = 1000,
+    )
+    .await;
+    let addr = door.addr;
+    let alice = log_in_as(addr, &fake, "alice").await;
+    let bob = log_in_as(addr, &fake, "bob").await;
+    let alice_h = choose(addr, &alice, "Alicex").await.1["handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bob_h = choose(addr, &bob, "Bobx").await.1["handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    friend(addr, &alice, "request", &bob_h).await;
+    friend(addr, &bob, "accept", &alice_h).await;
+    let mut bob_socket = connect_queue(addr, 2, &bob).await;
+    let mut alice_socket = connect_queue(addr, 1, &alice).await;
+    // Logging out everywhere (from another device) leaves this tab open,
+    // but it no longer acts for the account.
+    let ended = request(
+        addr,
+        "POST",
+        "/api/auth/logout_everywhere",
+        &format!("Cookie: __Host-arena_session={alice}\r\n{ORIGIN}"),
+    )
+    .await;
+    assert_eq!(ended.status, 204);
+    say(
+        &mut alice_socket,
+        format!(r#"{{"type":"invite","handle":"{bob_h}"}}"#),
+    )
+    .await;
+    let refused = until(&mut alice_socket, |m| match m {
+        QueueMessage::Refused { code } => Some(code),
+        _ => None,
+    })
+    .await;
+    assert_eq!(refused, "not_logged_in");
+    assert!(
+        !hears(&mut bob_socket, 200, |m| matches!(
+            m,
+            QueueMessage::Invite { .. }
+        ))
+        .await
     );
     door.stop().await.unwrap();
 }

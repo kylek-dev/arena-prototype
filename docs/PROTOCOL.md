@@ -173,6 +173,7 @@ the connection with `error`.
 | `{"type":"leave_party"}` | Back on one's own; the next member leads. |
 | `{"type":"queue","mode":"1v1"\|"2v2"\|"3v3"}` | Leader only. 1v1 takes one player; 2v2 and 3v3 take players alone or parties up to the team size ([ADR 0047](decisions/0047-accepting-matches-and-queue-status.md)). |
 | `{"type":"cancel"}` | Any member stops the party's search. |
+| `{"type":"invite","handle":"Name#1234"}` | Logged-in players: invite a friend to this player's custom lobby, else party (a player on their own gets a party first). Refused `not_logged_in`, `no_such_friend` (no such handle and not a friend look alike), `offline`, `rate_limited` (5 at once, then one per 6 s per account), or as joining would be. |
 | `{"type":"accept"}` | Accepts the match on offer. |
 | `{"type":"decline"}` | Declines it: the check ends for everyone, and this player's party leaves the queue. |
 | `{"type":"create_lobby","mode":"1v1"\|"2v2"\|"3v3"}` | Creates a private custom lobby with a 6-char invite code (leaving any idle party). `mode` defaults to `"1v1"`. |
@@ -195,6 +196,9 @@ the connection with `error`.
 | `stopped` `{reason}` | `cancelled`, `member_left`, `declined`, `not_accepted`, `member_declined` or `member_not_accepted`. The connection stays open. |
 | `lobby` `{code, mode, settings, spectator_slots, you, host, can_start, members}` | Current custom lobby roster (`members`: `{id, slot, host, you}`), settings, and readiness. |
 | `lobby_left` `{reason}` | `left` or `kicked`. |
+| `invite` `{from, kind, code}` | A friend invites this player: `kind` is `party` or `lobby`; accepting is `join_party` / `join_lobby` with `code`, declining is doing nothing. |
+| `invite_sent` `{to}` | The invite reached `to`. |
+| `friends_changed` `{}` | Requests or friendships changed; fetch `GET /api/friends`. |
 | `refused` `{code}` | `not_leader`, `party_too_big`, `party_full`, `party_busy`, `no_such_party`, `in_lobby`, `no_such_lobby`, `lobby_full`, `not_host`, `slot_full`, `lobby_not_full`, `lobby_too_big`, `no_such_member`, `invalid_settings`, `spectators_disabled`, `spectators_occupied` or `rate_limited`; nothing changed. |
 | `match` `{mode, match_id, seat, spectator?, server, ticket, expires}` | This player's seat ticket (or watch-only spectator ticket when `spectator: true`). The connection stays open. |
 | `error` `{code, message}` | Then the door closes: `bad_request`, `rate_limited`, `replaced` or `shutdown`. |
@@ -241,6 +245,35 @@ How the cookies behave:
   `GET /api/auth/me` also returns `handle` and `rename_at`.
 - Login routes are rate-limited per address. Account ids, codes and tokens
   are never logged.
+
+## Friends
+
+Logged-in players with a handle can befriend each other (social-identity
+step 4, `door/friends.rs`, `identity/friends.rs`). Players are addressed by
+`Name#1234` only.
+
+| Request | Answer |
+| --- | --- |
+| `GET /api/friends` | `{friends: [{handle, relation, presence}], blocked: [handle]}`. `relation` is `friend`, `incoming` or `outgoing`; friends also get `presence`: `offline`, `online`, `searching`, `in_lobby` or `in_match` (a match ticket in the last 21 minutes; the door never hears when a match ends). |
+| `POST /api/friends/<request\|accept\|decline\|remove\|block\|unblock>` `{"handle"}` | `request` answers `{"relation"}` (`outgoing`, or `friend` when they had asked you); the others answer 204. Errors are `{"error"}`: `no_such_player` (404; also when they blocked you), `yourself` (422), `bad_request` (422), `already_friends`, `already_asked`, `too_many` (50 waiting requests, or 200 friends on either side), `nothing_there`, `pick_a_name_first` (409), `not_logged_in` (401), `rate_limited` (429). |
+
+Acting needs an allowed `Origin`. Rate limits are per account:
+- requests: 10 at once, then one per 6 minutes;
+- other actions: 30 at once, then one per 2 s;
+- list reads: 10 at once, then one per 3 s.
+
+A block is invisible to the blocked player:
+- `request` to the blocker answers like an unknown handle.
+- `accept`, `decline`, `remove` and `unblock` answer `nothing_there` for
+  unknown handles too.
+- `block` succeeds on unknown handles.
+- Neither a block nor an unblock sends the other player `friends_changed`.
+
+Every other change reaches both players' open queue connections. Deleting an
+account deletes its friendships, requests and blocks. "Log out everywhere"
+also stops that account's open connections from inviting or being shown as
+it. A plain logout affects only the browser it came from: other open tabs
+keep receiving invites until they close.
 
 ## Browser telemetry
 
