@@ -43,6 +43,7 @@ fn main() -> ExitCode {
     // Telemetry starts before and stops after the runtime: the OTLP HTTP
     // exporter blocks, which an async context must not do.
     let telemetry = arena_server::logging::init("arena-server");
+    let profiler = arena_server::profiling::start("arena-server");
     let code = match tokio::runtime::Runtime::new() {
         Ok(runtime) => {
             let result = runtime.block_on(run());
@@ -60,6 +61,7 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     };
+    profiler.stop();
     telemetry.shutdown();
     code
 }

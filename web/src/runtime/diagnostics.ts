@@ -10,10 +10,13 @@ export const frameTiming = createStore(summary(0));
 let lastEngineTime: number | null = null;
 let lastEngineFrame: number | null = null;
 let firstStateMs: number | null = null;
+/** When the first state arrived, in ms since navigation started. */
+let firstStateAt: number | null = null;
 const errors: string[] = [];
 export function recordState(frame?: number) {
   const now = performance.now();
   firstStateMs ??= now - started;
+  firstStateAt ??= now;
   if (frame === undefined || !Number.isSafeInteger(frame) || frame <= 30 || document.hidden) {
     lastEngineTime = lastEngineFrame = null;
     return;
@@ -23,6 +26,10 @@ export function recordState(frame?: number) {
     engineTiming.add(now, now - lastEngineTime);
   lastEngineTime = now;
   lastEngineFrame = frame;
+}
+/** When the engine's first state arrived, in ms since navigation started. */
+export function firstStateSinceNavigation() {
+  return firstStateAt;
 }
 export function recordError(message: string) {
   errors.push(message);

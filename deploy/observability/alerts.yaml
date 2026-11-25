@@ -186,7 +186,7 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Drain near the 1215 s stop grace period"
+          summary: "Drain near the 1230 s stop grace period"
           description: "The server has drained for 18 minutes; matches still running when the grace period ends are closed with ServerShutdown."
       - uid: arena-high-memory
         title: High memory

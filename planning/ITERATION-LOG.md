@@ -453,7 +453,7 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 
 ## 2026-11-25 — Observability Phase 2: OTLP traces, log↔trace ids, shipping and alerts
 - **Branch / Commit:** `auto/observability-tracing`
-- **Base / PR:** `auto/observability-logging` (stacked on PR #90)
+- **Base / PR:** `auto/observability-logging` (stacked on PR #90) — PR #91
 - **Lane:** A (machine-verified)
 - **Task:** [observability-telemetry](issues/observability-telemetry.md) Phase 2; [ADR 0054](../docs/decisions/0054-observability-logs-metrics-and-local-lgtm.md) amended
 - **Changes:**
@@ -469,4 +469,21 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Also found live:** a queue client closing normally was answered as `bad_request` (now a Close frame just ends the connection; logging test + mutation check).
 - **Learnings:** Loki's OTLP intake replaces a Loki `service_name` label with the resource's service name: push Docker logs through `loki.write` instead. Grafana's alert notification log persists on its data volume, so recreating the container does not resend an already-notified group. The `opentelemetry-otlp` blocking HTTP client must not be built or shut down inside an async context: start telemetry before the runtime.
 - **Next Recommended Slice:** Observability Phase 3 — scrubbed browser telemetry and opt-in profiling.
+
+## 2026-11-25 — Observability Phase 3: scrubbed browser reports and opt-in profiling
+- **Branch / Commit:** `auto/observability-rum`
+- **Base / PR:** `auto/observability-tracing` (stacked on PR #91)
+- **Lane:** A (machine-verified; a real-browser beacon check is pending and recorded as such)
+- **Task:** [observability-telemetry](issues/observability-telemetry.md) Phase 3; [ADR 0054](../docs/decisions/0054-observability-logs-metrics-and-local-lgtm.md) amended (status: all three phases implemented)
+- **Changes:**
+  - Door `POST /api/telemetry` (`door/browser.rs`): origin and rate checks before parsing, closed `kind`-tagged schema, 2 KB limit, bounded numbers, server-side scrub, `info` log lines (`arena_door::browser`), `arena_door_browser_reports_total{kind}` / `_refused_total{reason}` / `_rejected_total`.
+  - `web/src/domain/telemetry.ts` (scrub page/text incl. URL passwords, separate error and summary budgets, DNT/GPC/remembered `?telemetry=off`, WASM panic classification, reservoir-sampled `MatchSummaryCollector`) and `web/src/runtime/telemetry.ts` (uncaught + caught failures via `start.ts`, WebGL context loss, startup time since navigation, one summary per finished match, `sendBeacon`); shared `tests/fixtures/scrub-cases.json` run by both scrubbers.
+  - `profiling` feature (`pyroscope` 2.1.5 pprof, no TLS) started by `ARENA_PYROSCOPE_URL`, bounded 11 s stop, `log` bridged into `tracing` with the agent at `warn`; image built with it; `check.sh` clippies it; `stop_grace_period` 1230 s; Front Door "Browser reports" panel.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/observability-tracing` (`smoke=true web_build=true wasm=true`): pass (`./scripts/check.sh`: 430 Rust tests, 1 pre-existing ignored, incl. `--features profiling` clippy; 58 Python; 50 Node; 42 Vitest files / 334 tests; headless pass; server smoke 496 ticks, 0 overruns, mean 13.6 µs, drained cleanly; `npm run build` 373 modules; WASM clippy pass).
+  - `./scripts/build-web.sh`: pass (28 static resources; no browser launched).
+  - Docker: reports scrubbed in door logs/Loki with no ticket, 422/403 refusals, Pyroscope listing `arena-server` under load, bounded profiler stop (5.7 s).
+- **Fresh-Eyes Review:** No Critical. Important fixed: failures caught by `start.ts` (engine load, `onState`) never reached telemetry, and the startup timer polled forever; match summaries shared the 20-report budget. Minors fixed: scrubbers aligned on whitespace and URL passwords with shared fixtures; parse after origin/rate checks; separate refusal counters; client reports at `info`; reservoir sampling; lazy frame-time read; startup measured from navigation; remembered opt-out; compose `ARENA_PYROSCOPE_HZ`; bounded profiler stop; `log` bridge; profiling clippy in `check.sh`; counters sized by kinds; new runtime tests. Documented rather than changed: `frame_ms` is the median of recent engine frames, and a rejoin after the link ended starts a new summary.
+- **Learnings:** `pyroscope` 2.x bundles its pprof backend (the separate `pyroscope_pprofrs` crate is the old API) and with default features pulls rustls/aws-lc; `default-features = false` keeps it plain HTTP. Its `stop()` waits for the current 10 s cycle. With no CPU load it uploads nothing, so Pyroscope lists no service until there is traffic.
+- **Next Recommended Slice:** Accounts research & login decision (social-identity step 1).
 

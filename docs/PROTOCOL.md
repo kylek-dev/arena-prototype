@@ -194,6 +194,37 @@ the connection with `error`.
 | `match` `{mode, match_id, seat, spectator?, server, ticket, expires}` | This player's seat ticket (or watch-only spectator ticket when `spectator: true`). The connection stays open. |
 | `error` `{code, message}` | Then the door closes: `bad_request`, `rate_limited`, `replaced` or `shutdown`. |
 
+## Browser telemetry
+
+The game page reports a few scrubbed facts to the front door's
+`POST /api/telemetry` ([ADR 0054](decisions/0054-observability-logs-metrics-and-local-lgtm.md),
+`web/src/domain/telemetry.ts`, `crates/arena-server/src/door/browser.rs`). Each
+request is one JSON object tagged by `kind`, at most 2 KB, from an allowed
+`Origin`, within a per-address rate limit. Unknown kinds or fields are refused
+(422), and the door answers 204 with no body.
+
+| `kind` | Fields besides `page` |
+| --- | --- |
+| `error`, `rejection`, `wasm_panic` | `message` |
+| `webgl_context_lost` | none |
+| `startup` | `first_state_ms` |
+| `match_summary` | `spectator`, `seconds`, `rtt_p95_ms`, `corrections`, `reconnects`, `hash_mismatches`, `underruns`, `tick_rate`, `frame_ms` |
+
+`page` is the origin and path only. Both the page and the door remove URL
+passwords (`//user:pass@`), any query or fragment, and any hex run of 16 or
+more digits from text, so join tickets cannot travel. Both scrubbers are
+tested against the shared cases in `tests/fixtures/scrub-cases.json`.
+
+A page load sends at most 20 error reports, each distinct message once. It
+also sends one summary per finished match, with a separate cap of 200. In
+`match_summary`, `frame_ms` is the median of the engine's most recent frames
+(up to 3600) when the match ends. A rejoin after the link has ended starts a
+new summary.
+
+Nothing is sent when the browser sends Do Not Track or Global Privacy
+Control. `?telemetry=off` also turns reports off, and the choice is
+remembered on that device until `?telemetry=on`.
+
 ## Match lifecycle
 
 - **Waiting:** the rules do not advance until every seat has connected once,

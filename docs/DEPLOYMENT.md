@@ -48,7 +48,8 @@ Changing the key invalidates every link already handed out.
 - **SIGTERM drains.** `docker compose stop server` (or a redeploy) sends
   SIGTERM. The server then stops starting matches and lets running ones
   finish for up to 1210 s. A round lasts at most 20 minutes, plus a 5 s
-  linger. Compose waits 1215 s (`stop_grace_period`) before killing it.
+  linger. Compose waits 1230 s (`stop_grace_period`) before killing it, which
+  leaves time for the last profile and spans.
 - **Restarting now.** To restart sooner, accept that running matches end:
   `docker compose stop -t 5 server`. A second SIGTERM also stops at once.
 - **During a restart.** Players whose match had not started get
@@ -181,13 +182,36 @@ socket exists. On stop the services flush their last spans for at most
 | Match server not scraped | its `up` below 1, or missing, for 2 min |
 | Front door not scraped | the same for the door |
 | Server draining | the server reports `arena_draining` (info) |
-| Drain approaching grace period | draining for 18 min of the 1215 s grace |
+| Drain approaching grace period | draining for 18 min of the 1230 s grace |
 | High memory | resident memory above 1.5 GB for 10 min |
 | High open file descriptors | more than 20 000 for 10 min |
 
 Notifications go to the `arena-webhook` contact point at
 `ARENA_ALERT_WEBHOOK_URL`, a Discord or Slack incoming webhook or any URL
 that accepts Grafana's webhook JSON. Unset, they go to a discard address.
+
+**Browser reports.** The game page posts scrubbed reports to
+`/api/telemetry` on its own origin, which Caddy routes to the door. Reports
+cover uncaught errors, rejections, WASM panics, WebGL context loss, startup
+time, and one network and performance summary per finished match
+([PROTOCOL.md](PROTOCOL.md#browser-telemetry)). The door logs each as one
+line: `{service_name="door"} | json | target="arena_door::browser"`. It also
+counts them in `arena_door_browser_reports_total{kind}`, shown on the Front
+Door dashboard. Nothing is stored beyond the logs. Client addresses are used
+for the rate limit and never logged. The lines are at `info` level: they
+are claims from clients, which anyone can send within the rate limit.
+Refusals are counted in `arena_door_browser_reports_refused_total{reason}`,
+and malformed reports in `arena_door_browser_reports_rejected_total`. No
+real browser has been seen sending one yet; the live check used hand-made
+requests, and a browser check is pending.
+
+**Profiling.** The image is built with the `profiling` feature. With
+`ARENA_PYROSCOPE_URL=http://lgtm:4040` in `deploy/.env`, the match server
+samples its CPU at 100 Hz (`ARENA_PYROSCOPE_HZ`) and sends flame graphs to
+Pyroscope; read them under Grafana's Explore, Profiles. It is off when the
+variable is empty, which is the default. On stop it waits at most 11 s for
+its last upload (the agent finishes its 10 s cycle first);
+`stop_grace_period` allows for it.
 
 ### Production topology
 
@@ -275,6 +299,22 @@ fresh rebuild and empty volumes. Observed through Grafana's HTTP API:
 - **Found and fixed.** A queue client closing its socket normally had been
   answered as `bad_request`. With the new warnings it would have logged a
   refusal on every tab close, so a Close frame now just ends the connection.
+
+Phase 3 run, the same day, with `ARENA_PYROSCOPE_URL=http://lgtm:4040`
+and the image built with `profiling`:
+
+- **Browser reports.** Hand-made posts to `/api/telemetry` returned 204 for a
+  report whose page and message carried a ticket and a URL password. They
+  returned 422 for malformed JSON and 403 for a foreign `Origin`. The door's
+  log line read `page: https://<redacted>@localhost/<redacted>`, and the
+  ticket appeared nowhere in the door's container log or in Loki. The
+  counters and the Front Door "Browser reports" panel showed the report.
+  No real browser sent one; that check is pending.
+- **Profiling.** Under bot traffic, Pyroscope listed `arena-server`. On
+  `docker stop`, the drain waited for the three running matches, then the
+  profiler stopped within its bound (5.7 s). A first attempt with a 3 s
+  bound timed out, because the agent finishes its 10 s cycle first; the bound
+  is now 11 s, and `stop_grace_period` is 1230 s.
 
 ## Local trial
 

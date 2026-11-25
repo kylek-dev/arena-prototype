@@ -1,0 +1,49 @@
+{
+  "_comment": "Inputs and expected outputs both scrubbers must agree on: web/src/domain/telemetry.ts scrubText and crates/arena-server/src/door/browser.rs scrub.",
+  "cases": [
+    {
+      "in": "failed at https://arena.example.com/#server=x&ticket=a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2 now",
+      "out": "failed at https://arena.example.com/<redacted> now"
+    },
+    {
+      "in": "GET https://arena.example.com/play?ticket=00ff reset",
+      "out": "GET https://arena.example.com/play<redacted> reset"
+    },
+    {
+      "in": "bad ticket a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2",
+      "out": "bad ticket <hex>"
+    },
+    {
+      "in": "query ticket=a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2",
+      "out": "query ticket=<hex>"
+    },
+    {
+      "in": "encoded %23ticket%3Da1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2",
+      "out": "encoded %23ticket%<hex>"
+    },
+    {
+      "in": "https://user:hunter2@arena.example.com/x",
+      "out": "https://<redacted>@arena.example.com/x"
+    },
+    {
+      "in": "line 42 code ff",
+      "out": "line 42 code ff"
+    },
+    {
+      "in": "match 0123456789abcdef",
+      "out": "match <hex>"
+    },
+    {
+      "in": "a\nb\tc",
+      "out": "a b c"
+    },
+    {
+      "in": "x?secret\u000bnext",
+      "out": "x<redacted> next"
+    },
+    {
+      "in": "x#frag\u0085tail",
+      "out": "x<redacted>"
+    }
+  ]
+}

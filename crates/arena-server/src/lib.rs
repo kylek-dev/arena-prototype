@@ -13,6 +13,7 @@ pub mod ingress;
 pub mod logging;
 pub mod matchmaker;
 pub mod metrics;
+pub mod profiling;
 pub mod session;
 pub mod ticket;
 
