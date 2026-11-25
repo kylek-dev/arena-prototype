@@ -40,10 +40,11 @@ const DRAIN_REPORT: Duration = Duration::from_secs(10);
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    arena_server::logging::init();
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            eprintln!("arena-server: {message}");
+            tracing::error!(reason = %message, "arena-server failed");
             ExitCode::FAILURE
         }
     }
@@ -205,20 +206,20 @@ async fn run() -> Result<(), String> {
         config.connections_per_address = 0;
     }
     let running = start(config).await.map_err(|error| error.to_string())?;
-    eprintln!("arena-server: listening on ws://{}/play", running.addr);
+    tracing::info!(addr = %running.addr, "arena-server listening on ws://{}/play", running.addr);
     if dev {
-        eprintln!(
-            "arena-server: development mode; create a match with POST http://{}/dev/match?team_size=1",
+        tracing::info!(
+            "development mode; create a match with POST http://{}/dev/match?team_size=1",
             running.addr
         );
     }
     stop_signal().await;
     running.begin_drain();
     if running.active_matches() > 0 && !drain.is_zero() {
-        eprintln!(
-            "arena-server: draining {} running match(es) for up to {}s; no new matches. Signal again to stop now.",
-            running.active_matches(),
-            drain.as_secs()
+        tracing::info!(
+            matches = running.active_matches(),
+            drain_seconds = drain.as_secs(),
+            "draining running matches; no new matches. Signal again to stop now."
         );
         let deadline = tokio::time::Instant::now() + drain;
         loop {
@@ -227,17 +228,25 @@ async fn run() -> Result<(), String> {
             tokio::select! {
                 finished = running.drained(wait) => {
                     if finished {
-                        eprintln!("arena-server: every match has ended");
+                        tracing::info!("drain finished: every match has ended");
                         break;
                     }
                     if tokio::time::Instant::now() >= deadline {
-                        eprintln!("arena-server: drain time is up; closing {} match(es)", running.active_matches());
+                        tracing::warn!(
+                            matches = running.active_matches(),
+                            reason = "drain_timeout",
+                            "drain time is up; closing matches"
+                        );
                         break;
                     }
-                    eprintln!("arena-server: still draining: {} match(es) running", running.active_matches());
+                    tracing::info!(matches = running.active_matches(), "still draining");
                 }
                 _ = stop_signal() => {
-                    eprintln!("arena-server: stopping now; closing {} match(es)", running.active_matches());
+                    tracing::warn!(
+                        matches = running.active_matches(),
+                        reason = "second_signal",
+                        "stopping now; closing matches"
+                    );
                     break;
                 }
             }

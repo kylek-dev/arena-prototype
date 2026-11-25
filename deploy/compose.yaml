@@ -2,10 +2,15 @@
 # serves the browser client; one match server and one front door sit behind
 # it on a private network. From the repository root, after building dist/:
 #   docker compose -f deploy/compose.yaml --env-file deploy/.env up -d --build
+# Add `--profile obs` for Grafana, Prometheus, Loki and Tempo (ADR 0054) on
+# 127.0.0.1 only; see docs/DEPLOYMENT.md "Observability".
 name: arena
 
 x-public: &public
   ARENA_TICKET_KEY: ${ARENA_TICKET_KEY:?set ARENA_TICKET_KEY in deploy/.env}
+  # One JSON object per log line, like Caddy's log; RUST_LOG filters.
+  ARENA_LOG_FORMAT: json
+  RUST_LOG: ${RUST_LOG:-info}
 
 services:
   server:
@@ -69,6 +74,33 @@ services:
       arena:
         ipv4_address: 172.30.10.2
 
+  # Opt-in observability (`--profile obs`): one container with Grafana,
+  # Prometheus, Loki, Tempo and an OTLP collector. Every port is bound to
+  # loopback: reach Grafana at http://127.0.0.1:3000 on this machine, or over
+  # an SSH tunnel. Prometheus scrapes server:8080/metrics and
+  # door:8090/metrics over the private network; Caddy never routes to them.
+  lgtm:
+    image: grafana/otel-lgtm:0.41.1
+    profiles: [obs]
+    depends_on: [server, door]
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+    volumes:
+      - ./observability/prometheus.yaml:/otel-lgtm/prometheus.yaml:ro
+      - ./observability/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/custom.yaml:ro
+      - ./observability/dashboards:/otel-lgtm/grafana/conf/provisioning/dashboards/custom:ro
+      - lgtm-data:/data
+    environment:
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /otel-lgtm/grafana/conf/provisioning/dashboards/custom/match-server-health.json
+    # Keep the stack from competing with the 30 Hz match loop for memory.
+    mem_limit: 1g
+    restart: unless-stopped
+    networks:
+      arena:
+        ipv4_address: 172.30.10.20
+
 networks:
   arena:
     ipam:
@@ -78,3 +110,4 @@ networks:
 volumes:
   caddy-data:
   caddy-config:
+  lgtm-data:

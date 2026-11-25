@@ -408,10 +408,21 @@ mod queue {
         assert_eq!(actors, [0, 1, 2, 3], "four distinct seats in one match");
         assert_eq!(server.active_matches(), 1);
         let metrics = request(door.addr, "GET", "/metrics", "", "").await.body;
-        assert!(
-            metrics.contains("arena_door_queue_matches_total 1\n"),
-            "{metrics}"
-        );
+        for line in [
+            "arena_door_queue_matches_total 1\n",
+            "arena_door_tickets_issued_total 4\n",
+            "arena_door_ready_checks_started_total 1\n",
+            "arena_door_ready_checks_completed_total 1\n",
+            "arena_door_ready_checks_failed_total 0\n",
+            "arena_door_ready_accepts_total 4\n",
+            "arena_door_queued_by_mode{mode=\"2v2\"} 0\n",
+            "arena_door_queue_connections 4\n",
+            // Four parties' waits, every one found within the first minute.
+            "arena_door_queue_wait_milliseconds_bucket{le=\"60000\"} 4\n",
+            "arena_door_queue_wait_milliseconds_count 4\n",
+        ] {
+            assert!(metrics.contains(line), "missing {line:?} in {metrics}");
+        }
         door.stop().await.unwrap();
         server.stop().await.unwrap();
     }
@@ -485,6 +496,15 @@ mod queue {
             sockets.push(join_match(&play, &ticket).await.0);
         }
         assert_eq!(server.active_matches(), 1);
+        let metrics = request(door.addr, "GET", "/metrics", "", "").await.body;
+        for line in [
+            "arena_door_searches_total{party_size=\"1\"} 2\n",
+            "arena_door_searches_total{party_size=\"2\"} 1\n",
+            "arena_door_searches_total{party_size=\"3\"} 0\n",
+            "arena_door_parties 1\n",
+        ] {
+            assert!(metrics.contains(line), "missing {line:?} in {metrics}");
+        }
         door.stop().await.unwrap();
         server.stop().await.unwrap();
     }
@@ -564,6 +584,19 @@ mod queue {
                     reason: "not_accepted".into()
                 })
             );
+        }
+        let metrics = request(door.addr, "GET", "/metrics", "", "").await.body;
+        for line in [
+            "arena_door_ready_checks_started_total 1\n",
+            "arena_door_ready_checks_failed_total 1\n",
+            "arena_door_ready_accepts_total 1\n",
+            "arena_door_ready_declines_total 1\n",
+            "arena_door_tickets_issued_total 0\n",
+            // The player who accepted is searching again.
+            "arena_door_queued_by_mode{mode=\"2v2\"} 1\n",
+            "arena_door_queue_wait_milliseconds_count 0\n",
+        ] {
+            assert!(metrics.contains(line), "missing {line:?} in {metrics}");
         }
         door.stop().await.unwrap();
         server.stop().await.unwrap();
