@@ -122,6 +122,21 @@ async fn lifecycle_logs_are_structured_and_never_carry_tickets_or_keys() {
     }
     // A second Hello mid-match is wire-logged with its ticket redacted.
     sockets[0].send(hello(&tickets[0])).await.unwrap();
+    // A browser error report that carries the page's ticket fragment and a
+    // ticket in its message is logged scrubbed.
+    let report = format!(
+        r#"{{"kind":"wasm_panic","page":"{PAGE}#server=x&ticket={0}","message":"panicked near {0}"}}"#,
+        tickets[0]
+    );
+    let mut stream = TcpStream::connect(door.addr).await.unwrap();
+    let request = format!(
+        "POST /api/telemetry HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{report}",
+        report.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    assert!(response.starts_with("HTTP/1.1 204"), "{response}");
     // A queue player who says hello and closes normally is no refusal.
     let (mut leaver, _) = connect_async(format!("ws://{}/api/queue", door.addr))
         .await
@@ -198,6 +213,10 @@ async fn lifecycle_logs_are_structured_and_never_carry_tickets_or_keys() {
     assert_eq!(refusals.len(), 1, "three refusals, one report: {logs}");
     assert_eq!(refusals[0]["error_code"], "Malformed");
     assert_eq!(refusals[0]["suppressed_reports"], 0);
+    let panic = find("browser reported an error");
+    assert_eq!(panic["kind"], "wasm_panic");
+    assert_eq!(panic["page"], format!("{PAGE}<redacted>"));
+    assert_eq!(panic["reason"], "panicked near <hex>");
     assert!(
         !logs.contains("closed a queue connection"),
         "a normal close was logged as a refusal: {logs}"

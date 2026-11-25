@@ -1,6 +1,6 @@
 # ADR 0054: Observability: structured logs, histograms and a local LGTM stack
 
-Date: 2026-11-25. **Status: proposed (Phases 1 and 2 implemented; Phase 3 planned).**
+Date: 2026-11-25. **Status: proposed (Phases 1, 2 and 3 implemented).**
 
 ## Context
 
@@ -125,8 +125,48 @@ Phase 1 of the issue, in `arena-server` (both binaries):
 - **Topology** for early, public and managed setups is documented in
   `docs/DEPLOYMENT.md`.
 
-Phase 3 (browser telemetry, profiling) stays as written in the issue and will
-amend this record.
+### Phase 3: browser reports and profiling
+
+- **Scrubbed browser reports, not a RUM SDK.** Grafana Faro would add a
+  third-party bundle and a second collector path. Instead the page sends
+  small JSON reports to the door's `POST /api/telemetry`, which logs them;
+  Alloy already ships door logs to Loki. The page reports:
+  - uncaught errors and unhandled rejections;
+  - WASM panics (`RuntimeError`/`unreachable`);
+  - WebGL context loss;
+  - the time to the engine's first state;
+  - one summary per finished match (p95 RTT, corrections, reconnects, hash
+    mismatches, underruns, median tick rate, median engine frame).
+
+  There is never per-frame telemetry.
+- **Scrubbing on both sides.** `page` is the origin and path only, and text
+  loses URL passwords, any query or fragment, and any hex run of 16 or more
+  digits. Shared fixture cases keep the two scrubbers identical. Unit tests in
+  `npm test` and `cargo test` prove that a join link's ticket never reaches a
+  report or a log line. The door also enforces:
+  - a closed schema with no unknown fields;
+  - a 2 KB body limit;
+  - a per-address rate limit and an origin check;
+  - bounded numbers.
+
+  The page sends at most 20 error reports per load. Match summaries have a
+  separate cap of 200, so a long queue session keeps reporting. Nothing is
+  sent under Do Not Track or Global Privacy Control, or after
+  `?telemetry=off`, which is remembered on the device. Failures the page
+  catches itself, such as an engine that fails to load, are reported too.
+  The door logs reports at `info`, because they are client claims.
+- **Opt-in Pyroscope profiling.** An optional `profiling` feature pulls in
+  `pyroscope` 2.1.5 with its pprof backend and without TLS, since the server
+  is on the private network. The Docker image builds it in.
+  - It starts only when `ARENA_PYROSCOPE_URL` is set, sampling at 100 Hz
+    (about 1% CPU by Pyroscope's estimate; not measured here).
+  - It is started before and stopped after the Tokio runtime, like the OTLP
+    exporter. Stopping waits at most 11 s, the agent's 10 s cycle plus the
+    upload, so an unreachable Pyroscope cannot outlast the container's grace
+    period. That period is now 1230 s.
+  - Its `log` output is bridged into the process logs.
+  - Default builds leave it out. `scripts/check.sh` runs Clippy on it
+    separately.
 
 ## Consequences
 

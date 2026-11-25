@@ -23,6 +23,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
+mod browser;
 mod queue;
 pub use queue::ToClient as QueueMessage;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -125,11 +126,19 @@ struct DoorMetrics {
     searches_by_size: [AtomicU64; crate::matchmaker::MAX_PARTY],
     /// How long each party searched before its match was found.
     queue_wait: QueueWaits,
+    /// Browser reports accepted, by kind (`browser::KINDS`), and refused for
+    /// their shape.
+    browser_reports: [AtomicU64; browser::KINDS.len()],
+    browser_rejected: AtomicU64,
+    /// Browser reports refused for their origin, then for the rate limit.
+    browser_refused: [AtomicU64; 2],
 }
 
 struct Door {
     config: DoorConfig,
     creations: RatePerAddress,
+    /// Browser telemetry reports per address.
+    reports: RatePerAddress,
     metrics: DoorMetrics,
     queue: mpsc::Sender<queue::Command>,
     queue_open: Arc<OpenPerAddress>,
@@ -402,6 +411,35 @@ fn render_door_metrics(metrics: &DoorMetrics) -> String {
             Metrics::get(counter)
         );
     }
+    let _ = writeln!(
+        text,
+        "# HELP arena_door_browser_reports_total Scrubbed browser reports accepted, by kind.\n# TYPE arena_door_browser_reports_total counter"
+    );
+    for (kind, counter) in browser::KINDS.iter().zip(&metrics.browser_reports) {
+        let _ = writeln!(
+            text,
+            "arena_door_browser_reports_total{{kind=\"{kind}\"}} {}",
+            Metrics::get(counter)
+        );
+    }
+    let _ = writeln!(
+        text,
+        "# HELP arena_door_browser_reports_refused_total Browser reports refused before reading, by reason.\n# TYPE arena_door_browser_reports_refused_total counter"
+    );
+    for (reason, counter) in ["origin", "rate"].iter().zip(&metrics.browser_refused) {
+        let _ = writeln!(
+            text,
+            "arena_door_browser_reports_refused_total{{reason=\"{reason}\"}} {}",
+            Metrics::get(counter)
+        );
+    }
+    write_metric(
+        &mut text,
+        "arena_door_browser_reports_rejected_total",
+        "counter",
+        "Browser reports refused for their shape or values.",
+        Metrics::get(&metrics.browser_rejected),
+    );
     metrics.queue_wait.0.render(
         &mut text,
         "door_queue_wait_milliseconds",
@@ -452,6 +490,8 @@ fn build(config: DoorConfig) -> (Router, Arc<Door>) {
     let (commands, receiver) = mpsc::channel(1024);
     let door = Arc::new(Door {
         creations: RatePerAddress::new(config.creation_burst, config.creation_every),
+        // A visit sends a handful (startup, a summary per match, a few errors).
+        reports: RatePerAddress::new(30, Duration::from_secs(10)),
         queue_open: OpenPerAddress::new(config.queue_per_address),
         config,
         metrics: DoorMetrics::default(),
@@ -467,6 +507,10 @@ fn build(config: DoorConfig) -> (Router, Arc<Door>) {
             post(create).layer(DefaultBodyLimit::max(1024)),
         )
         .route("/api/queue", get(queue::upgrade))
+        .route(
+            "/api/telemetry",
+            post(browser::receive).layer(DefaultBodyLimit::max(browser::MAX_REPORT)),
+        )
         .route("/lobby", get(|| async { Redirect::permanent("/lobby/") }))
         .route(
             "/lobby/",

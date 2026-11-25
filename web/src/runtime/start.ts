@@ -31,6 +31,7 @@ import { installSpellDragging } from "./spell-drag";
 import { debugEnabled, measureFrames, metrics, recordError, recordState } from "./diagnostics";
 import { browserLink, installJoinLinks, takeJoinFragment } from "./network";
 import { browserQueue, installPartyLinks } from "./matchmaking";
+import { installTelemetry } from "./telemetry";
 import { matchQueue, networkLink } from "../state/network";
 import { clearPostMatchScoreboard, syncPostMatchScoreboard } from "../state/scoreboard";
 export function startRuntime(canvas: HTMLCanvasElement) {
@@ -38,7 +39,10 @@ export function startRuntime(canvas: HTMLCanvasElement) {
   const router = installInput(canvas, pointer.end);
   const stopSpellDrop = installSpellDragging(canvas);
   const unitHover = installUnitHover(canvas);
-  const fail = (message: string) => {
+  const telemetry = installTelemetry(canvas);
+  const fail = (message: string, cause?: unknown) => {
+    // Every failure is reported, even after the first one is shown.
+    telemetry.failure(cause, message);
     if (error.get()) return;
     recordError(message);
     error.set(
@@ -107,7 +111,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
         syncPostMatchScoreboard(next, link.state.get());
         if (!previous && document.activeElement === document.body) canvas.focus();
       } catch (e) {
-        fail(String(e));
+        fail(String(e), e);
       }
     },
   };
@@ -127,9 +131,10 @@ export function startRuntime(canvas: HTMLCanvasElement) {
   void loadStartupMap();
   loadEngine().catch((e) => {
     console.error(e);
-    fail(String(e.message ?? e));
+    fail(String(e.message ?? e), e);
   });
   return () => {
+    telemetry.stop();
     stopJoinLinks();
     stopPartyLinks();
     queue.dispose();

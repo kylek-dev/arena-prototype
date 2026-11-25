@@ -34,9 +34,16 @@ services:
       - https://${ARENA_HOST:?set ARENA_HOST in deploy/.env}
       - --trusted-proxy
       - 172.30.10.2
-    environment: *public
-    # ... and allow a little longer than the drain before killing it.
-    stop_grace_period: 1215s
+    environment:
+      <<: *public
+      # Continuous CPU profiling: empty (the default) is off. With
+      # `--profile obs`, http://lgtm:4040 sends flame graphs to Pyroscope.
+      ARENA_PYROSCOPE_URL: ${ARENA_PYROSCOPE_URL:-}
+      ARENA_PYROSCOPE_HZ: ${ARENA_PYROSCOPE_HZ:-}
+    # ... and allow a little longer than the drain before killing it: the
+    # drain, then at most 11 s for the profiler's last upload and 3 s for
+    # the last spans.
+    stop_grace_period: 1230s
     restart: unless-stopped
     networks:
       arena:

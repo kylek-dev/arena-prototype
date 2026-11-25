@@ -3,6 +3,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
+# The optional Pyroscope agent (ADR 0054) is built into the Docker image.
+cargo clippy -p arena-server --all-targets --features profiling --locked -- -D warnings
 # The client is type-checked above; rendered behavior is reviewed manually.
 cargo test -p arena-sim -p arena-protocol -p arena-server -p arena-bot -p arena-headless -p arena-textures -p arena-map -p arena-palette --locked
 # Presentation contracts and character-relative movement regressions.

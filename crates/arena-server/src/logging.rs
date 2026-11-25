@@ -65,6 +65,16 @@ impl fmt::Debug for MatchId {
     }
 }
 
+/// The profiling agent logs every upload at `info` through the `log` bridge;
+/// keep it to warnings unless `RUST_LOG` names it.
+fn with_quiet_agents(filter: &str) -> String {
+    if filter.contains("pyroscope") {
+        filter.to_owned()
+    } else {
+        format!("{filter},pyroscope=warn")
+    }
+}
+
 /// The OTLP endpoint to export traces to: `OTEL_EXPORTER_OTLP_ENDPOINT` when
 /// set and not blank. `None` means no exporter, thread or socket is created.
 pub fn otlp_endpoint(value: Option<&str>) -> Option<&str> {
@@ -136,10 +146,13 @@ pub fn init(service: &'static str) -> Telemetry {
     // Unset means `info`; a filter that does not parse also means `info`,
     // with a warning once the subscriber is up.
     let (filter, bad_filter) = match std::env::var("RUST_LOG") {
-        Err(_) => (EnvFilter::new("info"), None),
-        Ok(text) => match EnvFilter::try_new(&text) {
+        Err(_) => (EnvFilter::new(with_quiet_agents("info")), None),
+        Ok(text) => match EnvFilter::try_new(with_quiet_agents(&text)) {
             Ok(filter) => (filter, None),
-            Err(error) => (EnvFilter::new("info"), Some(error.to_string())),
+            Err(error) => (
+                EnvFilter::new(with_quiet_agents("info")),
+                Some(error.to_string()),
+            ),
         },
     };
     let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
@@ -255,6 +268,16 @@ mod tests {
     fn match_ids_print_as_sixteen_hex_digits() {
         assert_eq!(MatchId(0xabc).to_string(), "0000000000000abc");
         assert_eq!(format!("{:?}", MatchId(u64::MAX)), "ffffffffffffffff");
+    }
+
+    #[test]
+    fn the_profiling_agent_is_quiet_unless_asked_for() {
+        assert_eq!(with_quiet_agents("info"), "info,pyroscope=warn");
+        assert_eq!(
+            with_quiet_agents("debug,pyroscope=info"),
+            "debug,pyroscope=info"
+        );
+        assert!(EnvFilter::try_new(with_quiet_agents("arena_server=debug")).is_ok());
     }
 
     #[test]

@@ -4,7 +4,9 @@
 FROM rust:1.99.1-slim-trixie AS build
 WORKDIR /src
 COPY . .
-RUN cargo build --release --locked -p arena-server --bin arena-server --bin arena-door
+# `profiling` builds in the Pyroscope agent; it starts only when
+# ARENA_PYROSCOPE_URL is set (ADR 0054).
+RUN cargo build --release --locked -p arena-server --features profiling --bin arena-server --bin arena-door
 
 FROM debian:trixie-slim
 RUN useradd --system --uid 10001 --no-create-home arena

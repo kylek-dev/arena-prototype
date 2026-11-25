@@ -494,6 +494,59 @@
         "showUnfilled": true
       },
       "description": "Queue searches started in the selected time range, by party size."
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Browser reports",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (kind) (rate(arena_door_browser_reports_total[$__rate_interval])) * 3600",
+          "legendFormat": "{{kind}} / h"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(arena_door_browser_reports_rejected_total[$__rate_interval]) * 3600",
+          "legendFormat": "rejected / h"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "description": "Scrubbed reports from game pages: errors, WASM panics, WebGL context loss, startup and match summaries. Details are in Loki: {service_name=\"door\"} | json | target=\"arena_door::browser\"."
     }
   ]
 }
