@@ -266,6 +266,7 @@ pub fn run() {
                 appearance::switch_kit,
                 appearance::apply,
                 textures::attach_arena_textures,
+                textures::mip_character_textures,
                 sky::attach,
                 startup::update,
                 present,

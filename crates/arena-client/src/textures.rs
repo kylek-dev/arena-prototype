@@ -154,6 +154,35 @@ fn to_srgb(linear: f32) -> u8 {
     (s * 255.0).round() as u8
 }
 
+/// Whether an asset path belongs to a character model (kits, weapons are not included).
+fn is_character_asset(path: &bevy::asset::AssetPath) -> bool {
+    path.path().starts_with("characters")
+}
+
+/// Give colour textures embedded in character glTFs the same mip chain as arena
+/// textures. glTF images load without mips, so distant characters shimmer and
+/// sample neighbouring UV islands as specks. Runs once per newly added image.
+pub fn mip_character_textures(
+    mut events: MessageReader<AssetEvent<Image>>,
+    server: Res<AssetServer>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    for event in events.read() {
+        let AssetEvent::Added { id } = event else {
+            continue;
+        };
+        if !server
+            .get_path(*id)
+            .is_some_and(|path| is_character_asset(&path))
+        {
+            continue;
+        }
+        if let Some(mut image) = images.get_mut(*id) {
+            add_mips(&mut image);
+        }
+    }
+}
+
 /// Append a gamma-correct box-filtered mip chain to an sRGB RGBA8 image.
 /// Bevy 0.20 does not generate mips for PNGs; without them the painted
 /// detail shimmers at camera distance. Returns false if left unchanged.
@@ -509,6 +538,20 @@ mod tests {
         let left = Transform::from_xyz(-1.0, 0.0, 0.0).with_scale(Vec3::new(2.0, 1.0, 1.0));
         let right = Transform::from_xyz(1.0, 0.0, 0.0).with_scale(Vec3::new(2.0, 1.0, 1.0));
         assert!((uv_range(left, Vec3::Y).1.x - uv_range(right, Vec3::Y).0.x).abs() < 1e-4);
+    }
+
+    #[test]
+    fn only_character_assets_get_glb_mips() {
+        use bevy::asset::AssetPath;
+        assert!(is_character_asset(&AssetPath::parse(
+            "characters/kits/human-male.glb#Texture0"
+        )));
+        assert!(!is_character_asset(&AssetPath::parse(
+            "textures/stone-floor.png"
+        )));
+        assert!(!is_character_asset(&AssetPath::parse(
+            "weapons/glaive.glb#Texture0"
+        )));
     }
 
     #[test]
