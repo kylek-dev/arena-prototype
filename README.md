@@ -9,6 +9,7 @@ Temporary project name. An original, browser-first competitive arena game, inspi
 - [Fresh-machine developer setup](docs/DEVELOPMENT.md)
 - [Game direction](docs/GAME.md)
 - [Art direction](docs/ART-DIRECTION.md)
+- [Art production](docs/ART-PRODUCTION.md)
 - [Technology recommendation and alternatives](docs/decisions/0001-stack.md)
 - [Wenilla investigation](docs/research/wenilla.md)
 - [Architecture](docs/ARCHITECTURE.md)
