@@ -98,6 +98,9 @@ stays rigid).
 `check_glb.py KIT.glb OUT --hair r,g,b --beard r,g,b --hair-only` renders each hairstyle
 tinted by a hair swatch (the palette colour divided by `hairAtlas`).
 
+`build_kit.py` embeds opaque textures as JPEG (colour quality 90, normals 95 at
+full chroma) and alpha-blended ones as PNG; the PNG masters stay in `tex/`.
+
 Shared modules: `kitlib.py` (paths, spaces, mesh helpers), `mh.py` (scaffold),
 `rigdata.py` and `skeleton.py` (the kit skeleton for this body), `layout.py`
 (faces, UVs, regions), `glbwriter.py` and `gltfkit.py` (GLB input and output),

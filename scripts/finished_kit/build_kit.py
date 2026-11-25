@@ -41,10 +41,14 @@ for k in range(3): np.add.at(N, T_all[:, k], fn)
 N /= np.maximum(np.linalg.norm(N, axis=1, keepdims=True), 1e-20)
 
 glb = GLB('pitborn human-male-kit build_kit.py')
-tx = lambda f, n: glb.texture(TEX + f, n)
-m_body = glb.material('Skin', tx('skin_body.png', 'Skin_BaseColor'), tx('skin_body_n.png', 'Skin_Normal'))
-m_head = glb.material('Skin_Head', tx('skin_head.png', 'Skin_Head_BaseColor'), tx('skin_head_n.png', 'Skin_Head_Normal'))
-m_trunks = glb.material('Trunks', tx('trunks.png', 'Trunks_BaseColor'), tx('trunks_n.png', 'Trunks_Normal'))
+# Opaque textures ship as JPEG (colour at quality 90; normals at 95 with full chroma, as they are directions),
+# a quarter of the PNG size. Alpha-blended layers and the tiny eye textures stay PNG.
+COLOR_JPEG, NORMAL_JPEG = (90, 2), (95, 0)
+tx = lambda f, n, jpeg=None: glb.texture(TEX + f, n, jpeg)
+txc = lambda f, n: tx(f, n, COLOR_JPEG); txn = lambda f, n: tx(f, n, NORMAL_JPEG)
+m_body = glb.material('Skin', txc('skin_body.png', 'Skin_BaseColor'), txn('skin_body_n.png', 'Skin_Normal'))
+m_head = glb.material('Skin_Head', txc('skin_head.png', 'Skin_Head_BaseColor'), txn('skin_head_n.png', 'Skin_Head_Normal'))
+m_trunks = glb.material('Trunks', txc('trunks.png', 'Trunks_BaseColor'), txn('trunks_n.png', 'Trunks_Normal'))
 m_white = glb.material('Eye_White', tx('eye_white.png', 'Eye_White_BaseColor')); m_iris = glb.material('Eye_Iris', tx('eye_iris.png', 'Eye_Iris_BaseColor'))
 
 fm = np.load(KIT + 'work/face_morphs.npz'); FACE_NAMES = [str(x) for x in fm['names']]; FACE_D = fm['deltas']
@@ -141,7 +145,7 @@ def generated_piece(node, stem, tint_material):
     key = np.concatenate([cv[:, None], np.round(cu * 1e5).astype(np.int64)], 1)
     _, first, inv = np.unique(key, axis=0, return_index=True, return_inverse=True); sv = cv[first]
     near = head_v[head_tree.query(PV[sv])[1]]
-    mat = glb.material(tint_material, tx(f'{stem}.png', f'{tint_material}_BaseColor'), tx(f'{stem}_n.png', f'{tint_material}_Normal'))
+    mat = glb.material(tint_material, txc(f'{stem}.png', f'{tint_material}_BaseColor'), txn(f'{stem}_n.png', f'{tint_material}_Normal'))
     meshes.append((node, [glb.primitive(PV[sv], Np[sv], cu[first], *follow_skin(PV[sv]), inv.reshape(-1, 3), mat, targets=[dd[near] for dd in FACE_D])]))
     tri_count[node] = len(PF)
 for style, _, stem in HAIR: generated_piece('Hair_' + style, stem, 'Hair_' + style)
@@ -219,11 +223,6 @@ for side, sx in (('l', 1), ('r', -1)):
     grip = j('hand') + main * 0.075 + palm * 0.028
     Rg = np.stack([np.cross(radial, main), radial, main], 1)                       # columns: X, Y (shaft), Z (knuckles)
     sockets['socket_weapon_' + side] = ('hand_' + side, grip, Rg)
-fore = unit(P_['hand_l'] - P_['lowerarm_l']); mid = (P_['hand_l'] + P_['lowerarm_l']) / 2
-main = unit(P_['middle_01_l'] - P_['hand_l']); radial = unit(P_['index_01_l'] - P_['pinky_01_l']); dorsal = -np.cross(main, unit(radial - main * (radial @ main)))
-dorsal = dorsal if dorsal[0] > 0 else -dorsal; dorsal = unit(dorsal - fore * (dorsal @ fore))
-strap = surface_point(dorsal, mid, 0.07)
-sockets['socket_shield_l'] = ('lowerarm_l', strap, np.stack([np.cross(-fore, dorsal), -fore, dorsal], 1))       # +Y towards the elbow, +Z out of the forearm
 socket_info = {}
 for name, (joint, pos, R) in sockets.items():
     M = np.eye(4); M[:3, :3] = np.eye(3) if R is world_axes else C_WG @ R; M[:3, 3] = C_WG @ pos       # R's columns are the socket axes in work space

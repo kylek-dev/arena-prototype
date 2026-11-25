@@ -24,11 +24,11 @@ are in [ADR 0052](decisions/0052-art-scope-and-quality-bar.md); the look is in
 | Human base bodies | 2 (male, female) | Underclothes, bald head, A-pose, split into the kit's body regions |
 | Hairstyles | 2 (one per body type) | Sculpted hand-painted locks as separate meshes, weighted to `Head` |
 | Gladiator base gear | 6 pieces | One per slot: head (helmet), shoulders (shoulder guard), torso (harness and chest), arms (arm guard and bracers), legs (greaves and skirt), feet (sandal boots) |
-| Gladiator weapons | 2 | Short sword (main hand), round shield (off hand) |
+| Gladiator weapon | 1 | Two-handed sword (two-handed slot). The game has no shields |
 | Gladiator spell icons | 8 | 2D, see the icon list below |
 | In game | 1 | Both bodies wearing the set, playing all kit clips, chosen in the customizer |
 
-Generation budget: about 12 assets × about 4 attempts ≈ 50 generations, well
+Generation budget: about 11 assets × about 4 attempts ≈ 45 generations, well
 inside Pro's monthly allowance of about 120 assets.
 
 ### Icon list (working names)
@@ -37,7 +37,7 @@ Only **Decapitate** exists in [the ability examples](../crates/arena-sim/Abiliti
 The other seven are icon briefs, not game design; the Gladiator kit's real
 abilities are still to be designed.
 
-Decapitate, Charge, Shield Bash, Whirlwind, Rallying Roar, Net Throw, Sunder
+Decapitate, Charge, Pommel Strike, Whirlwind, Rallying Roar, Net Throw, Sunder
 (a Negative Effect) and Last Stand (a Positive Effect).
 
 ## Technical spec
@@ -60,9 +60,11 @@ character's left on +X.
 | Base body (with head, without hair) | 25k |
 | Hairstyle | 8k |
 | Gear piece | 8k (helmet 6k) |
-| Weapon / shield | 5k / 4k |
+| Weapon | 5k |
 
-**Textures** (PNG only; the client decodes nothing else):
+**Textures** (the client decodes PNG and JPEG). Masters are PNG; a built kit
+embeds opaque textures as JPEG (base colour at quality 90, normal maps at 95
+with full chroma) and keeps alpha-blended ones PNG:
 
 | Asset | Base color | Normal |
 | --- | --- | --- |
@@ -119,8 +121,6 @@ generator (Pro includes it), ChatGPT or Gemini. Every image must have:
   moves the colour across, and re-bakes the normal map from the dense model.
 - Never post game assets to the Meshy Community page: posting makes them
   public under CC0 or CC BY-NC.
-- Opt out of Meshy training on your inputs and outputs by emailing
-  support@meshy.ai (Terms §2.9).
 
 ## Customization
 

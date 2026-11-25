@@ -114,7 +114,9 @@ Decided:
 - A modular kit: base bodies plus separately fitted gear pieces.
 - Gladiator is the first class.
 - Month 1 is a Gladiator vertical slice: human male and female bodies, the
-  base gear set, a sword and shield, 8 spell icons, all in game.
+  base gear set, a sword and shield, 8 spell icons, all in game. (Changed on
+  2026-11-25 at the user's request: one two-handed sword; the game has no
+  shields.)
 
 The remaining tooling recommendations above stand: no GPU purchase, Blender for
 finishing, and a contract artist for hero gaps when needed. The production

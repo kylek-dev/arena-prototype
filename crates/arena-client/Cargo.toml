@@ -15,7 +15,7 @@ arena-protocol = { path = "../arena-protocol" }
 arena-palette = { path = "../arena-palette" }
 serde_json = "=1.0.154"
 bevy = { version = "=0.20.1", default-features = false, features = [
-  "default_app", "bevy_pbr", "bevy_gltf", "gltf_animation", "bevy_post_process", "png", "std", "bevy_winit", "webgl2", "x11", "multi_threaded"
+  "default_app", "bevy_pbr", "bevy_gltf", "gltf_animation", "bevy_post_process", "png", "jpeg", "std", "bevy_winit", "webgl2", "x11", "multi_threaded"
 ] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

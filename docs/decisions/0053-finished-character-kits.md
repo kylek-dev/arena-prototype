@@ -95,16 +95,16 @@ kit keeps the generated shape and paint and replaces everything else.
   | pants | skinned | `Trunks`, `Knees`, `Calves` by length |
   | boots | skinned | `Feet`, `Shins`, plus `Calves` when tall |
   | main hand, two-handed | `socket_weapon_r` | |
-  | off hand | `socket_weapon_l`; shields on `socket_shield_l` | |
+  | off hand | `socket_weapon_l` | |
   | ranged | bow in `socket_weapon_l`, crossbow in `socket_weapon_r` | |
 
 - **Sockets.** Plain named nodes under a joint, outside the skin, so clips and
   skinning are unaffected: `socket_head`, `socket_shoulder_l/r`,
   `socket_back`, `socket_back_l/r`, `socket_chest`, `socket_belt`,
-  `socket_hip_l/r`, `socket_weapon_l/r` and `socket_shield_l`. Body sockets are
-  aligned to the model's axes in the rest pose. Grip sockets have +Y along the
-  gripped shaft towards the thumb side and +Z the way the knuckles point. The
-  shield socket has +Z out of the forearm and +Y towards the elbow.
+  `socket_hip_l/r` and `socket_weapon_l/r`. Body sockets are aligned to the
+  model's axes in the rest pose. Grip sockets have +Y along the gripped shaft
+  towards the thumb side and +Z the way the knuckles point. The game has no
+  shields, so the shield socket of the first build was removed (2026-11-25).
 - **Hair and beards.** Each style is generated in Meshy as a bust: an image
   edit adds the style to front, side and back renders of the kit's own bald
   head, and multi-image to 3D turns it into a model. The bust is fitted to
@@ -144,8 +144,10 @@ kit keeps the generated shape and paint and replaces everything else.
   texture is analysed at run time, and no eye texture variants ship for
   finished kits. At build time the only texture read for a decision is a
   generated hair or beard bust's paint, to place the piece's edge.
-- The human male kit is 13.9 MB; the hair and beard pieces add 6.9 MB, 4.8 MB
-  of it their textures.
+- The human male kit is 7.4 MB. It was 13.9 MB with every texture as PNG;
+  since 2026-11-25 opaque textures are embedded as JPEG (base colour at
+  quality 90, normal maps at 95 with full chroma) and only alpha-blended ones
+  stay PNG. The client enables Bevy's `jpeg` feature for this.
   Its body is 23,156 triangles, inside the 25k body budget of
   ART-PRODUCTION.md; with trunks, eyes and one brow set it draws 25,796. The
   dense hands and feet of the scaffold account for 10,920. The hairstyles are

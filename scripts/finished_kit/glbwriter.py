@@ -41,8 +41,17 @@ class GLB:
         if normalized: d['normalized'] = True
         self.j['accessors'].append(d); return len(self.j['accessors']) - 1
 
-    def texture(self, path, name):
-        data = open(path, 'rb').read(); self.j['images'].append(dict(name=name, mimeType='image/png', bufferView=self._view(data)))
+    def texture(self, path, name, jpeg=None):
+        """Embed an image. `jpeg` = (quality, subsampling) stores an opaque texture as JPEG, a quarter of the PNG
+        or less; PIL's encoder is deterministic, so the build stays reproducible."""
+        if jpeg is None:
+            data, mime = open(path, 'rb').read(), 'image/png'
+        else:
+            import io
+            from PIL import Image
+            out = io.BytesIO(); Image.open(path).convert('RGB').save(out, 'JPEG', quality=jpeg[0], subsampling=jpeg[1], optimize=True)
+            data, mime = out.getvalue(), 'image/jpeg'
+        self.j['images'].append(dict(name=name, mimeType=mime, bufferView=self._view(data)))
         self.j['textures'].append(dict(sampler=0, source=len(self.j['images']) - 1)); return len(self.j['textures']) - 1
 
     def material(self, name, base=None, normal=None, alpha=None, color=(1, 1, 1, 1), roughness=0.9, double_sided=False):
