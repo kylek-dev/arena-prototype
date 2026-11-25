@@ -30,6 +30,7 @@ use arena_server::ticket::TicketKey;
 use arena_server::{Config, start};
 use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::MAX_ROUND_TICKS;
+use tracing::Instrument;
 
 const MAX_ROUND_SECONDS: u64 = MAX_ROUND_TICKS / TICKS_PER_SECOND;
 const USAGE: &str = "usage: arena-server [--bind ADDR] [--dev] [--debug-json] [--drain-seconds N] \
@@ -38,16 +39,29 @@ const USAGE: &str = "usage: arena-server [--bind ADDR] [--dev] [--debug-json] [-
 /// How often a drain reports the matches it is waiting for.
 const DRAIN_REPORT: Duration = Duration::from_secs(10);
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    arena_server::logging::init();
-    match run().await {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(message) => {
-            tracing::error!(reason = %message, "arena-server failed");
+fn main() -> ExitCode {
+    // Telemetry starts before and stops after the runtime: the OTLP HTTP
+    // exporter blocks, which an async context must not do.
+    let telemetry = arena_server::logging::init("arena-server");
+    let code = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => {
+            let result = runtime.block_on(run());
+            drop(runtime);
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(message) => {
+                    tracing::error!(reason = %message, "arena-server failed");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Err(error) => {
+            tracing::error!(reason = %error, "arena-server could not start its runtime");
             ExitCode::FAILURE
         }
-    }
+    };
+    telemetry.shutdown();
+    code
 }
 
 /// How long to let running matches finish after a stop signal.
@@ -214,45 +228,54 @@ async fn run() -> Result<(), String> {
         );
     }
     stop_signal().await;
-    running.begin_drain();
-    if running.active_matches() > 0 && !drain.is_zero() {
-        tracing::info!(
-            matches = running.active_matches(),
-            drain_seconds = drain.as_secs(),
-            "draining running matches; no new matches. Signal again to stop now."
-        );
-        let deadline = tokio::time::Instant::now() + drain;
-        loop {
-            let wait =
-                DRAIN_REPORT.min(deadline.saturating_duration_since(tokio::time::Instant::now()));
-            tokio::select! {
-                finished = running.drained(wait) => {
-                    if finished {
-                        tracing::info!("drain finished: every match has ended");
-                        break;
+    let drain_span = arena_server::control_span!(
+        "server.drain",
+        matches = running.active_matches(),
+        drain_seconds = drain.as_secs()
+    );
+    async move {
+        running.begin_drain();
+        if running.active_matches() > 0 && !drain.is_zero() {
+            tracing::info!(
+                matches = running.active_matches(),
+                drain_seconds = drain.as_secs(),
+                "draining running matches; no new matches. Signal again to stop now."
+            );
+            let deadline = tokio::time::Instant::now() + drain;
+            loop {
+                let wait = DRAIN_REPORT
+                    .min(deadline.saturating_duration_since(tokio::time::Instant::now()));
+                tokio::select! {
+                    finished = running.drained(wait) => {
+                        if finished {
+                            tracing::info!("drain finished: every match has ended");
+                            break;
+                        }
+                        if tokio::time::Instant::now() >= deadline {
+                            tracing::warn!(
+                                matches = running.active_matches(),
+                                reason = "drain_timeout",
+                                "drain time is up; closing matches"
+                            );
+                            break;
+                        }
+                        tracing::info!(matches = running.active_matches(), "still draining");
                     }
-                    if tokio::time::Instant::now() >= deadline {
+                    _ = stop_signal() => {
                         tracing::warn!(
                             matches = running.active_matches(),
-                            reason = "drain_timeout",
-                            "drain time is up; closing matches"
+                            reason = "second_signal",
+                            "stopping now; closing matches"
                         );
                         break;
                     }
-                    tracing::info!(matches = running.active_matches(), "still draining");
-                }
-                _ = stop_signal() => {
-                    tracing::warn!(
-                        matches = running.active_matches(),
-                        reason = "second_signal",
-                        "stopping now; closing matches"
-                    );
-                    break;
                 }
             }
         }
+        running.stop().await.map_err(|error| error.to_string())
     }
-    running.stop().await.map_err(|error| error.to_string())
+    .instrument(drain_span)
+    .await
 }
 
 async fn stop_signal() {

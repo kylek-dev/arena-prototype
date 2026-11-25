@@ -1,7 +1,8 @@
 # Prometheus inside grafana/otel-lgtm (ADR 0054), mounted over the image's
-# /otel-lgtm/prometheus.yaml. The image's own file has no scrape jobs (it
-# takes OTLP pushes), so this keeps its OTLP settings and adds the arena
-# services' private /metrics endpoints on the Compose network.
+# /otel-lgtm/prometheus.yaml. Grafana Alloy on the game host scrapes the
+# arena services and remote-writes here (deploy/observability/alloy.alloy),
+# so this Prometheus scrapes nothing itself; this file keeps the image's OTLP
+# settings. Retention is a flag: PROMETHEUS_EXTRA_ARGS in deploy/compose.yaml.
 global:
   scrape_interval: 15s
   scrape_timeout: 5s
@@ -19,10 +20,3 @@ storage:
   tsdb:
     out_of_order_time_window: 10m
 
-scrape_configs:
-  - job_name: arena-server
-    static_configs:
-      - targets: ["server:8080"]
-  - job_name: arena-door
-    static_configs:
-      - targets: ["door:8090"]

@@ -436,6 +436,35 @@ impl ProcessStats {
     }
 }
 
+/// Appends the Tokio runtime's stable gauges (workers, alive tasks, global
+/// queue depth) when called inside a runtime. Per-task poll metrics need
+/// `tokio_unstable` and are not reported.
+pub fn render_runtime(text: &mut String) {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let runtime = handle.metrics();
+    for (name, help, value) in [
+        (
+            "tokio_workers",
+            "Worker threads of the Tokio runtime.",
+            runtime.num_workers(),
+        ),
+        (
+            "tokio_alive_tasks",
+            "Tasks alive in the Tokio runtime.",
+            runtime.num_alive_tasks(),
+        ),
+        (
+            "tokio_global_queue_depth",
+            "Tasks waiting in the Tokio runtime's global queue.",
+            runtime.global_queue_depth(),
+        ),
+    ] {
+        write_metric(text, name, "gauge", help, value);
+    }
+}
+
 /// `VmRSS:    1234 kB` from `/proc/self/status`.
 fn parse_resident_bytes(status: &str) -> Option<u64> {
     let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;

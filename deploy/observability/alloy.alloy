@@ -1,0 +1,117 @@
+// Grafana Alloy on the game host (ADR 0054): ships what arena-server,
+// arena-door and Caddy produce to an LGTM stack, the same way locally and in
+// production. Destinations come from the environment, so a remote LGTM, a
+// dedicated observability VPS or a managed service needs no change here:
+//   ARENA_OBS_OTLP_ENDPOINT     OTLP/HTTP for traces (default http://lgtm:4318)
+//   ARENA_OBS_REMOTE_WRITE_URL  Prometheus remote write (default http://lgtm:9090/api/v1/write)
+//   ARENA_OBS_LOKI_URL          Loki push API (default http://lgtm:3100/loki/api/v1/push)
+//   ARENA_OBS_PROJECT           the Compose project whose logs are shipped (default arena)
+// Nothing is listening for the public: Alloy's own ports stay on the
+// private network (and its UI on loopback).
+
+// ---- Metrics: scrape the private /metrics endpoints, remote-write them.
+
+prometheus.scrape "arena" {
+  targets = [
+    {"__address__" = "server:8080", "job" = "arena-server"},
+    {"__address__" = "door:8090", "job" = "arena-door"},
+  ]
+  scrape_interval = "15s"
+  scrape_timeout  = "5s"
+  forward_to      = [prometheus.remote_write.lgtm.receiver]
+}
+
+prometheus.remote_write "lgtm" {
+  endpoint {
+    url = coalesce(sys.env("ARENA_OBS_REMOTE_WRITE_URL"), "http://lgtm:9090/api/v1/write")
+  }
+}
+
+// ---- Logs: the Compose services' JSON stdout, read from Docker.
+
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "arena" {
+  targets = discovery.docker.containers.targets
+
+  // Only this deployment's services; never other containers on the host.
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    regex         = coalesce(sys.env("ARENA_OBS_PROJECT"), "arena")
+    action        = "keep"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "server|door|caddy"
+    action        = "keep"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service_name"
+  }
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    target_label  = "compose_project"
+  }
+}
+
+loki.source.docker "arena" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.arena.output
+  forward_to = [loki.process.arena.receiver]
+}
+
+// The services log JSON. The level becomes a lowercase label (Caddy writes
+// "info", the Rust services "INFO"); a line inside a traced span gets its
+// trace_id as structured metadata, which Grafana's Loki datasource links to
+// Tempo. match_id and the rest stay searchable in the line itself.
+loki.process "arena" {
+  stage.json {
+    expressions = {level = "level", trace_id = "span.trace_id"}
+  }
+  stage.template {
+    source   = "level"
+    template = "{{ ToLower .Value }}"
+  }
+  stage.labels {
+    values = {level = ""}
+  }
+  stage.structured_metadata {
+    values = {trace_id = ""}
+  }
+  forward_to = [loki.write.lgtm.receiver]
+}
+
+// Loki's own push API keeps the service_name label as set above (its OTLP
+// intake would replace it with the resource's service name).
+loki.write "lgtm" {
+  endpoint {
+    url = coalesce(sys.env("ARENA_OBS_LOKI_URL"), "http://lgtm:3100/loki/api/v1/push")
+  }
+}
+
+// ---- Traces: the services send OTLP here when OTEL_EXPORTER_OTLP_ENDPOINT
+// is http://alloy:4318.
+
+otelcol.receiver.otlp "arena" {
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+  output {
+    traces = [otelcol.processor.batch.arena.input]
+  }
+}
+
+otelcol.processor.batch "arena" {
+  output {
+    traces = [otelcol.exporter.otlphttp.lgtm.input]
+  }
+}
+
+otelcol.exporter.otlphttp "lgtm" {
+  client {
+    endpoint = coalesce(sys.env("ARENA_OBS_OTLP_ENDPOINT"), "http://lgtm:4318")
+  }
+}

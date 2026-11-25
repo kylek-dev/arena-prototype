@@ -47,6 +47,7 @@ use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior};
+use tracing::Span;
 
 use super::{Door, unix_now};
 use crate::RateWindow;
@@ -285,6 +286,67 @@ fn random_below(bound: usize) -> usize {
 
 type Senders = HashMap<QueueConn, mpsc::Sender<ToClient>>;
 
+/// Each searching player's trace (ADR 0054): a `queue.search` span from
+/// entering a queue until a ticket, a stop or leaving, with a child span per
+/// step (ready check offered, accepted, declined, requeued, ticket minted).
+/// Spans only: these steps write no log lines.
+#[derive(Default)]
+struct Searches(HashMap<QueueConn, Span>);
+
+impl Searches {
+    fn observe(&mut self, out: &Out) {
+        match out {
+            Out::Party { conn, view } => match view.queue {
+                Some(mode) => {
+                    self.0.entry(*conn).or_insert_with(|| {
+                        crate::control_span!(
+                            parent: None,
+                            "queue.search",
+                            conn_id = *conn,
+                            mode = mode.id(),
+                            party_size = view.members,
+                            outcome = tracing::field::Empty,
+                            match_id = tracing::field::Empty
+                        )
+                    });
+                }
+                None => self.end(*conn, "idle"),
+            },
+            Out::ReadyCheck { conn, check } if check.accepted == 0 => {
+                self.step(*conn, "ready_check.offer");
+            }
+            Out::Requeued { conn, .. } => self.step(*conn, "queue.requeue"),
+            Out::Stopped { conn, reason } => self.end(*conn, reason.code()),
+            _ => {}
+        }
+    }
+
+    fn step(&self, conn: QueueConn, name: &'static str) {
+        if let Some(search) = self.0.get(&conn) {
+            drop(crate::control_span!(parent: search, "queue.step", step = name));
+        }
+    }
+
+    fn end(&mut self, conn: QueueConn, outcome: &str) {
+        if let Some(search) = self.0.remove(&conn) {
+            search.record("outcome", outcome);
+        }
+    }
+
+    fn matched(&mut self, conn: QueueConn, match_id: u64) {
+        if let Some(search) = self.0.remove(&conn) {
+            drop(crate::control_span!(
+                parent: &search,
+                "queue.step",
+                step = "ticket.mint",
+                match_id = %MatchId(match_id)
+            ));
+            search.record("outcome", "matched");
+            search.record("match_id", tracing::field::display(MatchId(match_id)));
+        }
+    }
+}
+
 fn send(conns: &Senders, conn: QueueConn, message: ToClient) {
     if let Some(sender) = conns.get(&conn) {
         // A full outbox means a stalled client; it misses this message.
@@ -298,6 +360,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
     let mut mm = Matchmaker::new(door.config.ready_timeout, random_below);
     let mut conns: Senders = HashMap::new();
     let mut addresses: HashMap<QueueConn, IpAddr> = HashMap::new();
+    let mut searches = Searches::default();
     let mut tick = tokio::time::interval(TICK_EVERY);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut status_at = Instant::now() + STATUS_EVERY;
@@ -318,16 +381,29 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     addresses.insert(conn, address);
                     mm.connect(conn, guest, now)
                 }
-                Some(Command::CreateParty { conn }) => mm.create_party(conn, now),
-                Some(Command::JoinParty { conn, code }) => mm.join_party(conn, &code, now),
+                // Never record the invite code: it lets anyone join.
+                Some(Command::CreateParty { conn }) => {
+                    crate::control_span!(parent: None, "party.create", conn_id = conn)
+                        .in_scope(|| mm.create_party(conn, now))
+                }
+                Some(Command::JoinParty { conn, code }) => {
+                    crate::control_span!(parent: None, "party.join", conn_id = conn)
+                        .in_scope(|| mm.join_party(conn, &code, now))
+                }
                 Some(Command::LeaveParty { conn }) => mm.leave_party(conn, now),
                 Some(Command::Queue { conn, mode }) => {
                     queued_conn = Some(conn);
                     mm.queue(conn, mode, now)
                 }
                 Some(Command::Cancel { conn }) => mm.cancel(conn),
-                Some(Command::Accept { conn }) => mm.accept(conn, now),
-                Some(Command::Decline { conn }) => mm.decline(conn, now),
+                Some(Command::Accept { conn }) => {
+                    searches.step(conn, "ready_check.accept");
+                    mm.accept(conn, now)
+                }
+                Some(Command::Decline { conn }) => {
+                    searches.step(conn, "ready_check.decline");
+                    mm.decline(conn, now)
+                }
                 Some(Command::CreateLobby { conn, mode }) => mm.create_lobby(conn, mode, now),
                 Some(Command::JoinLobby { conn, code }) => mm.join_lobby(conn, &code, now),
                 Some(Command::LeaveLobby { conn }) => mm.leave_lobby(conn),
@@ -347,6 +423,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 }
                 Some(Command::StartLobby { conn }) => mm.start_lobby(conn),
                 Some(Command::Gone { conn }) => {
+                    searches.end(conn, "left");
                     conns.remove(&conn);
                     addresses.remove(&conn);
                     mm.disconnect(conn, now)
@@ -354,6 +431,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
             },
         };
         for action in out {
+            searches.observe(&action);
             match action {
                 Out::Party { conn, view } => send(&conns, conn, ToClient::party(view)),
                 Out::ReadyCheck { conn, check } => send(
@@ -392,6 +470,8 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     conn,
                     reason: Closed::Replaced,
                 } => {
+                    // The replaced connection's task leaves without a Gone.
+                    searches.end(conn, "replaced");
                     send(
                         &conns,
                         conn,
@@ -403,7 +483,12 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     conns.remove(&conn);
                     addresses.remove(&conn);
                 }
-                Out::Start { mode, seats } => start_match(&door, &conns, mode, seats),
+                Out::Start { mode, seats } => {
+                    let match_id = start_match(&door, &conns, mode, &seats);
+                    for conn in seats {
+                        searches.matched(conn, match_id);
+                    }
+                }
                 Out::Lobby { conn, view } => send(&conns, conn, ToClient::Lobby(view)),
                 Out::LobbyLeft { conn, reason } => send(
                     &conns,
@@ -459,6 +544,10 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
             }
         }
         publish_metrics(&door, &mut mm, conns.len());
+        debug_assert!(
+            searches.0.len() <= conns.len(),
+            "a search outlived its connection"
+        );
     }
     for sender in conns.values() {
         let _ = sender.try_send(ToClient::error(
@@ -508,7 +597,8 @@ fn publish_metrics(door: &Door, mm: &mut Matchmaker, connections: usize) {
     }
 }
 
-fn start_match(door: &Door, conns: &Senders, mode: Mode, seats: Vec<QueueConn>) {
+/// Issues a queue match's tickets; returns its id.
+fn start_match(door: &Door, conns: &Senders, mode: Mode, seats: &[QueueConn]) -> u64 {
     let expires = unix_now() + door.config.ticket_ttl.as_secs();
     let created = ticket::issue_match(&door.config.key, mode.team_size(), expires)
         .expect("queue modes have playable team sizes");
@@ -521,8 +611,8 @@ fn start_match(door: &Door, conns: &Senders, mode: Mode, seats: Vec<QueueConn>) 
         team_size = mode.team_size(),
         "match formed from the queue"
     );
-    for (seat, (conn, ticket)) in seats.into_iter().zip(created.tickets).enumerate() {
-        if let Some(sender) = conns.get(&conn) {
+    for (seat, (conn, ticket)) in seats.iter().zip(created.tickets).enumerate() {
+        if let Some(sender) = conns.get(conn) {
             let _ = sender.try_send(ToClient::Match {
                 mode: mode.id().into(),
                 match_id: format!("{:016x}", created.match_id),
@@ -534,6 +624,7 @@ fn start_match(door: &Door, conns: &Senders, mode: Mode, seats: Vec<QueueConn>) 
             });
         }
     }
+    created.match_id
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -581,15 +672,23 @@ fn start_custom_match(
         &door.metrics.tickets,
         (created.tickets.len() + created.spectator_tickets.len()) as u64,
     );
-    tracing::info!(
+    crate::control_span!(
+        parent: None,
+        "lobby.start",
         match_id = %MatchId(created.match_id),
-        mode = mode.id(),
-        team_size = mode.team_size(),
-        map = settings.map.id(),
-        round_seconds = settings.round_seconds,
-        spectators = spectators.len(),
-        "match started from a custom lobby"
-    );
+        mode = mode.id()
+    )
+    .in_scope(|| {
+        tracing::info!(
+            match_id = %MatchId(created.match_id),
+            mode = mode.id(),
+            team_size = mode.team_size(),
+            map = settings.map.id(),
+            round_seconds = settings.round_seconds,
+            spectators = spectators.len(),
+            "match started from a custom lobby"
+        );
+    });
     let match_id = format!("{:016x}", created.match_id);
     for (seat, (conn, ticket)) in seats.into_iter().zip(created.tickets).enumerate() {
         if let Some(sender) = conns.get(&conn) {
@@ -653,7 +752,21 @@ async fn say(socket: &mut WebSocket, message: &ToClient) -> bool {
     socket.send(Message::Text(text.into())).await.is_ok()
 }
 
+/// Queue connections closed for floods or garbage: one throttled warning.
+static REFUSALS: crate::anomaly::SharedThrottle =
+    crate::anomaly::SharedThrottle::new(crate::anomaly::REPORT_EVERY);
+
 async fn refuse(socket: &mut WebSocket, code: &str, message: &str) {
+    if matches!(code, "rate_limited" | "bad_request")
+        && let Some(suppressed) = REFUSALS.allow(std::time::Instant::now())
+    {
+        tracing::warn!(
+            error_code = code,
+            suppressed_reports = suppressed,
+            reason = "refused",
+            "closed a queue connection for flooding or malformed messages"
+        );
+    }
     let _ = say(socket, &ToClient::error(code, message)).await;
     let _ = socket.send(Message::Close(None)).await;
 }
@@ -728,6 +841,8 @@ async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr) {
     let first = tokio::time::timeout(HELLO_TIMEOUT, async {
         loop {
             match socket.recv().await {
+                // Closing is leaving, not a malformed message.
+                Some(Ok(Message::Close(_))) => return None,
                 Some(Ok(message)) => match decode(message) {
                     None => {
                         if !rate.allow(Instant::now()) {
@@ -773,6 +888,7 @@ async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr) {
             }
             incoming = socket.recv() => {
                 let message = match incoming {
+                    Some(Ok(Message::Close(_))) => break,
                     Some(Ok(message)) => {
                         if !rate.allow(Instant::now()) {
                             refuse(socket, "rate_limited", "Too many messages.").await;
