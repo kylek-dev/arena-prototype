@@ -81,12 +81,83 @@ network.
 
 ## Watching a playtest
 
-- `docker compose logs -f server` prints one line per match start, seat
-  join, disconnect and end. It never prints tickets.
-- Server counters: `docker compose exec caddy wget -qO- http://server:8080/metrics`.
+- `docker compose logs -f server` prints one JSON line per match start, seat
+  join, disconnect and end (`ARENA_LOG_FORMAT=json` in `compose.yaml`). Every
+  line names the `match_id` the lobby shows, and seat lines carry `seat` and
+  `conn_id`, so `docker compose logs server door | grep 0123456789abcdef`
+  follows one match from the door to the server. Logs never contain tickets,
+  join links or the signing key. Set `RUST_LOG=debug` in `deploy/.env` for
+  more, or run the binaries without `ARENA_LOG_FORMAT` for readable lines.
+- Server counters: `docker compose exec caddy wget -qO- http://server:8080/metrics`,
+  and the front door's at `http://door:8090/metrics`.
 - Players can add `?debug=1` before the `#` in their link to see ping,
   corrections, queue and server tick rate in the diagnostics overlay.
   Record those numbers in the playtest notes (issue `remote-playtests`).
+
+## Observability
+
+Opt-in dashboards for a playtest machine ([ADR 0054](decisions/0054-observability-logs-metrics-and-local-lgtm.md)):
+
+```sh
+docker compose -f deploy/compose.yaml --env-file deploy/.env --profile obs up -d
+```
+
+This adds one `grafana/otel-lgtm` container (Grafana, Prometheus, Loki,
+Tempo and an OpenTelemetry collector, capped at 1 GB of memory). Its ports
+are bound to `127.0.0.1` only: open Grafana at `http://127.0.0.1:3000` on the
+machine, or from elsewhere through a tunnel such as
+`ssh -L 3000:127.0.0.1:3000 HOST`. Never publish it through Caddy.
+
+Prometheus scrapes `server:8080/metrics` and `door:8090/metrics` every 15 s
+over the private network (`deploy/observability/prometheus.yaml`). Three
+dashboards are provisioned in the **Arena** folder:
+
+| Dashboard | Shows |
+| --- | --- |
+| Match Server Health | active matches, connections, spectators, drain state, matches created and finished, errors by code, refusals, RSS, CPU, open descriptors |
+| Tick Latency & Input Jitter | tick duration p50/p95/p99 and mean from `arena_tick_duration_microseconds`, slowest tick, overruns, input arrivals per tick, starved/folded/stale/overflowed inputs, dropped frames, bytes out |
+| Front Door & Matchmaking | players queued per mode, queue connections, parties, lobbies, queue wait p50/p95, ready checks and accepts/declines, matches and tickets issued, refusals, searches by party size |
+
+Grafana in this image signs everyone in as an administrator without a
+password. That is acceptable only because its port is on loopback.
+
+Logs and traces are not shipped yet (Phase 2 of
+`planning/issues/observability-telemetry.md`); read logs with
+`docker compose logs`.
+
+### Observability trial
+
+Run on 2026-11-25 on the development machine (WSL2, Docker 29.1.3), with
+`ARENA_HOST=localhost`, the `obs` profile and the `server`, `door` and `lgtm`
+services (no Caddy). For synthetic traffic a scratch override published the
+door and server on loopback ports and a Node script queued six guests
+(one declined ready check, two 1v1 matches found after 1.5 s and 3 s), created
+one lobby match and held every seat for 70 s. Observed:
+
+- **Logs.** Both containers wrote one JSON object per line
+  (`"message":"arena-server listening on ws://0.0.0.0:8080/play"`).
+- **Scraping.** `up` was 1 for `arena-server` and `arena-door`.
+  `arena_tick_duration_microseconds_count` equalled `arena_ticks_total`
+  (6 248). The door reported 6 tickets, 4 found waits and a queue-wait p95
+  of 3.8 s. The ready-check counts included one check left over from an
+  earlier aborted run of the script.
+- **Dashboards.** All three were provisioned in the **Arena** folder, the
+  home page opened Match Server Health, and every panel query returned data
+  through Grafana's Prometheus datasource. A second run after the final
+  changes (28 panels, finer tick buckets, party sizes) again returned data
+  for every panel: tick p50 about 11 µs and p99 about 48 µs, and 6 solo
+  searches.
+- **Memory.** `lgtm` used 550 MiB of its 1 GiB limit, while the server and
+  door used about 3 MiB each.
+
+The same day, release builds were compared under the same load: 60 3v3
+`arena-bot` matches of 20 s with seed 7, against `arena-server --dev`, run
+alternately twice. Mean running-tick time was 8.28 and 8.80 µs before this
+change and 8.43 and 8.22 µs after it, with 0 overruns in every run. That
+difference is within run-to-run noise, so no regression was seen.
+
+Not observed: a browser looking at the dashboards (they were checked through
+Grafana's HTTP API), or a production host.
 
 ## Local trial
 

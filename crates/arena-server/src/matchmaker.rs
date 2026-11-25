@@ -312,6 +312,28 @@ struct Forming {
 /// Players waiting per queue, indexed by [`Mode::index`].
 pub type Waiting = [usize; 3];
 
+/// Running totals since start, for the front door's `/metrics`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stats {
+    /// Ready checks offered (queue pops).
+    pub checks_started: u64,
+    /// Ready checks everyone accepted: a match was issued.
+    pub checks_completed: u64,
+    /// Ready checks that failed: a decline, a timeout or someone leaving.
+    pub checks_failed: u64,
+    /// Players who accepted a ready check.
+    pub accepts: u64,
+    /// Players who declined a ready check, including ones who had accepted
+    /// it first (they stay counted in `accepts`: both are counters).
+    pub declines: u64,
+    /// Searches started, by party size (index 0 is a solo player).
+    pub searches_by_size: [u64; MAX_PARTY],
+}
+
+/// Found waits buffered between [`Matchmaker::take_found_waits`] calls;
+/// beyond this, newer waits are not recorded (metrics only).
+const FOUND_WAITS_BUFFER: usize = 256;
+
 #[derive(Debug)]
 pub struct Matchmaker {
     queues: [VecDeque<u64>; 3],
@@ -330,6 +352,9 @@ pub struct Matchmaker {
     guests: HashMap<Guest, QueueConn>,
     /// How long recent matches took to find, per queue, newest last.
     waits: [VecDeque<Duration>; 3],
+    stats: Stats,
+    /// Waits of parties whose match was found, not yet taken for metrics.
+    found: Vec<(Mode, Duration)>,
     ready_timeout: Duration,
     /// A random value in `0..bound`: invite codes, team sides and seats.
     random: fn(usize) -> usize,
@@ -350,6 +375,8 @@ impl Matchmaker {
             of: HashMap::new(),
             guests: HashMap::new(),
             waits: Default::default(),
+            stats: Stats::default(),
+            found: Vec::new(),
             ready_timeout,
             random,
         }
@@ -366,6 +393,25 @@ impl Matchmaker {
 
     pub fn waiting(&self) -> Waiting {
         self.waiting
+    }
+
+    pub fn stats(&self) -> Stats {
+        self.stats
+    }
+
+    /// Parties with an invite code (made with `create_party`).
+    pub fn parties(&self) -> usize {
+        self.codes.len()
+    }
+
+    /// Open private custom lobbies.
+    pub fn lobbies(&self) -> usize {
+        self.lobbies.len()
+    }
+
+    /// How long each party waited for the matches found since the last call.
+    pub fn take_found_waits(&mut self) -> std::vec::Drain<'_, (Mode, Duration)> {
+        self.found.drain(..)
     }
 
     /// The expected wait for `mode`: the median of how long recent matches
@@ -705,6 +751,7 @@ impl Matchmaker {
         party.state = State::Queued(mode);
         party.since = Some(now);
         self.waiting[mode.index()] += party.members.len();
+        self.stats.searches_by_size[party.members.len() - 1] += 1;
         let mut out = Vec::new();
         self.announce(id, &mut out);
         out.extend(self.form(mode, now));
@@ -751,6 +798,7 @@ impl Matchmaker {
         if !forming.accepted.insert(conn) {
             return Vec::new();
         }
+        self.stats.accepts += 1;
         let everyone = forming.parties.iter().all(|party| {
             self.parties[party]
                 .members
@@ -763,6 +811,7 @@ impl Matchmaker {
             return out;
         }
         let forming = self.forming.remove(&check).expect("exists");
+        self.stats.checks_completed += 1;
         // Team sides at random; members in random order within their team.
         let mut teams: [Vec<QueueConn>; 2] = forming.teams.map(|parties| {
             parties
@@ -792,7 +841,11 @@ impl Matchmaker {
             let party = self.parties.get_mut(id).expect("exists");
             self.waiting[forming.mode.index()] -= party.members.len();
             if let Some(since) = party.since.take() {
-                waits.push_back(now.saturating_duration_since(since));
+                let waited = now.saturating_duration_since(since);
+                if self.found.len() < FOUND_WAITS_BUFFER {
+                    self.found.push((forming.mode, waited));
+                }
+                waits.push_back(waited);
                 if waits.len() > RECENT_WAITS {
                     waits.pop_front();
                 }
@@ -817,6 +870,7 @@ impl Matchmaker {
         let forming = self.forming.get_mut(&check).expect("check exists");
         forming.accepted.remove(&conn);
         forming.declined.insert(conn);
+        self.stats.declines += 1;
         self.fail(check, now)
     }
 
@@ -845,6 +899,7 @@ impl Matchmaker {
         let Some(forming) = self.forming.remove(&check) else {
             return Vec::new();
         };
+        self.stats.checks_failed += 1;
         let mode = forming.mode;
         let mut out = Vec::new();
         let mut back = Vec::new();
@@ -947,6 +1002,7 @@ impl Matchmaker {
                 .collect();
             self.queues[mode.index()].retain(|id| !chosen.contains(id));
             let check = self.id();
+            self.stats.checks_started += 1;
             for id in &parties {
                 self.parties.get_mut(id).expect("exists").state = State::Forming(check);
             }
@@ -1400,6 +1456,59 @@ mod tests {
         assert_eq!(mm.searching().collect::<Vec<_>>(), [(1, Mode::Duel, start)]);
         assert_eq!(mm.searching_party(1), Some((Mode::Duel, start, vec![1])));
         assert_eq!(mm.searching_party(2), None);
+        mm.check();
+    }
+
+    #[test]
+    fn stats_count_pops_accepts_declines_timeouts_and_found_waits() {
+        let start = Instant::now();
+        let mut mm = mm();
+        connect(&mut mm, 1..=4, start);
+        // A duel found after 7 s, accepted by both.
+        mm.queue(1, Mode::Duel, start);
+        let found = start + Duration::from_secs(7);
+        mm.queue(2, Mode::Duel, found);
+        accept_all(&mut mm, &[1, 2], found);
+        // A repeated accept is not counted twice.
+        mm.accept(1, found);
+        assert_eq!(
+            mm.take_found_waits().collect::<Vec<_>>(),
+            [
+                (Mode::Duel, Duration::from_secs(7)),
+                (Mode::Duel, Duration::ZERO)
+            ]
+        );
+        assert_eq!(mm.take_found_waits().count(), 0, "taken once");
+        // One declined check, then one that times out.
+        mm.queue(3, Mode::Duel, found);
+        mm.queue(4, Mode::Duel, found);
+        mm.accept(3, found);
+        mm.decline(4, found);
+        mm.queue(4, Mode::Duel, found);
+        mm.tick(found + READY + Duration::from_secs(1));
+        assert_eq!(
+            mm.stats(),
+            Stats {
+                checks_started: 3,
+                checks_completed: 1,
+                checks_failed: 2,
+                accepts: 3,
+                declines: 1,
+                // Solo searches: 1, 2, 3, 4 and 4 again after declining.
+                searches_by_size: [5, 0, 0],
+            }
+        );
+        assert_eq!(
+            mm.take_found_waits().count(),
+            0,
+            "failed checks find nothing"
+        );
+        assert_eq!(mm.parties(), 0);
+        mm.create_party(1, found);
+        assert_eq!(mm.parties(), 1);
+        assert_eq!(mm.lobbies(), 0);
+        mm.create_lobby(2, Mode::Duel, found);
+        assert_eq!(mm.lobbies(), 1);
         mm.check();
     }
 

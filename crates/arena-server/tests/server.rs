@@ -489,6 +489,18 @@ async fn operations_endpoints_and_development_guards() {
         "{metrics}"
     );
     assert!(metrics.contains("arena_matches_active 1\n"), "{metrics}");
+    assert!(metrics.contains("arena_draining 0\n"), "{metrics}");
+    assert!(
+        metrics.contains("# TYPE arena_tick_duration_microseconds histogram\n"),
+        "{metrics}"
+    );
+    if cfg!(target_os = "linux") {
+        assert!(
+            metrics.contains("\nprocess_resident_memory_bytes "),
+            "{metrics}"
+        );
+        assert!(metrics.contains("\nprocess_open_fds "), "{metrics}");
+    }
     running.shut_down(Duration::ZERO).await.unwrap();
 
     // Without --dev there is no ticket issuing endpoint.
@@ -576,6 +588,8 @@ async fn draining_keeps_running_matches_until_stopped() {
     assert_eq!(running.active_matches(), 1);
     // No new matches and not ready, but the running match plays on ...
     assert_eq!(http(addr, "GET", "/readyz").await.0, 503);
+    let (_, metrics) = http(addr, "GET", "/metrics").await;
+    assert!(metrics.contains("arena_draining 1\n"), "{metrics}");
     assert_eq!(http(addr, "POST", "/dev/match").await.0, 503);
     let before = first
         .snapshot_until(|snapshot| snapshot.tick > 0)

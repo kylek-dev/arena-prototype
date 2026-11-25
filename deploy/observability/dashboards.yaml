@@ -1,0 +1,12 @@
+# Grafana dashboard provider for the arena dashboards (ADR 0054), mounted at
+# /otel-lgtm/grafana/conf/provisioning/dashboards/custom.yaml.
+apiVersion: 1
+providers:
+  - name: arena
+    folder: Arena
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /otel-lgtm/grafana/conf/provisioning/dashboards/custom
+      foldersFromFilesStructure: false

@@ -51,6 +51,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 use super::{Door, unix_now};
 use crate::RateWindow;
 use crate::ingress;
+use crate::logging::MatchId;
 use crate::matchmaker::{
     CODE_LENGTH, Closed, Guest, LobbySlot, LobbyView, Matchmaker, Mode, Out, PartyView, QueueConn,
 };
@@ -457,9 +458,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 );
             }
         }
-        door.metrics
-            .queued
-            .store(mm.waiting().iter().sum::<usize>() as u64, Ordering::Relaxed);
+        publish_metrics(&door, &mut mm, conns.len());
     }
     for sender in conns.values() {
         let _ = sender.try_send(ToClient::error(
@@ -469,16 +468,58 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
     }
 }
 
+/// Copies the matchmaker's gauges and totals into the door's `/metrics`.
+fn publish_metrics(door: &Door, mm: &mut Matchmaker, connections: usize) {
+    let metrics = &door.metrics;
+    let waiting = mm.waiting();
+    metrics
+        .queued
+        .store(waiting.iter().sum::<usize>() as u64, Ordering::Relaxed);
+    for (gauge, count) in metrics.queued_by_mode.iter().zip(waiting) {
+        gauge.store(count as u64, Ordering::Relaxed);
+    }
+    metrics
+        .queue_connections
+        .store(connections as u64, Ordering::Relaxed);
+    metrics
+        .parties
+        .store(mm.parties() as u64, Ordering::Relaxed);
+    metrics
+        .lobbies
+        .store(mm.lobbies() as u64, Ordering::Relaxed);
+    let stats = mm.stats();
+    for (counter, total) in [
+        (&metrics.checks_started, stats.checks_started),
+        (&metrics.checks_completed, stats.checks_completed),
+        (&metrics.checks_failed, stats.checks_failed),
+        (&metrics.accepts, stats.accepts),
+        (&metrics.declines, stats.declines),
+    ] {
+        counter.store(total, Ordering::Relaxed);
+    }
+    for (counter, total) in metrics.searches_by_size.iter().zip(stats.searches_by_size) {
+        counter.store(total, Ordering::Relaxed);
+    }
+    for (_, waited) in mm.take_found_waits() {
+        metrics
+            .queue_wait
+            .0
+            .record(u64::try_from(waited.as_millis()).unwrap_or(u64::MAX));
+    }
+}
+
 fn start_match(door: &Door, conns: &Senders, mode: Mode, seats: Vec<QueueConn>) {
     let expires = unix_now() + door.config.ticket_ttl.as_secs();
     let created = ticket::issue_match(&door.config.key, mode.team_size(), expires)
         .expect("queue modes have playable team sizes");
     Metrics::add(&door.metrics.issued, 1);
     Metrics::add(&door.metrics.queue_matches, 1);
-    eprintln!(
-        "match {:016x}: formed from the {} queue",
-        created.match_id,
-        mode.id()
+    Metrics::add(&door.metrics.tickets, created.tickets.len() as u64);
+    tracing::info!(
+        match_id = %MatchId(created.match_id),
+        mode = mode.id(),
+        team_size = mode.team_size(),
+        "match formed from the queue"
     );
     for (seat, (conn, ticket)) in seats.into_iter().zip(created.tickets).enumerate() {
         if let Some(sender) = conns.get(&conn) {
@@ -536,13 +577,18 @@ fn start_custom_match(
     .expect("validated custom lobby settings and mode");
     Metrics::add(&door.metrics.issued, 1);
     Metrics::add(&door.metrics.custom_matches, 1);
-    eprintln!(
-        "match {:016x}: started from a {} custom lobby (map={}, round={}s, spectators={})",
-        created.match_id,
-        mode.id(),
-        settings.map.id(),
-        settings.round_seconds,
-        spectators.len(),
+    Metrics::add(
+        &door.metrics.tickets,
+        (created.tickets.len() + created.spectator_tickets.len()) as u64,
+    );
+    tracing::info!(
+        match_id = %MatchId(created.match_id),
+        mode = mode.id(),
+        team_size = mode.team_size(),
+        map = settings.map.id(),
+        round_seconds = settings.round_seconds,
+        spectators = spectators.len(),
+        "match started from a custom lobby"
     );
     let match_id = format!("{:016x}", created.match_id);
     for (seat, (conn, ticket)) in seats.into_iter().zip(created.tickets).enumerate() {

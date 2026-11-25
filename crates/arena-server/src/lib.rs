@@ -9,6 +9,7 @@
 
 pub mod door;
 pub mod ingress;
+pub mod logging;
 pub mod matchmaker;
 pub mod metrics;
 pub mod session;
@@ -41,6 +42,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
 
 use ingress::{Cidr, OpenPerAddress, Origins};
+use logging::MatchId;
 use metrics::Metrics;
 use session::{ConnId, EncodedOut, Limits, Out, Session};
 use ticket::{Claims, TicketKey};
@@ -239,7 +241,7 @@ impl App {
         let id = claims.match_id;
         Metrics::add(&self.metrics.matches_created, 1);
         Metrics::add(&self.metrics.matches_active, 1);
-        eprintln!("match {id:016x}: started for {team_size}v{team_size} by its first connection");
+        tracing::info!(match_id = %MatchId(id), team_size, "match started by its first connection");
         let session = Session::new(arena, map_hash, self.config.limits, self.metrics.clone());
         tokio::spawn(run_match(
             self.clone(),
@@ -317,7 +319,7 @@ fn apply_command(
         Some(Command::Detach { seat, conn }) => {
             remove_conn(conns, conn);
             if session.holds(seat, conn) {
-                eprintln!("match {id:016x}: seat {seat} disconnected (connection {conn})");
+                tracing::info!(match_id = %MatchId(id), seat, conn_id = conn, "seat disconnected");
             }
             session.detach(seat, conn);
             return;
@@ -430,15 +432,18 @@ async fn run_match(
                 let seconds = started.duration_since(report_from).as_secs_f64();
                 for (seat, window) in session.take_windows() {
                     let rate = |count: u32| f64::from(count) / seconds;
-                    eprintln!(
-                        "match {id:016x}: seat {seat} over {seconds:.1} s: {:.2} ticks/s, {:.2} inputs/s received, {:.2}/s applied, {} folded, {} starved, queue {}..{}",
-                        rate(window.ticks),
-                        rate(window.received),
-                        rate(window.applied),
-                        window.folded,
-                        window.starved,
-                        window.queue_min.unwrap_or(0),
-                        window.queue_max
+                    tracing::info!(
+                        match_id = %MatchId(id),
+                        seat,
+                        window_seconds = seconds,
+                        ticks_per_second = rate(window.ticks),
+                        inputs_received_per_second = rate(window.received),
+                        inputs_applied_per_second = rate(window.applied),
+                        folded = window.folded,
+                        starved = window.starved,
+                        queue_min = window.queue_min.unwrap_or(0),
+                        queue_max = window.queue_max,
+                        "seat input report"
                     );
                 }
                 report_from = started;
@@ -452,9 +457,13 @@ async fn run_match(
     app.end_match(id, expires);
     Metrics::sub(&app.metrics.matches_active, 1);
     match session.arena().result() {
-        Some(result) => eprintln!("match {id:016x}: ended ({result:?})"),
-        None => eprintln!(
-            "match {id:016x}: ended without a result (seats never all joined, everyone left, or the server stopped)"
+        Some(result) => {
+            tracing::info!(match_id = %MatchId(id), result = ?result, "match ended");
+        }
+        None => tracing::info!(
+            match_id = %MatchId(id),
+            reason = "no_result",
+            "match ended without a result (seats never all joined, everyone left, or the server stopped)"
         ),
     }
 }
@@ -468,20 +477,31 @@ fn log_attach(id: u64, seat: usize, conn: ConnId, out: &[Out]) {
                 conn: to,
                 message: ServerMessage::Welcome(_),
             } if *to == conn => {
-                eprintln!("match {id:016x}: seat {seat} joined (connection {conn})");
+                tracing::info!(match_id = %MatchId(id), seat, conn_id = conn, "seat joined");
             }
             Out::Close {
                 conn: refused,
                 error: Some(code),
             } if *refused == conn => {
-                eprintln!("match {id:016x}: seat {seat} refused connection {conn}: {code:?}");
+                tracing::info!(
+                    match_id = %MatchId(id),
+                    seat,
+                    conn_id = conn,
+                    error_code = ?code,
+                    "seat refused connection"
+                );
             }
             Out::Close {
                 conn: old,
                 error: Some(ErrorCode::Replaced),
             } => {
-                eprintln!(
-                    "match {id:016x}: seat {seat} taken over by connection {conn} from connection {old}"
+                tracing::info!(
+                    match_id = %MatchId(id),
+                    seat,
+                    conn_id = conn,
+                    replaced_conn_id = *old,
+                    reason = "replaced",
+                    "seat taken over by a new connection"
                 );
             }
             _ => {}
@@ -496,13 +516,18 @@ fn log_spectator_attach(id: u64, conn: ConnId, out: &[Out]) {
                 conn: to,
                 message: ServerMessage::Welcome(_),
             } if *to == conn => {
-                eprintln!("match {id:016x}: spectator joined (connection {conn})");
+                tracing::info!(match_id = %MatchId(id), conn_id = conn, "spectator joined");
             }
             Out::Close {
                 conn: refused,
                 error: Some(code),
             } if *refused == conn => {
-                eprintln!("match {id:016x}: spectator refused connection {conn}: {code:?}");
+                tracing::info!(
+                    match_id = %MatchId(id),
+                    conn_id = conn,
+                    error_code = ?code,
+                    "spectator refused connection"
+                );
             }
             _ => {}
         }
@@ -519,9 +544,12 @@ fn deliver(app: &App, id: u64, conns: &mut Conns, out: Vec<Out>) {
                     continue;
                 };
                 if app.config.debug_json {
-                    eprintln!(
-                        "match {id:016x} -> conn {conn}: {}",
-                        message.to_debug_json()
+                    tracing::info!(
+                        target: "arena_server::wire",
+                        match_id = %MatchId(id),
+                        conn_id = conn,
+                        payload = %message.to_debug_json(),
+                        "to client"
                     );
                 }
                 let frame = message.encode();
@@ -570,7 +598,16 @@ async fn ready(State(app): State<Arc<App>>) -> Response {
 }
 
 async fn render_metrics(State(app): State<Arc<App>>) -> String {
-    app.metrics.render()
+    let mut text = app.metrics.render();
+    let _ = std::fmt::Write::write_fmt(
+        &mut text,
+        format_args!(
+            "# HELP arena_draining 1 while the server drains after a stop signal.\n# TYPE arena_draining gauge\narena_draining {}\n",
+            u8::from(app.is_draining())
+        ),
+    );
+    metrics::ProcessStats::read().render(&mut text);
+    text
 }
 
 #[derive(Deserialize)]
@@ -758,9 +795,12 @@ async fn connection(socket: &mut WebSocket, app: Arc<App>) {
         Err(_) => return reject(socket, &app, ErrorCode::BadTicket).await,
     };
     if app.config.debug_json {
-        eprintln!(
-            "conn {conn} hello: match {:016x} role {:?}",
-            claims.match_id, claims.role
+        tracing::info!(
+            target: "arena_server::wire",
+            match_id = %MatchId(claims.match_id),
+            conn_id = conn,
+            role = ?claims.role,
+            "hello"
         );
     }
     let commands = match app.match_for(&claims) {
@@ -822,7 +862,27 @@ async fn connection(socket: &mut WebSocket, app: Arc<App>) {
                     }
                 };
                 if app.config.debug_json {
-                    eprintln!("conn {conn} -> match: {}", message.to_debug_json());
+                    // A repeated Hello carries a ticket: never print it.
+                    let shown = match &message {
+                        ClientMessage::Hello {
+                            protocol,
+                            appearance,
+                            ..
+                        } => ClientMessage::Hello {
+                            protocol: *protocol,
+                            ticket: Vec::new(),
+                            appearance: appearance.clone(),
+                        }
+                        .to_debug_json()
+                        .replacen("\"ticket\":[]", "\"ticket\":\"<redacted>\"", 1),
+                        other => other.to_debug_json(),
+                    };
+                    tracing::info!(
+                        target: "arena_server::wire",
+                        conn_id = conn,
+                        payload = %shown,
+                        "from client"
+                    );
                 }
                 match message {
                     ClientMessage::Input(frame) => {

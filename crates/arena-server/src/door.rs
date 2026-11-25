@@ -39,7 +39,8 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::ingress::{self, Cidr, OpenPerAddress, Origins, RatePerAddress};
-use crate::metrics::Metrics;
+use crate::logging::MatchId;
+use crate::metrics::{Histogram, Metrics, write_metric};
 use crate::ticket::{self, TicketKey};
 
 pub struct DoorConfig {
@@ -82,15 +83,48 @@ impl DoorConfig {
     }
 }
 
+/// Upper bounds of `arena_door_queue_wait_milliseconds`: 1 s to 10 min.
+const QUEUE_WAIT_BUCKETS_MS: [u64; 11] = [
+    1_000, 2_000, 5_000, 10_000, 20_000, 30_000, 60_000, 120_000, 180_000, 300_000, 600_000,
+];
+
+#[derive(Debug)]
+struct QueueWaits(Histogram<{ QUEUE_WAIT_BUCKETS_MS.len() }>);
+
+impl Default for QueueWaits {
+    fn default() -> Self {
+        Self(Histogram::new(&QUEUE_WAIT_BUCKETS_MS))
+    }
+}
+
 #[derive(Debug, Default)]
 struct DoorMetrics {
     issued: AtomicU64,
+    /// Join tickets signed: one per seat and per spectator.
+    tickets: AtomicU64,
     refused_rate: AtomicU64,
     refused_origin: AtomicU64,
     /// Players in a queue or ready check right now.
     queued: AtomicU64,
+    /// The same per queue, indexed by `Mode::index`.
+    queued_by_mode: [AtomicU64; 3],
+    /// Open `/api/queue` connections that said hello.
+    queue_connections: AtomicU64,
+    /// Parties with an invite code, and private custom lobbies.
+    parties: AtomicU64,
+    lobbies: AtomicU64,
     queue_matches: AtomicU64,
     custom_matches: AtomicU64,
+    /// Copied from the matchmaker's running totals.
+    checks_started: AtomicU64,
+    checks_completed: AtomicU64,
+    checks_failed: AtomicU64,
+    accepts: AtomicU64,
+    declines: AtomicU64,
+    /// Searches started, by party size 1, 2 and 3.
+    searches_by_size: [AtomicU64; crate::matchmaker::MAX_PARTY],
+    /// How long each party searched before its match was found.
+    queue_wait: QueueWaits,
 }
 
 struct Door {
@@ -204,12 +238,12 @@ async fn create(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     Metrics::add(&door.metrics.issued, 1);
-    eprintln!(
-        "match {:016x}: issued {} tickets for {}v{}",
-        created.match_id,
-        created.tickets.len(),
-        created.team_size,
-        created.team_size
+    Metrics::add(&door.metrics.tickets, created.tickets.len() as u64);
+    tracing::info!(
+        match_id = %MatchId(created.match_id),
+        team_size = created.team_size,
+        tickets = created.tickets.len(),
+        "match links issued"
     );
     let seats = created
         .tickets
@@ -238,43 +272,140 @@ async fn create(
 }
 
 async fn render_metrics(State(door): State<Arc<Door>>) -> String {
+    let mut text = render_door_metrics(&door.metrics);
+    crate::metrics::ProcessStats::read().render(&mut text);
+    text
+}
+
+fn render_door_metrics(metrics: &DoorMetrics) -> String {
     let mut text = String::new();
     let _ = writeln!(
         text,
         "# HELP arena_door_queued Players in a queue or ready check.\n# TYPE arena_door_queued gauge\narena_door_queued {}",
-        Metrics::get(&door.metrics.queued)
+        Metrics::get(&metrics.queued)
     );
+    let _ = writeln!(
+        text,
+        "# HELP arena_door_queued_by_mode Players in a queue or ready check, by queue.\n# TYPE arena_door_queued_by_mode gauge"
+    );
+    for (mode, counter) in crate::matchmaker::Mode::ALL
+        .iter()
+        .zip(&metrics.queued_by_mode)
+    {
+        let _ = writeln!(
+            text,
+            "arena_door_queued_by_mode{{mode=\"{}\"}} {}",
+            mode.id(),
+            Metrics::get(counter)
+        );
+    }
+    for (name, help, gauge) in [
+        (
+            "door_queue_connections",
+            "Open queue connections that said hello.",
+            &metrics.queue_connections,
+        ),
+        (
+            "door_parties",
+            "Parties with an invite code.",
+            &metrics.parties,
+        ),
+        (
+            "door_lobbies",
+            "Open private custom lobbies.",
+            &metrics.lobbies,
+        ),
+    ] {
+        write_metric(
+            &mut text,
+            &format!("arena_{name}"),
+            "gauge",
+            help,
+            Metrics::get(gauge),
+        );
+    }
     for (name, help, counter) in [
         (
             "door_queue_matches_total",
             "Matches formed from the queues.",
-            &door.metrics.queue_matches,
+            &metrics.queue_matches,
         ),
         (
             "door_custom_matches_total",
             "Matches started from private custom lobbies.",
-            &door.metrics.custom_matches,
+            &metrics.custom_matches,
         ),
         (
             "door_matches_issued_total",
             "Matches whose tickets were issued.",
-            &door.metrics.issued,
+            &metrics.issued,
+        ),
+        (
+            "door_tickets_issued_total",
+            "Join tickets signed, one per seat and per spectator.",
+            &metrics.tickets,
+        ),
+        (
+            "door_ready_checks_started_total",
+            "Ready checks offered when a queue could fill a match.",
+            &metrics.checks_started,
+        ),
+        (
+            "door_ready_checks_completed_total",
+            "Ready checks everyone accepted.",
+            &metrics.checks_completed,
+        ),
+        (
+            "door_ready_checks_failed_total",
+            "Ready checks ended by a decline, a timeout or a player leaving.",
+            &metrics.checks_failed,
+        ),
+        (
+            "door_ready_accepts_total",
+            "Players who accepted a ready check (a later decline is counted in declines too).",
+            &metrics.accepts,
+        ),
+        (
+            "door_ready_declines_total",
+            "Players who declined a ready check.",
+            &metrics.declines,
         ),
         (
             "door_refused_rate_total",
-            "Match creations refused by the per-address limit.",
-            &door.metrics.refused_rate,
+            "Match creations and queue connections refused by a per-address limit.",
+            &metrics.refused_rate,
         ),
         (
             "door_refused_origin_total",
-            "Match creations refused because their page origin is not allowed.",
-            &door.metrics.refused_origin,
+            "Match creations and queue connections refused because their page origin is not allowed.",
+            &metrics.refused_origin,
         ),
     ] {
-        let _ = writeln!(text, "# HELP arena_{name} {help}");
-        let _ = writeln!(text, "# TYPE arena_{name} counter");
-        let _ = writeln!(text, "arena_{name} {}", Metrics::get(counter));
+        write_metric(
+            &mut text,
+            &format!("arena_{name}"),
+            "counter",
+            help,
+            Metrics::get(counter),
+        );
     }
+    let _ = writeln!(
+        text,
+        "# HELP arena_door_searches_total Queue searches started, by party size.\n# TYPE arena_door_searches_total counter"
+    );
+    for (size, counter) in metrics.searches_by_size.iter().enumerate() {
+        let _ = writeln!(
+            text,
+            "arena_door_searches_total{{party_size=\"{}\"}} {}",
+            size + 1,
+            Metrics::get(counter)
+        );
+    }
+    metrics.queue_wait.0.render(
+        &mut text,
+        "door_queue_wait_milliseconds",
+        "How long parties searched before their match was found, in milliseconds.",
+    );
     text
 }
 

@@ -27,10 +27,11 @@ const USAGE: &str = "usage: arena-door --match-server URL --page URL [--bind ADD
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    arena_server::logging::init();
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            eprintln!("arena-door: {message}");
+            tracing::error!(reason = %message, "arena-door failed");
             ExitCode::FAILURE
         }
     }
@@ -154,8 +155,9 @@ async fn run() -> Result<(), String> {
         config.ticket_ttl = Duration::from_secs(minutes * 60);
     }
     let running = start(config).await.map_err(|error| error.to_string())?;
-    eprintln!(
-        "arena-door: listening on http://{}; lobby at /lobby/",
+    tracing::info!(
+        addr = %running.addr,
+        "arena-door listening on http://{}; lobby at /lobby/",
         running.addr
     );
     stop_signal().await;

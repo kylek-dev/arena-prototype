@@ -1,0 +1,28 @@
+# Prometheus inside grafana/otel-lgtm (ADR 0054), mounted over the image's
+# /otel-lgtm/prometheus.yaml. The image's own file has no scrape jobs (it
+# takes OTLP pushes), so this keeps its OTLP settings and adds the arena
+# services' private /metrics endpoints on the Compose network.
+global:
+  scrape_interval: 15s
+  scrape_timeout: 5s
+  scrape_native_histograms: true
+
+otlp:
+  keep_identifying_resource_attributes: true
+  promote_resource_attributes:
+    - service.instance.id
+    - service.name
+    - service.namespace
+    - deployment.environment.name
+
+storage:
+  tsdb:
+    out_of_order_time_window: 10m
+
+scrape_configs:
+  - job_name: arena-server
+    static_configs:
+      - targets: ["server:8080"]
+  - job_name: arena-door
+    static_configs:
+      - targets: ["door:8090"]
