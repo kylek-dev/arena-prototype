@@ -71,6 +71,7 @@ yet.
 | `Error` | `code` | Sent before the server closes: `VersionMismatch`, `BadTicket`, `MatchFull`, `MatchOver`, `RateLimited`, `Malformed`, `HelloTimeout`, `ServerShutdown`, `Replaced` (a newer connection with the same ticket took the seat). Stays variant 3 (`[3, code]`). |
 | `Appearances` | `Vec<Option<WireAppearance>>` (`2..=6`, even) | Sent on join (when any seat has a locked look) and broadcast whenever a seat locks a new look on first join, in server actor order. Never carries paths; clients validate against their local kit catalog and fall back to defaults. |
 | `Handles` | `Vec<Option<Handle>>` (`2..=6`, even) | Each seat's `Name#1234` from the first ticket for that seat that names one, in server actor order; `None` for a seat not joined yet or joined by a lobby link. Guest handles are not unique: two guests may share one. Sent on join (when any seat has one) to the new connection and spectators, and broadcast when a seat's handle is first locked. A `Handle` is 16 name bytes (3–16 ASCII letters and digits starting with a letter, zero-padded) and a `u16` number `1..=9999`; anything else fails decoding. Clients never name themselves. |
+| `Tags` | `Vec<Tags>` (`2..=6`, even; `Tags { admin: bool }`) | Each seat's tags from the same ticket as its handle, in server actor order. Sent right after `Handles` whenever any seat has a tag. The door sets `admin` from deploy configuration. |
 
 Snapshots go out every tick to start with. Live `PROTOCOL_VERSION = 3` combat
 measurements ([netcode-measurements-2026-11-21.md](research/netcode-measurements-2026-11-21.md))
@@ -111,7 +112,7 @@ connection, which can discard the `Error` before the client reads it.
 
 ## Versioning
 
-`PROTOCOL_VERSION` (currently 9: `ServerMessage::Handles`; 8 gave `WireAppearance` `facial_hair_color` and 24 part groups for the armour slots, [ADR 0053](decisions/0053-finished-character-kits.md)) changes with any
+`PROTOCOL_VERSION` (currently 10: `ServerMessage::Tags`; 9 added `ServerMessage::Handles`; 8 gave `WireAppearance` `facial_hair_color` and 24 part groups for the armour slots, [ADR 0053](decisions/0053-finished-character-kits.md)) changes with any
 incompatible layout change; the golden-frame test fails until it is bumped
 deliberately.
 `RULES_VERSION` (currently 6: timed casts charge their resource and health costs
@@ -122,10 +123,11 @@ could alter a replayed outcome. `Welcome.map` identifies the layout.
 ## Join tickets
 
 A ticket is the postcard encoding of
-`{match_id, player, role, team_size, expires, settings, account, handle}`
+`{match_id, player, role, team_size, expires, settings, account, handle, admin}`
 (`account` is the logged-in player's account id, or none for guests and lobby
 links; `handle` is the `Name#1234` to show: the account's own, or a
-temporary `Guest#NNNN` from the queue, and none for lobby links;
+temporary `Guest#NNNN` from the queue, and none for lobby links; `admin`
+marks an account holding the admin role and is never set without one;
 `role` is `Player { seat }` or `Spectator`, so player and spectator credentials are never interchangeable; `expires` in Unix
 seconds; optional versioned `MatchSettings { version: 1, map, round_seconds, allow_spectators }`
 for private custom matches) followed by a 32-byte HMAC-SHA256 tag over those
@@ -245,6 +247,29 @@ How the cookies behave:
   `GET /api/auth/me` also returns `handle` and `rename_at`.
 - Login routes are rate-limited per address. Account ids, codes and tokens
   are never logged.
+
+## Admin tools
+
+The admin role comes from deploy configuration (`ARENA_ADMIN_ACCOUNTS`) and
+is checked by the door on every request; the page hiding a button is never
+the gate (social-identity step 5, `door/admin.rs`). `GET /api/auth/me`
+reports `admin`, and match tickets carry it for the tag shown beside the
+handle.
+
+| Request | Answer |
+| --- | --- |
+| `GET /api/admin/maps` | `{maps: [{id, name}]}`: maps saved by admins. |
+| `GET /api/admin/maps/<id>.json` | The map file. |
+| `PUT /api/admin/maps/<id>.json` | Validates the body with `arena_map` (as the editor and build do) and stores it: `{id, name}`, or 422 `{error: "invalid_map", problems}` / `invalid_id`. At most 256 KiB; ids are lowercase letters, digits and dashes. |
+| `POST /api/admin/handles/clear` `{"handle"}` | Removes a player's handle (204, or 404 `no_such_player`); they pick again with no wait. |
+
+Everyone else gets 401 `not_logged_in` or 403 `not_admin`. Writes need an
+allowed `Origin`, and with `--any-origin` the tools are off (cookies never
+act there). Maps live in `maps/` beside the account store, written through
+a synced temporary file; matches still play the built-in colosseum. A
+change to `ARENA_ADMIN_ACCOUNTS` applies to new tickets after the door
+restarts; tickets already issued keep their tag until they expire (2 hours),
+as a cleared handle stays shown in a match already running.
 
 ## Friends
 

@@ -1165,3 +1165,30 @@ fn a_new_connection_forgets_the_last_matchs_handles() {
     session.receive(&feed(2, vec![welcome(0, 1)]), 0.2, &layout());
     assert!(session.handles().is_empty());
 }
+
+#[test]
+fn relayed_tags_renumber_into_local_order() {
+    use arena_protocol::Tags;
+    let admin = Tags { admin: true };
+    // Join as seat 1 in 2v2: seat_order(1, 4) == [1, 0, 3, 2].
+    let mut session = joined(1, 2);
+    session.receive(
+        &feed(
+            1,
+            vec![
+                ServerMessage::Tags(vec![admin, Tags::default(), Tags::default(), admin]).encode(),
+            ],
+        ),
+        0.1,
+        &layout(),
+    );
+    assert_eq!(
+        session.tags(),
+        &[Tags::default(), admin, admin, Tags::default()]
+    );
+    assert_eq!(
+        super::tags_json(session.tags()),
+        r#"[{"admin":false},{"admin":true},{"admin":true},{"admin":false}]"#
+    );
+    assert_eq!(super::tags_json(&[]), "null");
+}

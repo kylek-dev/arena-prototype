@@ -448,7 +448,9 @@ async fn session(
                             stop = Some(End::Error(code));
                             break;
                         }
-                        ServerMessage::Appearances(_) | ServerMessage::Handles(_) => {}
+                        ServerMessage::Appearances(_)
+                        | ServerMessage::Handles(_)
+                        | ServerMessage::Tags(_) => {}
                     }
                 }
                 if !frame_ticks.is_empty() {

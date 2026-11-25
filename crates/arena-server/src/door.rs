@@ -23,6 +23,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
+mod admin;
 mod auth;
 mod browser;
 mod friends;
@@ -161,6 +162,8 @@ struct Door {
     /// matchmaker task for presence), per account.
     friend_actions: RatePerAccount,
     friend_reads: RatePerAccount,
+    /// Admin-saved maps (social-identity step 5).
+    maps: Arc<admin::MapStore>,
     creations: RatePerAddress,
     /// Browser telemetry reports per address.
     reports: RatePerAddress,
@@ -543,6 +546,12 @@ fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
         invites: RatePerAccount::new(5, Duration::from_secs(6)),
         friend_actions: RatePerAccount::new(30, Duration::from_secs(2)),
         friend_reads: RatePerAccount::new(10, Duration::from_secs(3)),
+        maps: Arc::new(admin::MapStore::beside(
+            config
+                .identity
+                .as_ref()
+                .and_then(|identity| identity.store.as_deref()),
+        )),
         creations: RatePerAddress::new(config.creation_burst, config.creation_every),
         // A visit sends a handful (startup, a summary per match, a few errors).
         reports: RatePerAddress::new(30, Duration::from_secs(10)),
@@ -594,6 +603,17 @@ fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
         .route(
             "/api/auth/handle",
             post(auth::choose_handle).layer(DefaultBodyLimit::max(256)),
+        )
+        .route("/api/admin/maps", get(admin::list_maps))
+        .route(
+            "/api/admin/maps/{file}",
+            get(admin::get_map)
+                .put(admin::put_map)
+                .layer(DefaultBodyLimit::max(admin::MAX_MAP)),
+        )
+        .route(
+            "/api/admin/handles/clear",
+            post(admin::clear_handle).layer(DefaultBodyLimit::max(256)),
         )
         .route("/api/friends", get(friends::list))
         .route(

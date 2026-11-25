@@ -32,8 +32,8 @@ import { debugEnabled, measureFrames, metrics, recordError, recordState } from "
 import { browserLink, installJoinLinks, takeJoinFragment } from "./network";
 import { browserQueue, installPartyLinks } from "./matchmaking";
 import { installTelemetry } from "./telemetry";
-import { matchQueue, networkLink, remoteHandles } from "../state/network";
-import { parseHandles } from "../domain/handles";
+import { matchQueue, networkLink, remoteHandles, remoteTags } from "../state/network";
+import { parseHandles, parseTags } from "../domain/handles";
 import { clearPostMatchScoreboard, syncPostMatchScoreboard } from "../state/scoreboard";
 export function startRuntime(canvas: HTMLCanvasElement) {
   const pointer = installPointer(canvas, () => router.cancel());
@@ -77,6 +77,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     onNetwork: link.onStatus,
     onAppearances,
     onHandles: (raw) => remoteHandles.set(parseHandles(raw)),
+    onTags: (raw) => remoteTags.set(parseTags(raw)),
     readInput: router.sample,
     readHover: unitHover.read,
     readGraphics,
@@ -145,6 +146,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     networkLink.set(null);
     remoteAppearances.set(null);
     remoteHandles.set(null);
+    remoteTags.set(null);
     clearPostMatchScoreboard();
     customLobbyVisible.set(false);
     stopFrameTiming();

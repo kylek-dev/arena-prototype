@@ -488,6 +488,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                             *holder = Holder {
                                 account: None,
                                 handle: Some(super::auth::guest_handle()),
+                                admin: false,
                             };
                         }
                     }
@@ -1027,6 +1028,10 @@ pub(super) async fn upgrade(
                 .and_then(|account| account.handle)
                 .unwrap_or_else(super::auth::guest_handle),
         ),
+        // From deploy configuration, as of this connection.
+        admin: account
+            .zip(door.identity.as_ref())
+            .is_some_and(|(account, identity)| identity.is_admin(account.id)),
     };
     ws.max_message_size(MAX_MESSAGE)
         .max_frame_size(MAX_MESSAGE)

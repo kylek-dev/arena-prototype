@@ -109,13 +109,18 @@ pub struct Claims {
     /// The player's `Name#1234` handle, set by the front door: the account's
     /// own, or a temporary guest handle. `None` for lobby links.
     pub handle: Option<Handle>,
+    /// The account holds the admin role (from deploy configuration when the
+    /// ticket was issued); shown as a tag beside the handle.
+    pub admin: bool,
 }
 
-/// Who a ticket is for: the logged-in account and the handle to show.
+/// Who a ticket is for: the logged-in account, the handle to show, and
+/// whether the account is an admin.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Holder {
     pub account: Option<u64>,
     pub handle: Option<Handle>,
+    pub admin: bool,
 }
 
 impl Claims {
@@ -137,6 +142,7 @@ impl Claims {
             || !self.settings.is_none_or(MatchSettings::is_valid)
             || self.account == Some(0)
             || !self.handle.is_none_or(|handle| handle.is_valid())
+            || (self.admin && self.account.is_none())
         {
             return false;
         }
@@ -246,11 +252,14 @@ pub fn issue_seats(
         return None;
     }
     // Account 0 is never issued (treated as a guest); invalid handles drop.
+    // Admin only with an account.
     let holder = |slot: Option<&Holder>| {
         let holder = slot.copied().unwrap_or_default();
+        let account = holder.account.filter(|id| *id != 0);
         (
-            holder.account.filter(|id| *id != 0),
+            account,
             holder.handle.filter(Handle::is_valid),
+            holder.admin && account.is_some(),
         )
     };
     let match_id = random_u64();
@@ -265,6 +274,7 @@ pub fn issue_seats(
                 settings,
                 account: holder(seats.get(seat)).0,
                 handle: holder(seats.get(seat)).1,
+                admin: holder(seats.get(seat)).2,
             }))
         })
         .collect();
@@ -280,6 +290,7 @@ pub fn issue_seats(
                 settings,
                 account: holder(Some(spectator)).0,
                 handle: holder(Some(spectator)).1,
+                admin: holder(Some(spectator)).2,
             }))
         })
         .collect();
@@ -400,6 +411,7 @@ mod tests {
         settings: None,
         account: None,
         handle: None,
+        admin: false,
     };
 
     #[test]
@@ -440,7 +452,11 @@ mod tests {
 
     #[test]
     fn seat_tickets_carry_their_players_accounts() {
-        let with = |account: Option<u64>, handle: Option<Handle>| Holder { account, handle };
+        let with = |account: Option<u64>, handle: Option<Handle>| Holder {
+            account,
+            handle,
+            admin: account == Some(0xabc),
+        };
         let rook = Handle::new("Rook", 7);
         let created = issue_seats(
             &key(1),
@@ -454,6 +470,20 @@ mod tests {
         let claims = |ticket: &String| key(1).verify(&from_hex(ticket).unwrap(), 0).unwrap();
         assert_eq!(claims(&created.tickets[0]).account, Some(0xabc));
         assert_eq!(claims(&created.tickets[0]).handle, rook);
+        assert!(claims(&created.tickets[0]).admin);
+        assert!(
+            !claims(&created.tickets[1]).admin,
+            "no admin without an account"
+        );
+        assert!(
+            !Claims {
+                admin: true,
+                account: None,
+                ..CLAIMS
+            }
+            .is_valid(),
+            "a signed admin claim without an account is refused"
+        );
         assert_eq!(claims(&created.tickets[1]).handle, None);
         assert_eq!(claims(&created.spectator_tickets[0]).handle, rook);
         assert_eq!(

@@ -29,7 +29,8 @@ use serde::{Deserialize, Serialize};
 /// 7: `Welcome.spectator` for watch-only delayed spectator connections.
 /// 8: `WireAppearance.facial_hair_color`, and up to 24 part groups for the armour slots (ADR 0053).
 /// 9: `ServerMessage::Handles`: each seat's server-set `Name#1234` handle.
-pub const PROTOCOL_VERSION: u16 = 9;
+/// 10: `ServerMessage::Tags`: each seat's server-set tags (the admin tag).
+pub const PROTOCOL_VERSION: u16 = 10;
 /// Bumped whenever a rules change could alter a replayed outcome.
 /// 2: rounds end in a draw after twenty minutes (`MAX_ROUND_TICKS`).
 /// 3: time-limit draws are distinct from mutual-elimination draws and round limits are explicit.
@@ -300,6 +301,14 @@ impl std::fmt::Debug for Handle {
     }
 }
 
+/// Marks shown next to a seat's handle, set by the front door from deploy
+/// configuration and signed into the ticket (social-identity step 5).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Tags {
+    /// The account holds the admin role.
+    pub admin: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ServerMessage {
     Welcome(Welcome),
@@ -316,6 +325,9 @@ pub enum ServerMessage {
     /// order (`2..=MAX_FIGHTERS`, even); `None` for a seat not joined yet or
     /// joined by a link that names nobody.
     Handles(Vec<Option<Handle>>),
+    /// Per-seat tags in server actor order (`2..=MAX_FIGHTERS`, even), sent
+    /// with `Handles` whenever any seat has one.
+    Tags(Vec<Tags>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -904,6 +916,11 @@ impl ServerMessage {
                 Err(DecodeError::OverLimit)
             }
             Self::Handles(handles) if !valid_handles(handles) => Err(DecodeError::OverLimit),
+            Self::Tags(tags)
+                if !((2..=MAX_FIGHTERS).contains(&tags.len()) && tags.len().is_multiple_of(2)) =>
+            {
+                Err(DecodeError::OverLimit)
+            }
             _ => Ok(message),
         }
     }

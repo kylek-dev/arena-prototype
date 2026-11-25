@@ -23,6 +23,24 @@ export function parseHandles(raw: unknown): (string | null)[] | null {
     : null;
 }
 
+export type SeatTags = { admin: boolean };
+
+/** The tags relay from `onTags`: `null` outside a match, when no seat has a
+ * tag, or when malformed; otherwise `{admin}` per actor. Set by the server
+ * from deploy configuration, never by a client. */
+export function parseTags(raw: unknown): SeatTags[] | null {
+  if (!Array.isArray(raw) || raw.length < 2 || raw.length > MAX_FIGHTERS || raw.length % 2)
+    return null;
+  const valid = raw.every(
+    (entry) =>
+      entry !== null &&
+      typeof entry === "object" &&
+      Object.keys(entry).length === 1 &&
+      typeof (entry as SeatTags).admin === "boolean",
+  );
+  return valid ? (raw as SeatTags[]).map((entry) => ({ admin: entry.admin })) : null;
+}
+
 /** The name part of a handle, for tight spaces such as nameplates. */
 export function handleName(handle: string) {
   return handle.slice(0, handle.indexOf("#"));
