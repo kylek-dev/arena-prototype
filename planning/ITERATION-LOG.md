@@ -472,7 +472,7 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 
 ## 2026-11-25 — Observability Phase 3: scrubbed browser reports and opt-in profiling
 - **Branch / Commit:** `auto/observability-rum`
-- **Base / PR:** `auto/observability-tracing` (stacked on PR #91)
+- **Base / PR:** `auto/observability-tracing` (stacked on PR #91) — PR #92
 - **Lane:** A (machine-verified; a real-browser beacon check is pending and recorded as such)
 - **Task:** [observability-telemetry](issues/observability-telemetry.md) Phase 3; [ADR 0054](../docs/decisions/0054-observability-logs-metrics-and-local-lgtm.md) amended (status: all three phases implemented)
 - **Changes:**
@@ -486,4 +486,17 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fresh-Eyes Review:** No Critical. Important fixed: failures caught by `start.ts` (engine load, `onState`) never reached telemetry, and the startup timer polled forever; match summaries shared the 20-report budget. Minors fixed: scrubbers aligned on whitespace and URL passwords with shared fixtures; parse after origin/rate checks; separate refusal counters; client reports at `info`; reservoir sampling; lazy frame-time read; startup measured from navigation; remembered opt-out; compose `ARENA_PYROSCOPE_HZ`; bounded profiler stop; `log` bridge; profiling clippy in `check.sh`; counters sized by kinds; new runtime tests. Documented rather than changed: `frame_ms` is the median of recent engine frames, and a rejoin after the link ended starts a new summary.
 - **Learnings:** `pyroscope` 2.x bundles its pprof backend (the separate `pyroscope_pprofrs` crate is the old API) and with default features pulls rustls/aws-lc; `default-features = false` keeps it plain HTTP. Its `stop()` waits for the current 10 s cycle. With no CPU load it uploads nothing, so Pyroscope lists no service until there is traffic.
 - **Next Recommended Slice:** Accounts research & login decision (social-identity step 1).
+
+## 2026-11-25 — Accounts research and login decision
+- **Branch / Commit:** `auto/accounts-decision`
+- **Base / PR:** `auto/observability-rum` (stacked on PR #92)
+- **Lane:** A (documentation only)
+- **Task:** [social-identity](issues/social-identity.md) step 1
+- **Changes:**
+  - `docs/research/accounts-2026-11-25.md`: own OAuth/OIDC vs WorkOS, Clerk, Supabase Auth, Auth0, Ory Kratos, Keycloak and own passwords, on price at playtest and modest scale, lock-in, stored data, deletion and single-host load, with sources (third-party 2026 pricing summaries and vendor docs; vendor pages not opened directly, said so).
+  - `docs/decisions/0055-accounts-oauth-login-in-arena-door.md` (Proposed): Discord/Google/GitHub via OAuth code + PKCE in an identity module beside `arena-door`; no passwords; minimal SQLite store (account id, provider subject, handle, timestamps, admin flag); own signed session cookie keyed by `ARENA_SESSION_KEY`; account id in tickets; guests first-class; deletion removes our rows; WorkOS AuthKit as the hosted fallback.
+- **Checks Observed:** `./scripts/check.sh`: pass (430 Rust tests, 1 pre-existing ignored; 58 Python; 50 Node; 42 Vitest files / 334 tests). `cargo run -p arena-headless --locked`: pass (winner 0). Server smoke, web build and WASM: not applicable (docs only).
+- **Fresh-Eyes Review:** No Critical. Important fixed in the ADR and the note: the door was not stateless and had no volume (a `door-data` volume, online backups and doc follow-ups are now consequences); a deleted account could keep using its cookie (sessions are checked against the database with a generation counter; ticket, backup and log retention are stated); the CSRF design was underspecified (`__Host-` cookies, required `Origin` on cookie POSTs and the queue handshake, cookie auth off under `--any-origin`, state and PKCE in a signed short-lived cookie, fixed redirects); identity keys and linking were not decided (permanent numeric ids, no auto-merge, linking out of scope, the WorkOS migration caveat); privacy and provider limits were understated (a privacy notice, Google's 100-test-user Testing mode). Minors: admin from config only, minimal scopes, sources for Google and GitHub, community-report labels, wording.
+- **Learnings:** At our scale every hosted option is free, so the choice turns on lock-in, privacy and what runs next to the match loop. Supabase free projects pause after a week idle, which would lock players out between playtests.
+- **Next Recommended Slice:** Identity service & signed account ids (social-identity step 2).
 

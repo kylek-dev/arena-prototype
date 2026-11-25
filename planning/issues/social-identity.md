@@ -1,5 +1,11 @@
 Give players a persistent identity outside the match: accounts, a chosen `Name#1234` handle, friends and invites, and an admin role. This is a social layer that sits beside the match server, not inside the simulation or match protocol.
 
+**Status (2026-11-25):** step 1 is done. See the
+[research note](../../docs/research/accounts-2026-11-25.md) and the proposed
+[ADR 0055](../../docs/decisions/0055-accounts-oauth-login-in-arena-door.md):
+OAuth login with Discord, Google or GitHub, handled by `arena-door`; no
+passwords; a minimal SQLite store; guests stay.
+
 Acceptance criteria, in shipping order (each step is its own PR):
 
 - **1. Accounts research and decision (do first):**
