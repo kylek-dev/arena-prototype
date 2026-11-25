@@ -101,6 +101,20 @@ tinted by a hair swatch (the palette colour divided by `hairAtlas`).
 `build_kit.py` embeds opaque textures as JPEG (colour quality 90, normals 95 at
 full chroma) and alpha-blended ones as PNG; the PNG masters stay in `tex/`.
 
+### Weapons
+
+A weapon is generated alone (concept image, then image to 3D) and built in the
+kit's grip-socket frame, so the client parents it under `socket_weapon_r` with
+no offset:
+
+1. `weapon.py RAW.glb DENSE.npz [--length M] [--hand M]`: scale to length,
+   thin the blade and grip (one image cannot show depth), origin where the
+   right hand holds, +Y to the tip, +Z along the edge.
+2. `hair_low.py DENSE.npz LOW.npz NORMAL.png --tris 5000 --by-normal`.
+3. `hair_tex.py LOW.npz DENSE.npz RAW_BASECOLOR.png NORMAL.png tex/NAME --colour`.
+4. `weapon_build.py LOW.npz tex/NAME NAME assets/weapons/<id>/<id>.glb`;
+   `prepare_weapon.py` ships it as `weapons/<id>.glb`.
+
 Shared modules: `kitlib.py` (paths, spaces, mesh helpers), `mh.py` (scaffold),
 `rigdata.py` and `skeleton.py` (the kit skeleton for this body), `layout.py`
 (faces, UVs, regions), `glbwriter.py` and `gltfkit.py` (GLB input and output),

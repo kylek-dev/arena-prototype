@@ -50,6 +50,7 @@ for character in characters:
 paths = ['index.html', 'pkg/arena_client.js', 'pkg/arena_client_bg.wasm',
          'assets/licenses/universal-strafes-MIT.txt',
          'assets/character.json', 'assets/weapons/verdant-eclipse.glb',
+         'assets/weapons/gladiator-greatsword.glb',
          'assets/weapons/aetherthorn.glb', 'assets/textures/stone-floor.png',
          'assets/textures/stone-bricks.png', 'assets/textures/stone-wall.png',
          'assets/textures/stone-granite.png',

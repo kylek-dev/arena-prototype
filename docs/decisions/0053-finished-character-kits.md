@@ -159,8 +159,16 @@ kit keeps the generated shape and paint and replaces everything else.
   rather than regenerated.
 - A shorter underclothes piece would need the `Hips` and `Thighs` skin
   exported. Its paint exists.
-- The client does not yet attach anything to the sockets. Weapons still ride
-  the back carrier.
+- The client attaches the Gladiator's two-handed sword
+  (`assets/weapons/gladiator-greatsword/`, built in the grip socket's frame by
+  `weapon.py` and `weapon_build.py`) under `socket_weapon_r` of every
+  finished kit, with an identity transform. Every clip is unarmed for now
+  (Attack is a punch), so it is held in one hand until two-handed clips exist.
+  A **Sheathe / draw weapon** keybind (default Z) moves the local player's
+  sword to `socket_back`, hilt over the right shoulder; fighters start
+  sheathed and using an ability draws it. The state is presentation only: it
+  is not saved, not part of the combat input, and not sent to other players,
+  so other fighters always hold theirs drawn. The other sockets are unused.
 - Hair and beards have no joints of their own; away from the skin they are
   rigid on the head. The tied-back ponytail clears the back in all ten clips;
   longer hair would need its own joints.

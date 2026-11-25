@@ -6,6 +6,7 @@ export const actions = [
   ...movement,
   "autorun",
   "jump",
+  "toggleSheath",
   "stopCasting",
   "nextTarget",
   "menu",
@@ -75,6 +76,7 @@ export function defaults(bars: Bar[]): Bindings {
     spellbook: "KeyP",
     setFocus: "KeyF",
     toggleEnemyNameplates: "KeyV",
+    toggleSheath: "KeyZ",
   }))
     result[action] = [chord({ code }), null];
   result.autorun = [chord({ code: "NumLock" }), chord({ code: "Backquote" })];

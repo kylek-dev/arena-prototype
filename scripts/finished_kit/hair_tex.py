@@ -3,7 +3,7 @@ point, then made grey for tinting. Texels near the piece's edge (sunk under the 
 paint of the hair surface further in, so the generated skin under the hair's edge does not come along.
 The grey keeps the painted light and dark of the locks (luminance ratios, with the highlights rolled into a soft
 shoulder so they do not clip) and averages ATLAS, so each hair colour's tint lands on its swatch.
-python hair_tex.py LOW.npz DENSE.npz RAW_BASECOLOR.png NORMAL.png OUT_PREFIX [--edge MM]
+python hair_tex.py LOW.npz DENSE.npz RAW_BASECOLOR.png NORMAL.png OUT_PREFIX [--edge MM] [--colour]
 -> OUT_PREFIX.png (grey base colour), OUT_PREFIX_n.png (normal, filled outside the islands)"""
 import sys
 import numpy as np
@@ -23,28 +23,31 @@ tid, bary = raster(lo['UV'], R); m = tid >= 0
 P = np.einsum('nk,nkj->nj', bary[m].astype(np.float64), lo['V'][lo['F'][tid[m]]])
 DV, DF, CUV = de['V'], de['F'], de['CUV']
 # dense vertices clear of the edge, each with its paint
-ev = np.where(de['edge'])[0]; dist_edge = cKDTree(DV[ev]).query(DV)[0]
+ev = np.where(de['edge'])[0]; dist_edge = cKDTree(DV[ev]).query(DV)[0] if len(ev) else np.full(len(DV), np.inf)
 vuv = np.zeros((len(DV), 2)); vuv[DF.ravel()] = CUV.reshape(-1, 2); vcol = bilinear(tex, vuv)
 good = dist_edge > EDGE; tree_good = cKDTree(DV[good])
 _, fi, C = igl.point_mesh_squared_distance(P, DV, DF)
 L = igl.barycentric_coordinates_tri(C, DV[DF[fi, 0]], DV[DF[fi, 1]], DV[DF[fi, 2]])
 bad = ~np.isfinite(L).all(1); L[bad] = 1 / 3                                     # zero-area triangles: take the centre
 col = bilinear(tex, np.einsum('nk,nkj->nj', L, CUV[fi]))
-near_edge = (L * dist_edge[DF[fi]]).sum(1) < EDGE
+near_edge = (L * np.minimum(dist_edge[DF[fi]], 1e3)).sum(1) < EDGE
 k_d, k_i = tree_good.query(C[near_edge], k=6); w = 1 / np.maximum(k_d, 1e-5)
 col[near_edge] = (vcol[good][k_i] * w[..., None]).sum(1) / w.sum(1, keepdims=True)
 print('texels %d, %.1f%% of the texture; %.1f%% near the edge take the paint further in' % (m.sum(), m.mean() * 100, near_edge.mean() * 100))
-lum = col @ np.array([0.2126, 0.7152, 0.0722])
-mean = lum.astype(np.float64).mean()
-KNEE, TOP = 0.86, 0.98                                                       # highlights roll off into a soft shoulder
-def shoulder(g):
-    g = g.copy(); o = g > KNEE; g[o] = KNEE + (TOP - KNEE) * np.tanh((g[o] - KNEE) / (TOP - KNEE)); return g
-gain = ATLAS[0]
-for it in range(60):                                                         # luminance ratios kept; gain set so the average is ATLAS
-    g = shoulder(gain * lum / mean); gain *= ATLAS[0] / g.astype(np.float64).mean()
-print('paint luminance mean %.3f p0.5 %.3f p99.5 %.3f; gain %.3f, %.1f%% of texels in the shoulder'
-      % (mean, np.quantile(lum, 0.005), np.quantile(lum, 0.995), gain / mean, (gain * lum / mean > KNEE).mean() * 100))
-grey = np.clip(g[:, None] * (ATLAS / ATLAS[0])[None, :], 0, 1)
+if '--colour' in a:                                                         # an untinted piece keeps its painted colour
+    grey = np.clip(col, 0, 1); g = None
+else:
+    lum = col @ np.array([0.2126, 0.7152, 0.0722])
+    mean = lum.astype(np.float64).mean()
+    KNEE, TOP = 0.86, 0.98                                                       # highlights roll off into a soft shoulder
+    def shoulder(g):
+        g = g.copy(); o = g > KNEE; g[o] = KNEE + (TOP - KNEE) * np.tanh((g[o] - KNEE) / (TOP - KNEE)); return g
+    gain = ATLAS[0]
+    for it in range(60):                                                         # luminance ratios kept; gain set so the average is ATLAS
+        g = shoulder(gain * lum / mean); gain *= ATLAS[0] / g.astype(np.float64).mean()
+    print('paint luminance mean %.3f p0.5 %.3f p99.5 %.3f; gain %.3f, %.1f%% of texels in the shoulder'
+          % (mean, np.quantile(lum, 0.005), np.quantile(lum, 0.995), gain / mean, (gain * lum / mean > KNEE).mean() * 100))
+    grey = np.clip(g[:, None] * (ATLAS / ATLAS[0])[None, :], 0, 1)
 img = np.zeros((R, R, 3)); img[m] = grey
 idx = ndimage.distance_transform_edt(~m, return_distances=False, return_indices=True); img = img[idx[0], idx[1]]   # fill outside the islands
 Image.fromarray((img * 255 + 0.5).astype(np.uint8)).save(out + '.png', optimize=True)

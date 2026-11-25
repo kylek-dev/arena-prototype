@@ -157,6 +157,7 @@ fn to_srgb(linear: f32) -> u8 {
 /// Whether an asset path belongs to a character model (kits, weapons are not included).
 fn is_character_asset(path: &bevy::asset::AssetPath) -> bool {
     path.path().starts_with("characters")
+        || path.path() == std::path::Path::new(crate::held_weapon::PATH)
 }
 
 /// Give colour textures embedded in character glTFs the same mip chain as arena
@@ -551,6 +552,10 @@ mod tests {
         )));
         assert!(!is_character_asset(&AssetPath::parse(
             "weapons/glaive.glb#Texture0"
+        )));
+        // The finished kits' held sword gets them too.
+        assert!(is_character_asset(&AssetPath::parse(
+            "weapons/gladiator-greatsword.glb#Texture0"
         )));
     }
 

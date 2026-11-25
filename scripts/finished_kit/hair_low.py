@@ -1,6 +1,6 @@
 """Game mesh for a hair or beard piece: the dense cut (hair_cut.py) reduced to a triangle budget, new UVs with
 wide gutters, and a tangent-space normal map (MikkTSpace, OpenGL +Y) baked from the dense piece.
-blender -b --factory-startup -P hair_low.py -- DENSE.npz OUT.npz NORMAL.png [--tris N] [--res R] [--centre x,y,z] [--no-split]
+blender -b --factory-startup -P hair_low.py -- DENSE.npz OUT.npz NORMAL.png [--tris N] [--res R] [--centre x,y,z | --by-normal] [--no-split]
 -> OUT.npz: V, F (triangles), UV per corner (glTF v down)"""
 import bpy, bmesh, sys, math, numpy as np
 a = sys.argv[sys.argv.index('--') + 1:]; src, out, nrm_out = a[:3]
@@ -30,7 +30,10 @@ print('low: %d triangles' % len(low.data.polygons))
 CENTRE = np.array([float(x) for x in opt('--centre', '0,0,1.70').split(',')])     # a beard: about 0,-0.03,1.66
 DIRS = np.array([[0, 0, 1], [0, -1, 0], [0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, -1.0]])
 bm = bmesh.new(); bm.from_mesh(low.data); bm.faces.ensure_lookup_table()
-fc = np.array([f.calc_center_median() for f in bm.faces]) - CENTRE; fc /= np.linalg.norm(fc, axis=1, keepdims=True)
+if '--by-normal' in a:                                                      # a long, thin prop: chart by facing
+    fc = np.array([f.normal for f in bm.faces])
+else:
+    fc = np.array([f.calc_center_median() for f in bm.faces]) - CENTRE; fc /= np.linalg.norm(fc, axis=1, keepdims=True)
 lab = np.argmax(fc @ DIRS.T * np.array([1.25, 1, 1, 1, 1, 1]), 1)          # the top chart reaches a little further down
 nbr = [[e.link_faces[0].index if e.link_faces[1] == f else e.link_faces[1].index for e in f.edges if len(e.link_faces) == 2] for f in bm.faces]
 for it in range(6):                                                         # majority vote: no ragged chart borders or specks

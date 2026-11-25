@@ -149,7 +149,7 @@ export function validateConfig(value: unknown): Config {
     }
   }
   // Newly introduced defaults must not steal existing custom chords.
-  for (const action of ["toggleEnemyNameplates", "toggleFriendlyNameplates"]) {
+  for (const action of ["toggleEnemyNameplates", "toggleFriendlyNameplates", "toggleSheath"]) {
     if (
       !(action in rawBindings) &&
       Object.values(rawBindings).some(

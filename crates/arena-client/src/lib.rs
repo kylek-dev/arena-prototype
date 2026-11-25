@@ -7,6 +7,7 @@ mod character;
 mod character_animation;
 mod combat_text;
 mod graphics;
+mod held_weapon;
 mod heraldry;
 mod hover;
 mod humanoid;
@@ -219,6 +220,7 @@ pub fn run() {
         .init_resource::<animation::Settings>()
         .init_resource::<appearance::Desired>()
         .init_resource::<appearance::Preview>()
+        .init_resource::<held_weapon::Sheathed>()
         .init_resource::<character::KitCache>()
         .add_plugins(
             DefaultPlugins
@@ -269,6 +271,9 @@ pub fn run() {
                 character::check_loading,
                 appearance::switch_kit,
                 appearance::apply,
+                held_weapon::read,
+                held_weapon::attach,
+                held_weapon::place,
                 textures::attach_arena_textures,
                 textures::mip_character_textures,
                 sky::attach,
@@ -1888,6 +1893,10 @@ mod platform {
         let values = arena_weapons();
         super::weapons::Selection::from_values(values.get(0).as_f64(), values.get(1).as_f64())
     }
+    /// The local player's sheath keybind state (the weapon channel's third value).
+    pub fn read_sheathed() -> bool {
+        arena_weapons().get(2).as_f64() == Some(1.0)
+    }
     pub fn read_lighting() -> super::lighting::Settings {
         let values = arena_lighting();
         super::lighting::Settings::from_values::<{ super::lighting::VALUE_COUNT }>(
@@ -3052,6 +3061,9 @@ mod platform {
     }
     pub fn read_weapons() -> super::weapons::Selection {
         super::weapons::Selection::from_values(None, None)
+    }
+    pub fn read_sheathed() -> bool {
+        false
     }
     pub fn read_graphics() -> super::graphics::Settings {
         // Exercise the same defaults as an older browser shell with no callback.

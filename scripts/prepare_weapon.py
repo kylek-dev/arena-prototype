@@ -46,8 +46,31 @@ def weapon_glb(source):
     return struct.pack('<III', magic, version, 20 + len(payload) + len(tail)) + struct.pack('<II', len(payload), kind) + payload + tail
 
 
+# Finished weapons (built offline by scripts/finished_kit/weapon_build.py, tracked under assets/weapons/<id>/)
+# ship as built: assets/weapons/<id>/<id>.glb -> web/public/assets/weapons/<id>.glb.
+FINISHED = Path('assets/weapons')
+
+
+def finished_weapons(source=FINISHED, target=TARGET.parent):
+    """Copy every finished weapon GLB; return the ids copied."""
+    target.mkdir(parents=True, exist_ok=True)
+    ids = []
+    for folder in sorted(p for p in source.glob('*') if p.is_dir()):
+        glb = folder / f'{folder.name}.glb'
+        if not glb.is_file():
+            raise ValueError(f'{folder}: {glb.name} is missing')
+        data = glb.read_bytes()
+        if data[:4] != b'glTF':
+            raise ValueError(f'{glb}: not a GLB')
+        (target / glb.name).write_bytes(data)
+        ids.append(folder.name)
+    return ids
+
+
 def main():
     TARGET.parent.mkdir(parents=True, exist_ok=True)
+    for identifier in finished_weapons():
+        print(f'Weapon asset: {TARGET.parent / identifier}.glb (finished weapon, as built)')
     TARGET.write_bytes(weapon_glb(SOURCE.read_bytes()))
     print(f'Weapon asset: {TARGET} (weapon-only scene; source unchanged)')
     target = TARGET.with_name('aetherthorn.glb')

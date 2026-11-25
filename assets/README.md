@@ -63,6 +63,28 @@ stubble on 2026-11-25 after two rounds of fixes; the last fix (the ponytail
 clearing the back) awaits their browser check. AI assistance does not
 establish exclusive rights.
 
+## Gladiator greatsword (2026-11-25)
+
+`assets/weapons/gladiator-greatsword/gladiator-greatsword.glb`: the two-handed
+sword of the Gladiator slice, held in the finished kit's right-hand socket.
+
+- **Generated** with Meshy (Pro plan) on 2026-11-25 from a concept by the user's
+  brief: a `nano-banana-2` text-to-image concept (task
+  `01a2114c-5466-7686-b57c-83a640130a48`), then Meshy 7.1 image to 3D with the
+  meshy-7 texture at 4K (task `01a2114f-39fe-758f-b5c6-4a0f35adc52b`), 36
+  credits. Same licence terms as the kit (Meshy paid-plan output; confirm the
+  terms before shipping).
+- **Finished** offline by `scripts/finished_kit/weapon.py` (scaled to 1.35 m,
+  blade and grip thinned to game proportions, placed in the grip socket's
+  frame), `hair_low.py --by-normal` (5,000 triangles, new UVs, normal map baked
+  from the dense model), `hair_tex.py --colour` and `weapon_build.py` (JPEG
+  textures, 0.67 MB).
+- **Tools:** Blender 5.3 and Python. Anthropic Claude (Claude Code) wrote the
+  pipeline and this entry. AI assistance does not establish exclusive rights.
+
+The user reviewed it in the browser, held and sheathed, and accepted it on
+2026-11-25.
+
 ## Shared universal strafe clips (2026-11-14)
 
 `assets/animations/universal-strafes.glb`: two new in-place lateral cycles,

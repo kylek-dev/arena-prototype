@@ -75,6 +75,14 @@ class GLB:
         if targets: pr['targets'] = [dict(POSITION=self.acc(to_gltf(d), 'VEC3', target=34962, minmax=True)) for d in targets]
         return pr
 
+    def static_primitive(self, P, N, UV, tris, material):
+        """An unskinned primitive whose positions/normals are already in the node's own glTF frame (a weapon in
+        its socket's frame)."""
+        attr = dict(POSITION=self.acc(np.asarray(P, np.float64), 'VEC3', target=34962, minmax=True),
+                    NORMAL=self.acc(np.asarray(N, np.float64), 'VEC3', target=34962), TEXCOORD_0=self.acc(UV, 'VEC2', target=34962))
+        idx = np.asarray(tris).reshape(-1)
+        return dict(attributes=attr, indices=self.acc(idx, 'SCALAR', 5125 if idx.max() > 65535 else 5123, target=34963), material=material)
+
     def write(self, path):
         while len(self.buf) % 4: self.buf += b'\0'
         self.j['buffers'] = [dict(byteLength=len(self.buf))]
