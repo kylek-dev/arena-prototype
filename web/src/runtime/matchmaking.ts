@@ -23,6 +23,18 @@ import {
   type QueueState,
 } from "../domain/matchmaking";
 import type { MatchTicket } from "../domain/network";
+import {
+  CHAT_ONLY_REFUSALS,
+  EMPTY_CHAT,
+  IGNORE_REFUSALS,
+  MAX_IGNORE_REPLAY,
+  SHARED_CHAT_REFUSALS,
+  receiveChat,
+  showChatTab,
+  withIgnored,
+  type ChatChannel,
+  type ChatState,
+} from "../domain/chat";
 import { createStore } from "../state/store";
 
 type TextSocket = {
@@ -69,6 +81,17 @@ function loadGuest(deps: QueueDeps) {
 
 export function createQueue(deps: QueueDeps) {
   const state = createStore<QueueState>(IDLE_QUEUE);
+  /** Chat apart from the queue state, so a busy channel re-renders only
+   * the chat box. Kept across connections. */
+  const chat = createStore<ChatState>(EMPTY_CHAT);
+  const updateChat = (patch: Partial<ChatState>) => chat.set({ ...chat.get(), ...patch });
+  /** What the last request was, to tell whose refusal arrives next. */
+  let lastAsked: "chat" | "other" = "other";
+  /** An ignore waiting on the door (it answers only refusals). */
+  let ignoring: string | null = null;
+  let pendingIgnore: string | null = null;
+  /** Replayed ignores whose refusals are still to come (silently). */
+  let replaying = 0;
   const guest = loadGuest(deps);
   let socket: TextSocket | null = null;
   /** Requests made while the connection opens. */
@@ -99,7 +122,14 @@ export function createQueue(deps: QueueDeps) {
     background = false;
   };
   /** Sends `request`, connecting first when needed. */
-  const request = (message: string | null) => {
+  const request = (message: string | null, kind: "chat" | "other" = "other") => {
+    if (message) {
+      lastAsked = kind;
+      // The door answers an ignore before any later request of the same
+      // connection reaches its matchmaker: once another request goes out,
+      // an ignore refusal is no longer expected for the earlier one.
+      if (message !== pendingIgnore) ignoring = null;
+    }
     if (socket?.readyState === OPEN && state.get().connection === "online") {
       if (message) {
         socket.send(message);
@@ -118,8 +148,17 @@ export function createQueue(deps: QueueDeps) {
     next.onopen = () => {
       next.send(requests.hello(guest));
       update({ connection: "online" });
+      // An ignore sent on the old connection gets no answer here; one still
+      // waiting to be sent does, and comes before the replays below.
+      if (!pendingIgnore || !pending.includes(pendingIgnore)) ignoring = pendingIgnore = null;
       for (const queued of pending) next.send(queued);
       pending = [];
+      // The door keeps ignores per connection: tell a new one the newest few
+      // again (the chat box hides the rest itself). Their refusals, such as
+      // an ignored player who is offline now, are expected and stay quiet.
+      const replay = chat.get().ignored.slice(-MAX_IGNORE_REPLAY);
+      replaying = replay.length;
+      for (const handle of replay) next.send(requests.ignore(handle, true));
     };
     next.onmessage = (event) => receive(event.data);
     next.onerror = () => {};
@@ -179,6 +218,23 @@ export function createQueue(deps: QueueDeps) {
         update({ phase: "idle", since: null, readyCheck: null, notice: message.reason });
         break;
       case "refused":
+        if (IGNORE_REFUSALS.has(message.code) && replaying > 0 && !ignoring) {
+          replaying -= 1;
+          break;
+        }
+        if (
+          CHAT_ONLY_REFUSALS.has(message.code) ||
+          (lastAsked === "chat" && SHARED_CHAT_REFUSALS.has(message.code))
+        ) {
+          const failed = IGNORE_REFUSALS.has(message.code) ? ignoring : null;
+          if (failed) ignoring = null;
+          const log = chat.get();
+          chat.set({
+            ...(failed ? withIgnored(log, failed, false) : log),
+            error: message.code,
+          });
+          break;
+        }
         // An accepted invite that could not be joined is told at the prompt.
         if (current.joining)
           update({
@@ -211,6 +267,9 @@ export function createQueue(deps: QueueDeps) {
         break;
       case "friends_changed":
         update({ friendsChanged: current.friendsChanged + 1 });
+        break;
+      case "chat":
+        chat.set(receiveChat(chat.get(), message.line));
         break;
       case "error":
         end(message.code);
@@ -314,6 +373,35 @@ export function createQueue(deps: QueueDeps) {
     /** Clears "invite sent". */
     dismissInviteSent() {
       update({ inviteSent: null });
+    },
+    /** Chat: the log, tabs and last refusal. */
+    chat,
+    /** Posts `text` to a channel (the door names the sender). */
+    say(channel: Exclude<ChatChannel, "whisper">, text: string) {
+      updateChat({ error: null });
+      request(requests.chat(channel, text), "chat");
+    },
+    /** Whispers to a friend. */
+    whisper(to: string, text: string) {
+      updateChat({ error: null, whisperTo: to });
+      request(requests.whisper(to, text), "chat");
+    },
+    /** Stops (or resumes) hearing a player on this connection. */
+    ignore(handle: string, on: boolean) {
+      const message = requests.ignore(handle, on);
+      ignoring = on ? handle : null;
+      pendingIgnore = message;
+      chat.set({ ...withIgnored(chat.get(), handle, on), error: null });
+      request(message, "chat");
+    },
+    showChat(tab: ChatChannel) {
+      chat.set(showChatTab(chat.get(), tab));
+    },
+    whisperTo(handle: string | null) {
+      updateChat({ whisperTo: handle });
+    },
+    dismissChatError() {
+      updateChat({ error: null });
     },
     /** Clears an invite that could not be joined. */
     dismissInviteError() {

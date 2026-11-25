@@ -164,7 +164,7 @@ The front door's `GET /api/queue` is a WebSocket of small JSON text
 messages ([ADR 0046](decisions/0046-queues-parties-and-home-screen.md)),
 separate from the binary match protocol. It is checked against the page
 `Origin`, limited to 12 connections per address and 10 messages per
-second, and messages are at most 512 bytes. Unknown fields or types close
+second, and messages are at most 4 KiB. Unknown fields or types close
 the connection with `error`.
 
 | From the browser | Meaning |

@@ -1,0 +1,135 @@
+/* The chat box. Colors are palette swatches or the Radix scales the
+   palette drives. Translucent until typing, so the arena shows through. */
+.chat-box {
+  display: grid;
+  gap: 4px;
+  width: min(360px, calc(100vw - 24px));
+  padding: 6px;
+  color: var(--gray-12);
+  background: color-mix(in srgb, var(--pal-night-1) 45%, transparent);
+  border: 1px solid transparent;
+  border-radius: var(--radius-3);
+  font-size: 13px;
+}
+.chat-box.typing {
+  background: color-mix(in srgb, var(--pal-night-1) 85%, transparent);
+  border-color: var(--gray-7);
+}
+.chat-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+.chat-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  color: var(--gray-11);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chat-tab[aria-selected="true"] {
+  color: var(--gray-12);
+  border-color: var(--gray-7);
+  background: color-mix(in srgb, var(--pal-night-3) 70%, transparent);
+}
+.chat-unread {
+  min-width: 16px;
+  padding: 0 4px;
+  color: var(--pal-night-1);
+  background: var(--pal-gold-5);
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+}
+.chat-log {
+  /* Shorter on short screens, to stay clear of frames and bars. */
+  height: min(140px, 18vh);
+  margin: 0;
+  padding: 0 2px;
+  overflow-y: auto;
+  list-style: none;
+  overflow-wrap: anywhere;
+  text-shadow: 0 1px 2px var(--pal-night-1);
+}
+.chat-line {
+  position: relative;
+  line-height: 18px;
+}
+.chat-line.team {
+  color: var(--pal-sky-5);
+}
+.chat-line.match {
+  color: var(--pal-sand-6);
+}
+.chat-line.spectator {
+  color: var(--pal-teal-5);
+}
+.chat-line.whisper {
+  color: var(--pal-arcane-5);
+}
+.chat-name {
+  padding: 0;
+  color: inherit;
+  background: none;
+  border: 0;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.chat-name:hover,
+.chat-name:focus-visible {
+  text-decoration: underline;
+}
+.chat-name-menu {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 6px;
+}
+.chat-name-menu button,
+.chat-error button {
+  padding: 0 6px;
+  color: var(--gray-12);
+  background: var(--pal-night-3);
+  border: 1px solid var(--gray-7);
+  border-radius: var(--radius-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chat-error {
+  margin: 0;
+  color: var(--pal-gold-5);
+  font-size: 12px;
+}
+.chat-to {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.chat-to input {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, monospace;
+}
+.chat-input {
+  width: 100%;
+  min-width: 0;
+  padding: 3px 6px;
+  color: var(--gray-12);
+  background: color-mix(in srgb, var(--pal-night-2) 70%, transparent);
+  border: 1px solid var(--gray-7);
+  border-radius: var(--radius-2);
+  font: inherit;
+}
+.chat-box:not(.typing) .chat-input {
+  opacity: 0.6;
+}

@@ -2,6 +2,7 @@
 // `/api/queue` WebSocket exchanges, the queue's state and how the interface
 // words it. Pure, so it is unit tested without sockets.
 
+import { parseChatLine, type ChatChannel, type ChatLine } from "./chat";
 import { isHandle } from "./handles";
 import { parseTicket, type MatchTicket } from "./network";
 
@@ -141,6 +142,7 @@ export type QueueMessage =
   | { type: "invite"; invite: Invite }
   | { type: "invite_sent"; to: string }
   | { type: "friends_changed" }
+  | { type: "chat"; line: ChatLine }
   | { type: "error"; code: string };
 
 const count = (value: unknown): value is number =>
@@ -297,6 +299,10 @@ export function parseQueueMessage(text: unknown): QueueMessage | null {
       return isHandle(v.to) ? { type: "invite_sent", to: v.to } : null;
     case "friends_changed":
       return { type: "friends_changed" };
+    case "chat": {
+      const line = parseChatLine(v);
+      return line ? { type: "chat", line } : null;
+    }
     case "error":
       return word(v.code) ? { type: "error", code: v.code } : null;
     default:
@@ -335,6 +341,11 @@ export const requests = {
     }),
   startLobby: () => JSON.stringify({ type: "start_lobby" }),
   invite: (handle: string) => JSON.stringify({ type: "invite", handle }),
+  chat: (channel: Exclude<ChatChannel, "whisper">, text: string) =>
+    JSON.stringify({ type: "chat", channel, text }),
+  whisper: (to: string, text: string) => JSON.stringify({ type: "whisper", to, text }),
+  ignore: (handle: string, on: boolean) =>
+    JSON.stringify({ type: on ? "ignore" : "unignore", handle }),
 };
 
 /** The door's queue endpoint on the page's own origin. */

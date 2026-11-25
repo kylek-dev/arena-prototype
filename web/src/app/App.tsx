@@ -22,6 +22,7 @@ import { CustomLobby } from "../features/custom-lobby/CustomLobby";
 import { SpectatorHud } from "../features/spectator/SpectatorHud";
 import { MatchReady } from "../features/queue/MatchReady";
 import { InvitePrompt } from "../features/friends/InvitePrompt";
+import { ChatBox } from "../features/chat/ChatBox";
 import { QueueBar } from "../features/queue/QueueBar";
 import { Loading } from "../features/loading/Loading";
 import { Diagnostics } from "../features/diagnostics/Diagnostics";
@@ -104,6 +105,7 @@ export function App() {
             )}
             <RoundClock />
             <MatchStatus />
+            <ChatBox />
           </>
         )}
         <Diagnostics />

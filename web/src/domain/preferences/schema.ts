@@ -22,7 +22,8 @@ export type FrameRole =
   | "opponents"
   | "team"
   | "unitTooltip"
-  | "castBar";
+  | "castBar"
+  | "chat";
 export type Config = {
   bars: Bar[];
   bindings: Bindings;
@@ -49,6 +50,9 @@ export function defaultConfig(): Config {
       unitTooltip: layout(1, 1),
       // Centred, just above the default action bar (y 0.92), down to 800×600.
       castBar: layout(0.5, 0.78),
+      // Left side, below the team frames and above the action bars (y 0.92),
+      // which span most of the width on small screens.
+      chat: layout(0.01, 0.7),
     },
     castBarAttached: false,
     assignmentsLocked: false,
@@ -231,6 +235,7 @@ export function validateConfig(value: unknown): Config {
       team: cleanLayout(frames.team, d.frames.team),
       unitTooltip: cleanLayout(frames.unitTooltip, d.frames.unitTooltip),
       castBar: cleanLayout(frames.castBar, d.frames.castBar),
+      chat: cleanLayout(frames.chat, d.frames.chat),
     },
     castBarAttached: bool(r.castBarAttached, false),
     assignmentsLocked: bool(r.assignmentsLocked, false),

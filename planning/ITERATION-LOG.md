@@ -704,3 +704,19 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fresh-Eyes Review:** no Critical. Important (fixed): a server-opened map was treated as a map file (Reload and Open map fetched `assets/maps/<id>.json` and failed silently, or loaded a bundled copy); one `mapSavedText` meant both saves, disabling the local save after a server open. Minor taken: empty-problem 422, 413 and origin-403 wording, non-JSON list, replace confirmation, shared parsers, scoreboard `rowsEqual`, merged imports, tests.
 - **Learnings:** the map editor's `mapId` names a file under `assets/maps`; any other source needs its own source marker and saved-text, or reload, open and dirty tracking quietly assume a file.
 - **Next Recommended Slice:** the chat box (stacked on this branch).
+
+## 2026-11-25 — Chat box
+- **Branch / Commit:** `auto/chat-box`
+- **Base / PR:** `auto/admin-ui` (stacked on PR #103)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Lane B "Chat box" ([chat](issues/chat.md))
+- **Changes:**
+  - `domain/chat.ts` (strict `chat` lines, tabs, character counting, unread/whisper/ignore helpers, refusal words and routing sets); queue requests `chat`, `whisper`, `ignore`/`unignore`.
+  - Queue runtime: a separate `chat` store (200 lines); refusals go to chat for chat-only codes, or shared codes right after a chat request; a refused ignore is undone; the newest five ignores are re-sent quietly on each new connection.
+  - `features/chat/ChatBox.tsx`: a `chat` layout frame (left side, above the action bars); Enter (unmodified, not repeated) opens it through the input router, releasing held keys; Enter sends, Escape leaves keeping the draft; tabs with unread counts that follow seated/spectating; whisper and ignore from a name (not one's own); admin tag on senders.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/admin-ui` (`smoke=false web_build=true wasm=false`): pass — 483 Rust tests (1 pre-existing ignored), 58 Python, 50 Node, 49 Vitest files / 399 tests, headless pass, `npm run build` pass.
+  - Server smoke and WASM: not applicable (web only).
+- **Fresh-Eyes Review:** no Critical. Important (fixed): a remounted box took focus after any earlier Enter; re-sending every ignore on reconnect could trip the door's 10/s limit, showed false `no_such_player` errors and could undo the wrong name; the default position covered the action bars below ~1500 px. Minor taken: scroll pinning by newest id, Team tab when seated, whisper target hint, no menu on own lines, narrower shared-code routing, IME and Enter-repeat guards, PROTOCOL's 4 KiB message size, more negative tests.
+- **Learnings:** the door answers queue requests from two places (socket-task chat checks, matchmaker-outbox refusals) and successful ignores get no reply, so a refusal can only be matched to a request by its code plus what was asked last; anything replayed on reconnect must stay inside the 10 messages/s budget.
+- **Next Recommended Slice:** system messages and slash commands (stacked on this branch).
