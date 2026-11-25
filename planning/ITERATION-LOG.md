@@ -673,3 +673,19 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fresh-Eyes Review:** no Critical. Important: renames and revokes did not reach open lobby views (fixed with re-announce and an end-to-end test); long handles overflowed unit frames (ellipsis + title). Minor taken: `handleName` reuse, role names instead of per-viewer `Player N`, unique lobby button labels, name-form edge cases, `conn` never serialized (unit test), spectator naming test.
 - **Learnings:** the matchmaker knows no names; the door's `holders` do, so name-bearing views are completed at the `Out` send site in `door/queue.rs`, and anything that changes a holder must re-announce views that show it.
 - **Next Recommended Slice:** friends list and invite prompts (stacked on this branch).
+
+## 2026-11-25 — Friends list and invite prompts
+- **Branch / Commit:** `auto/friends-ui`
+- **Base / PR:** `auto/handles-ui` (stacked on PR #101)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Lane B "Friends list and invite prompts" ([social-identity](issues/social-identity.md) step 4 UI)
+- **Changes:**
+  - `domain/friends.ts` (strict list parsing, grouping, presence words, refusal words), `runtime/friends.ts` (list reads spaced 3 s apart with folding and a 429 retry; request/accept/decline/remove/block/unblock), `features/friends/Friends.tsx` in Play online (Add by `Name#number`, Accept/Decline, Withdraw, Remove/Block on a second click, Unblock, Invite per friend who is on, 30 s presence poll while shown).
+  - Queue: `invite`, `invite_sent`, `friends_changed` parsed; `connect()` opens a listening connection that ends quietly; `invite` (one at a time), `acceptInvite` (refusals shown at the prompt), `declineInvite`; `InvitePrompt` (right edge, non-modal, three at most, newest per friend).
+  - `runtime/social.ts`: one tab (Web Lock) listens while logged in, reconnects with a backoff (2 s … 60 s) but never after `replaced`, and the friends list follows login and pushes.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/handles-ui` (`smoke=false web_build=true wasm=false`): pass — 483 Rust tests (1 pre-existing ignored), 58 Python, 50 Node, 47 Vitest files / 382 tests, headless pass, `npm run build` pass.
+  - Server smoke and WASM: not applicable (web only).
+- **Fresh-Eyes Review:** no Critical. Important (all fixed): opening a second tab replaced the first tab's connection (one listening tab via a Web Lock, quiet background ends); dropped listening connections never came back (backoff reconnect, visibility retry, not after `replaced`); failed invite joins were silent (shown at the prompt); `rate_limited`/`unavailable` invite refusals had no words; presence is not pushed (30 s poll, scenario reworded). Minor taken: read spacing and 429 retry, Invite pending state, dismissible "invite sent", prompt placement and roles, PROTOCOL `refused` codes for invites.
+- **Learnings:** the door keeps one queue connection per guest id and every tab shares it, so anything that connects without a player action must elect a single tab and must not show its end as an error.
+- **Next Recommended Slice:** admin tag and server-backed map editor (stacked on this branch).

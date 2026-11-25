@@ -205,7 +205,7 @@ the connection with `error`.
 | `invite_sent` `{to}` | The invite reached `to`. |
 | `chat` `{channel, from, to?, admin, text}` | A chat message. `from` and `admin` are the door's (the sender's handle and admin tag); `to` is set on the sender's own copy of a whisper. `channel` is `public`, `match`, `team`, `spectator` or `whisper`. |
 | `friends_changed` `{}` | Requests or friendships changed; fetch `GET /api/friends`. |
-| `refused` `{code}` | `not_leader`, `party_too_big`, `party_full`, `party_busy`, `no_such_party`, `in_lobby`, `no_such_lobby`, `lobby_full`, `not_host`, `slot_full`, `lobby_not_full`, `lobby_too_big`, `no_such_member`, `invalid_settings`, `spectators_disabled`, `spectators_occupied` or `rate_limited`; nothing changed. |
+| `refused` `{code}` | `not_leader`, `party_too_big`, `party_full`, `party_busy`, `no_such_party`, `in_lobby`, `no_such_lobby`, `lobby_full`, `not_host`, `slot_full`, `lobby_not_full`, `lobby_too_big`, `no_such_member`, `invalid_settings`, `spectators_disabled`, `spectators_occupied` or `rate_limited`; for `invite` also `not_logged_in`, `no_such_friend`, `offline` or `unavailable`; nothing changed. |
 | `match` `{mode, match_id, seat, spectator?, server, ticket, expires}` | This player's seat ticket (or watch-only spectator ticket when `spectator: true`). The connection stays open. |
 | `error` `{code, message}` | Then the door closes: `bad_request`, `rate_limited`, `replaced` or `shutdown`. |
 

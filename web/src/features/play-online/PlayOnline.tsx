@@ -15,11 +15,17 @@ import { customizerVisible } from "../../state/appearance";
 import { matchQueue } from "../../state/network";
 import { customLobbyVisible, setPanel } from "../../state/session";
 import { AccountPanel } from "../account/AccountPanel";
+import { Friends } from "../friends/Friends";
 import { createStore, useStore } from "../../state/store";
 import "./play-online.css";
 
 const NO_QUEUE = createStore(IDLE_QUEUE);
 const REFUSALS = new Set([
+  "not_logged_in",
+  "no_such_friend",
+  "offline",
+  "unavailable",
+  "rate_limited",
   "not_leader",
   "party_too_big",
   "party_full",
@@ -172,6 +178,7 @@ export function PlayOnline({ onQueue }: { onQueue?: () => void }) {
         Play online
       </Text>
       <AccountPanel />
+      <Friends />
       {state.connection === "ended" && (
         <div className="play-online-ended" role="alert">
           <Text size="1">{endedText(state.ended)}</Text>

@@ -102,6 +102,11 @@ export type Party = {
   leader: boolean;
 };
 
+/** A friend's invite: accepting joins their party or custom lobby by code. */
+export type Invite = { from: string; kind: "party" | "lobby"; code: string };
+/** Invites kept waiting for an answer at once; older ones give way. */
+export const MAX_INVITES = 3;
+
 /** What the door sends. A `match` carries this player's own seat ticket. */
 export type QueueMessage =
   | { type: "party"; party: Party; queue: QueueMode | null }
@@ -133,6 +138,9 @@ export type QueueMessage =
     }
   | { type: "lobby"; lobby: CustomLobby }
   | { type: "lobby_left"; reason: "left" | "kicked" }
+  | { type: "invite"; invite: Invite }
+  | { type: "invite_sent"; to: string }
+  | { type: "friends_changed" }
   | { type: "error"; code: string };
 
 const count = (value: unknown): value is number =>
@@ -280,6 +288,15 @@ export function parseQueueMessage(text: unknown): QueueMessage | null {
       return v.reason === "left" || v.reason === "kicked"
         ? { type: "lobby_left", reason: v.reason }
         : null;
+    case "invite": {
+      const code = typeof v.code === "string" ? normalizeCode(v.code) : null;
+      if (!isHandle(v.from) || (v.kind !== "party" && v.kind !== "lobby") || !code) return null;
+      return { type: "invite", invite: { from: v.from, kind: v.kind, code } };
+    }
+    case "invite_sent":
+      return isHandle(v.to) ? { type: "invite_sent", to: v.to } : null;
+    case "friends_changed":
+      return { type: "friends_changed" };
     case "error":
       return word(v.code) ? { type: "error", code: v.code } : null;
     default:
@@ -317,6 +334,7 @@ export const requests = {
       },
     }),
   startLobby: () => JSON.stringify({ type: "start_lobby" }),
+  invite: (handle: string) => JSON.stringify({ type: "invite", handle }),
 };
 
 /** The door's queue endpoint on the page's own origin. */
@@ -381,6 +399,18 @@ export type QueueState = {
   notice: string | null;
   /** Why the connection ended: a door error code, `unreachable` or `lost`. */
   ended: string | null;
+  /** Friends' invites waiting for an answer, newest last. */
+  invites: Invite[];
+  /** Who the last invite reached (the door's `invite_sent`). */
+  inviteSent: string | null;
+  /** An invite on its way to the door, until it is sent or refused. */
+  inviting: string | null;
+  /** An accepted invite waiting to be joined. */
+  joining: Invite | null;
+  /** Why an accepted invite could not be joined (a refusal code). */
+  inviteError: { from: string; code: string } | null;
+  /** Counts the door's `friends_changed` pushes: the list is stale. */
+  friendsChanged: number;
 };
 export const IDLE_QUEUE: QueueState = {
   connection: "offline",
@@ -394,6 +424,12 @@ export const IDLE_QUEUE: QueueState = {
   readyCheck: null,
   notice: null,
   ended: null,
+  invites: [],
+  inviteSent: null,
+  inviting: null,
+  joining: null,
+  inviteError: null,
+  friendsChanged: 0,
 };
 
 /** `m:ss`, or `h:mm:ss` past an hour. */
@@ -445,7 +481,11 @@ const NOTICES: Record<string, string> = {
   no_such_member: "That player is no longer in the lobby.",
   invalid_settings: "Those match settings are not supported by the server.",
   kicked: "You were removed from the custom lobby by the host.",
-  rate_limited: "Too many matches started recently. Wait a moment and try again.",
+  rate_limited: "Too many matches started or invites sent recently. Wait a moment and try again.",
+  not_logged_in: "Log in to invite friends.",
+  no_such_friend: "That player is not your friend, so they cannot be invited.",
+  offline: "That friend is offline.",
+  unavailable: "The server could not check that invite right now. Try again in a minute.",
   spectators_disabled: "Spectators are disabled in this custom lobby.",
   spectators_occupied: "Move or remove spectators before turning spectators off.",
 };

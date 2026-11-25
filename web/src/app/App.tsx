@@ -21,6 +21,7 @@ import { Scoreboard } from "../features/scoreboard/Scoreboard";
 import { CustomLobby } from "../features/custom-lobby/CustomLobby";
 import { SpectatorHud } from "../features/spectator/SpectatorHud";
 import { MatchReady } from "../features/queue/MatchReady";
+import { InvitePrompt } from "../features/friends/InvitePrompt";
 import { QueueBar } from "../features/queue/QueueBar";
 import { Loading } from "../features/loading/Loading";
 import { Diagnostics } from "../features/diagnostics/Diagnostics";
@@ -111,6 +112,7 @@ export function App() {
         {/* The queue follows the player from the home screen into the arena. */}
         <QueueBar />
         <MatchReady />
+        <InvitePrompt />
         <LightingTweaks />
         <MapEditor />
         <StartScreen />

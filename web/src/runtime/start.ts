@@ -32,7 +32,9 @@ import { debugEnabled, measureFrames, metrics, recordError, recordState } from "
 import { browserLink, installJoinLinks, takeJoinFragment } from "./network";
 import { browserQueue, installPartyLinks } from "./matchmaking";
 import { browserAccount } from "./account";
-import { accountService } from "../state/account";
+import { accountService, friendsService } from "../state/account";
+import { browserFriends } from "./friends";
+import { browserSocial, followAccount } from "./social";
 import { installTelemetry } from "./telemetry";
 import { matchQueue, networkLink, remoteHandles, remoteTags } from "../state/network";
 import { parseHandles, parseTags, withHandles } from "../domain/handles";
@@ -70,6 +72,9 @@ export function startRuntime(canvas: HTMLCanvasElement) {
   // Who is logged in, if this door offers login (ADR 0055).
   const { account, stop: stopAccount } = browserAccount();
   accountService.set(account);
+  const friends = browserFriends();
+  friendsService.set(friends);
+  const stopSocial = followAccount(account, queue, friends, browserSocial());
   void account.refresh();
   const stopPartyLinks = installPartyLinks(queue);
   // A join link wins; otherwise a reload rejoins this tab's match.
@@ -149,8 +154,10 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     stopPartyLinks();
     queue.dispose();
     matchQueue.set(null);
+    stopSocial();
     stopAccount();
     accountService.set(null);
+    friendsService.set(null);
     link.dispose();
     networkLink.set(null);
     remoteAppearances.set(null);

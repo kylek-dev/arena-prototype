@@ -1,0 +1,106 @@
+/* Friends list in Play online, and friends' invite prompts. Colors are
+   palette swatches or the Radix scales the palette drives. */
+.friends {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--gray-6);
+  border-radius: var(--radius-3);
+}
+.friend-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.friend-add input {
+  width: 22ch;
+  font-family: ui-monospace, monospace;
+}
+.friends-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--pal-gold-5);
+}
+.friend-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.friend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.friend-name {
+  display: grid;
+  flex: 1 1 10ch;
+  min-width: 0;
+}
+.friend-handle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+}
+.friend-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.friend-presence {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--gray-8);
+}
+.friend-presence.online,
+.friend-presence.searching,
+.friend-presence.in_lobby {
+  background: var(--pal-leaf-4);
+}
+.friend-presence.in_match {
+  background: var(--pal-gold-4);
+}
+.friends-blocked summary {
+  cursor: pointer;
+}
+/* Right edge, a third of the way down: clear of the queue bar and round
+   clock (top centre), the spectator HUD (top right), unit frames (left)
+   and the action bars (bottom). */
+.invite-prompts {
+  position: fixed;
+  top: 33%;
+  right: 16px;
+  z-index: 35;
+  display: grid;
+  gap: 8px;
+  width: min(320px, calc(100vw - 32px));
+}
+.invite-prompt {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  color: var(--gray-12);
+  background: var(--pal-night-2);
+  border: 1px solid var(--pal-gold-4);
+  border-radius: var(--radius-4);
+  box-shadow: var(--shadow-5);
+}
+.invite-prompt p {
+  margin: 0;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.invite-prompt-actions {
+  display: flex;
+  gap: 6px;
+}
