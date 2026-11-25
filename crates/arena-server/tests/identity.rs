@@ -1172,3 +1172,234 @@ async fn admins_come_from_configuration_and_alone_may_store_maps() {
     door.stop().await.unwrap();
     let _ = std::fs::remove_dir_all(directory);
 }
+
+/// The next chat message: (channel, from, to, admin, text).
+async fn chat_heard(socket: &mut Socket) -> (String, String, Option<String>, bool, String) {
+    until(socket, |m| match m {
+        QueueMessage::Chat {
+            channel,
+            from,
+            to,
+            admin,
+            text,
+        } => Some((channel, from, to, admin, text)),
+        _ => None,
+    })
+    .await
+}
+
+async fn chat_refused(socket: &mut Socket) -> String {
+    until(socket, |m| match m {
+        QueueMessage::Refused { code } => Some(code),
+        _ => None,
+    })
+    .await
+}
+
+#[tokio::test]
+async fn whispers_reach_friends_and_admins_mute_while_blocks_silence() {
+    let fake = Fake::default();
+    let provider = fake_provider(fake.clone()).await;
+    let directory =
+        std::env::temp_dir().join(format!("arena-chat-{}", arena_server::ticket::random_u64()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let store = directory.join("identity.sqlite3");
+    let key = SessionKey::random();
+    let only = || Origins::Only(vec!["https://arena.example.com".into()]);
+    let configure = |admins: HashSet<u64>| {
+        let store = store.clone();
+        let key = key.clone();
+        move |config: &mut DoorConfig| {
+            let identity = config.identity.as_mut().unwrap();
+            identity.store = Some(store);
+            identity.key = key;
+            identity.admins = admins;
+            config.auth_burst = 1000;
+        }
+    };
+    let (first, _) = door_tuned(only(), provider, configure(HashSet::new())).await;
+    let alice = log_in_as(first.addr, &fake, "alice").await;
+    let alice_id = me(first.addr, &alice).await.account.unwrap();
+    first.stop().await.unwrap();
+    let admins = HashSet::from([u64::from_str_radix(&alice_id, 16).unwrap()]);
+    let (door, _) = door_tuned(only(), provider, configure(admins)).await;
+    let addr = door.addr;
+    let bob = log_in_as(addr, &fake, "bob").await;
+    let carol = log_in_as(addr, &fake, "carol").await;
+    let mut handles = Vec::new();
+    for (session, name) in [(&alice, "Alicex"), (&bob, "Bobx"), (&carol, "Carolx")] {
+        handles.push(
+            choose(addr, session, name).await.1["handle"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    let [alice_h, bob_h, carol_h] = <[String; 3]>::try_from(handles).unwrap();
+    friend(addr, &alice, "request", &bob_h).await;
+    friend(addr, &bob, "accept", &alice_h).await;
+    let mut alice_socket = connect_queue(addr, 1, &alice).await;
+    let mut bob_socket = connect_queue(addr, 2, &bob).await;
+    let mut carol_socket = connect_queue(addr, 3, &carol).await;
+    let mut guest_socket = connect_queue(addr, 4, "nobody").await;
+
+    // A whisper reaches the friend, and the sender sees who it went to;
+    // the admin's tag comes from the door.
+    say(
+        &mut alice_socket,
+        serde_json::json!({"type": "whisper", "to": bob_h, "text": "duo?"}).to_string(),
+    )
+    .await;
+    assert_eq!(
+        chat_heard(&mut bob_socket).await,
+        ("whisper".into(), alice_h.clone(), None, true, "duo?".into())
+    );
+    assert_eq!(
+        chat_heard(&mut alice_socket).await,
+        (
+            "whisper".into(),
+            alice_h.clone(),
+            Some(bob_h.clone()),
+            true,
+            "duo?".into()
+        )
+    );
+    assert!(
+        !hears(&mut carol_socket, 200, |m| matches!(
+            m,
+            QueueMessage::Chat { .. }
+        ))
+        .await
+    );
+    // Strangers and guests cannot whisper.
+    say(
+        &mut alice_socket,
+        serde_json::json!({"type": "whisper", "to": carol_h, "text": "hi"}).to_string(),
+    )
+    .await;
+    assert_eq!(chat_refused(&mut alice_socket).await, "no_such_friend");
+    say(
+        &mut guest_socket,
+        serde_json::json!({"type": "whisper", "to": bob_h, "text": "hi"}).to_string(),
+    )
+    .await;
+    assert_eq!(chat_refused(&mut guest_socket).await, "not_logged_in");
+
+    // An admin mutes Bob; a non-admin cannot mute anyone.
+    let mute = |session: String, handle: String, minutes: u32| async move {
+        let body = format!(r#"{{"handle":"{handle}","minutes":{minutes}}}"#);
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let request = format!(
+            "POST /api/admin/mute HTTP/1.1\r\nHost: test\r\nCookie: __Host-arena_session={session}\r\n{ORIGIN}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        response[9..12].parse::<u16>().unwrap()
+    };
+    assert_eq!(mute(bob.clone(), alice_h.clone(), 10).await, 403);
+    assert_eq!(mute(alice.clone(), bob_h.clone(), 10).await, 204);
+    say(
+        &mut bob_socket,
+        serde_json::json!({"type": "chat", "channel": "public", "text": "hey"}).to_string(),
+    )
+    .await;
+    assert_eq!(chat_refused(&mut bob_socket).await, "muted");
+    assert_eq!(mute(alice.clone(), bob_h.clone(), 0).await, 204);
+    say(
+        &mut bob_socket,
+        serde_json::json!({"type": "chat", "channel": "public", "text": "hey"}).to_string(),
+    )
+    .await;
+    assert_eq!(chat_heard(&mut carol_socket).await.4, "hey");
+    assert_eq!(
+        chat_heard(&mut bob_socket).await.4,
+        "hey",
+        "senders hear their own post"
+    );
+
+    // Carol blocks Alice: Alice's chat stops reaching Carol's open tab.
+    assert_eq!(friend(addr, &carol, "block", &alice_h).await.0, 204);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    say(
+        &mut alice_socket,
+        serde_json::json!({"type": "chat", "channel": "public", "text": "anyone?"}).to_string(),
+    )
+    .await;
+    assert_eq!(chat_heard(&mut bob_socket).await.4, "anyone?");
+    assert!(
+        !hears(&mut carol_socket, 200, |m| matches!(
+            m,
+            QueueMessage::Chat { .. }
+        ))
+        .await
+    );
+
+    // Guests cannot post in public.
+    say(
+        &mut guest_socket,
+        serde_json::json!({"type": "chat", "channel": "public", "text": "hi"}).to_string(),
+    )
+    .await;
+    assert_eq!(chat_refused(&mut guest_socket).await, "log_in");
+
+    // Bob and Carol play while Alice, Bob's friend, watches: no channel
+    // and no whisper of hers reaches them.
+    say(
+        &mut bob_socket,
+        r#"{"type":"create_lobby","mode":"1v1"}"#.into(),
+    )
+    .await;
+    let code = until(&mut bob_socket, |m| match m {
+        QueueMessage::Lobby(view) => Some(view.code),
+        _ => None,
+    })
+    .await;
+    for socket in [&mut carol_socket, &mut alice_socket] {
+        say(
+            socket,
+            format!(r#"{{"type":"join_lobby","code":"{code}"}}"#),
+        )
+        .await;
+        until(socket, |m| {
+            matches!(m, QueueMessage::Lobby(_)).then_some(())
+        })
+        .await;
+    }
+    say(&mut bob_socket, r#"{"type":"start_lobby"}"#.into()).await;
+    for socket in [&mut bob_socket, &mut carol_socket, &mut alice_socket] {
+        until(socket, |m| {
+            matches!(m, QueueMessage::Match { .. }).then_some(())
+        })
+        .await;
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    say(
+        &mut alice_socket,
+        serde_json::json!({"type": "whisper", "to": bob_h, "text": "carol is low"}).to_string(),
+    )
+    .await;
+    assert_eq!(chat_refused(&mut alice_socket).await, "spectators_only");
+    // A second tab of hers is not spectating, but players in a live match
+    // hear neither public chat nor whispers.
+    let mut alice_tab = connect_queue(addr, 5, &alice).await;
+    say(
+        &mut alice_tab,
+        serde_json::json!({"type": "chat", "channel": "public", "text": "carol is low"})
+            .to_string(),
+    )
+    .await;
+    assert_eq!(chat_heard(&mut alice_tab).await.4, "carol is low");
+    say(
+        &mut alice_tab,
+        serde_json::json!({"type": "whisper", "to": bob_h, "text": "carol is low"}).to_string(),
+    )
+    .await;
+    assert_eq!(chat_refused(&mut alice_tab).await, "in_match");
+    for player in [&mut bob_socket, &mut carol_socket] {
+        assert!(!hears(player, 200, |m| matches!(m, QueueMessage::Chat { .. })).await);
+    }
+    door.stop().await.unwrap();
+    let _ = std::fs::remove_dir_all(directory);
+}

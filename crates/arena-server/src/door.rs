@@ -26,6 +26,7 @@ use std::sync::atomic::AtomicU64;
 mod admin;
 mod auth;
 mod browser;
+mod chat;
 mod friends;
 mod queue;
 pub use auth::Me;
@@ -164,6 +165,10 @@ struct Door {
     friend_reads: RatePerAccount,
     /// Admin-saved maps (social-identity step 5).
     maps: Arc<admin::MapStore>,
+    /// Words masked in chat (and refused in names).
+    words: crate::identity::names::Blocklist,
+    /// Accounts an admin muted, until when.
+    muted: std::sync::Mutex<std::collections::HashMap<u64, Instant>>,
     creations: RatePerAddress,
     /// Browser telemetry reports per address.
     reports: RatePerAddress,
@@ -546,6 +551,12 @@ fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
         invites: RatePerAccount::new(5, Duration::from_secs(6)),
         friend_actions: RatePerAccount::new(30, Duration::from_secs(2)),
         friend_reads: RatePerAccount::new(10, Duration::from_secs(3)),
+        words: config
+            .identity
+            .as_ref()
+            .map(|identity| identity.blocked.clone())
+            .unwrap_or_else(|| crate::identity::names::Blocklist::new("")),
+        muted: std::sync::Mutex::default(),
         maps: Arc::new(admin::MapStore::beside(
             config
                 .identity
@@ -610,6 +621,10 @@ fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
             get(admin::get_map)
                 .put(admin::put_map)
                 .layer(DefaultBodyLimit::max(admin::MAX_MAP)),
+        )
+        .route(
+            "/api/admin/mute",
+            post(admin::mute).layer(DefaultBodyLimit::max(256)),
         )
         .route(
             "/api/admin/handles/clear",

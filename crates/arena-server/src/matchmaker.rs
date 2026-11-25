@@ -634,6 +634,20 @@ impl Matchmaker {
         }
     }
 
+    /// Everyone in `conn`'s party (itself included).
+    pub fn party_members(&self, conn: QueueConn) -> Vec<QueueConn> {
+        self.of
+            .get(&conn)
+            .map(|id| {
+                self.parties[id]
+                    .members
+                    .iter()
+                    .map(|member| member.conn)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Whether `conn`'s party is searching or in a ready check.
     pub fn is_searching(&self, conn: QueueConn) -> bool {
         self.of

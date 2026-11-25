@@ -34,7 +34,7 @@
 //!
 //! One task owns the [`Matchmaker`]; connections talk to it over channels.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -49,6 +49,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Instant, MissedTickBehavior};
 use tracing::Span;
 
+use super::chat::{self as chat_rules, Channel, ChatBudget, ChatSeat};
 use super::{Door, unix_now};
 use crate::RateWindow;
 use crate::ingress;
@@ -60,8 +61,9 @@ use crate::metrics::Metrics;
 use crate::ticket::{self, Holder, MatchSettings};
 use arena_protocol::Handle;
 
-/// Largest message a queue client may send.
-const MAX_MESSAGE: usize = 512;
+/// Largest message a queue client may send: room for 200 characters of chat
+/// even when each is a 4-byte character escaped by the client.
+const MAX_MESSAGE: usize = 4096;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 const MESSAGES_PER_SECOND: u32 = 10;
 const STATUS_EVERY: Duration = Duration::from_secs(2);
@@ -117,6 +119,24 @@ enum FromClient {
     StartLobby {},
     /// Invite a friend (by `Name#1234`) to this player's lobby or party.
     Invite {
+        handle: String,
+    },
+    /// Chat (`door/chat.rs`): text to `public`, `match`, `team` or
+    /// `spectator`. The door sets who it is from.
+    Chat {
+        channel: String,
+        text: String,
+    },
+    /// Chat to a friend by `Name#1234`.
+    Whisper {
+        to: String,
+        text: String,
+    },
+    /// Stop (or resume) hearing a player's chat, on this connection.
+    Ignore {
+        handle: String,
+    },
+    Unignore {
         handle: String,
     },
 }
@@ -199,6 +219,16 @@ pub enum ToClient {
     },
     /// Friend requests or friendships changed: fetch `/api/friends`.
     FriendsChanged {},
+    /// A chat message. `from` and `admin` are the door's, never the
+    /// sender's claim; `to` is set on the sender's copy of a whisper.
+    Chat {
+        channel: String,
+        from: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<String>,
+        admin: bool,
+        text: String,
+    },
 }
 impl ToClient {
     fn error(code: &str, message: &str) -> Self {
@@ -311,6 +341,39 @@ pub(super) enum Command {
         to: u64,
         to_handle: String,
     },
+    /// Chat already cleaned, masked and within the sender's budget.
+    Chat {
+        conn: QueueConn,
+        channel: Channel,
+        text: String,
+    },
+    /// A whisper to the friend `to`, checked like an invite.
+    Whisper {
+        conn: QueueConn,
+        from: u64,
+        to: u64,
+        to_handle: String,
+        text: String,
+    },
+    /// Ignore (`on`) or stop ignoring `handle` (lowercase) on `conn`.
+    Ignore {
+        conn: QueueConn,
+        handle: String,
+        on: bool,
+    },
+    /// `account` blocked (or unblocked) `other`: their chat stops (or
+    /// resumes) reaching `account`'s open connections.
+    SetBlock {
+        account: u64,
+        other: u64,
+        blocked: bool,
+    },
+    /// Accounts `conn`'s player blocked, read after its hello so no block
+    /// slips between the read and [`Command::SetBlock`].
+    Blocks {
+        conn: QueueConn,
+        blocked: Vec<u64>,
+    },
     /// Tell every open connection of `account`.
     Notify {
         account: u64,
@@ -415,6 +478,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
     let mut matched_at: HashMap<QueueConn, Instant> = HashMap::new();
     // Each logged-in account's open connections, kept with `holders`.
     let mut by_account: HashMap<u64, Vec<QueueConn>> = HashMap::new();
+    let mut chat = ChatState::default();
     let mut searches = Searches::default();
     let mut tick = tokio::time::interval(TICK_EVERY);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -434,6 +498,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 Some(Command::Hello { conn, guest, address, holder, out }) => {
                     conns.insert(conn, out);
                     addresses.insert(conn, address);
+                    chat.guests.insert(conn, guest);
                     if let Some(account) = holder.account {
                         by_account.entry(account).or_default().push(conn);
                     }
@@ -483,8 +548,10 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 Some(Command::StartLobby { conn }) => mm.start_lobby(conn),
                 Some(Command::Revoke { account }) => {
                     by_account.remove(&account);
-                    for holder in holders.values_mut() {
+                    for (conn, holder) in holders.iter_mut() {
                         if holder.account == Some(account) {
+                            // A mute outlives logging out.
+                            chat.formerly.insert(*conn, account);
                             *holder = Holder {
                                 account: None,
                                 handle: Some(super::auth::guest_handle()),
@@ -510,6 +577,66 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                         Vec::new()
                     }
                 }
+                Some(Command::Chat { conn, channel, text }) => {
+                    // Public posts also spend the account's allowance, so
+                    // more tabs are not more messages.
+                    let account = holders.get(&conn).and_then(|holder| holder.account);
+                    let over = channel == Channel::Public
+                        && account.is_some_and(|account| {
+                            !chat
+                                .public
+                                .entry(account)
+                                .or_insert_with(|| ChatBudget::new(now))
+                                .take(now)
+                        });
+                    if over {
+                        send(&conns, conn, ToClient::Refused { code: "rate_limited".into() });
+                    } else {
+                        Chat {
+                            mm: &mm,
+                            conns: &conns,
+                            holders: &holders,
+                            state: &chat,
+                            muted: &door.muted,
+                            now,
+                        }
+                        .post(conn, channel, text);
+                    }
+                    Vec::new()
+                }
+                Some(Command::Whisper { conn, from, to, to_handle, text }) => {
+                    Chat {
+                        mm: &mm,
+                        conns: &conns,
+                        holders: &holders,
+                        state: &chat,
+                        muted: &door.muted,
+                        now,
+                    }
+                    .whisper(&by_account, conn, from, to, to_handle, text);
+                    Vec::new()
+                }
+                Some(Command::Ignore { conn, handle, on }) => {
+                    ignore(&conns, &holders, &mut chat, conn, &handle, on);
+                    Vec::new()
+                }
+                Some(Command::SetBlock { account, other, blocked }) => {
+                    for conn in by_account.get(&account).into_iter().flatten() {
+                        let set = chat.blocks.entry(*conn).or_default();
+                        if blocked {
+                            set.insert(other);
+                        } else {
+                            set.remove(&other);
+                        }
+                    }
+                    Vec::new()
+                }
+                Some(Command::Blocks { conn, blocked }) => {
+                    if conns.contains_key(&conn) {
+                        chat.blocks.entry(conn).or_default().extend(blocked);
+                    }
+                    Vec::new()
+                }
                 Some(Command::Notify { account, message }) => {
                     for conn in by_account.get(&account).into_iter().flatten() {
                         send(&conns, *conn, message.clone());
@@ -531,6 +658,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     unindex(&mut by_account, &holders, conn);
                     holders.remove(&conn);
                     matched_at.remove(&conn);
+                    chat.forget(conn);
                     mm.disconnect(conn, now)
                 }
             },
@@ -590,11 +718,20 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     unindex(&mut by_account, &holders, conn);
                     holders.remove(&conn);
                     matched_at.remove(&conn);
+                    chat.forget(conn);
                 }
                 Out::Start { mode, seats } => {
                     let match_id = start_match(&door, &conns, &holders, mode, &seats);
-                    for conn in &seats {
+                    for (seat, conn) in seats.iter().enumerate() {
                         matched_at.insert(*conn, now);
+                        chat.seat(
+                            *conn,
+                            ChatSeat {
+                                match_id,
+                                team: Some((seat % 2) as u8),
+                                at: now,
+                            },
+                        );
                     }
                     for conn in seats {
                         searches.matched(conn, match_id);
@@ -622,12 +759,24 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                         &[]
                     };
                     let players: Vec<QueueConn> = seats.iter().chain(watchers).copied().collect();
-                    if start_custom_match(
+                    let teams: Vec<Option<u8>> = (0..seats.len())
+                        .map(|seat| Some((seat % 2) as u8))
+                        .chain(watchers.iter().map(|_| None))
+                        .collect();
+                    if let Some(match_id) = start_custom_match(
                         &door, &conns, &addresses, &holders, now, host, mode, settings, seats,
                         spectators,
                     ) {
-                        for conn in players {
+                        for (conn, team) in players.into_iter().zip(teams) {
                             matched_at.insert(conn, now);
+                            chat.seat(
+                                conn,
+                                ChatSeat {
+                                    match_id,
+                                    team,
+                                    at: now,
+                                },
+                            );
                         }
                     }
                 }
@@ -802,6 +951,357 @@ fn presence(
         .unwrap_or(Presence::Offline)
 }
 
+/// Players one connection may ignore.
+const MAX_IGNORED: usize = 200;
+/// Outbox slots chat leaves free, so a busy channel never pushes out a
+/// ticket or ready check.
+const CHAT_RESERVE: usize = 8;
+
+/// Who said something, independent of the name shown: ignores and mutes
+/// follow this, so renaming or sharing a guest number changes nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Speaker {
+    Account(u64),
+    Guest(Guest),
+}
+
+/// Chat state the matchmaker task keeps per connection.
+#[derive(Default)]
+struct ChatState {
+    /// Each connection's guest id.
+    guests: HashMap<QueueConn, Guest>,
+    /// Accounts whose connections were logged out (still muted).
+    formerly: HashMap<QueueConn, u64>,
+    /// Each connection's last seat, and the connections seated per match.
+    seats: HashMap<QueueConn, ChatSeat>,
+    members: HashMap<u64, Vec<QueueConn>>,
+    /// Speakers each connection ignores, with the handle used to ignore.
+    ignores: HashMap<QueueConn, HashMap<Speaker, String>>,
+    /// Accounts each connection's account blocked.
+    blocks: HashMap<QueueConn, HashSet<u64>>,
+    /// `public` allowance per account, across its tabs.
+    public: HashMap<u64, ChatBudget>,
+}
+
+impl ChatState {
+    fn seat(&mut self, conn: QueueConn, seat: ChatSeat) {
+        self.unseat(conn);
+        self.members.entry(seat.match_id).or_default().push(conn);
+        self.seats.insert(conn, seat);
+    }
+
+    fn unseat(&mut self, conn: QueueConn) {
+        if let Some(old) = self.seats.remove(&conn)
+            && let Some(list) = self.members.get_mut(&old.match_id)
+        {
+            list.retain(|other| *other != conn);
+            if list.is_empty() {
+                self.members.remove(&old.match_id);
+            }
+        }
+    }
+
+    fn speaker(&self, conn: QueueConn, holder: &Holder) -> Option<Speaker> {
+        match holder.account {
+            Some(account) => Some(Speaker::Account(account)),
+            None => self.guests.get(&conn).copied().map(Speaker::Guest),
+        }
+    }
+
+    fn forget(&mut self, conn: QueueConn) {
+        self.unseat(conn);
+        self.guests.remove(&conn);
+        self.formerly.remove(&conn);
+        self.ignores.remove(&conn);
+        self.blocks.remove(&conn);
+    }
+}
+
+/// What chat routing reads from the matchmaker task. One rule keeps
+/// spectators from feeding players (ghosting): a player in a live match
+/// hears only `match` and `team`, and only players of that match post there.
+struct Chat<'a> {
+    mm: &'a Matchmaker,
+    conns: &'a Senders,
+    holders: &'a HashMap<QueueConn, Holder>,
+    state: &'a ChatState,
+    muted: &'a std::sync::Mutex<HashMap<u64, Instant>>,
+    now: Instant,
+}
+
+impl Chat<'_> {
+    /// `conn`'s seat in a match still under way, if any.
+    fn seat(&self, conn: QueueConn) -> Option<ChatSeat> {
+        self.state.seats.get(&conn).copied().filter(|seat| {
+            self.now.saturating_duration_since(seat.at) < IN_MATCH && !self.mm.is_searching(conn)
+        })
+    }
+
+    /// Whether `conn` plays (not watches) in a live match.
+    fn playing(&self, conn: QueueConn) -> bool {
+        self.seat(conn).is_some_and(|seat| seat.team.is_some())
+    }
+
+    /// The live match's seated connections whose team (`Some` for players,
+    /// `None` for spectators) is `wanted`.
+    fn seated(&self, match_id: u64, wanted: impl Fn(Option<u8>) -> bool) -> Vec<QueueConn> {
+        self.state
+            .members
+            .get(&match_id)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|other| {
+                self.seat(*other)
+                    .is_some_and(|seat| seat.match_id == match_id && wanted(seat.team))
+            })
+            .collect()
+    }
+
+    fn speaker(&self, conn: QueueConn, holder: &Holder) -> Option<Speaker> {
+        self.state.speaker(conn, holder)
+    }
+
+    fn refuse(&self, conn: QueueConn, code: &str) {
+        send(self.conns, conn, ToClient::Refused { code: code.into() });
+    }
+
+    /// Whether `conn`'s account (or the account it was logged out of) is
+    /// muted.
+    fn muted(&self, conn: QueueConn, holder: &Holder) -> bool {
+        let Some(account) = holder
+            .account
+            .or_else(|| self.state.formerly.get(&conn).copied())
+        else {
+            return false;
+        };
+        let muted = self
+            .muted
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        muted.get(&account).is_some_and(|until| self.now < *until)
+    }
+
+    /// Whether `to` hears `speaker`: not ignored, not blocked.
+    fn hears(&self, to: QueueConn, speaker: Speaker) -> bool {
+        let ignored = self
+            .state
+            .ignores
+            .get(&to)
+            .is_some_and(|ignored| ignored.contains_key(&speaker));
+        let blocked = match speaker {
+            Speaker::Account(account) => self
+                .state
+                .blocks
+                .get(&to)
+                .is_some_and(|set| set.contains(&account)),
+            Speaker::Guest(_) => false,
+        };
+        !(ignored || blocked)
+    }
+
+    /// Sends to each recipient that hears the speaker and has outbox room
+    /// beyond [`CHAT_RESERVE`].
+    fn deliver(&self, recipients: &[QueueConn], speaker: Speaker, message: &ToClient) {
+        for to in recipients {
+            let room = self
+                .conns
+                .get(to)
+                .is_some_and(|out| out.capacity() > CHAT_RESERVE);
+            if room && self.hears(*to, speaker) {
+                send(self.conns, *to, message.clone());
+            }
+        }
+    }
+
+    /// Routes a message to its channel's listeners (the sender included).
+    fn post(&self, conn: QueueConn, channel: Channel, text: String) -> Option<u64> {
+        let from = *self.holders.get(&conn)?;
+        let (Some(handle), Some(speaker)) = (from.handle, self.speaker(conn, &from)) else {
+            self.refuse(conn, "no_name");
+            return None;
+        };
+        if self.muted(conn, &from) {
+            self.refuse(conn, "muted");
+            return None;
+        }
+        let seat = self.seat(conn);
+        let spectating = seat.is_some_and(|seat| seat.team.is_none());
+        if spectating && channel != Channel::Spectator {
+            self.refuse(conn, "spectators_only");
+            return None;
+        }
+        let mut charge = None;
+        let recipients: Vec<QueueConn> = match (channel, seat) {
+            (Channel::Public, _) => {
+                // Guests have no account to mute or block, so only
+                // logged-in players speak in public.
+                let Some(account) = from.account else {
+                    self.refuse(conn, "log_in");
+                    return None;
+                };
+                charge = Some(account);
+                self.holders
+                    .keys()
+                    .copied()
+                    .filter(|other| *other == conn || !self.playing(*other))
+                    .collect()
+            }
+            (Channel::Match, Some(mine)) if mine.team.is_some() => {
+                self.seated(mine.match_id, |team| team.is_some())
+            }
+            (Channel::Match, _) => {
+                self.refuse(conn, "not_in_match");
+                return None;
+            }
+            (Channel::Team, Some(mine)) if mine.team.is_some() => {
+                self.seated(mine.match_id, |team| team == mine.team)
+            }
+            (Channel::Team, _) => {
+                let lobby = self.mm.lobby_members(conn);
+                let group = if lobby.is_empty() {
+                    self.mm.party_members(conn)
+                } else {
+                    lobby
+                };
+                // Lobby-mates now playing hear only their match.
+                group
+                    .into_iter()
+                    .filter(|other| *other == conn || !self.playing(*other))
+                    .collect()
+            }
+            (Channel::Spectator, Some(mine)) if spectating => {
+                self.seated(mine.match_id, |team| team.is_none())
+            }
+            (Channel::Spectator, _) => {
+                self.refuse(conn, "not_spectating");
+                return None;
+            }
+        };
+        let message = ToClient::Chat {
+            channel: channel.id().into(),
+            from: handle.to_string(),
+            to: None,
+            admin: from.admin,
+            text,
+        };
+        self.deliver(&recipients, speaker, &message);
+        charge
+    }
+
+    /// Delivers a whisper to the open connections of the friend `to` that
+    /// are not playing a live match, and a copy (with `to`) to the sender.
+    fn whisper(
+        &self,
+        by_account: &HashMap<u64, Vec<QueueConn>>,
+        conn: QueueConn,
+        from: u64,
+        to: u64,
+        to_handle: String,
+        text: String,
+    ) {
+        let Some(sender) = self.holders.get(&conn).copied() else {
+            return;
+        };
+        if sender.account != Some(from) {
+            return self.refuse(conn, "not_logged_in");
+        }
+        if self.muted(conn, &sender) {
+            return self.refuse(conn, "muted");
+        }
+        let Some(handle) = sender.handle else {
+            return self.refuse(conn, "no_name");
+        };
+        if self.seat(conn).is_some_and(|seat| seat.team.is_none()) {
+            return self.refuse(conn, "spectators_only");
+        }
+        let open = by_account.get(&to).cloned().unwrap_or_default();
+        if open.is_empty() {
+            return self.refuse(conn, "offline");
+        }
+        let targets: Vec<QueueConn> = open
+            .into_iter()
+            .filter(|other| !self.playing(*other))
+            .collect();
+        if targets.is_empty() {
+            return self.refuse(conn, "in_match");
+        }
+        // Someone ignoring the sender just does not hear it; the sender is
+        // not told (as with a block).
+        let message = ToClient::Chat {
+            channel: "whisper".into(),
+            from: handle.to_string(),
+            to: None,
+            admin: sender.admin,
+            text,
+        };
+        self.deliver(&targets, Speaker::Account(from), &message);
+        let ToClient::Chat { text, .. } = message else {
+            unreachable!()
+        };
+        send(
+            self.conns,
+            conn,
+            ToClient::Chat {
+                channel: "whisper".into(),
+                from: handle.to_string(),
+                to: Some(to_handle),
+                admin: sender.admin,
+                text,
+            },
+        );
+    }
+}
+
+/// Ignores (or stops ignoring) whoever is connected as `handle`, keyed on
+/// who they are rather than the name: a rename or a new guest with the same
+/// number changes nothing.
+fn ignore(
+    conns: &Senders,
+    holders: &HashMap<QueueConn, Holder>,
+    state: &mut ChatState,
+    conn: QueueConn,
+    handle: &str,
+    on: bool,
+) {
+    let me = holders
+        .get(&conn)
+        .and_then(|holder| state.speaker(conn, holder));
+    let found: HashSet<Speaker> = holders
+        .iter()
+        .filter(|(_, holder)| {
+            holder
+                .handle
+                .is_some_and(|h| h.to_string().eq_ignore_ascii_case(handle))
+        })
+        .filter_map(|(other, holder)| state.speaker(*other, holder))
+        .filter(|speaker| Some(*speaker) != me)
+        .collect();
+    let ignored = state.ignores.entry(conn).or_default();
+    if !on {
+        ignored
+            .retain(|speaker, name| !name.eq_ignore_ascii_case(handle) && !found.contains(speaker));
+        return;
+    }
+    let refusal = if found.is_empty() {
+        "no_such_player"
+    } else if ignored.len() + found.len() > MAX_IGNORED {
+        "too_many"
+    } else {
+        for speaker in found {
+            ignored.insert(speaker, handle.to_owned());
+        }
+        return;
+    };
+    send(
+        conns,
+        conn,
+        ToClient::Refused {
+            code: refusal.into(),
+        },
+    );
+}
+
 /// Delivers a friend's invite: the inviter's lobby or party code, to every
 /// open connection of `to`. Refuses `offline` when there is none.
 #[allow(clippy::too_many_arguments)]
@@ -916,7 +1416,7 @@ fn start_custom_match(
     settings: MatchSettings,
     seats: Vec<QueueConn>,
     spectators: Vec<QueueConn>,
-) -> bool {
+) -> Option<u64> {
     if let Some(&address) = addresses.get(&host)
         && door.creations.take(address, now).is_err()
     {
@@ -928,7 +1428,7 @@ fn start_custom_match(
                 code: "rate_limited".into(),
             },
         );
-        return false;
+        return None;
     }
     let expires = unix_now() + door.config.ticket_ttl.as_secs();
     let spectators = if settings.allow_spectators {
@@ -996,7 +1496,7 @@ fn start_custom_match(
             });
         }
     }
-    true
+    Some(created.match_id)
 }
 
 pub(super) async fn upgrade(
@@ -1125,6 +1625,19 @@ fn command(conn: QueueConn, message: FromClient) -> Result<Command, &'static str
         FromClient::StartLobby {} => Command::StartLobby { conn },
         // Needs the store; checked by the connection first.
         FromClient::Invite { .. } => return Err("Invite through the connection."),
+        FromClient::Chat { .. } | FromClient::Whisper { .. } => {
+            return Err("Chat through the connection.");
+        }
+        FromClient::Ignore { handle } => Command::Ignore {
+            conn,
+            handle: handle.to_ascii_lowercase(),
+            on: true,
+        },
+        FromClient::Unignore { handle } => Command::Ignore {
+            conn,
+            handle: handle.to_ascii_lowercase(),
+            on: false,
+        },
     })
 }
 
@@ -1167,10 +1680,70 @@ async fn check_invite(
     }
 }
 
+/// Sends a checked command to the matchmaker task, or the refusal to the
+/// client; `false` once the connection should end.
+async fn forward_or_refuse(
+    socket: &mut WebSocket,
+    door: &Door,
+    checked: Result<Command, &'static str>,
+) -> bool {
+    match checked {
+        Ok(command) => door.queue.send(command).await.is_ok(),
+        Err(code) => say(socket, &ToClient::Refused { code: code.into() }).await,
+    }
+}
+
+/// A chat message within the connection's budget, cleaned and masked.
+fn check_chat(door: &Door, budget: &mut ChatBudget, text: &str) -> Result<String, &'static str> {
+    if !budget.take(Instant::now()) {
+        return Err("rate_limited");
+    }
+    let text = chat_rules::clean(text)?;
+    Ok(door.words.mask(&text))
+}
+
+/// A whisper is for a friend of a logged-in player, found by handle; a
+/// stranger and a missing handle get the same refusal.
+async fn check_whisper(
+    door: &Door,
+    conn: QueueConn,
+    account: Option<u64>,
+    handle: String,
+    text: String,
+) -> Result<Command, &'static str> {
+    let (Some(identity), Some(account)) = (door.identity.as_ref(), account) else {
+        return Err("not_logged_in");
+    };
+    if handle.len() > 32 {
+        return Err("no_such_friend");
+    }
+    let store = identity.store.clone();
+    let lookup = handle.clone();
+    let friend = tokio::task::spawn_blocking(move || -> rusqlite::Result<Option<u64>> {
+        let Some(other) = store.find_handle(&lookup)? else {
+            return Ok(None);
+        };
+        Ok(store.are_friends(account, other)?.then_some(other))
+    })
+    .await;
+    match friend {
+        Ok(Ok(Some(to))) => Ok(Command::Whisper {
+            conn,
+            from: account,
+            to,
+            to_handle: handle,
+            text,
+        }),
+        Ok(Ok(None)) => Err("no_such_friend"),
+        _ => Err("unavailable"),
+    }
+}
+
 async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr, holder: Holder) {
     let conn = door.next_conn.fetch_add(1, Ordering::Relaxed);
     let mut rate = RateWindow::new(MESSAGES_PER_SECOND, Instant::now());
     let mut stop = door.shutdown.subscribe();
+    let mut chat_budget = ChatBudget::new(Instant::now());
     enum FirstError {
         RateLimited,
         BadRequest,
@@ -1217,6 +1790,19 @@ async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr, ho
     if door.queue.send(hello).await.is_err() {
         return refuse(socket, "shutdown", "The matchmaker is not running.").await;
     }
+    // Players this account blocked: their chat never reaches it. Read
+    // after the hello, so a block made meanwhile arrives as a SetBlock.
+    if let (Some(account), Some(identity)) = (holder.account, door.identity.as_ref()) {
+        let store = identity.store.clone();
+        let blocked = tokio::task::spawn_blocking(move || store.blocked_by(account))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+        if !blocked.is_empty() {
+            let _ = door.queue.send(Command::Blocks { conn, blocked }).await;
+        }
+    }
     loop {
         tokio::select! {
             // Drop the borrow `wait_for` returns before awaiting the refusal.
@@ -1238,6 +1824,31 @@ async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr, ho
                         }
                     }
                     _ => break,
+                };
+                // Chat is cleaned, masked and rate-limited here.
+                let message = match message {
+                    Ok(FromClient::Chat { channel, text }) => {
+                        let checked = check_chat(&door, &mut chat_budget, &text).and_then(|text| {
+                            Channel::from_id(&channel)
+                                .map(|channel| Command::Chat { conn, channel, text })
+                                .ok_or("no_such_channel")
+                        });
+                        if !forward_or_refuse(socket, &door, checked).await {
+                            break;
+                        }
+                        continue;
+                    }
+                    Ok(FromClient::Whisper { to, text }) => {
+                        let checked = match check_chat(&door, &mut chat_budget, &text) {
+                            Ok(text) => check_whisper(&door, conn, holder.account, to, text).await,
+                            Err(code) => Err(code),
+                        };
+                        if !forward_or_refuse(socket, &door, checked).await {
+                            break;
+                        }
+                        continue;
+                    }
+                    other => other,
                 };
                 // Invites need the store, so they are checked here.
                 let message = match message {
