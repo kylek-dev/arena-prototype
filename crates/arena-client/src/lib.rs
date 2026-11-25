@@ -117,6 +117,8 @@ struct Net {
     last_appearances_version: u64,
     /// The handles last published to the page.
     last_handles: Vec<Option<arena_protocol::Handle>>,
+    /// The tags last published to the page.
+    last_tags: Vec<arena_protocol::Tags>,
 }
 #[derive(Resource)]
 struct Orbit {
@@ -1061,9 +1063,11 @@ fn network_receive(
             net.last_status = None;
             net.last_appearances_version = 0;
             net.last_handles.clear();
+            net.last_tags.clear();
             *spec_cam = SpectatorCamera::default();
             platform::network_appearances("null");
             platform::network_handles("null");
+            platform::network_tags("null");
             restart(&mut practice, &mut orbit, &map.0, 1);
             practice.feedback = "Left the match · practice round";
         }
@@ -1082,6 +1086,7 @@ fn network_receive(
         last_status,
         last_appearances_version,
         last_handles,
+        last_tags,
         ..
     } = &mut *net;
     let session = session.get_or_insert_default();
@@ -1095,6 +1100,10 @@ fn network_receive(
     if session.handles() != last_handles.as_slice() {
         *last_handles = session.handles().to_vec();
         platform::network_handles(&network::handles_json(last_handles));
+    }
+    if session.tags() != last_tags.as_slice() {
+        *last_tags = session.tags().to_vec();
+        platform::network_tags(&network::tags_json(last_tags));
     }
     // A new match starts facing where the server placed this player: out of
     // its starting room. The camera starts behind it.
@@ -1820,7 +1829,7 @@ mod platform {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen(
-        inline_js = "export function arena_character() { const id = globalThis.arenaShell.characterModel; return typeof id === 'string' ? id : undefined; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(tag) { globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); } export function arena_map() { return globalThis.arenaShell.readMap?.() ?? []; } export function arena_map_status(json) { globalThis.arenaShell.onMapStatus?.(JSON.parse(json)); } export function arena_appearance() { return globalThis.arenaShell.readAppearance?.() ?? []; } export function arena_preview() { return globalThis.arenaShell.readPreview?.() ?? []; } export function arena_network() { return globalThis.arenaShell.readNetwork?.() ?? []; } export function arena_network_send(frame) { globalThis.arenaShell.sendNetwork?.(frame.slice()); } export function arena_network_status(json) { globalThis.arenaShell.onNetwork?.(JSON.parse(json)); } export function arena_network_appearances(json) { globalThis.arenaShell.onAppearances?.(JSON.parse(json)); } export function arena_network_handles(json) { globalThis.arenaShell.onHandles?.(JSON.parse(json)); }"
+        inline_js = "export function arena_character() { const id = globalThis.arenaShell.characterModel; return typeof id === 'string' ? id : undefined; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(tag) { globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); } export function arena_map() { return globalThis.arenaShell.readMap?.() ?? []; } export function arena_map_status(json) { globalThis.arenaShell.onMapStatus?.(JSON.parse(json)); } export function arena_appearance() { return globalThis.arenaShell.readAppearance?.() ?? []; } export function arena_preview() { return globalThis.arenaShell.readPreview?.() ?? []; } export function arena_network() { return globalThis.arenaShell.readNetwork?.() ?? []; } export function arena_network_send(frame) { globalThis.arenaShell.sendNetwork?.(frame.slice()); } export function arena_network_status(json) { globalThis.arenaShell.onNetwork?.(JSON.parse(json)); } export function arena_network_appearances(json) { globalThis.arenaShell.onAppearances?.(JSON.parse(json)); } export function arena_network_handles(json) { globalThis.arenaShell.onHandles?.(JSON.parse(json)); } export function arena_network_tags(json) { globalThis.arenaShell.onTags?.(JSON.parse(json)); }"
     )]
     extern "C" {
         fn arena_character() -> Option<String>;
@@ -1840,6 +1849,7 @@ mod platform {
         fn arena_network_status(json: &str);
         fn arena_network_appearances(json: &str);
         fn arena_network_handles(json: &str);
+        fn arena_network_tags(json: &str);
     }
     /// The runtime's match feed as `[generation, ...frames]`; `None` when
     /// there is no match (older shells send nothing).
@@ -1867,6 +1877,9 @@ mod platform {
     }
     pub fn network_handles(json: &str) {
         arena_network_handles(json);
+    }
+    pub fn network_tags(json: &str) {
+        arena_network_tags(json);
     }
     /// The player's appearance spec as `[revision, json]`; older shells send none.
     pub fn read_appearance() -> Option<(f64, String)> {
@@ -3109,6 +3122,7 @@ mod platform {
     pub static NETWORK_STATUS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
     pub static NETWORK_APPEARANCES: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
     pub static NETWORK_HANDLES: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    pub static NETWORK_TAGS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
     pub fn read_network() -> Option<super::network::Feed> {
         NETWORK
             .lock()
@@ -3130,6 +3144,9 @@ mod platform {
     }
     pub fn network_handles(json: &str) {
         *NETWORK_HANDLES.lock().unwrap() = Some(json.to_owned());
+    }
+    pub fn network_tags(json: &str) {
+        *NETWORK_TAGS.lock().unwrap() = Some(json.to_owned());
     }
     pub fn read_map() -> Option<(f64, String)> {
         MAP.lock().unwrap().clone()

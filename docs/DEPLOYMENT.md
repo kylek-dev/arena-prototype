@@ -121,7 +121,11 @@ off until you set it up; the game is then guest-only, as before.
    - `ARENA_OAUTH_<PROVIDER>_CLIENT_ID` and `_CLIENT_SECRET` for each
      provider;
    - optionally `ARENA_ADMIN_ACCOUNTS`, a comma-separated list of account
-     ids (an id is shown as `account` at `/api/auth/me` once logged in);
+     ids (an id is shown as `account` at `/api/auth/me` once logged in).
+     Admins get the admin tag and the admin tools (map storage for the
+     editor, clearing a player's handle). A change applies to the admin
+     tools when the door restarts, and to tags on tickets issued after that. Maps admins save are kept in `/var/lib/arena/maps/` on the
+     same volume, so back them up with the account store;
    - optionally `ARENA_BLOCKED_NAMES`, the path inside the container to a
      file of extra words handles may not contain (one per line, `#` for
      comments), added to `crates/arena-server/src/identity/blocked-names.txt`.

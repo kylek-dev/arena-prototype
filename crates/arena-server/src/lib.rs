@@ -104,8 +104,9 @@ enum Command {
         conn: ConnId,
         /// Boxed: looks are large and the other commands are small.
         appearance: Option<Box<WireAppearance>>,
-        /// From the ticket; the client never names itself.
+        /// From the ticket; the client never names or tags itself.
         handle: Option<arena_protocol::Handle>,
+        tags: arena_protocol::Tags,
         out: mpsc::Sender<Outbound>,
     },
     AttachSpectator {
@@ -321,13 +322,14 @@ fn apply_command(
             conn,
             appearance,
             handle,
+            tags,
             out,
         }) => {
             insert_conn(conns, conn, out);
             let mut out = session.attach_with_appearance(seat, conn, appearance.map(|look| *look));
             log_attach(span, id, seat, conn, &out);
             if welcomed(&out, conn) {
-                out.extend(session.relay_handles(seat, conn, handle));
+                out.extend(session.relay_handles(seat, conn, handle, tags));
             }
             out
         }
@@ -1006,6 +1008,9 @@ async fn connection(socket: &mut WebSocket, app: Arc<App>) {
             conn,
             appearance: appearance.map(Box::new),
             handle: claims.handle,
+            tags: arena_protocol::Tags {
+                admin: claims.admin,
+            },
             out: out_sender,
         },
         ticket::Role::Spectator => Command::AttachSpectator {

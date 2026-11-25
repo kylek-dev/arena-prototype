@@ -540,7 +540,7 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 
 ## 2026-11-25 — Friends and friend invites
 - **Branch / Commit:** `auto/friends`
-- **Base / PR:** `auto/display-names` (stacked on PR #95)
+- **Base / PR:** `auto/display-names` (stacked on PR #95) — PR #96
 - **Lane:** A (machine-verified; friends UI queued as Lane B)
 - **Task:** [social-identity](issues/social-identity.md) step 4
 - **Changes:**
@@ -558,4 +558,25 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
   Minors fixed: the friend cap is counted for both sides; friend actions have their own per-account limit; unreadable bodies answer `bad_request`; the presence comment; spectators of lobbies that forbid them no longer count as in a match; plain-logout behaviour documented; the rate limiter comment. Tests added: a stranger never receives the code, requests carry no presence, a block sends nothing. Not done: `in_lobby`/`in_match` presence and lobby invites end to end (covered by the presence ordering code but not by a test), blocks of accounts without a handle cannot be listed or undone by handle.
 - **Learnings:** "Indistinguishable" privacy claims have to hold across every endpoint that takes the same input, not just the obvious one. A connection task's copy of the account goes stale; authority belongs to the task that sees `Revoke`.
 - **Next Recommended Slice:** Admin role & tag (social-identity step 5).
+
+## 2026-11-25 — Admin role and tag
+- **Branch / Commit:** `auto/admin-role`
+- **Base / PR:** `auto/friends` (stacked on PR #96)
+- **Lane:** A (machine-verified; the tag display and the editor's server save queued as Lane B)
+- **Task:** [social-identity](issues/social-identity.md) step 5
+- **Changes:**
+  - Role from `ARENA_ADMIN_ACCOUNTS` (identity step), now carried as `Claims.admin` / `Holder.admin` (never without an account; cleared on revoke) and relayed by the match server as `ServerMessage::Tags` (variant 6) with the seat's handle; `PROTOCOL_VERSION = 10` in Rust and web, golden frames, fuzz seeds, decode limits; `arena-client` keeps tags in local order, clears them per match and publishes `onTags` → `remoteTags` (strict `parseTags`); the web queue protects variant 6 from eviction.
+  - `door/admin.rs`: shared `require_admin` (accounts on, allowed `Origin` for writes, logged in, admin from config) and the first tools: `GET /api/admin/maps`, `GET`/`PUT /api/admin/maps/<id>.json` (id allowlist, 256 KiB, `arena_map::parse`, canonical JSON, atomic write into `maps/` beside the account store) and `POST /api/admin/handles/clear` (`Store::clear_handle`, open searches renamed to a guest handle).
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/friends` (`smoke=true web_build=true wasm=true`): pass (`./scripts/check.sh`: 469 Rust tests, 1 pre-existing ignored; 58 Python; 50 Node; 43 Vitest files / 338 tests; headless pass; server smoke 496 ticks, 0 overruns, mean 14.2 µs, drained cleanly; `npm run build` 374 modules; WASM clippy pass). `./scripts/build-web.sh`: pass (no browser launched).
+  - Door test with two door processes over one file store (accounts first, then the operator names an admin): `/me` admin flag, maps GET/PUT for admin vs non-admin vs guest vs missing `Origin`, invalid map problems, bad id, the file on disk, clearing a handle and picking again, `admin` in the admin's queue ticket only. Server test: `Tags` follows `Handles`. Client test: tags in local order.
+- **Fresh-Eyes Review:** No Critical or Important findings (server gate complete, tag unforgeable, revocation clears it). Minors fixed:
+  - Two saves of one map shared a temporary file and could leave corrupt JSON; each save now uses its own synced temporary file.
+  - One unreadable or special file no longer fails or hangs the map list.
+  - The docs say tickets already issued keep their tag until they expire, and that the tools are off under `--any-origin`.
+  - Tests added: a signed admin claim without an account is refused, traversal attempts over HTTP are refused, oversize bodies get 413, and `Tags` reaches later players and spectators.
+
+  Not done: reading PUT bodies only after the admin check (other routes allow similar sizes), and an audit trail of which admin acted (needs a store table; noted for when there are several admins).
+- **Learnings:** `#[serde(default)]` is no help for postcard tickets; new claims change the format, which ships with the door and server together. Box a `Response` error once a handler returns `Result<_, Response>` (Clippy `result_large_err`).
+- **Next Recommended Slice:** Chat server (the last Lane A item).
 

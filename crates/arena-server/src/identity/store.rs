@@ -287,6 +287,17 @@ impl Store {
         Ok(Ok(handle))
     }
 
+    /// Removes the account's handle (an admin action for names that break
+    /// the rules); the player picks again, with no rename wait.
+    pub fn clear_handle(&self, id: u64) -> rusqlite::Result<bool> {
+        let changed = self.connection().execute(
+            "UPDATE accounts SET handle_name = NULL, handle_key = NULL, handle_number = NULL,
+             renamed = NULL WHERE id = ?1 AND handle_name IS NOT NULL",
+            params![id as i64],
+        )?;
+        Ok(changed == 1)
+    }
+
     /// Ends every session of the account; `false` when it does not exist.
     pub fn end_sessions(&self, id: u64) -> rusqlite::Result<bool> {
         let changed = self.connection().execute(

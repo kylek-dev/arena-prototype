@@ -18,6 +18,7 @@ import {
   isAppearances,
   isExpired,
   isHandles,
+  isTags,
   isWelcome,
   parseJoinFragment,
   parseStatus,
@@ -33,7 +34,7 @@ import {
   enterArena,
   remoteAppearances,
 } from "../state/appearance";
-import { remoteHandles } from "../state/network";
+import { remoteHandles, remoteTags } from "../state/network";
 import { createStore } from "../state/store";
 
 type SocketLike = {
@@ -170,7 +171,7 @@ export function createLink(deps: LinkDeps) {
       lastError = serverError(frame) ?? lastError;
       // Only the newest per-seat relay of each kind matters; replace any
       // queued older copy.
-      for (const relay of [isAppearances, isHandles]) {
+      for (const relay of [isAppearances, isHandles, isTags]) {
         if (!relay(frame)) continue;
         const existing = queue.findIndex((queued) => relay(queued));
         if (existing >= 0) queue.splice(existing, 1);
@@ -178,7 +179,8 @@ export function createLink(deps: LinkDeps) {
       queue.push(frame);
       if (queue.length > MAX_QUEUED) {
         const oldest = queue.findIndex(
-          (queued) => !isWelcome(queued) && !isAppearances(queued) && !isHandles(queued),
+          (queued) =>
+            !isWelcome(queued) && !isAppearances(queued) && !isHandles(queued) && !isTags(queued),
         );
         queue.splice(Math.max(oldest, 0), 1);
       }
@@ -301,6 +303,7 @@ export function browserLink() {
     onReset: () => {
       remoteAppearances.set(null);
       remoteHandles.set(null);
+      remoteTags.set(null);
     },
   });
 }

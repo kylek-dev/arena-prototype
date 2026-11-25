@@ -1020,3 +1020,155 @@ async fn a_connection_logged_out_everywhere_cannot_invite() {
     );
     door.stop().await.unwrap();
 }
+
+#[tokio::test]
+async fn admins_come_from_configuration_and_alone_may_store_maps() {
+    let fake = Fake::default();
+    let provider = fake_provider(fake.clone()).await;
+    let directory = std::env::temp_dir().join(format!(
+        "arena-admin-{}",
+        arena_server::ticket::random_u64()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let store = directory.join("identity.sqlite3");
+    let key = SessionKey::random();
+    let only = || Origins::Only(vec!["https://arena.example.com".into()]);
+    let configure = |admins: HashSet<u64>| {
+        let store = store.clone();
+        let key = key.clone();
+        move |config: &mut DoorConfig| {
+            let identity = config.identity.as_mut().unwrap();
+            identity.store = Some(store);
+            identity.key = key;
+            identity.admins = admins;
+            config.auth_burst = 1000;
+        }
+    };
+    // Accounts exist first; the operator then names one in the config.
+    let (first, _) = door_tuned(only(), provider, configure(HashSet::new())).await;
+    let alice = log_in_as(first.addr, &fake, "alice").await;
+    let bob = log_in_as(first.addr, &fake, "bob").await;
+    let alice_id = me(first.addr, &alice).await.account.unwrap();
+    assert!(!me(first.addr, &alice).await.admin);
+    first.stop().await.unwrap();
+    let admins = HashSet::from([u64::from_str_radix(&alice_id, 16).unwrap()]);
+    let (door, ticket_key) = door_tuned(only(), provider, configure(admins)).await;
+    let addr = door.addr;
+    assert!(me(addr, &alice).await.admin);
+    assert!(!me(addr, &bob).await.admin);
+
+    let as_cookie = |session: &str| format!("Cookie: __Host-arena_session={session}\r\n");
+    let put = |session: String, id: &'static str, body: String, origin: bool| async move {
+        let origin = if origin { ORIGIN } else { "" };
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let request = format!(
+            "PUT /api/admin/maps/{id}.json HTTP/1.1\r\nHost: test\r\nCookie: __Host-arena_session={session}\r\n{origin}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        let status: u16 = response[9..12].parse().unwrap();
+        let json = response.split_once("\r\n\r\n").unwrap().1;
+        (
+            status,
+            serde_json::from_str::<serde_json::Value>(json).unwrap_or(serde_json::Value::Null),
+        )
+    };
+    // Only the admin reaches the tool, on the server.
+    let listed = request(addr, "GET", "/api/admin/maps", &as_cookie(&alice)).await;
+    assert_eq!(
+        (listed.status, listed.body.as_str()),
+        (200, r#"{"maps":[]}"#)
+    );
+    let refused = request(addr, "GET", "/api/admin/maps", &as_cookie(&bob)).await;
+    assert_eq!(
+        (refused.status, refused.body.as_str()),
+        (403, r#"{"error":"not_admin"}"#)
+    );
+    assert_eq!(
+        request(addr, "GET", "/api/admin/maps", "").await.status,
+        401
+    );
+
+    let map = arena_map::colosseum().to_json();
+    assert_eq!(put(bob.clone(), "pit", map.clone(), true).await.0, 403);
+    assert_eq!(
+        put(alice.clone(), "pit", map.clone(), false).await.0,
+        403,
+        "writes need our Origin"
+    );
+    let (status, saved) = put(alice.clone(), "pit", map.clone(), true).await;
+    assert_eq!(status, 200, "{saved}");
+    assert_eq!(saved["id"], "pit");
+    let (status, invalid) = put(alice.clone(), "broken", r#"{"format":1}"#.into(), true).await;
+    assert_eq!(
+        (status, invalid["error"].as_str()),
+        (422, Some("invalid_map"))
+    );
+    assert!(!invalid["problems"].as_array().unwrap().is_empty());
+    assert_eq!(put(alice.clone(), "Bad", map.clone(), true).await.0, 422);
+    // No way out of the maps directory, and no oversized bodies.
+    for path in [
+        "/api/admin/maps/..%2Fidentity.sqlite3.json",
+        "/api/admin/maps/..%2F..%2Fx.json",
+    ] {
+        let reply = request(addr, "GET", path, &as_cookie(&alice)).await;
+        assert_eq!(reply.status, 404, "{path}");
+    }
+    assert_eq!(
+        put(alice.clone(), "huge", "x".repeat(300 * 1024), true)
+            .await
+            .0,
+        413
+    );
+    let back = request(addr, "GET", "/api/admin/maps/pit.json", &as_cookie(&alice)).await;
+    assert_eq!(back.status, 200);
+    assert_eq!(
+        arena_map::parse(&back.body).unwrap().name,
+        arena_map::colosseum().name
+    );
+    assert!(directory.join("maps/pit.json").exists());
+    assert!(!directory.join("maps/broken.json").exists());
+
+    // An admin can clear a player's handle; nobody else can.
+    let bob_h = choose(addr, &bob, "Bobx").await.1["handle"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let clear = |session: String, handle: String, origin: bool| async move {
+        let origin = if origin { ORIGIN } else { "" };
+        let body = format!(r#"{{"handle":"{handle}"}}"#);
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let request = format!(
+            "POST /api/admin/handles/clear HTTP/1.1\r\nHost: test\r\nCookie: __Host-arena_session={session}\r\n{origin}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        response[9..12].parse::<u16>().unwrap()
+    };
+    assert_eq!(clear(bob.clone(), bob_h.clone(), true).await, 403);
+    assert_eq!(clear(alice.clone(), bob_h.clone(), false).await, 403);
+    assert_eq!(clear(alice.clone(), "Nobody#0001".into(), true).await, 404);
+    assert_eq!(clear(alice.clone(), bob_h.clone(), true).await, 204);
+    let bob_now = me(addr, &bob).await;
+    assert_eq!((bob_now.handle, bob_now.rename_at), (None, None));
+    assert_eq!(
+        choose(addr, &bob, "Bobby").await.0,
+        200,
+        "picks again at once"
+    );
+
+    // The admin flag rides in the admin's ticket, for the tag; not Bob's.
+    let (alice_ticket, bob_ticket) = tokio::join!(
+        queue_ticket(addr, 1, Some(&alice)),
+        queue_ticket(addr, 2, Some(&bob))
+    );
+    let claims = |ticket: &str| ticket_key.verify(&from_hex(ticket).unwrap(), 0).unwrap();
+    assert!(claims(&alice_ticket).admin);
+    assert!(!claims(&bob_ticket).admin);
+    door.stop().await.unwrap();
+    let _ = std::fs::remove_dir_all(directory);
+}

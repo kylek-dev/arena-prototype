@@ -172,6 +172,7 @@ fn server_samples() -> Vec<ServerMessage> {
         ServerMessage::Appearances(vec![Some(sample_appearance()); MAX_FIGHTERS]),
         ServerMessage::Handles(vec![Handle::new("Rook7", 42), None]),
         ServerMessage::Handles(vec![Handle::new("abcdefghijklmnop", 9999); MAX_FIGHTERS]),
+        ServerMessage::Tags(vec![Tags { admin: true }, Tags::default()]),
     ]
 }
 
@@ -206,15 +207,15 @@ fn ordinary_traffic_is_small() {
 #[test]
 fn the_wire_layout_is_pinned() {
     // Golden frames: changing them requires a PROTOCOL_VERSION bump.
-    assert_eq!(PROTOCOL_VERSION, 9);
+    assert_eq!(PROTOCOL_VERSION, 10);
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 9,
+            protocol: 10,
             ticket: vec![0xAB, 0xCD],
             appearance: None,
         }
         .encode(),
-        [0, 9, 2, 0xAB, 0xCD, 0]
+        [0, 10, 2, 0xAB, 0xCD, 0]
     );
     let compact = WireAppearance {
         ancestry: "elf".into(),
@@ -229,13 +230,13 @@ fn the_wire_layout_is_pinned() {
     };
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 9,
+            protocol: 10,
             ticket: vec![0xAB, 0xCD],
             appearance: Some(Box::new(compact)),
         }
         .encode(),
         [
-            0, 9, 2, 0xAB, 0xCD, 1, // Hello variant 0, protocol 9, ticket, Some
+            0, 10, 2, 0xAB, 0xCD, 1, // Hello variant 0, protocol 10, ticket, Some
             3, b'e', b'l', b'f', // ancestry
             4, b'm', b'a', b'l', b'e', // body
             4, b'f', b'a', b'i', b'r', // skin_tone
@@ -1520,6 +1521,10 @@ fn fuzz_client_and_server_frames_preserve_all_wire_invariants() {
                         assert!(look.is_valid());
                     }
                 }
+                ServerMessage::Tags(tags) => {
+                    let count = tags.len();
+                    assert!((2..=MAX_FIGHTERS).contains(&count) && count.is_multiple_of(2));
+                }
                 ServerMessage::Handles(handles) => {
                     let count = handles.len();
                     assert!((2..=MAX_FIGHTERS).contains(&count) && count.is_multiple_of(2));
@@ -1582,6 +1587,21 @@ fn hostile_handles_are_refused_at_decode() {
     let mut frame3 = encoded(vec![Some(rook), None]);
     frame3[3 + 16] = 0; // number 1 -> 0
     for bad in [frame, frame2, frame3] {
+        assert!(ServerMessage::decode(&bad).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn tags_are_one_flag_byte_per_seat_for_two_to_six_seats() {
+    let message = ServerMessage::Tags(vec![Tags { admin: true }, Tags::default()]);
+    assert_eq!(message.encode(), [6, 2, 1, 0]);
+    assert_eq!(ServerMessage::decode(&message.encode()), Ok(message));
+    for bad in [
+        vec![6, 1, 1],
+        vec![6, 3, 0, 0, 0],
+        vec![6, 8, 0, 0, 0, 0, 0, 0, 0, 0],
+        vec![6, 2, 2, 0],
+    ] {
         assert!(ServerMessage::decode(&bad).is_err(), "{bad:?}");
     }
 }

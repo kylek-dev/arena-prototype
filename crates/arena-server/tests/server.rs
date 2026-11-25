@@ -276,6 +276,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 settings: None,
                 account: None,
                 handle: None,
+                admin: false,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -290,6 +291,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 settings: None,
                 account: None,
                 handle: None,
+                admin: false,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -304,6 +306,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 settings: None,
                 account: None,
                 handle: None,
+                admin: false,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -323,6 +326,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 }),
                 account: None,
                 handle: None,
+                admin: false,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -342,6 +346,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 }),
                 account: None,
                 handle: None,
+                admin: false,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -361,6 +366,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 }),
                 account: None,
                 handle: None,
+                admin: false,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -375,6 +381,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 settings: None,
                 account: None,
                 handle: None,
+                admin: false,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -1616,6 +1623,7 @@ async fn seats_show_the_handles_their_tickets_name() {
     let watcher = Holder {
         account: None,
         handle: Handle::new("Watcher", 1),
+        admin: false,
     };
     let created = issue_seats(
         &key,
@@ -1625,10 +1633,12 @@ async fn seats_show_the_handles_their_tickets_name() {
             Holder {
                 account: Some(5),
                 handle: rook,
+                admin: true,
             },
             Holder {
                 account: None,
                 handle: ash,
+                admin: false,
             },
         ],
         &[watcher],
@@ -1637,13 +1647,25 @@ async fn seats_show_the_handles_their_tickets_name() {
     .unwrap();
     let (mut first, _) = Client::join(addr, &created.tickets[0]).await;
     assert_eq!(next_handles(&mut first).await, [rook, None]);
+    // Seat 0 is an admin: its tag follows the handles.
+    let admin = arena_protocol::Tags { admin: true };
+    assert_eq!(
+        first.next().await,
+        Some(ServerMessage::Tags(vec![
+            admin,
+            arena_protocol::Tags::default()
+        ]))
+    );
     // The second seat's arrival is relayed to everyone already there.
     let (mut second, _) = Client::join(addr, &created.tickets[1]).await;
     assert_eq!(next_handles(&mut second).await, [rook, ash]);
+    let tags = vec![admin, arena_protocol::Tags::default()];
+    assert_eq!(second.next().await, Some(ServerMessage::Tags(tags.clone())));
     assert_eq!(next_handles(&mut first).await, [rook, ash]);
     // Spectators see the seats' handles; their own is never a seat's.
     let (mut spectator, _) = Client::join(addr, &created.spectator_tickets[0]).await;
     assert_eq!(next_handles(&mut spectator).await, [rook, ash]);
+    assert_eq!(spectator.next().await, Some(ServerMessage::Tags(tags)));
     // A reconnect keeps the seat's handle even with a ticket naming nobody
     // for that seat (the handle is locked by the first one that does).
     let other = issue_seats(&key, 1, None, &[], &[], u64::MAX).unwrap();

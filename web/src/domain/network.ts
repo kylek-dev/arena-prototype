@@ -166,7 +166,7 @@ export function endsLink(error: string | null) {
 // same bytes; everything else is decoded by the engine.
 
 /** Must match `arena_protocol::PROTOCOL_VERSION`. */
-export const PROTOCOL_VERSION = 9;
+export const PROTOCOL_VERSION = 10;
 /** `ServerMessage::Error` codes in declaration order (`[3, index]`). */
 export const ERROR_CODES = [
   "VersionMismatch",
@@ -282,6 +282,11 @@ export function isAppearances(frame: Uint8Array) {
 /** Whether a frame is the server's `Handles` relay (variant 5). */
 export function isHandles(frame: Uint8Array) {
   return frame.length > 0 && frame[0] === 5;
+}
+
+/** Whether a frame is the server's `Tags` relay (variant 6). */
+export function isTags(frame: Uint8Array) {
+  return frame.length > 0 && frame[0] === 6;
 }
 
 /** Delay before reconnect attempt `attempt` (0-based): 0.5 s doubling to 8 s. */
