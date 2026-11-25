@@ -1,5 +1,6 @@
-//! Accounts end to end (ADR 0055) against a fake OAuth provider on
-//! loopback: login with state and PKCE, the session cookie, the account id
+//! Accounts end to end (ADR 0055) against a fake WorkOS on loopback and a
+//! real PostgreSQL (`ARENA_TEST_DATABASE_URL`; each door gets a fresh
+//! schema): login with state and PKCE, the session cookie, the account id
 //! in queue tickets, and every way a cookie must stop working.
 
 use std::collections::{HashMap, HashSet};
@@ -9,15 +10,15 @@ use std::time::Duration;
 
 use arena_server::door::{self, DoorConfig, Me, QueueMessage};
 use arena_server::identity::IdentityConfig;
-use arena_server::identity::cookie::{SessionKey, pkce_challenge};
+use arena_server::identity::cookie::{SessionKey, base64url, pkce_challenge};
 use arena_server::identity::names::Blocklist;
-use arena_server::identity::provider::Provider;
-use arena_server::identity::store::ProviderId;
+use arena_server::identity::store::test_database;
+use arena_server::identity::workos::WorkOs;
 use arena_server::ingress::Origins;
 use arena_server::ticket::{Claims, TicketKey, from_hex};
-use axum::extract::{Form, State};
-use axum::http::HeaderMap;
-use axum::routing::{get, post};
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::routing::{delete, post};
 use axum::{Json, Router};
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -28,55 +29,97 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 const PAGE: &str = "https://arena.example.com/";
 const ORIGIN: &str = "Origin: https://arena.example.com\r\n";
-const SUBJECT: &str = "80351110224678912";
+/// The WorkOS user behind the default fake login (`good-code`).
+const SUBJECT: &str = "user_01HDEFAULT";
 const WAIT: Duration = Duration::from_secs(5);
 
-/// The challenge the fake provider expects the verifier to match.
+/// The fake WorkOS: the PKCE challenge it expects, the users deleted there,
+/// and whether deleting fails.
 #[derive(Clone, Default)]
-struct Fake(Arc<Mutex<Option<String>>>);
+struct Fake(
+    Arc<Mutex<Option<String>>>,
+    Arc<Mutex<Vec<String>>>,
+    Arc<std::sync::atomic::AtomicBool>,
+);
 
-async fn token(
-    State(fake): State<Fake>,
-    Form(form): Form<HashMap<String, String>>,
-) -> Json<serde_json::Value> {
-    let expected = fake.0.lock().unwrap().clone();
-    let code = form.get("code").cloned().unwrap_or_default();
-    let ok = code.starts_with("good-")
-        && form.get("grant_type").map(String::as_str) == Some("authorization_code")
-        && form.get("client_secret").map(String::as_str) == Some("shh")
-        && expected.is_some()
-        && form
-            .get("code_verifier")
-            .map(|verifier| pkce_challenge(verifier))
-            == expected;
-    Json(if ok {
-        serde_json::json!({"access_token": format!("tok:{code}"), "token_type": "Bearer"})
-    } else {
-        serde_json::json!({"error": "invalid_grant"})
-    })
+/// A WorkOS-shaped access token whose `sid` is `session_<who>`.
+fn access_token(who: &str) -> String {
+    let claims = serde_json::json!({"sid": format!("session_{who}"), "sub": "user"});
+    format!(
+        "{}.{}.signature",
+        base64url(br#"{"alg":"RS256"}"#),
+        base64url(claims.to_string().as_bytes())
+    )
 }
 
-async fn user(headers: HeaderMap) -> Json<serde_json::Value> {
-    let bearer = headers.get("authorization").and_then(|v| v.to_str().ok());
+async fn authenticate(
+    State(fake): State<Fake>,
+    Json(body): Json<HashMap<String, serde_json::Value>>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let field = |name: &str| body.get(name).and_then(|v| v.as_str()).unwrap_or_default();
+    let expected = fake.0.lock().unwrap().clone();
+    let ok = field("code").starts_with("good-")
+        && field("grant_type") == "authorization_code"
+        && field("client_id") == "client_test"
+        && field("client_secret") == "sk_test"
+        && expected.is_some()
+        && Some(pkce_challenge(field("code_verifier"))) == expected;
+    if !ok {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid_grant"})),
+        );
+    }
     // "good-code" is the default player; "good-<who>" another one.
-    Json(
-        match bearer.and_then(|b| b.strip_prefix("Bearer tok:good-")) {
-            Some("code") => serde_json::json!({"id": SUBJECT, "username": "someone"}),
-            Some(who) => serde_json::json!({"id": format!("sub-{who}")}),
-            None => serde_json::json!({}),
-        },
+    let who = field("code").trim_start_matches("good-").to_owned();
+    let user = if who == "code" {
+        SUBJECT.to_owned()
+    } else {
+        format!("user_{who}")
+    };
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "user": {"object": "user", "id": user, "email": format!("{who}@example.com")},
+            "access_token": access_token(&who),
+            "refresh_token": "refresh",
+        })),
     )
+}
+
+async fn delete_user(
+    State(fake): State<Fake>,
+    headers: HeaderMap,
+    Path(user): Path<String>,
+) -> StatusCode {
+    if headers.get("authorization").and_then(|v| v.to_str().ok()) != Some("Bearer sk_test") {
+        return StatusCode::UNAUTHORIZED;
+    }
+    if fake.2.load(std::sync::atomic::Ordering::Relaxed) {
+        return StatusCode::SERVICE_UNAVAILABLE;
+    }
+    fake.1.lock().unwrap().push(user);
+    StatusCode::OK
 }
 
 async fn fake_provider(fake: Fake) -> SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let app = Router::new()
-        .route("/token", post(token))
-        .route("/user", get(user))
+        .route("/user_management/authenticate", post(authenticate))
+        .route("/user_management/users/{user}", delete(delete_user))
         .with_state(fake);
     tokio::spawn(async move { axum::serve(listener, app).await });
     addr
+}
+
+/// Whether these tests must skip: they need `ARENA_TEST_DATABASE_URL`.
+fn no_database() -> bool {
+    let missing = std::env::var_os("ARENA_TEST_DATABASE_URL").is_none();
+    if missing {
+        eprintln!("skipped: set ARENA_TEST_DATABASE_URL to run account tests");
+    }
+    missing
 }
 
 struct Reply {
@@ -139,21 +182,18 @@ async fn door_tuned(
     tune: impl FnOnce(&mut DoorConfig),
 ) -> (door::DoorRunning, TicketKey) {
     let key = TicketKey::random();
-    let mut discord = Provider::new(ProviderId::Discord, "client".into(), "shh".into());
-    discord.authorize_url = format!("http://{provider}/authorize");
-    discord.token_url = format!("http://{provider}/token");
-    discord.user_url = format!("http://{provider}/user");
-    // GitHub is configured too, to prove a Discord login cannot finish there.
-    let mut github = Provider::new(ProviderId::Github, "client".into(), "shh".into());
-    github.token_url = format!("http://{provider}/token");
-    github.user_url = format!("http://{provider}/user");
+    let database = test_database().await.expect("ARENA_TEST_DATABASE_URL set");
     let mut config = DoorConfig::new(key.clone(), "ws://127.0.0.1:1/play".into(), PAGE.into());
     config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
     config.origins = origins;
     config.identity = Some(IdentityConfig {
-        store: None,
+        database,
         key: SessionKey::random(),
-        providers: vec![discord, github],
+        workos: WorkOs {
+            client_id: "client_test".into(),
+            api_key: "sk_test".into(),
+            api: format!("http://{provider}"),
+        },
         admins: HashSet::new(),
         blocked: Blocklist::new(""),
     });
@@ -161,9 +201,9 @@ async fn door_tuned(
     (door::start(config).await.unwrap(), key)
 }
 
-/// Starts a Discord login; returns the login cookie and the provider link.
+/// Starts a login; returns the login cookie and the WorkOS link.
 async fn start_login(addr: SocketAddr) -> (String, reqwest::Url) {
-    let started = request(addr, "GET", "/api/auth/discord/login", "").await;
+    let started = request(addr, "GET", "/api/auth/login", "").await;
     assert_eq!(started.status, 303);
     let (oauth, age) = started.cookie("__Host-arena_oauth").unwrap();
     assert_eq!(age, "600");
@@ -185,18 +225,19 @@ async fn log_in(addr: SocketAddr, fake: &Fake) -> String {
 async fn log_in_as(addr: SocketAddr, fake: &Fake, who: &str) -> String {
     let (oauth, link) = start_login(addr).await;
     let query = query(&link);
-    assert_eq!(query["scope"], "identify");
+    assert_eq!(query["provider"], "authkit");
+    assert_eq!(query["client_id"], "client_test");
     assert_eq!(query["code_challenge_method"], "S256");
     assert_eq!(
         query["redirect_uri"],
-        "https://arena.example.com/api/auth/discord/callback"
+        "https://arena.example.com/api/auth/callback"
     );
     *fake.0.lock().unwrap() = Some(query["code_challenge"].clone());
     let back = request(
         addr,
         "GET",
         &format!(
-            "/api/auth/discord/callback?code=good-{who}&state={}",
+            "/api/auth/callback?code=good-{who}&state={}",
             query["state"]
         ),
         &format!("Cookie: __Host-arena_oauth={oauth}\r\n"),
@@ -336,17 +377,22 @@ async fn queue_ticket(door: SocketAddr, guest: u128, cookie: Option<&str>) -> St
 
 #[tokio::test]
 async fn players_log_in_and_their_account_rides_in_their_ticket() {
+    if no_database() {
+        return;
+    }
     let fake = Fake::default();
     let provider = fake_provider(fake.clone()).await;
-    let (door, key) = door_with(
+    // Room for this test's own logins; the limit is checked at the end.
+    let (door, key) = door_tuned(
         Origins::Only(vec!["https://arena.example.com".into()]),
         provider,
+        |config| config.auth_burst = 30,
     )
     .await;
     let addr = door.addr;
     let claims = |ticket: &str| -> Claims { key.verify(&from_hex(ticket).unwrap(), 0).unwrap() };
 
-    // A guest: no account, and the providers on offer.
+    // A guest: no account, and login on offer.
     let guest: Me =
         serde_json::from_str(&request(addr, "GET", "/api/auth/me", "").await.body).unwrap();
     assert_eq!(
@@ -354,17 +400,17 @@ async fn players_log_in_and_their_account_rides_in_their_ticket() {
         Me {
             account: None,
             admin: false,
-            providers: vec!["discord".into(), "github".into()],
+            login: true,
             handle: None,
             rename_at: None,
         }
     );
-    assert_eq!(
-        request(addr, "GET", "/api/auth/google/login", "")
-            .await
-            .status,
-        404,
-        "not configured"
+    // Asking to sign up opens WorkOS's sign-up screen.
+    let sign_up = request(addr, "GET", "/api/auth/login?sign_up", "").await;
+    assert!(
+        sign_up.header("location")[0].contains("screen_hint=sign-up"),
+        "{:?}",
+        sign_up.header("location")
     );
 
     let session = log_in(addr, &fake).await;
@@ -400,33 +446,28 @@ async fn players_log_in_and_their_account_rides_in_their_ticket() {
     let forged = request(
         addr,
         "GET",
-        "/api/auth/discord/callback?code=good-code&state=someone-elses",
+        "/api/auth/callback?code=good-code&state=someone-elses",
         &format!("Cookie: __Host-arena_oauth={oauth}\r\n"),
     )
     .await;
     assert_eq!(forged.status, 400);
     assert!(forged.cookie("__Host-arena_session").is_none());
-    // Nor does a callback without a login started, nor a Discord login
-    // finished at another provider's callback.
-    let unstarted = request(
-        addr,
-        "GET",
-        "/api/auth/discord/callback?code=good-code&state=x",
-        "",
-    )
-    .await;
+    // Nor does a callback without a login started, nor one WorkOS reports
+    // as refused or cancelled.
+    let unstarted = request(addr, "GET", "/api/auth/callback?code=good-code&state=x", "").await;
     assert_eq!(unstarted.status, 400);
-    let elsewhere = request(
+    let refused = request(
         addr,
         "GET",
         &format!(
-            "/api/auth/github/callback?code=good-code&state={}",
+            "/api/auth/callback?error=access_denied&code=good-code&state={}",
             query(&link)["state"]
         ),
         &format!("Cookie: __Host-arena_oauth={oauth}\r\n"),
     )
     .await;
-    assert_eq!(elsewhere.status, 400);
+    assert_eq!(refused.status, 400);
+    assert!(refused.cookie("__Host-arena_session").is_none());
     // A tampered session is a guest.
     // Always a different last digit (replacing a `0` with `0` would not
     // tamper at all).
@@ -454,7 +495,8 @@ async fn players_log_in_and_their_account_rides_in_their_ticket() {
         403
     );
     assert!(me(addr, &session).await.account.is_some());
-    // Logging out everywhere ends this session and any copy of it.
+    // Logging out everywhere ends this session and any copy of it, and
+    // hands the page WorkOS's link to end its own session too.
     let other_device = log_in(addr, &fake).await;
     let ended = request(
         addr,
@@ -463,8 +505,14 @@ async fn players_log_in_and_their_account_rides_in_their_ticket() {
         &format!("{cookie}{ORIGIN}"),
     )
     .await;
-    assert_eq!(ended.status, 204);
+    assert_eq!(ended.status, 200);
     assert_eq!(ended.cookie("__Host-arena_session").unwrap().1, "0");
+    let logout: serde_json::Value = serde_json::from_str(&ended.body).unwrap();
+    let logout = reqwest::Url::parse(logout["logout_url"].as_str().unwrap()).unwrap();
+    assert_eq!(logout.path(), "/user_management/sessions/logout");
+    let logout = query(&logout);
+    assert_eq!(logout["session_id"], "session_code");
+    assert_eq!(logout["return_to"], PAGE);
     assert_eq!(me(addr, &session).await.account, None);
     assert_eq!(me(addr, &other_device).await.account, None);
 
@@ -479,6 +527,18 @@ async fn players_log_in_and_their_account_rides_in_their_ticket() {
         403,
         "deleting needs our Origin"
     );
+    // If WorkOS cannot delete the user, nothing is deleted.
+    fake.2.store(true, std::sync::atomic::Ordering::Relaxed);
+    let failed = request(
+        addr,
+        "POST",
+        "/api/auth/delete",
+        &format!("{fresh_cookie}{ORIGIN}"),
+    )
+    .await;
+    assert_eq!(failed.status, 502);
+    assert_eq!(me(addr, &fresh).await.account, Some(account.clone()));
+    fake.2.store(false, std::sync::atomic::Ordering::Relaxed);
     // A search under way when the account is deleted gets no account.
     let searching = open_queue(addr, 5, Some(&fresh), true).await;
     let deleted = request(
@@ -490,6 +550,7 @@ async fn players_log_in_and_their_account_rides_in_their_ticket() {
     .await;
     assert_eq!(deleted.status, 204);
     assert_eq!(me(addr, &fresh).await.account, None);
+    assert_eq!(*fake.1.lock().unwrap(), [SUBJECT], "deleted at WorkOS too");
     let (revoked, _) = tokio::join!(await_ticket(searching), queue_ticket(addr, 6, None));
     assert_eq!(
         claims(&revoked).account,
@@ -509,12 +570,8 @@ async fn players_log_in_and_their_account_rides_in_their_ticket() {
     }
     // Login routes are limited per address.
     let mut statuses = Vec::new();
-    for _ in 0..30 {
-        statuses.push(
-            request(addr, "GET", "/api/auth/discord/login", "")
-                .await
-                .status,
-        );
+    for _ in 0..40 {
+        statuses.push(request(addr, "GET", "/api/auth/login", "").await.status);
     }
     assert!(statuses.contains(&429), "{statuses:?}");
     door.stop().await.unwrap();
@@ -522,6 +579,9 @@ async fn players_log_in_and_their_account_rides_in_their_ticket() {
 
 #[tokio::test]
 async fn players_pick_handles_that_ride_in_their_tickets() {
+    if no_database() {
+        return;
+    }
     let fake = Fake::default();
     let provider = fake_provider(fake.clone()).await;
     let (door, key) = door_with(
@@ -604,6 +664,9 @@ async fn players_pick_handles_that_ride_in_their_tickets() {
 
 #[tokio::test]
 async fn cookies_never_act_for_a_door_open_to_any_origin() {
+    if no_database() {
+        return;
+    }
     let fake = Fake::default();
     let provider = fake_provider(fake.clone()).await;
     let (door, key) = door_with(Origins::Any, provider).await;
@@ -712,6 +775,9 @@ async fn say(socket: &mut Socket, json: String) {
 
 #[tokio::test]
 async fn friends_ask_accept_see_each_other_and_invite_with_one_click() {
+    if no_database() {
+        return;
+    }
     let fake = Fake::default();
     let provider = fake_provider(fake.clone()).await;
     // Many account calls from one test address: lift the per-address limit
@@ -967,6 +1033,9 @@ async fn friends_ask_accept_see_each_other_and_invite_with_one_click() {
 
 #[tokio::test]
 async fn a_connection_logged_out_everywhere_cannot_invite() {
+    if no_database() {
+        return;
+    }
     let fake = Fake::default();
     let provider = fake_provider(fake.clone()).await;
     let (door, _) = door_tuned(
@@ -999,7 +1068,7 @@ async fn a_connection_logged_out_everywhere_cannot_invite() {
         &format!("Cookie: __Host-arena_session={alice}\r\n{ORIGIN}"),
     )
     .await;
-    assert_eq!(ended.status, 204);
+    assert_eq!(ended.status, 200, "with WorkOS's logout link");
     say(
         &mut alice_socket,
         format!(r#"{{"type":"invite","handle":"{bob_h}"}}"#),
@@ -1023,6 +1092,9 @@ async fn a_connection_logged_out_everywhere_cannot_invite() {
 
 #[tokio::test]
 async fn admins_come_from_configuration_and_alone_may_store_maps() {
+    if no_database() {
+        return;
+    }
     let fake = Fake::default();
     let provider = fake_provider(fake.clone()).await;
     let directory = std::env::temp_dir().join(format!(
@@ -1030,15 +1102,18 @@ async fn admins_come_from_configuration_and_alone_may_store_maps() {
         arena_server::ticket::random_u64()
     ));
     std::fs::create_dir_all(&directory).unwrap();
-    let store = directory.join("identity.sqlite3");
+    // Both doors share one database, as a restart would.
+    let database = test_database().await.unwrap();
     let key = SessionKey::random();
     let only = || Origins::Only(vec!["https://arena.example.com".into()]);
     let configure = |admins: HashSet<u64>| {
-        let store = store.clone();
+        let database = database.clone();
         let key = key.clone();
+        let maps = directory.join("maps");
         move |config: &mut DoorConfig| {
+            config.maps = Some(maps);
             let identity = config.identity.as_mut().unwrap();
-            identity.store = Some(store);
+            identity.database = database;
             identity.key = key;
             identity.admins = admins;
             config.auth_burst = 1000;
@@ -1110,7 +1185,7 @@ async fn admins_come_from_configuration_and_alone_may_store_maps() {
     assert_eq!(put(alice.clone(), "Bad", map.clone(), true).await.0, 422);
     // No way out of the maps directory, and no oversized bodies.
     for path in [
-        "/api/admin/maps/..%2Fidentity.sqlite3.json",
+        "/api/admin/maps/..%2Fsecret.json",
         "/api/admin/maps/..%2F..%2Fx.json",
     ] {
         let reply = request(addr, "GET", path, &as_cookie(&alice)).await;
@@ -1198,20 +1273,26 @@ async fn chat_refused(socket: &mut Socket) -> String {
 
 #[tokio::test]
 async fn whispers_reach_friends_and_admins_mute_while_blocks_silence() {
+    if no_database() {
+        return;
+    }
     let fake = Fake::default();
     let provider = fake_provider(fake.clone()).await;
     let directory =
         std::env::temp_dir().join(format!("arena-chat-{}", arena_server::ticket::random_u64()));
     std::fs::create_dir_all(&directory).unwrap();
-    let store = directory.join("identity.sqlite3");
+    // Both doors share one database, as a restart would.
+    let database = test_database().await.unwrap();
     let key = SessionKey::random();
     let only = || Origins::Only(vec!["https://arena.example.com".into()]);
     let configure = |admins: HashSet<u64>| {
-        let store = store.clone();
+        let database = database.clone();
         let key = key.clone();
+        let maps = directory.join("maps");
         move |config: &mut DoorConfig| {
+            config.maps = Some(maps);
             let identity = config.identity.as_mut().unwrap();
-            identity.store = Some(store);
+            identity.database = database;
             identity.key = key;
             identity.admins = admins;
             config.auth_burst = 1000;

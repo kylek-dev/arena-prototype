@@ -1,18 +1,18 @@
-//! Accounts (ADR 0055): players log in with Discord, Google or GitHub; the
-//! door keeps the minimum about each account in SQLite, holds the session in
-//! a signed cookie, and signs the account id into match tickets. Guests
-//! keep playing without any of it.
+//! Accounts (ADR 0055): players log in through WorkOS AuthKit (email and
+//! password, an emailed code, Google or GitHub, so no social account is
+//! needed); the door keeps the minimum about each account in its own
+//! PostgreSQL database, holds the session in a signed cookie, and signs the
+//! account id into match tickets. Guests keep playing without any of it.
 //!
 //! The match server never sees this module: it trusts the ticket alone.
 
 pub mod cookie;
 pub mod friends;
 pub mod names;
-pub mod provider;
 pub mod store;
+pub mod workos;
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,16 +21,16 @@ use axum::http::header::{COOKIE, ORIGIN};
 
 use crate::ingress::Origins;
 use cookie::{SESSION_COOKIE, Session, SessionKey};
-use provider::Provider;
-use store::{Account, ProviderId, Store};
+use store::{Account, Database, Store};
+use workos::WorkOs;
 
 /// How the door's accounts are set up.
 #[derive(Clone, Debug)]
 pub struct IdentityConfig {
-    /// The SQLite file; `None` keeps accounts in memory (tests, trials).
-    pub store: Option<PathBuf>,
+    /// The accounts database (`ARENA_DATABASE_URL`).
+    pub database: Database,
     pub key: SessionKey,
-    pub providers: Vec<Provider>,
+    pub workos: WorkOs,
     /// Accounts granted the admin role by deploy configuration.
     pub admins: HashSet<u64>,
     /// Words handles may not contain.
@@ -38,11 +38,12 @@ pub struct IdentityConfig {
 }
 
 impl IdentityConfig {
-    /// From `ARENA_SESSION_KEY` (hex, at least 32 bytes), the
-    /// `ARENA_OAUTH_*` provider credentials and `ARENA_ADMIN_ACCOUNTS`
-    /// (comma-separated account ids in hex). `Ok(None)` without a session
-    /// key: the door is guest-only.
-    pub fn from_env(store: Option<PathBuf>) -> Result<Option<Self>, String> {
+    /// From `ARENA_SESSION_KEY` (hex, at least 32 bytes),
+    /// `ARENA_DATABASE_URL`, `ARENA_WORKOS_CLIENT_ID`,
+    /// `ARENA_WORKOS_API_KEY` and `ARENA_ADMIN_ACCOUNTS` (comma-separated
+    /// account ids in hex). `Ok(None)` without a session key: the door is
+    /// guest-only. With one, the rest are required.
+    pub fn from_env() -> Result<Option<Self>, String> {
         let Some(key) = std::env::var("ARENA_SESSION_KEY")
             .ok()
             .filter(|key| !key.trim().is_empty())
@@ -52,10 +53,14 @@ impl IdentityConfig {
         let key = SessionKey::from_hex(&key)
             .ok_or("ARENA_SESSION_KEY must be hex encoding at least 32 bytes")?;
         let admins = parse_admins(&std::env::var("ARENA_ADMIN_ACCOUNTS").unwrap_or_default())?;
+        let url = std::env::var("ARENA_DATABASE_URL")
+            .ok()
+            .filter(|url| !url.trim().is_empty())
+            .ok_or("accounts need ARENA_DATABASE_URL (postgres://...)")?;
         Ok(Some(Self {
-            store,
+            database: Database { url, schema: None },
             key,
-            providers: Provider::from_env(),
+            workos: WorkOs::from_env()?,
             admins,
             blocked: names::Blocklist::from_env()?,
         }))
@@ -81,24 +86,22 @@ pub fn parse_admins(text: &str) -> Result<HashSet<u64>, String> {
 pub struct Identity {
     pub store: Arc<Store>,
     pub key: SessionKey,
-    pub providers: Vec<Provider>,
+    pub workos: WorkOs,
     pub admins: HashSet<u64>,
     pub blocked: names::Blocklist,
     pub client: reqwest::Client,
-    /// The game page's origin: callbacks are `{origin}/api/auth/<p>/callback`.
+    /// The game page's origin: the callback is `{origin}/api/auth/callback`.
     pub origin: String,
 }
 
 impl Identity {
-    pub fn start(config: IdentityConfig, page: &str) -> Result<Self, String> {
-        // HTTPS to providers uses rustls with `ring`; installing it twice is
+    pub async fn start(config: IdentityConfig, page: &str) -> Result<Self, String> {
+        // HTTPS to WorkOS uses rustls with `ring`; installing it twice is
         // harmless.
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let store = match &config.store {
-            Some(path) => Store::open(path),
-            None => Store::in_memory(),
-        }
-        .map_err(|error| format!("account store: {error}"))?;
+        let store = Store::connect(&config.database)
+            .await
+            .map_err(|error| format!("account store: {error}"))?;
         let origin = reqwest::Url::parse(page)
             .map_err(|_| format!("--page {page} is not a URL"))?
             .origin()
@@ -111,7 +114,7 @@ impl Identity {
         Ok(Self {
             store: Arc::new(store),
             key: config.key,
-            providers: config.providers,
+            workos: config.workos,
             admins: config.admins,
             blocked: config.blocked,
             client,
@@ -119,12 +122,9 @@ impl Identity {
         })
     }
 
-    pub fn provider(&self, id: ProviderId) -> Option<&Provider> {
-        self.providers.iter().find(|provider| provider.id == id)
-    }
-
-    pub fn redirect_uri(&self, provider: ProviderId) -> String {
-        format!("{}/api/auth/{}/callback", self.origin, provider.id())
+    /// Where WorkOS sends the browser back (configured in its dashboard).
+    pub fn redirect_uri(&self) -> String {
+        format!("{}/api/auth/callback", self.origin)
     }
 
     pub fn is_admin(&self, account: u64) -> bool {
@@ -142,11 +142,7 @@ impl Identity {
             .filter_map(|header| header.to_str().ok())
             .find_map(|header| cookie::cookie(header, SESSION_COOKIE))?;
         let session = self.key.read_session(value, now)?;
-        let store = self.store.clone();
-        let account = tokio::task::spawn_blocking(move || store.get(session.account))
-            .await
-            .ok()?
-            .ok()??;
+        let account = self.store.get(session.account).await.ok()??;
         (account.generation == session.generation).then_some((session, account))
     }
 }

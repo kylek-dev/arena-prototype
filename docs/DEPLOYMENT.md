@@ -55,9 +55,10 @@ Changing the key invalidates every link already handed out.
 - **During a restart.** Players whose match had not started get
   `ServerShutdown` and retry by themselves until the new server is up.
   Players of matches that were cut off see the match as over.
-- **The door.** The door keeps queues, parties and lobbies in memory, and
-  accounts in its `door-data` volume. A restart drops searches and lobbies;
-  players reconnect and queue again. Accounts and login sessions survive.
+- **The door.** The door keeps queues, parties and lobbies in memory,
+  accounts in the `identity-db` PostgreSQL container, and admin-saved maps
+  in its `door-data` volume. A restart drops searches and lobbies; players
+  reconnect and queue again. Accounts and login sessions survive.
 - **Caddy.** A configuration reload keeps match WebSockets open for up to
   21 minutes. A restart of Caddy drops them, and players reconnect
   automatically.
@@ -103,50 +104,67 @@ Upgrading to the release that added accounts changes the ticket format.
 Tickets and links issued before the upgrade stop working, as they do when
 `ARENA_TICKET_KEY` changes. Upgrade between playtests.
 
-Players can log in with Discord, Google or GitHub
-([ADR 0055](decisions/0055-accounts-oauth-login-in-arena-door.md)). Login is
-off until you set it up; the game is then guest-only, as before.
+Players log in through WorkOS AuthKit with email and password, an emailed
+code, Google or GitHub
+([ADR 0055](decisions/0055-accounts-oauth-login-in-arena-door.md)). Accounts
+live in the `identity-db` PostgreSQL container, a database used for nothing
+else. Login is off until you set it up; the game is then guest-only, as
+before.
 
-1. **Publish a privacy notice** before offering login. Say that the game
-   stores the provider's user id, the chosen name and login times, and
-   nothing else, and say how to delete an account.
-2. **Register an OAuth app** with each provider you want, using the callback
-   `https://ARENA_HOST/api/auth/<provider>/callback` (`discord`, `google`
-   or `github`). The game asks for Discord `identify`, Google `openid` and no
-   GitHub scope. A Google app in Testing mode lists at most 100 test users,
-   so publish its audience before a public playtest.
+1. **Publish a privacy notice** before offering login. Say that:
+   - WorkOS holds each player's email and login methods;
+   - the game stores the WorkOS user id, the chosen name, friends, blocks
+     and login times, and nothing else;
+   - how to delete an account.
+2. **Create a WorkOS application** (dashboard.workos.com; the first million
+   monthly active users are free). Use the Staging environment for trials;
+   production needs its own Google and GitHub OAuth apps, since WorkOS's
+   default credentials work only in staging. In the application's
+   **Redirects** tab, set:
+   - redirect URI `https://ARENA_HOST/api/auth/callback`;
+   - default sign-out URI `https://ARENA_HOST/`;
+   - initiate-login URI `https://ARENA_HOST/api/auth/login`.
+
+   Under **Authentication**, keep Email + Password, and turn on Magic Auth
+   and the Google and GitHub providers you want.
 3. **In `deploy/.env`**, set:
    - `ARENA_SESSION_KEY=$(openssl rand -hex 32)`, which must differ from the
      ticket key;
-   - `ARENA_OAUTH_<PROVIDER>_CLIENT_ID` and `_CLIENT_SECRET` for each
-     provider;
+   - `ARENA_WORKOS_CLIENT_ID` (`client_...`) and `ARENA_WORKOS_API_KEY`
+     (`sk_...`);
+   - `ARENA_IDENTITY_DB_PASSWORD=$(openssl rand -hex 24)`. Compose requires
+     it even when login is off;
    - optionally `ARENA_ADMIN_ACCOUNTS`, a comma-separated list of account
      ids (an id is shown as `account` at `/api/auth/me` once logged in).
      Admins get the admin tag and the admin tools (map storage for the
-     editor, clearing a player's handle). A change applies to the admin
-     tools when the door restarts, and to tags on tickets issued after that. Maps admins save are kept in `/var/lib/arena/maps/` on the
-     same volume, so back them up with the account store;
+     editor, clearing a player's handle, chat mutes). A change applies to
+     the admin tools when the door restarts, and to tags on tickets issued
+     after that. Maps admins save are kept in `/var/lib/arena/maps/` on the
+     `door-data` volume;
    - optionally `ARENA_BLOCKED_NAMES`, the path inside the container to a
      file of extra words handles may not contain (one per line, `#` for
      comments), added to `crates/arena-server/src/identity/blocked-names.txt`.
-4. Restart the door: `docker compose up -d door`.
+4. Start or restart: `docker compose up -d identity-db door`. The door waits
+   for the database's health check and creates its tables on first start.
 
-The door keeps accounts in `/var/lib/arena/identity.sqlite3` on the
-`door-data` volume. To back it up, stop the door and copy every
-`identity.sqlite3*` file. A clean stop folds SQLite's write-ahead log into
-the main file; this was checked on 2026-11-25, when only `identity.sqlite3`
-was left after a stop. If the door was killed instead, the `-wal` file
-holds the newest rows, so copy it too, and restore all the files together.
+Back up the accounts with `pg_dump` while everything runs; restore into an
+empty database before starting the door:
 
 ```sh
-docker compose stop door
-docker run --rm -v arena_door-data:/data -v "$PWD/backup-$(date +%F)":/backup \
-  debian:trixie-slim sh -c 'cp /data/identity.sqlite3* /backup/'
-docker compose start door
+docker compose exec -T identity-db pg_dump -U arena_identity -Fc arena_identity \
+  > "identity-$(date +%F).dump"
+# Restore (door stopped, empty database):
+docker compose exec -T identity-db pg_restore -U arena_identity -d arena_identity \
+  < identity-YYYY-MM-DD.dump
 ```
 
-A player deletes their account with `POST /api/auth/delete`. Their sessions
-end at once, and any queue connection still open stops putting the account
+Back up admin-saved maps by copying the `door-data` volume's `maps/`
+directory.
+
+A player deletes their account with `POST /api/auth/delete`. The door
+deletes the user at WorkOS first (if WorkOS cannot be reached, nothing is
+deleted and the player can retry), then the account. Their sessions end at
+once, and any queue connection still open stops putting the account
 into tickets. Tickets already issued stay valid until they expire (2 hours
 by default), and backups keep the row until you discard them.
 

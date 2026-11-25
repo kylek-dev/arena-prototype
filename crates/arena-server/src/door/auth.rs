@@ -1,21 +1,25 @@
 //! Login routes (ADR 0055, `docs/PROTOCOL.md` "Accounts"):
 //!
-//! - `GET /api/auth/me`: `{account, admin, providers}` for this browser.
-//! - `GET /api/auth/<provider>/login`: starts a login (state and PKCE in a
-//!   short-lived signed cookie) and redirects to the provider.
-//! - `GET /api/auth/<provider>/callback`: checks the state, trades the code
-//!   for the provider's permanent id, sets the session cookie and returns
-//!   to the game page. Never a free-form redirect.
+//! - `GET /api/auth/me`: `{account, admin, login, handle, rename_at}` for
+//!   this browser.
+//! - `GET /api/auth/login[?sign_up]`: starts a login (state and PKCE in a
+//!   short-lived signed cookie) and redirects to WorkOS's hosted page. It
+//!   is also the dashboard's "initiate login" URI.
+//! - `GET /api/auth/callback`: checks the state, trades the code for the
+//!   WorkOS user id, sets the session cookie and returns to the game page.
+//!   Never a free-form redirect.
 //! - `POST /api/auth/logout`, `POST /api/auth/logout_everywhere` and
-//!   `POST /api/auth/delete`: need an allowed `Origin`.
+//!   `POST /api/auth/delete`: need an allowed `Origin`. Logging out answers
+//!   `{"logout_url"}`, WorkOS's page that ends its own session and returns
+//!   to the game, for the page to open.
 //!
-//! Account ids, codes, tokens and subjects are never logged.
+//! Account ids, codes, tokens and WorkOS ids are never logged.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Json;
-use axum::extract::{ConnectInfo, Path, Query, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::header::{CACHE_CONTROL, COOKIE, LOCATION, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -27,8 +31,8 @@ use crate::identity::cookie::{
     Login, OAUTH_COOKIE, OAUTH_SECONDS, SESSION_COOKIE, SESSION_SECONDS, Session, cookie,
     set_cookie,
 };
-use crate::identity::store::{Account, HandleError, ProviderId, RENAME_EVERY};
-use crate::identity::{Identity, cookie_allowed};
+use crate::identity::cookie_allowed;
+use crate::identity::store::{Account, HandleError, RENAME_EVERY};
 use crate::ingress;
 use crate::metrics::Metrics;
 use arena_protocol::{Handle, MAX_HANDLE_NUMBER};
@@ -39,8 +43,8 @@ pub struct Me {
     /// The account id in hex, or `None` for a guest.
     pub account: Option<String>,
     pub admin: bool,
-    /// Providers this door can log in with.
-    pub providers: Vec<String>,
+    /// Whether this door offers login at all.
+    pub login: bool,
     /// The account's `Name#1234`, once picked.
     #[serde(default)]
     pub handle: Option<String>,
@@ -118,44 +122,34 @@ pub(super) async fn me(State(door): State<Arc<Door>>, headers: HeaderMap) -> Res
             admin: account
                 .zip(identity)
                 .is_some_and(|(account, identity)| identity.is_admin(account.id)),
-            providers: identity
-                .map(|identity| {
-                    identity
-                        .providers
-                        .iter()
-                        .map(|p| p.id.id().to_owned())
-                        .collect()
-                })
-                .unwrap_or_default(),
+            login: identity.is_some(),
         })
         .into_response(),
     )
 }
 
-fn provider_of<'a>(door: &'a Door, name: &str) -> Option<(&'a Identity, ProviderId)> {
-    let identity = door.identity.as_ref()?;
-    let id = ProviderId::from_id(name)?;
-    identity.provider(id)?;
-    Some((identity, id))
+#[derive(Debug, Deserialize)]
+pub(super) struct Start {
+    /// Present to open the hosted page on "sign up" rather than "sign in".
+    sign_up: Option<String>,
 }
 
 pub(super) async fn login(
     State(door): State<Arc<Door>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    Path(provider): Path<String>,
+    Query(start): Query<Start>,
 ) -> Response {
     if limited(&door, peer, &headers) {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
-    let Some((identity, id)) = provider_of(&door, &provider) else {
+    let Some(identity) = door.identity.as_ref() else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let login = Login::start(id, unix_now());
+    let login = Login::start(unix_now());
     let to = identity
-        .provider(id)
-        .expect("checked above")
-        .authorize(&login, &identity.redirect_uri(id));
+        .workos
+        .authorize(&login, &identity.redirect_uri(), start.sign_up.is_some());
     with_cookie(
         redirect(&to),
         set_cookie(OAUTH_COOKIE, &identity.key.login(&login), OAUTH_SECONDS),
@@ -166,25 +160,26 @@ pub(super) async fn login(
 pub(super) struct Callback {
     code: Option<String>,
     state: Option<String>,
+    /// Set by WorkOS when the login failed or was cancelled.
+    error: Option<String>,
 }
 
 pub(super) async fn callback(
     State(door): State<Arc<Door>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
-    Path(provider): Path<String>,
     Query(callback): Query<Callback>,
 ) -> Response {
     if limited(&door, peer, &headers) {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
-    let Some((identity, id)) = provider_of(&door, &provider) else {
+    let Some(identity) = door.identity.as_ref() else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let clear = set_cookie(OAUTH_COOKIE, "", 0);
     let fail = |reason: &'static str| {
         Metrics::add(&door.metrics.login_failures, 1);
-        tracing::info!(provider = id.id(), reason, "login failed");
+        tracing::info!(reason, "login failed");
         with_cookie(
             no_store(
                 (
@@ -206,8 +201,11 @@ pub(super) async fn callback(
         return fail("no_login_in_progress");
     };
     // The state proves this browser started this login (no login CSRF).
-    if started.provider != id || callback.state.as_deref() != Some(started.state.as_str()) {
+    if callback.state.as_deref() != Some(started.state.as_str()) {
         return fail("state_mismatch");
+    }
+    if callback.error.is_some() {
+        return fail("refused_by_workos");
     }
     let Some(code) = callback
         .code
@@ -215,44 +213,39 @@ pub(super) async fn callback(
     else {
         return fail("no_code");
     };
-    let provider = identity.provider(id).expect("checked above");
-    let subject = match provider
-        .subject(
-            &identity.client,
-            &code,
-            &started.verifier,
-            &identity.redirect_uri(id),
-        )
+    let logged_in = match identity
+        .workos
+        .authenticate(&identity.client, &code, &started.verifier)
         .await
     {
-        Ok(subject) => subject,
+        Ok(logged_in) => logged_in,
         Err(problem) => {
-            tracing::warn!(provider = id.id(), reason = %problem, "login could not reach the provider");
-            return fail("provider_error");
+            tracing::warn!(reason = %problem, "login could not reach WorkOS");
+            return fail("workos_error");
         }
     };
-    let store = identity.store.clone();
     let now = unix_now();
-    let account = tokio::task::spawn_blocking(move || {
-        store.login(id, &subject, now, crate::ticket::random_u64)
-    })
-    .await;
-    let Ok(Ok(account)) = account else {
+    let Ok(account) = identity
+        .store
+        .login(&logged_in.user, now, crate::ticket::random_u64)
+        .await
+    else {
         return fail("store_error");
     };
     Metrics::add(&door.metrics.logins, 1);
-    tracing::info!(provider = id.id(), "player logged in");
+    tracing::info!("player logged in");
     let session = Session {
         account: account.id,
         generation: account.generation,
         expires: now + SESSION_SECONDS,
+        workos: logged_in.session,
     };
     let response = with_cookie(redirect(&door.config.page), clear);
     with_cookie(
         response,
         set_cookie(
             SESSION_COOKIE,
-            &identity.key.session(session),
+            &identity.key.session(&session),
             SESSION_SECONDS,
         ),
     )
@@ -285,37 +278,66 @@ pub(super) async fn end(
         return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
     }
     let cleared = set_cookie(SESSION_COOKIE, "", 0);
-    let Some(account) = account(&door, &headers, true)
-        .await
-        .map(|account| account.id)
-    else {
+    let identity = door.identity.as_ref().expect("checked above");
+    let session = if cookie_allowed(&door.config.origins, &headers, true) {
+        identity.session(&headers, unix_now()).await
+    } else {
+        None
+    };
+    let Some((session, account)) = session else {
         // Not logged in (or already ended): just make sure the cookie goes.
         return with_cookie(no_store(StatusCode::NO_CONTENT.into_response()), cleared);
     };
-    let identity = door.identity.as_ref().expect("checked above");
-    let store = identity.store.clone();
-    let done = tokio::task::spawn_blocking(move || match ending {
+    let done = match ending {
         Ending::Logout => Ok(true),
-        Ending::Everywhere => store.end_sessions(account),
-        Ending::Delete => store.delete(account),
-    })
-    .await;
-    match done {
-        Ok(Ok(_)) => {
-            if !matches!(ending, Ending::Logout) {
-                // Open queue connections stop using the account now.
-                let _ = door
-                    .queue
-                    .send(super::queue::Command::Revoke { account })
-                    .await;
+        Ending::Everywhere => identity.store.end_sessions(account.id).await,
+        Ending::Delete => {
+            // WorkOS first: if it cannot delete the user (their email and
+            // login methods), nothing is deleted and the player can retry.
+            let user = match identity.store.workos_user(account.id).await {
+                Ok(Some(user)) => user,
+                Ok(None) => {
+                    return with_cookie(no_store(StatusCode::NO_CONTENT.into_response()), cleared);
+                }
+                Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+            };
+            if let Err(problem) = identity.workos.delete_user(&identity.client, &user).await {
+                tracing::warn!(reason = %problem, "account deletion could not reach WorkOS");
+                return refusal(StatusCode::BAD_GATEWAY, "unavailable", None);
             }
-            if matches!(ending, Ending::Delete) {
-                Metrics::add(&door.metrics.deletions, 1);
-                tracing::info!("account deleted");
-            }
-            with_cookie(no_store(StatusCode::NO_CONTENT.into_response()), cleared)
+            identity.store.delete(account.id).await
         }
-        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if done.is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    if !matches!(ending, Ending::Logout) {
+        // Open queue connections stop using the account now.
+        let _ = door
+            .queue
+            .send(super::queue::Command::Revoke {
+                account: account.id,
+            })
+            .await;
+    }
+    if matches!(ending, Ending::Delete) {
+        Metrics::add(&door.metrics.deletions, 1);
+        tracing::info!("account deleted");
+        return with_cookie(no_store(StatusCode::NO_CONTENT.into_response()), cleared);
+    }
+    // End this browser's WorkOS session too, or the hosted page would log
+    // the player straight back in next time.
+    match session.workos {
+        Some(workos) => with_cookie(
+            no_store(
+                Json(serde_json::json!({
+                    "logout_url": identity.workos.logout(&workos, &door.config.page),
+                }))
+                .into_response(),
+            ),
+            cleared,
+        ),
+        None => with_cookie(no_store(StatusCode::NO_CONTENT.into_response()), cleared),
     }
 }
 
@@ -377,14 +399,12 @@ pub(super) async fn choose_handle(
     if let Err(refused) = identity.blocked.check(&name) {
         return refusal(StatusCode::UNPROCESSABLE_ENTITY, refused.code(), None);
     }
-    let store = identity.store.clone();
-    let now = unix_now();
-    let chosen = tokio::task::spawn_blocking(move || {
-        store.set_handle(account.id, &name, now, crate::ticket::random_u64)
-    })
-    .await;
+    let chosen = identity
+        .store
+        .set_handle(account.id, &name, unix_now(), crate::ticket::random_u64)
+        .await;
     match chosen {
-        Ok(Ok(Ok(handle))) => {
+        Ok(Ok(handle)) => {
             // Open queue connections show the new handle from now on.
             let _ = door
                 .queue
@@ -395,14 +415,12 @@ pub(super) async fn choose_handle(
                 .await;
             no_store(Json(serde_json::json!({ "handle": handle.to_string() })).into_response())
         }
-        Ok(Ok(Err(HandleError::TooSoon(at)))) => {
+        Ok(Err(HandleError::TooSoon(at))) => {
             refusal(StatusCode::TOO_MANY_REQUESTS, "too_soon", Some(at))
         }
-        Ok(Ok(Err(HandleError::Full))) => refusal(StatusCode::CONFLICT, "name_full", None),
-        Ok(Ok(Err(HandleError::NoAccount))) => {
-            refusal(StatusCode::UNAUTHORIZED, "not_logged_in", None)
-        }
-        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Ok(Err(HandleError::Full)) => refusal(StatusCode::CONFLICT, "name_full", None),
+        Ok(Err(HandleError::NoAccount)) => refusal(StatusCode::UNAUTHORIZED, "not_logged_in", None),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 

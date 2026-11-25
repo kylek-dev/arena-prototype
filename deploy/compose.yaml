@@ -51,7 +51,11 @@ services:
 
   door:
     image: arena-server:local
-    depends_on: [server]
+    depends_on:
+      server:
+        condition: service_started
+      identity-db:
+        condition: service_healthy
     entrypoint: [arena-door]
     command:
       - --bind
@@ -62,20 +66,18 @@ services:
       - https://${ARENA_HOST}/
       - --trusted-proxy
       - 172.30.10.2
-      # Accounts (ADR 0055) live here; used only with ARENA_SESSION_KEY.
-      - --identity-db
-      - /var/lib/arena/identity.sqlite3
+      # Maps saved by admins in the server-backed editor.
+      - --maps-dir
+      - /var/lib/arena/maps
     environment:
       <<: *public
       # Accounts are off (guests only) until ARENA_SESSION_KEY is set: hex,
-      # at least 32 bytes, different from ARENA_TICKET_KEY.
+      # at least 32 bytes, different from ARENA_TICKET_KEY. With it, login
+      # goes through WorkOS AuthKit and accounts live in identity-db.
       ARENA_SESSION_KEY: ${ARENA_SESSION_KEY:-}
-      ARENA_OAUTH_DISCORD_CLIENT_ID: ${ARENA_OAUTH_DISCORD_CLIENT_ID:-}
-      ARENA_OAUTH_DISCORD_CLIENT_SECRET: ${ARENA_OAUTH_DISCORD_CLIENT_SECRET:-}
-      ARENA_OAUTH_GOOGLE_CLIENT_ID: ${ARENA_OAUTH_GOOGLE_CLIENT_ID:-}
-      ARENA_OAUTH_GOOGLE_CLIENT_SECRET: ${ARENA_OAUTH_GOOGLE_CLIENT_SECRET:-}
-      ARENA_OAUTH_GITHUB_CLIENT_ID: ${ARENA_OAUTH_GITHUB_CLIENT_ID:-}
-      ARENA_OAUTH_GITHUB_CLIENT_SECRET: ${ARENA_OAUTH_GITHUB_CLIENT_SECRET:-}
+      ARENA_WORKOS_CLIENT_ID: ${ARENA_WORKOS_CLIENT_ID:-}
+      ARENA_WORKOS_API_KEY: ${ARENA_WORKOS_API_KEY:-}
+      ARENA_DATABASE_URL: postgres://arena_identity:${ARENA_IDENTITY_DB_PASSWORD:?set ARENA_IDENTITY_DB_PASSWORD in deploy/.env}@identity-db:5432/arena_identity
       ARENA_ADMIN_ACCOUNTS: ${ARENA_ADMIN_ACCOUNTS:-}
       ARENA_BLOCKED_NAMES: ${ARENA_BLOCKED_NAMES:-}
     volumes:
@@ -84,6 +86,29 @@ services:
     networks:
       arena:
         ipv4_address: 172.30.10.11
+
+  # The accounts database (ADR 0055): PostgreSQL holding accounts, handles,
+  # friends and blocks, and nothing else. Reachable only on the private
+  # network; back it up with `pg_dump` (docs/DEPLOYMENT.md "Accounts").
+  identity-db:
+    image: postgres:18.7-alpine
+    environment:
+      POSTGRES_DB: arena_identity
+      POSTGRES_USER: arena_identity
+      POSTGRES_PASSWORD: ${ARENA_IDENTITY_DB_PASSWORD:?set ARENA_IDENTITY_DB_PASSWORD in deploy/.env}
+    volumes:
+      - identity-db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "arena_identity", "-d", "arena_identity", "-h", "127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    # A small database next to the 30 Hz match loop.
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      arena:
+        ipv4_address: 172.30.10.12
 
   caddy:
     image: caddy:2.11.9
@@ -175,6 +200,7 @@ networks:
 
 volumes:
   door-data:
+  identity-db-data:
   caddy-data:
   caddy-config:
   lgtm-data:

@@ -1659,24 +1659,15 @@ async fn check_invite(
     if handle.len() > 32 {
         return Err("no_such_friend");
     }
-    let store = identity.store.clone();
-    let lookup = handle.clone();
-    let friend = tokio::task::spawn_blocking(move || -> rusqlite::Result<Option<u64>> {
-        let Some(other) = store.find_handle(&lookup)? else {
-            return Ok(None);
-        };
-        Ok(store.are_friends(account, other)?.then_some(other))
-    })
-    .await;
-    match friend {
-        Ok(Ok(Some(to))) => Ok(Command::Invite {
+    match friend_by_handle(identity, account, &handle).await {
+        Ok(Some(to)) => Ok(Command::Invite {
             conn,
             from: account,
             to,
             to_handle: handle,
         }),
-        Ok(Ok(None)) => Err("no_such_friend"),
-        _ => Err("unavailable"),
+        Ok(None) => Err("no_such_friend"),
+        Err(_) => Err("unavailable"),
     }
 }
 
@@ -1691,6 +1682,23 @@ async fn forward_or_refuse(
         Ok(command) => door.queue.send(command).await.is_ok(),
         Err(code) => say(socket, &ToClient::Refused { code: code.into() }).await,
     }
+}
+
+/// The friend of `account` holding `handle`; `None` for a stranger, a
+/// block or no such handle alike.
+async fn friend_by_handle(
+    identity: &crate::identity::Identity,
+    account: u64,
+    handle: &str,
+) -> Result<Option<u64>, crate::identity::store::StoreError> {
+    let Some(other) = identity.store.find_handle(handle).await? else {
+        return Ok(None);
+    };
+    Ok(identity
+        .store
+        .are_friends(account, other)
+        .await?
+        .then_some(other))
 }
 
 /// A chat message within the connection's budget, cleaned and masked.
@@ -1717,25 +1725,16 @@ async fn check_whisper(
     if handle.len() > 32 {
         return Err("no_such_friend");
     }
-    let store = identity.store.clone();
-    let lookup = handle.clone();
-    let friend = tokio::task::spawn_blocking(move || -> rusqlite::Result<Option<u64>> {
-        let Some(other) = store.find_handle(&lookup)? else {
-            return Ok(None);
-        };
-        Ok(store.are_friends(account, other)?.then_some(other))
-    })
-    .await;
-    match friend {
-        Ok(Ok(Some(to))) => Ok(Command::Whisper {
+    match friend_by_handle(identity, account, &handle).await {
+        Ok(Some(to)) => Ok(Command::Whisper {
             conn,
             from: account,
             to,
             to_handle: handle,
             text,
         }),
-        Ok(Ok(None)) => Err("no_such_friend"),
-        _ => Err("unavailable"),
+        Ok(None) => Err("no_such_friend"),
+        Err(_) => Err("unavailable"),
     }
 }
 
@@ -1793,12 +1792,7 @@ async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr, ho
     // Players this account blocked: their chat never reaches it. Read
     // after the hello, so a block made meanwhile arrives as a SetBlock.
     if let (Some(account), Some(identity)) = (holder.account, door.identity.as_ref()) {
-        let store = identity.store.clone();
-        let blocked = tokio::task::spawn_blocking(move || store.blocked_by(account))
-            .await
-            .ok()
-            .and_then(Result::ok)
-            .unwrap_or_default();
+        let blocked = identity.store.blocked_by(account).await.unwrap_or_default();
         if !blocked.is_empty() {
             let _ = door.queue.send(Command::Blocks { conn, blocked }).await;
         }

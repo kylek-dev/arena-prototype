@@ -582,7 +582,7 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 
 ## 2026-11-25 — Chat server
 - **Branch / Commit:** `auto/chat-server`
-- **Base / PR:** `auto/admin-role` (stacked on PR #97)
+- **Base / PR:** `auto/admin-role` (stacked on PR #97) — PR #98
 - **Lane:** A (machine-verified; chat box, system messages and slash commands queued as Lane B)
 - **Task:** [chat](issues/chat.md), server side — the last Lane A backlog item
 - **Changes:**
@@ -593,4 +593,50 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Checks Observed:**
   - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/admin-role` (`smoke=true web_build=false wasm=true`): pass (`./scripts/check.sh`: 480 Rust tests, 1 pre-existing ignored; 58 Python; 50 Node; 43 Vitest files / 338 tests; headless pass; server smoke 496 ticks, 0 overruns, mean 15.3 µs, drained cleanly; WASM clippy pass).
   - `tests/chat.rs` (guests): door-set sender, masking, oversized/empty/`system`/guest-`public` refusals, 200 CJK and emoji characters, spoofed sender closes the connection, flood limit, ignore/unignore and unknown-handle refusals, party and lobby team chat, match/team/spectator isolation, a mid-match lobby joiner never reaching players, 2v2 team chat. `tests/identity.rs`: whispers, stranger and guest refusals, admin mute and unmute, a block silencing chat live, a spectating friend's whisper refused, a second tab's public chat and whispers never reaching live players. Spectator confinement, spectator whispers, the public filter and the lobby filter each mutation-checked.
+
+## 2026-11-25 — Accounts on WorkOS and PostgreSQL
+- **Branch / Commit:** `auto/accounts-workos`
+- **Base / PR:** `auto/chat-server` (stacked on PR #98)
+- **Lane:** A (machine-verified; requested by the user after the Lane A queue emptied)
+- **Task:** revise [ADR 0055](../docs/decisions/0055-accounts-oauth-login-in-arena-door.md): login without a social account, PostgreSQL in its own database
+- **Changes:**
+  - `identity/workos.rs` replaces the three direct OAuth providers:
+    - AuthKit authorize link with state and PKCE (and `?sign_up`);
+    - code exchange at `/user_management/authenticate`;
+    - logout link from the access token's `sid`;
+    - user deletion.
+  - Routes are now `/api/auth/login` and `/api/auth/callback`. `me` reports `login` instead of `providers`.
+  - `identity/store.rs` and `friends.rs` moved from SQLite to PostgreSQL:
+    - `tokio-postgres` with a `deadpool-postgres` pool, and numbered migrations under an advisory lock;
+    - friends and blocks are deleted with their account (`ON DELETE CASCADE`);
+    - picking a handle takes a per-name advisory lock, and friend actions lock both accounts' rows;
+    - `rusqlite` is gone, and blocking store calls became plain `await`s.
+  - The session cookie (v2) carries the WorkOS session id. Logout answers `{"logout_url"}`, and deletion removes the WorkOS user first (502 and no change if WorkOS cannot be reached).
+  - Compose:
+    - new `identity-db` container (PostgreSQL 18.7, private network, 256 MB, health check) that the door waits for;
+    - `ARENA_DATABASE_URL`, `ARENA_WORKOS_*` and `ARENA_IDENTITY_DB_PASSWORD`;
+    - admin maps move to `--maps-dir`.
+  - `check.sh` starts a throwaway PostgreSQL when `ARENA_TEST_DATABASE_URL` is unset, and CI gains a PostgreSQL service.
+  - Docs: ADR 0055 rewritten, research addendum (WorkOS pricing and API, read 2026-11-25), PROTOCOL, DEPLOYMENT (setup, `pg_dump` backups), ARCHITECTURE and AGENTS.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/chat-server` with `ARENA_TEST_DATABASE_URL` unset (`smoke=true web_build=false wasm=true`): pass. `check.sh` started and removed its own `postgres:18.7-alpine`, and no test reported skipping. Results:
+    - 482 Rust tests, 1 pre-existing ignored;
+    - 58 Python, 50 Node, 43 Vitest files / 338 tests;
+    - headless pass;
+    - server smoke: 495 ticks, 0 overruns, mean 19.4 µs, drained cleanly;
+    - WASM clippy pass.
+  - Account tests against PostgreSQL: 25 identity unit tests (including 8 players racing for one handle) and 7 end-to-end tests with a fake WorkOS, which cover:
+    - PKCE and the API key at code exchange;
+    - forged, unstarted and WorkOS-refused callbacks;
+    - logout links carrying the session id;
+    - deletion at WorkOS first, with a 502 and no change when WorkOS refuses;
+    - restarts sharing one database.
+  - Live Docker Compose check (rebuilt image; `identity-db`, `server`, `door`, `caddy`; placeholder WorkOS ids):
+    - `identity-db` healthy, and the door logged "accounts are on (WorkOS login, PostgreSQL store)";
+    - `GET https://localhost:8443/api/auth/me` answered `{"account":null,"admin":false,"login":true,...}`;
+    - `/api/auth/login` answered 303 to `api.workos.com/user_management/authorize` with `provider=authkit`, the callback `https://localhost:8443/api/auth/callback` and S256 PKCE, and set a `__Host-arena_oauth` cookie (`Max-Age=600; HttpOnly; Secure; SameSite=Lax`);
+    - `psql` listed `accounts`, `blocks`, `friends` and `schema_migrations` (version 1).
+
+    Then `docker compose down`.
+  - Real WorkOS login, reported by the user on 2026-11-25. They set up a WorkOS staging application, put its client id and API key in `deploy/.env`, and logged in through the local Compose stack at `https://localhost:8443`. Before that, the door's login link got a 302 from WorkOS to the application's hosted AuthKit page. The user approved the slice. A Grafana login (anonymous access is admin, on loopback only) was discussed and deferred.
 

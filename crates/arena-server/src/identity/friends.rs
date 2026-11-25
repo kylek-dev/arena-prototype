@@ -2,25 +2,9 @@
 //! stored beside the accounts. Players find each other by `Name#1234`; the
 //! store never reveals whether someone blocked you.
 
-use rusqlite::{OptionalExtension, Transaction, params};
+use tokio_postgres::Transaction;
 
-use super::store::Store;
-
-pub(super) const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS friends (
-    low INTEGER NOT NULL,
-    high INTEGER NOT NULL,
-    requester INTEGER NOT NULL,
-    accepted INTEGER NOT NULL DEFAULT 0,
-    created INTEGER NOT NULL,
-    PRIMARY KEY (low, high)
-);
-CREATE TABLE IF NOT EXISTS blocks (
-    blocker INTEGER NOT NULL,
-    blocked INTEGER NOT NULL,
-    PRIMARY KEY (blocker, blocked)
-);
-";
+use super::store::{Store, StoreResult, db};
 
 /// Most requests one account may have waiting for answers.
 pub const MAX_OUTGOING: u64 = 50;
@@ -76,144 +60,145 @@ impl FriendError {
 }
 
 fn pair(a: u64, b: u64) -> (i64, i64) {
-    (a.min(b) as i64, a.max(b) as i64)
+    (db(a.min(b)), db(a.max(b)))
 }
 
-/// Removes every friendship, request and block involving `id`.
-pub(super) fn forget(transaction: &Transaction<'_>, id: u64) -> rusqlite::Result<()> {
-    let id = id as i64;
-    transaction.execute(
-        "DELETE FROM friends WHERE low = ?1 OR high = ?1",
-        params![id],
-    )?;
-    transaction.execute(
-        "DELETE FROM blocks WHERE blocker = ?1 OR blocked = ?1",
-        params![id],
-    )?;
-    Ok(())
+/// Locks both accounts' rows for the rest of the transaction, so their
+/// counts cannot change underneath a check; whether `other` exists.
+async fn lock_pair(transaction: &Transaction<'_>, me: u64, other: u64) -> StoreResult<bool> {
+    let ids = vec![db(me.min(other)), db(me.max(other))];
+    let rows = transaction
+        .query(
+            "SELECT id FROM accounts WHERE id = ANY($1) ORDER BY id FOR UPDATE",
+            &[&ids],
+        )
+        .await?;
+    Ok(rows.iter().any(|row| row.get::<_, i64>(0) == db(other)))
 }
 
 /// An edge between two accounts: who asked, and whether it was accepted.
-fn edge(transaction: &Transaction<'_>, a: u64, b: u64) -> rusqlite::Result<Option<(u64, bool)>> {
+async fn edge(transaction: &Transaction<'_>, a: u64, b: u64) -> StoreResult<Option<(u64, bool)>> {
     let (low, high) = pair(a, b);
-    transaction
-        .query_row(
-            "SELECT requester, accepted FROM friends WHERE low = ?1 AND high = ?2",
-            params![low, high],
-            |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, bool>(1)?)),
+    let row = transaction
+        .query_opt(
+            "SELECT requester, accepted FROM friends WHERE low = $1 AND high = $2",
+            &[&low, &high],
         )
-        .optional()
+        .await?;
+    Ok(row.map(|row| (row.get::<_, i64>(0) as u64, row.get(1))))
 }
 
-fn blocked_either_way(transaction: &Transaction<'_>, a: u64, b: u64) -> rusqlite::Result<bool> {
-    transaction
-        .query_row(
-            "SELECT 1 FROM blocks WHERE (blocker = ?1 AND blocked = ?2) OR (blocker = ?2 AND blocked = ?1)",
-            params![a as i64, b as i64],
-            |_| Ok(()),
+async fn blocked_either_way(transaction: &Transaction<'_>, a: u64, b: u64) -> StoreResult<bool> {
+    let row = transaction
+        .query_opt(
+            "SELECT 1 FROM blocks WHERE (blocker = $1 AND blocked = $2) OR (blocker = $2 AND blocked = $1)",
+            &[&db(a), &db(b)],
         )
-        .optional()
-        .map(|found| found.is_some())
+        .await?;
+    Ok(row.is_some())
 }
 
-fn count(transaction: &Transaction<'_>, sql: &str, id: u64) -> rusqlite::Result<u64> {
-    transaction
-        .query_row(sql, params![id as i64], |row| row.get::<_, i64>(0))
-        .map(|count| count as u64)
+async fn count(transaction: &Transaction<'_>, sql: &str, id: u64) -> StoreResult<u64> {
+    let row = transaction.query_one(sql, &[&db(id)]).await?;
+    Ok(row.get::<_, i64>(0) as u64)
 }
 
 impl Store {
     /// `from` asks `to` to be friends. If `to` already asked `from`, they
     /// become friends at once.
-    pub fn request_friend(
+    pub async fn request_friend(
         &self,
         from: u64,
         to: u64,
         now: u64,
-    ) -> rusqlite::Result<Result<Relation, FriendError>> {
+    ) -> StoreResult<Result<Relation, FriendError>> {
         if from == to {
             return Ok(Err(FriendError::Yourself));
         }
-        let mut connection = self.connection();
-        let transaction = connection.transaction()?;
-        let exists = transaction
-            .query_row(
-                "SELECT 1 FROM accounts WHERE id = ?1",
-                params![to as i64],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        if !exists || blocked_either_way(&transaction, from, to)? {
+        let mut client = self.client().await?;
+        let transaction = client.transaction().await?;
+        if !lock_pair(&transaction, from, to).await?
+            || blocked_either_way(&transaction, from, to).await?
+        {
             return Ok(Err(FriendError::NoSuchPlayer));
         }
-        let result = match edge(&transaction, from, to)? {
+        let (low, high) = pair(from, to);
+        let result = match edge(&transaction, from, to).await? {
             Some((_, true)) => Err(FriendError::AlreadyFriends),
             Some((requester, false)) if requester == from => Err(FriendError::AlreadyAsked),
             Some((_, false)) => {
-                if count(&transaction, FRIENDS_OF, from)? >= MAX_FRIENDS
-                    || count(&transaction, FRIENDS_OF, to)? >= MAX_FRIENDS
+                if count(&transaction, FRIENDS_OF, from).await? >= MAX_FRIENDS
+                    || count(&transaction, FRIENDS_OF, to).await? >= MAX_FRIENDS
                 {
                     return Ok(Err(FriendError::TooMany));
                 }
-                let (low, high) = pair(from, to);
-                transaction.execute(
-                    "UPDATE friends SET accepted = 1 WHERE low = ?1 AND high = ?2",
-                    params![low, high],
-                )?;
+                transaction
+                    .execute(
+                        "UPDATE friends SET accepted = TRUE WHERE low = $1 AND high = $2",
+                        &[&low, &high],
+                    )
+                    .await?;
                 Ok(Relation::Friend)
             }
             None => {
-                if count(&transaction, OUTGOING_OF, from)? >= MAX_OUTGOING
-                    || count(&transaction, FRIENDS_OF, from)? >= MAX_FRIENDS
+                if count(&transaction, OUTGOING_OF, from).await? >= MAX_OUTGOING
+                    || count(&transaction, FRIENDS_OF, from).await? >= MAX_FRIENDS
                 {
                     return Ok(Err(FriendError::TooMany));
                 }
-                let (low, high) = pair(from, to);
-                transaction.execute(
-                    "INSERT INTO friends (low, high, requester, created) VALUES (?1, ?2, ?3, ?4)",
-                    params![low, high, from as i64, now as i64],
-                )?;
+                transaction
+                    .execute(
+                        "INSERT INTO friends (low, high, requester, created) VALUES ($1, $2, $3, $4)",
+                        &[&low, &high, &db(from), &(now as i64)],
+                    )
+                    .await?;
                 Ok(Relation::Outgoing)
             }
         };
-        transaction.commit()?;
+        transaction.commit().await?;
         Ok(result)
     }
 
     /// `me` accepts `from`'s request.
-    pub fn accept_friend(&self, me: u64, from: u64) -> rusqlite::Result<Result<(), FriendError>> {
-        let mut connection = self.connection();
-        let transaction = connection.transaction()?;
-        let result = match edge(&transaction, me, from)? {
+    pub async fn accept_friend(&self, me: u64, from: u64) -> StoreResult<Result<(), FriendError>> {
+        let mut client = self.client().await?;
+        let transaction = client.transaction().await?;
+        lock_pair(&transaction, me, from).await?;
+        let result = match edge(&transaction, me, from).await? {
             Some((requester, false)) if requester == from => {
-                if count(&transaction, FRIENDS_OF, me)? >= MAX_FRIENDS
-                    || count(&transaction, FRIENDS_OF, from)? >= MAX_FRIENDS
+                if count(&transaction, FRIENDS_OF, me).await? >= MAX_FRIENDS
+                    || count(&transaction, FRIENDS_OF, from).await? >= MAX_FRIENDS
                 {
                     return Ok(Err(FriendError::TooMany));
                 }
                 let (low, high) = pair(me, from);
-                transaction.execute(
-                    "UPDATE friends SET accepted = 1 WHERE low = ?1 AND high = ?2",
-                    params![low, high],
-                )?;
+                transaction
+                    .execute(
+                        "UPDATE friends SET accepted = TRUE WHERE low = $1 AND high = $2",
+                        &[&low, &high],
+                    )
+                    .await?;
                 Ok(())
             }
             Some((_, true)) => Err(FriendError::AlreadyFriends),
             _ => Err(FriendError::NothingThere),
         };
-        transaction.commit()?;
+        transaction.commit().await?;
         Ok(result)
     }
 
     /// Ends whatever is between `me` and `other`: declines their request,
     /// withdraws mine, or ends a friendship.
-    pub fn remove_friend(&self, me: u64, other: u64) -> rusqlite::Result<Result<(), FriendError>> {
+    pub async fn remove_friend(&self, me: u64, other: u64) -> StoreResult<Result<(), FriendError>> {
         let (low, high) = pair(me, other);
-        let changed = self.connection().execute(
-            "DELETE FROM friends WHERE low = ?1 AND high = ?2",
-            params![low, high],
-        )?;
+        let changed = self
+            .client()
+            .await?
+            .execute(
+                "DELETE FROM friends WHERE low = $1 AND high = $2",
+                &[&low, &high],
+            )
+            .await?;
         Ok(if changed == 1 {
             Ok(())
         } else {
@@ -223,30 +208,41 @@ impl Store {
 
     /// `me` blocks `other`: ends anything between them and refuses their
     /// requests and invites until unblocked.
-    pub fn block(&self, me: u64, other: u64) -> rusqlite::Result<Result<(), FriendError>> {
+    pub async fn block(&self, me: u64, other: u64) -> StoreResult<Result<(), FriendError>> {
         if me == other {
             return Ok(Err(FriendError::Yourself));
         }
-        let mut connection = self.connection();
-        let transaction = connection.transaction()?;
+        let mut client = self.client().await?;
+        let transaction = client.transaction().await?;
+        if !lock_pair(&transaction, me, other).await? {
+            return Ok(Err(FriendError::NoSuchPlayer));
+        }
         let (low, high) = pair(me, other);
-        transaction.execute(
-            "DELETE FROM friends WHERE low = ?1 AND high = ?2",
-            params![low, high],
-        )?;
-        transaction.execute(
-            "INSERT OR IGNORE INTO blocks (blocker, blocked) VALUES (?1, ?2)",
-            params![me as i64, other as i64],
-        )?;
-        transaction.commit()?;
+        transaction
+            .execute(
+                "DELETE FROM friends WHERE low = $1 AND high = $2",
+                &[&low, &high],
+            )
+            .await?;
+        transaction
+            .execute(
+                "INSERT INTO blocks (blocker, blocked) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+                &[&db(me), &db(other)],
+            )
+            .await?;
+        transaction.commit().await?;
         Ok(Ok(()))
     }
 
-    pub fn unblock(&self, me: u64, other: u64) -> rusqlite::Result<Result<(), FriendError>> {
-        let changed = self.connection().execute(
-            "DELETE FROM blocks WHERE blocker = ?1 AND blocked = ?2",
-            params![me as i64, other as i64],
-        )?;
+    pub async fn unblock(&self, me: u64, other: u64) -> StoreResult<Result<(), FriendError>> {
+        let changed = self
+            .client()
+            .await?
+            .execute(
+                "DELETE FROM blocks WHERE blocker = $1 AND blocked = $2",
+                &[&db(me), &db(other)],
+            )
+            .await?;
         Ok(if changed == 1 {
             Ok(())
         } else {
@@ -255,78 +251,80 @@ impl Store {
     }
 
     /// The accounts `me` blocked.
-    pub fn blocked_by(&self, me: u64) -> rusqlite::Result<Vec<u64>> {
-        let connection = self.connection();
-        let mut statement = connection.prepare("SELECT blocked FROM blocks WHERE blocker = ?1")?;
-        statement
-            .query_map(params![me as i64], |row| {
-                row.get::<_, i64>(0).map(|id| id as u64)
-            })?
-            .collect()
+    pub async fn blocked_by(&self, me: u64) -> StoreResult<Vec<u64>> {
+        let rows = self
+            .client()
+            .await?
+            .query("SELECT blocked FROM blocks WHERE blocker = $1", &[&db(me)])
+            .await?;
+        Ok(rows.iter().map(|row| row.get::<_, i64>(0) as u64).collect())
     }
 
     /// Whether `a` and `b` are friends (and neither blocked the other).
-    pub fn are_friends(&self, a: u64, b: u64) -> rusqlite::Result<bool> {
+    pub async fn are_friends(&self, a: u64, b: u64) -> StoreResult<bool> {
         let (low, high) = pair(a, b);
-        self.connection()
-            .query_row(
-                "SELECT 1 FROM friends WHERE low = ?1 AND high = ?2 AND accepted = 1",
-                params![low, high],
-                |_| Ok(()),
+        let row = self
+            .client()
+            .await?
+            .query_opt(
+                "SELECT 1 FROM friends WHERE low = $1 AND high = $2 AND accepted",
+                &[&low, &high],
             )
-            .optional()
-            .map(|found| found.is_some())
+            .await?;
+        Ok(row.is_some())
     }
 
     /// Everyone `me` has a relation with, with their handle (players
     /// without one are listed as `None`), and the handles `me` blocked.
-    pub fn friends_of(&self, me: u64) -> rusqlite::Result<Friends> {
-        let connection = self.connection();
-        let me_i = me as i64;
-        let mut statement = connection.prepare(
-            "SELECT f.requester, f.accepted, a.id, a.handle_name, a.handle_number
-             FROM friends f JOIN accounts a
-               ON a.id = CASE WHEN f.low = ?1 THEN f.high ELSE f.low END
-             WHERE f.low = ?1 OR f.high = ?1
-             ORDER BY f.accepted DESC, a.handle_key, a.handle_number",
-        )?;
-        let people = statement
-            .query_map(params![me_i], |row| {
-                let requester = row.get::<_, i64>(0)? as u64;
-                let accepted: bool = row.get(1)?;
+    pub async fn friends_of(&self, me: u64) -> StoreResult<Friends> {
+        let client = self.client().await?;
+        let rows = client
+            .query(
+                "SELECT f.requester, f.accepted, a.id, a.handle_name, a.handle_number
+                 FROM friends f JOIN accounts a
+                   ON a.id = CASE WHEN f.low = $1 THEN f.high ELSE f.low END
+                 WHERE f.low = $1 OR f.high = $1
+                 ORDER BY f.accepted DESC, a.handle_key, a.handle_number",
+                &[&db(me)],
+            )
+            .await?;
+        let people = rows
+            .iter()
+            .map(|row| {
+                let requester = row.get::<_, i64>(0) as u64;
+                let accepted: bool = row.get(1);
                 let relation = match (accepted, requester == me) {
                     (true, _) => Relation::Friend,
                     (false, true) => Relation::Outgoing,
                     (false, false) => Relation::Incoming,
                 };
-                Ok(Person {
-                    account: row.get::<_, i64>(2)? as u64,
-                    handle: handle_of(row.get(3)?, row.get(4)?),
+                Person {
+                    account: row.get::<_, i64>(2) as u64,
+                    handle: handle_of(row.get(3), row.get(4)),
                     relation,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut statement = connection.prepare(
-            "SELECT a.handle_name, a.handle_number FROM blocks b JOIN accounts a ON a.id = b.blocked
-             WHERE b.blocker = ?1",
-        )?;
-        let blocked = statement
-            .query_map(params![me_i], |row| Ok(handle_of(row.get(0)?, row.get(1)?)))?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-            .into_iter()
-            .flatten()
+                }
+            })
+            .collect();
+        let blocked = client
+            .query(
+                "SELECT a.handle_name, a.handle_number FROM blocks b JOIN accounts a ON a.id = b.blocked
+                 WHERE b.blocker = $1 ORDER BY a.handle_key, a.handle_number",
+                &[&db(me)],
+            )
+            .await?
+            .iter()
+            .filter_map(|row| handle_of(row.get(0), row.get(1)))
             .collect();
         Ok(Friends { people, blocked })
     }
 }
 
-const FRIENDS_OF: &str =
-    "SELECT COUNT(*) FROM friends WHERE (low = ?1 OR high = ?1) AND accepted = 1";
-const OUTGOING_OF: &str = "SELECT COUNT(*) FROM friends WHERE requester = ?1 AND accepted = 0";
+const FRIENDS_OF: &str = "SELECT COUNT(*) FROM friends WHERE (low = $1 OR high = $1) AND accepted";
+const OUTGOING_OF: &str = "SELECT COUNT(*) FROM friends WHERE requester = $1 AND NOT accepted";
 
-fn handle_of(name: Option<String>, number: Option<u16>) -> Option<String> {
+fn handle_of(name: Option<String>, number: Option<i32>) -> Option<String> {
     name.zip(number)
-        .and_then(|(name, number)| arena_protocol::Handle::new(&name, number))
+        .and_then(|(name, number)| arena_protocol::Handle::new(&name, u16::try_from(number).ok()?))
         .map(|handle| handle.to_string())
 }
 
@@ -347,120 +345,133 @@ pub struct Friends {
 
 #[cfg(test)]
 mod tests {
-    use super::super::store::ProviderId;
+    use super::super::store::test_database;
     use super::*;
 
-    fn store_with(accounts: &[(u64, &str)]) -> Store {
-        let store = Store::in_memory().unwrap();
+    async fn store_with(accounts: &[(u64, &str)]) -> Option<Store> {
+        let store = Store::connect(&test_database().await?).await.unwrap();
         for &(id, name) in accounts {
+            store.login(&id.to_string(), 0, move || id).await.unwrap();
             store
-                .login(ProviderId::Github, &id.to_string(), 0, move || id)
+                .set_handle(id, name, 0, move || id)
+                .await
+                .unwrap()
                 .unwrap();
-            store.set_handle(id, name, 0, move || id).unwrap().unwrap();
         }
-        store
+        Some(store)
     }
 
-    #[test]
-    fn requests_become_friendships_both_ways() {
-        let store = store_with(&[(1, "Rook"), (2, "Ash"), (3, "Bishop")]);
+    #[tokio::test]
+    async fn requests_become_friendships_both_ways() {
+        let Some(store) = store_with(&[(1, "Rook"), (2, "Ash"), (3, "Bishop")]).await else {
+            return;
+        };
         assert_eq!(
-            store.request_friend(1, 2, 0).unwrap(),
+            store.request_friend(1, 2, 0).await.unwrap(),
             Ok(Relation::Outgoing)
         );
         assert_eq!(
-            store.request_friend(1, 2, 0).unwrap(),
+            store.request_friend(1, 2, 0).await.unwrap(),
             Err(FriendError::AlreadyAsked)
         );
         assert_eq!(
-            store.request_friend(1, 1, 0).unwrap(),
+            store.request_friend(1, 1, 0).await.unwrap(),
             Err(FriendError::Yourself)
         );
         assert_eq!(
-            store.request_friend(1, 99, 0).unwrap(),
+            store.request_friend(1, 99, 0).await.unwrap(),
             Err(FriendError::NoSuchPlayer)
         );
-        let ash = store.friends_of(2).unwrap();
+        let ash = store.friends_of(2).await.unwrap();
         assert_eq!(ash.people[0].relation, Relation::Incoming);
         assert_eq!(ash.people[0].handle.as_deref(), Some("Rook#0002"));
-        assert_eq!(store.accept_friend(2, 1).unwrap(), Ok(()));
-        assert!(store.are_friends(1, 2).unwrap());
+        assert_eq!(store.accept_friend(2, 1).await.unwrap(), Ok(()));
+        assert!(store.are_friends(1, 2).await.unwrap());
         assert_eq!(
-            store.request_friend(2, 1, 0).unwrap(),
+            store.request_friend(2, 1, 0).await.unwrap(),
             Err(FriendError::AlreadyFriends)
         );
         // Asking someone who already asked you accepts at once.
         assert_eq!(
-            store.request_friend(3, 1, 0).unwrap(),
+            store.request_friend(3, 1, 0).await.unwrap(),
             Ok(Relation::Outgoing)
         );
-        assert_eq!(store.request_friend(1, 3, 0).unwrap(), Ok(Relation::Friend));
-        assert_eq!(store.friends_of(1).unwrap().people.len(), 2);
-        // Declining, withdrawing and unfriending all end the edge.
-        assert_eq!(store.remove_friend(1, 2).unwrap(), Ok(()));
         assert_eq!(
-            store.remove_friend(1, 2).unwrap(),
+            store.request_friend(1, 3, 0).await.unwrap(),
+            Ok(Relation::Friend)
+        );
+        assert_eq!(store.friends_of(1).await.unwrap().people.len(), 2);
+        // Declining, withdrawing and unfriending all end the edge.
+        assert_eq!(store.remove_friend(1, 2).await.unwrap(), Ok(()));
+        assert_eq!(
+            store.remove_friend(1, 2).await.unwrap(),
             Err(FriendError::NothingThere)
         );
-        assert!(!store.are_friends(1, 2).unwrap());
+        assert!(!store.are_friends(1, 2).await.unwrap());
         assert_eq!(
-            store.accept_friend(2, 1).unwrap(),
+            store.accept_friend(2, 1).await.unwrap(),
             Err(FriendError::NothingThere)
         );
     }
 
-    #[test]
-    fn blocks_hide_you_and_end_friendships() {
-        let store = store_with(&[(1, "Rook"), (2, "Ash")]);
-        store.request_friend(1, 2, 0).unwrap().unwrap();
-        store.accept_friend(2, 1).unwrap().unwrap();
-        assert_eq!(store.block(2, 1).unwrap(), Ok(()));
-        assert!(!store.are_friends(1, 2).unwrap());
+    #[tokio::test]
+    async fn blocks_hide_you_and_end_friendships() {
+        let Some(store) = store_with(&[(1, "Rook"), (2, "Ash")]).await else {
+            return;
+        };
+        store.request_friend(1, 2, 0).await.unwrap().unwrap();
+        store.accept_friend(2, 1).await.unwrap().unwrap();
+        assert_eq!(store.block(2, 1).await.unwrap(), Ok(()));
+        assert!(!store.are_friends(1, 2).await.unwrap());
         // The blocked player cannot tell a block from a missing player, and
         // the blocker cannot ask either until they unblock.
         assert_eq!(
-            store.request_friend(1, 2, 0).unwrap(),
+            store.request_friend(1, 2, 0).await.unwrap(),
             Err(FriendError::NoSuchPlayer)
         );
         assert_eq!(
-            store.request_friend(2, 1, 0).unwrap(),
+            store.request_friend(2, 1, 0).await.unwrap(),
             Err(FriendError::NoSuchPlayer)
         );
-        assert_eq!(store.friends_of(2).unwrap().blocked, ["Rook#0002"]);
-        assert_eq!(store.unblock(2, 1).unwrap(), Ok(()));
+        assert_eq!(store.friends_of(2).await.unwrap().blocked, ["Rook#0002"]);
+        assert_eq!(store.unblock(2, 1).await.unwrap(), Ok(()));
         assert_eq!(
-            store.request_friend(1, 2, 0).unwrap(),
+            store.request_friend(1, 2, 0).await.unwrap(),
             Ok(Relation::Outgoing)
         );
     }
 
-    #[test]
-    fn requests_are_capped_and_deletion_forgets_everything() {
+    #[tokio::test]
+    async fn requests_are_capped_and_deletion_forgets_everything() {
         let ids: Vec<(u64, String)> = (1..=MAX_OUTGOING + 2)
             .map(|id| (id, format!("Player{id}")))
             .collect();
         let named: Vec<(u64, &str)> = ids.iter().map(|(id, name)| (*id, name.as_str())).collect();
-        let store = store_with(&named);
+        let Some(store) = store_with(&named).await else {
+            return;
+        };
         for to in 2..=MAX_OUTGOING + 1 {
             assert_eq!(
-                store.request_friend(1, to, 0).unwrap(),
+                store.request_friend(1, to, 0).await.unwrap(),
                 Ok(Relation::Outgoing)
             );
         }
         assert_eq!(
-            store.request_friend(1, MAX_OUTGOING + 2, 0).unwrap(),
+            store.request_friend(1, MAX_OUTGOING + 2, 0).await.unwrap(),
             Err(FriendError::TooMany)
         );
-        store.block(2, 1).unwrap().unwrap();
-        assert!(store.delete(1).unwrap());
-        assert!(store.friends_of(3).unwrap().people.is_empty());
-        assert!(store.friends_of(2).unwrap().blocked.is_empty());
+        store.block(2, 1).await.unwrap().unwrap();
+        assert!(store.delete(1).await.unwrap());
+        assert!(store.friends_of(3).await.unwrap().people.is_empty());
+        assert!(store.friends_of(2).await.unwrap().blocked.is_empty());
     }
 
-    #[test]
-    fn handles_find_their_accounts_without_case() {
-        let store = store_with(&[(7, "Rook")]);
-        assert_eq!(store.find_handle("rook#0008").unwrap(), Some(7));
+    #[tokio::test]
+    async fn handles_find_their_accounts_without_case() {
+        let Some(store) = store_with(&[(7, "Rook")]).await else {
+            return;
+        };
+        assert_eq!(store.find_handle("rook#0008").await.unwrap(), Some(7));
         for missing in [
             "Rook#0009",
             "Rook",
@@ -469,7 +480,7 @@ mod tests {
             "Ro ok#0008",
             "#0008",
         ] {
-            assert_eq!(store.find_handle(missing).unwrap(), None, "{missing}");
+            assert_eq!(store.find_handle(missing).await.unwrap(), None, "{missing}");
         }
     }
 }

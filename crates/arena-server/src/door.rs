@@ -76,6 +76,9 @@ pub struct DoorConfig {
     /// Account routes (login, names, friends) one address may call at once,
     /// then one per 6 s.
     pub auth_burst: u32,
+    /// Where admins' saved maps go (`--maps-dir`); `None` keeps them in
+    /// memory.
+    pub maps: Option<std::path::PathBuf>,
 }
 impl DoorConfig {
     pub fn new(key: TicketKey, match_server: String, page: String) -> Self {
@@ -92,6 +95,7 @@ impl DoorConfig {
             ready_timeout: Duration::from_secs(15),
             queue_per_address: 12,
             identity: None,
+            maps: None,
             auth_burst: 20,
         }
     }
@@ -228,7 +232,7 @@ pub fn join_link(page: &str, server: &str, ticket: &str, expires: u64) -> String
     )
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
@@ -534,13 +538,15 @@ fn page(content_type: &'static str, body: impl Into<axum::body::Body>) -> Respon
 
 /// The door's routes, with its matchmaker task started. Must be called
 /// inside the Tokio runtime.
-fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
-    let identity = config
-        .identity
-        .clone()
-        .map(|identity| Identity::start(identity, &config.page))
-        .transpose()
-        .map_err(io::Error::other)?;
+async fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
+    let identity = match config.identity.clone() {
+        Some(identity) => Some(
+            Identity::start(identity, &config.page)
+                .await
+                .map_err(io::Error::other)?,
+        ),
+        None => None,
+    };
     let (commands, receiver) = mpsc::channel(1024);
     let door = Arc::new(Door {
         identity,
@@ -557,12 +563,7 @@ fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
             .map(|identity| identity.blocked.clone())
             .unwrap_or_else(|| crate::identity::names::Blocklist::new("")),
         muted: std::sync::Mutex::default(),
-        maps: Arc::new(admin::MapStore::beside(
-            config
-                .identity
-                .as_ref()
-                .and_then(|identity| identity.store.as_deref()),
-        )),
+        maps: Arc::new(admin::MapStore::at(config.maps.as_deref())),
         creations: RatePerAddress::new(config.creation_burst, config.creation_every),
         // A visit sends a handful (startup, a summary per match, a few errors).
         reports: RatePerAddress::new(30, Duration::from_secs(10)),
@@ -606,8 +607,8 @@ fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
             }),
         )
         .route("/api/auth/me", get(auth::me))
-        .route("/api/auth/{provider}/login", get(auth::login))
-        .route("/api/auth/{provider}/callback", get(auth::callback))
+        .route("/api/auth/login", get(auth::login))
+        .route("/api/auth/callback", get(auth::callback))
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/auth/logout_everywhere", post(auth::logout_everywhere))
         .route("/api/auth/delete", post(auth::delete))
@@ -658,7 +659,7 @@ impl DoorRunning {
 pub async fn start(config: DoorConfig) -> io::Result<DoorRunning> {
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     let addr = listener.local_addr()?;
-    let (router, door) = build(config)?;
+    let (router, door) = build(config).await?;
     let stop = door.shutdown.clone();
     let mut stopped = stop.subscribe();
     let service = router.into_make_service_with_connect_info::<SocketAddr>();

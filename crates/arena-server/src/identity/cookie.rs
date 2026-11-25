@@ -5,7 +5,6 @@
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest, Sha256};
 
-use super::store::ProviderId;
 use crate::ticket::{from_hex, to_hex};
 
 /// The session cookie. `__Host-` makes browsers require `Secure`, `Path=/`
@@ -68,12 +67,15 @@ impl SessionKey {
         mac.verify_slice(&tag).ok().map(|()| body)
     }
 
-    pub fn session(&self, session: Session) -> String {
+    pub fn session(&self, session: &Session) -> String {
         self.sign(
             "session",
             format!(
-                "1.{:016x}.{}.{}",
-                session.account, session.generation, session.expires
+                "2.{:016x}.{}.{}.{}",
+                session.account,
+                session.generation,
+                session.expires,
+                session.workos.as_deref().unwrap_or("-")
             ),
         )
     }
@@ -83,7 +85,8 @@ impl SessionKey {
     pub fn read_session(&self, value: &str, now: u64) -> Option<Session> {
         let body = self.open("session", value)?;
         let mut parts = body.split('.');
-        let (Some("1"), Some(account), Some(generation), Some(expires), None) = (
+        let (Some("2"), Some(account), Some(generation), Some(expires), Some(workos), None) = (
+            parts.next(),
             parts.next(),
             parts.next(),
             parts.next(),
@@ -98,6 +101,7 @@ impl SessionKey {
                 .filter(|id| *id != 0)?,
             generation: generation.parse().ok()?,
             expires: expires.parse().ok()?,
+            workos: (workos != "-").then(|| workos.to_owned()),
         };
         (now < session.expires).then_some(session)
     }
@@ -105,13 +109,7 @@ impl SessionKey {
     pub fn login(&self, login: &Login) -> String {
         self.sign(
             "oauth",
-            format!(
-                "1.{}.{}.{}.{}",
-                login.provider.id(),
-                login.state,
-                login.verifier,
-                login.expires
-            ),
+            format!("2.{}.{}.{}", login.state, login.verifier, login.expires),
         )
     }
 
@@ -119,8 +117,7 @@ impl SessionKey {
     pub fn read_login(&self, value: &str, now: u64) -> Option<Login> {
         let body = self.open("oauth", value)?;
         let mut parts = body.split('.');
-        let (Some("1"), Some(provider), Some(state), Some(verifier), Some(expires), None) = (
-            parts.next(),
+        let (Some("2"), Some(state), Some(verifier), Some(expires), None) = (
             parts.next(),
             parts.next(),
             parts.next(),
@@ -130,7 +127,6 @@ impl SessionKey {
             return None;
         };
         let login = Login {
-            provider: ProviderId::from_id(provider)?,
             state: state.to_owned(),
             verifier: verifier.to_owned(),
             expires: expires.parse().ok()?,
@@ -140,17 +136,19 @@ impl SessionKey {
 }
 
 /// A logged-in browser.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Session {
     pub account: u64,
     pub generation: u32,
     pub expires: u64,
+    /// The WorkOS session (`session_...`) to end at logout. WorkOS ids
+    /// hold only letters, digits and `_`, never the `.` separator.
+    pub workos: Option<String>,
 }
 
 /// A login in progress: what the callback must see again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Login {
-    pub provider: ProviderId,
     /// Random, URL-safe; must come back unchanged from the provider.
     pub state: String,
     /// The PKCE code verifier; its S256 challenge went to the provider.
@@ -159,9 +157,8 @@ pub struct Login {
 }
 
 impl Login {
-    pub fn start(provider: ProviderId, now: u64) -> Self {
+    pub fn start(now: u64) -> Self {
         Self {
-            provider,
             state: random_token(),
             verifier: random_token(),
             expires: now + OAUTH_SECONDS,
@@ -204,6 +201,32 @@ pub fn base64url(bytes: &[u8]) -> String {
     out
 }
 
+/// Decodes base64url, with or without padding; `None` on anything else.
+pub fn base64url_decode(text: &str) -> Option<Vec<u8>> {
+    let text = text.trim_end_matches('=');
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
+    let mut bits = 0u32;
+    let mut held = 0;
+    for byte in text.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'-' => 62,
+            b'_' => 63,
+            _ => return None,
+        };
+        bits = (bits << 6) | u32::from(value);
+        held += 6;
+        if held >= 8 {
+            held -= 8;
+            out.push((bits >> held) as u8);
+        }
+    }
+    // A single leftover character cannot encode a byte.
+    (held < 6).then_some(out)
+}
+
 /// The value of cookie `name` in a `Cookie` header.
 pub fn cookie<'a>(header: &'a str, name: &str) -> Option<&'a str> {
     header.split(';').find_map(|pair| {
@@ -231,9 +254,18 @@ mod tests {
             account: 0xdead_beef,
             generation: 2,
             expires: 1_000,
+            workos: Some("session_01HQ".into()),
         };
-        let value = key().session(session);
-        assert_eq!(key().read_session(&value, 999), Some(session));
+        let value = key().session(&session);
+        assert_eq!(key().read_session(&value, 999), Some(session.clone()));
+        let without = Session {
+            workos: None,
+            ..session.clone()
+        };
+        assert_eq!(
+            key().read_session(&key().session(&without), 0),
+            Some(without)
+        );
         assert_eq!(key().read_session(&value, 1_000), None, "expired");
         assert_eq!(
             SessionKey::random().read_session(&value, 0),
@@ -249,7 +281,7 @@ mod tests {
             }
         }
         // A login cookie can never pass as a session, nor the reverse.
-        let login = key().login(&Login::start(ProviderId::Discord, 0));
+        let login = key().login(&Login::start(0));
         assert_eq!(key().read_session(&login, 0), None);
         assert_eq!(key().read_login(&value, 0), None);
         assert!(SessionKey::from_hex("abcd").is_none(), "too short");
@@ -258,7 +290,7 @@ mod tests {
 
     #[test]
     fn logins_round_trip_and_expire() {
-        let login = Login::start(ProviderId::Github, 100);
+        let login = Login::start(100);
         let value = key().login(&login);
         assert_eq!(
             key().read_login(&value, 100 + OAUTH_SECONDS - 1),
@@ -278,6 +310,12 @@ mod tests {
         assert_eq!(base64url(b"f"), "Zg");
         assert_eq!(base64url(b"fo"), "Zm8");
         assert_eq!(base64url(b"foo"), "Zm9v");
+        for bytes in [&b""[..], b"f", b"fo", b"foo", b"\xff\xfe\x00"] {
+            assert_eq!(base64url_decode(&base64url(bytes)).as_deref(), Some(bytes));
+        }
+        assert_eq!(base64url_decode("Zm8=").as_deref(), Some(&b"fo"[..]));
+        assert_eq!(base64url_decode("Z"), None);
+        assert_eq!(base64url_decode("Zm+v"), None, "base64, not base64url");
     }
 
     #[test]

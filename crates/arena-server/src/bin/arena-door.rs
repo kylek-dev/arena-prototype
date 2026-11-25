@@ -1,6 +1,6 @@
 //! `arena-door --match-server URL --page URL [--bind ADDR] [--dev]
 //!  [--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]...
-//!  [--ticket-minutes N] [--identity-db PATH]`
+//!  [--ticket-minutes N] [--maps-dir PATH]`
 //!
 //! The front door (ADR 0045): creates matches for remote players and hands
 //! out one join link per seat. `--match-server` is the match server's
@@ -15,11 +15,12 @@
 //! `--dev` allows plain URLs and any origin, and only binds to loopback.
 //!
 //! Accounts (ADR 0055) are on when `ARENA_SESSION_KEY` (hex, at least 32
-//! bytes, not the ticket key) is set: players log in with each provider
-//! configured by `ARENA_OAUTH_<DISCORD|GOOGLE|GITHUB>_CLIENT_ID` and
-//! `_CLIENT_SECRET`, and accounts live in the SQLite file `--identity-db`
-//! (in memory without it). `ARENA_ADMIN_ACCOUNTS` lists admin account ids.
-//! Login cookies act only for named pages, never with `--any-origin`.
+//! bytes, not the ticket key) is set. Players then log in through WorkOS
+//! AuthKit (`ARENA_WORKOS_CLIENT_ID`, `ARENA_WORKOS_API_KEY`), and accounts
+//! live in the PostgreSQL database `ARENA_DATABASE_URL`, kept for accounts
+//! alone. `ARENA_ADMIN_ACCOUNTS` lists admin account ids. Login cookies act
+//! only for named pages, never with `--any-origin`. Admins' saved maps go
+//! to `--maps-dir` (in memory without it).
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -31,7 +32,7 @@ use arena_server::ingress::{Cidr, Origins};
 use arena_server::ticket::TicketKey;
 
 const USAGE: &str = "usage: arena-door --match-server URL --page URL [--bind ADDR] [--dev] \
-[--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]... [--ticket-minutes N] [--identity-db PATH]";
+[--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]... [--ticket-minutes N] [--maps-dir PATH]";
 
 fn main() -> ExitCode {
     // Telemetry starts before and stops after the runtime: the OTLP HTTP
@@ -107,7 +108,7 @@ async fn run() -> Result<(), String> {
     let mut any_origin = false;
     let mut trusted_proxies = Vec::new();
     let mut ticket_minutes = None;
-    let mut identity_db = None;
+    let mut maps = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| USAGE.to_owned());
@@ -142,7 +143,7 @@ async fn run() -> Result<(), String> {
                         ))?,
                 );
             }
-            "--identity-db" => identity_db = Some(std::path::PathBuf::from(value()?)),
+            "--maps-dir" => maps = Some(std::path::PathBuf::from(value()?)),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
@@ -177,7 +178,8 @@ async fn run() -> Result<(), String> {
     if let Some(minutes) = ticket_minutes {
         config.ticket_ttl = Duration::from_secs(minutes * 60);
     }
-    config.identity = IdentityConfig::from_env(identity_db.clone())?;
+    config.maps = maps;
+    config.identity = IdentityConfig::from_env()?;
     if std::env::var("ARENA_SESSION_KEY")
         .ok()
         .map(|k| k.trim().to_ascii_lowercase())
@@ -195,9 +197,8 @@ async fn run() -> Result<(), String> {
                 tracing::warn!("accounts are on, but login cookies never act with --any-origin");
             }
             tracing::info!(
-                providers = ?identity.providers.iter().map(|p| p.id.id()).collect::<Vec<_>>(),
-                persistent = identity.store.is_some(),
-                "accounts are on"
+                workos_client = %identity.workos.client_id,
+                "accounts are on (WorkOS login, PostgreSQL store)"
             );
         }
     }
@@ -208,7 +209,8 @@ async fn run() -> Result<(), String> {
         running.addr
     );
     stop_signal().await;
-    // Stateless: nothing to drain beyond requests already being answered.
+    // Nothing to drain beyond requests already being answered: accounts
+    // live in PostgreSQL.
     running.stop().await.map_err(|error| error.to_string())
 }
 
