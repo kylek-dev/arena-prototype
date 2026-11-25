@@ -21,7 +21,7 @@ Build an original browser-first arena combat game. Arena Prototype is a placehol
 
 ## Verification
 
-Run `./scripts/check.sh` for Rust changes. Add behavioral tests for game rules, exploit boundaries, replay order, and regressions. Use `npm test` (or `npm run test:watch`) for fast, deterministic JavaScript input unit tests. For client changes, also run the WASM Clippy check and build documented in docs/BROWSER.md. E2E and rendered browser validation are performed manually by the user; do not automatically run Playwright as a development or CI gate. Rendering changes require human browser review before merge/release; record its actual status without claiming an unobserved pass. Use `cargo run -p arena-headless` for the scripted scenario.
+Run `./scripts/check.sh` for Rust changes. Account tests need PostgreSQL: the script uses `ARENA_TEST_DATABASE_URL` or starts a throwaway `postgres:18.7-alpine` container (Docker required); without either they skip, which is not a pass. Add behavioral tests for game rules, exploit boundaries, replay order, and regressions. Use `npm test` (or `npm run test:watch`) for fast, deterministic JavaScript input unit tests. For client changes, also run the WASM Clippy check and build documented in docs/BROWSER.md. E2E and rendered browser validation are performed manually by the user; do not automatically run Playwright as a development or CI gate. Rendering changes require human browser review before merge/release; record its actual status without claiming an unobserved pass. Use `cargo run -p arena-headless` for the scripted scenario.
 
 ## Repository map
 

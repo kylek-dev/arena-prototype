@@ -8,7 +8,7 @@
 //! - `PUT /api/admin/maps/<id>`: validates a map file with `arena_map` and
 //!   stores it; answers `{id, name}` or `{error: "invalid_map", problems}`.
 //!
-//! Maps live in a `maps` directory beside the account store (in memory
+//! Maps live in the `--maps-dir` directory (in memory
 //! without one). Matches still play the built-in colosseum.
 //!
 //! - `POST /api/admin/mute` `{"handle": "Name#1234", "minutes": 60}`: stops
@@ -46,9 +46,9 @@ pub(super) enum MapStore {
 }
 
 impl MapStore {
-    pub(super) fn beside(store: Option<&std::path::Path>) -> Self {
-        match store.and_then(std::path::Path::parent) {
-            Some(directory) => Self::Directory(directory.join("maps")),
+    pub(super) fn at(directory: Option<&std::path::Path>) -> Self {
+        match directory {
+            Some(directory) => Self::Directory(directory.to_owned()),
             None => Self::Memory(Mutex::default()),
         }
     }
@@ -322,15 +322,15 @@ pub(super) async fn clear_handle(
         .expect("admins need accounts")
         .store
         .clone();
-    let cleared = tokio::task::spawn_blocking(move || -> rusqlite::Result<Option<u64>> {
-        let Some(id) = store.find_handle(&handle)? else {
+    let cleared = async {
+        let Some(id) = store.find_handle(&handle).await? else {
             return Ok(None);
         };
-        Ok(store.clear_handle(id)?.then_some(id))
-    })
+        Ok::<_, crate::identity::store::StoreError>(store.clear_handle(id).await?.then_some(id))
+    }
     .await;
     match cleared {
-        Ok(Ok(Some(account))) => {
+        Ok(Some(account)) => {
             // Open searches stop showing the old name at once.
             let _ = door
                 .queue
@@ -342,7 +342,7 @@ pub(super) async fn clear_handle(
             tracing::info!("admin cleared a handle");
             no_store(StatusCode::NO_CONTENT.into_response())
         }
-        Ok(Ok(None)) => refusal(StatusCode::NOT_FOUND, "no_such_player", None),
+        Ok(None) => refusal(StatusCode::NOT_FOUND, "no_such_player", None),
         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -381,8 +381,7 @@ pub(super) async fn mute(
         .expect("admins need accounts")
         .store
         .clone();
-    let Ok(Ok(found)) = tokio::task::spawn_blocking(move || store.find_handle(&handle)).await
-    else {
+    let Ok(found) = store.find_handle(&handle).await else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let Some(account) = found else {

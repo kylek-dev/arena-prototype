@@ -214,16 +214,19 @@ the connection with `error`.
 Login is optional and handled by the front door
 ([ADR 0055](decisions/0055-accounts-oauth-login-in-arena-door.md),
 `crates/arena-server/src/identity/`, `door/auth.rs`). It is on when the door
-has `ARENA_SESSION_KEY` and at least one provider.
+has `ARENA_SESSION_KEY`, and then also needs `ARENA_DATABASE_URL` and the
+WorkOS application (`ARENA_WORKOS_CLIENT_ID`, `ARENA_WORKOS_API_KEY`).
+Players log in on WorkOS AuthKit's hosted page with email and password, an
+emailed code, Google or GitHub.
 
 | Request | Answer |
 | --- | --- |
-| `GET /api/auth/me` | `{account, admin, providers}`: the account id in hex or `null`, whether deploy configuration makes it an admin, and the providers on offer. |
-| `GET /api/auth/<discord\|google\|github>/login` | 303 to the provider, with state and an S256 PKCE challenge. Sets `__Host-arena_oauth` (signed state and verifier, 10 minutes). |
-| `GET /api/auth/<provider>/callback?code&state` | Checks the state against that cookie, trades the code (with the verifier) for the provider's permanent id, and sets `__Host-arena_session`. Always a 303 to the game page; 400 when anything is off. |
-| `POST /api/auth/logout` | Clears this browser's session cookie. |
-| `POST /api/auth/logout_everywhere` | Ends every session of the account. |
-| `POST /api/auth/delete` | Deletes the account; its sessions end at once. |
+| `GET /api/auth/me` | `{account, admin, login, handle, rename_at}`: the account id in hex or `null`, whether deploy configuration makes it an admin, and whether this door offers login. |
+| `GET /api/auth/login[?sign_up]` | 303 to WorkOS AuthKit (`provider=authkit`), with state and an S256 PKCE challenge; `sign_up` opens the sign-up screen. Sets `__Host-arena_oauth` (signed state and verifier, 10 minutes). Also the dashboard's initiate-login URI. |
+| `GET /api/auth/callback?code&state` | Checks the state against that cookie, trades the code (with the verifier) for the WorkOS user id, and sets `__Host-arena_session`. Always a 303 to the game page; 400 when anything is off, including WorkOS's `error`. |
+| `POST /api/auth/logout` | Clears this browser's session cookie. Answers `{"logout_url"}` (WorkOS's page that ends its session there and returns to the game; the page should open it), or 204 when there is no WorkOS session to end. |
+| `POST /api/auth/logout_everywhere` | Ends every session of the account; answers like `logout`. |
+| `POST /api/auth/delete` | Deletes the user at WorkOS, then the account; its sessions end at once. 502 `unavailable` (nothing deleted) when WorkOS cannot be reached. |
 | `POST /api/auth/handle` `{"name"}` | Picks or changes the account's `Name#1234`. Answers `{"handle"}`, or `{"error"}`: `invalid_name` or `blocked_name` (422), `name_full` (409), `too_soon` with `rename_at` (429), `not_logged_in` (401). |
 
 How the cookies behave:

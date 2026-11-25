@@ -61,8 +61,7 @@ pub(super) async fn list(State(door): State<Arc<Door>>, headers: HeaderMap) -> R
     if door.friend_reads.take(me.id, Instant::now()).is_err() {
         return refusal(StatusCode::TOO_MANY_REQUESTS, "rate_limited", None);
     }
-    let store = identity.store.clone();
-    let Ok(Ok(friends)) = tokio::task::spawn_blocking(move || store.friends_of(me.id)).await else {
+    let Ok(friends) = identity.store.friends_of(me.id).await else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let presence = presence_of(
@@ -137,11 +136,11 @@ pub(super) async fn act(
         "unblock" => Some(false),
         _ => None,
     };
-    let store = identity.store.clone();
+    let store = &identity.store;
     let now = unix_now();
     type Done = (Option<u64>, Result<Option<Relation>, FriendError>);
-    let done = tokio::task::spawn_blocking(move || -> rusqlite::Result<Done> {
-        let Some(other) = store.find_handle(&handle)? else {
+    let done = async {
+        let Some(other) = store.find_handle(&handle).await? else {
             // A missing handle must answer like a blocked one would, so no
             // action tells a blocked player apart from a missing one:
             // `request` says no such player, `block` quietly does nothing,
@@ -156,16 +155,20 @@ pub(super) async fn act(
             ));
         };
         let result = match action.as_str() {
-            "request" => store.request_friend(me.id, other, now)?.map(Some),
-            "accept" => store.accept_friend(me.id, other)?.map(|()| None),
-            "decline" | "remove" => store.remove_friend(me.id, other)?.map(|()| None),
-            "block" => store.block(me.id, other)?.map(|()| None),
-            _ => store.unblock(me.id, other)?.map(|()| None),
+            "request" => store.request_friend(me.id, other, now).await?.map(Some),
+            "accept" => store.accept_friend(me.id, other).await?.map(|()| None),
+            "decline" | "remove" => store.remove_friend(me.id, other).await?.map(|()| None),
+            // Deleted meanwhile: as quiet as a missing handle.
+            "block" => match store.block(me.id, other).await? {
+                Err(FriendError::NoSuchPlayer) => Ok(None),
+                done => done.map(|()| None),
+            },
+            _ => store.unblock(me.id, other).await?.map(|()| None),
         };
-        Ok((Some(other), result))
-    })
+        Ok::<Done, crate::identity::store::StoreError>((Some(other), result))
+    }
     .await;
-    let Ok(Ok((other, result))) = done else {
+    let Ok((other, result)) = done else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     match result {
