@@ -1035,6 +1035,7 @@ fn relayed_appearances_renumber_into_local_order_and_serialize_to_json() {
         body: body.into(),
         skin_tone: "natural".into(),
         hair_color: "auburn".into(),
+        facial_hair_color: "auburn".into(),
         eyes: "brown".into(),
         build: 25,
         groups: vec![("hair".into(), "Hair_Buns".into())],
@@ -1114,4 +1115,80 @@ fn spectator_session_keeps_server_order_never_sends_inputs_and_reports_spectator
     let status: serde_json::Value = serde_json::from_str(&session.status_json()).unwrap();
     assert_eq!(status["spectator"], true);
     assert_eq!(status["seat"], serde_json::Value::Null);
+}
+
+#[test]
+fn relayed_handles_renumber_into_local_order() {
+    use arena_protocol::Handle;
+    let name = |name: &str, number: u16| Handle::new(name, number);
+    // Join as seat 1 in 2v2: seat_order(1, 4) == [1, 0, 3, 2].
+    let mut session = joined(1, 2);
+    assert!(session.handles().is_empty());
+    let server = vec![name("Ash", 1), name("Rook", 2), None, name("Bishop", 3)];
+    session.receive(
+        &feed(1, vec![ServerMessage::Handles(server).encode()]),
+        0.1,
+        &layout(),
+    );
+    assert_eq!(
+        session.handles(),
+        &[name("Rook", 2), name("Ash", 1), name("Bishop", 3), None]
+    );
+    assert_eq!(
+        super::handles_json(session.handles()),
+        r#"["Rook#0002","Ash#0001","Bishop#0003",null]"#
+    );
+    // A relay of the wrong size is ignored.
+    session.receive(
+        &feed(1, vec![ServerMessage::Handles(vec![None, None]).encode()]),
+        0.2,
+        &layout(),
+    );
+    assert_eq!(session.handles().len(), 4);
+}
+
+#[test]
+fn a_new_connection_forgets_the_last_matchs_handles() {
+    use arena_protocol::Handle;
+    let mut session = joined(0, 1);
+    session.receive(
+        &feed(
+            1,
+            vec![ServerMessage::Handles(vec![Handle::new("Rook", 1), None]).encode()],
+        ),
+        0.1,
+        &layout(),
+    );
+    assert_eq!(session.handles().len(), 2);
+    // A new socket generation (a new match or rejoin) starts without them,
+    // even when no Appearances relay was ever received.
+    session.receive(&feed(2, vec![welcome(0, 1)]), 0.2, &layout());
+    assert!(session.handles().is_empty());
+}
+
+#[test]
+fn relayed_tags_renumber_into_local_order() {
+    use arena_protocol::Tags;
+    let admin = Tags { admin: true };
+    // Join as seat 1 in 2v2: seat_order(1, 4) == [1, 0, 3, 2].
+    let mut session = joined(1, 2);
+    session.receive(
+        &feed(
+            1,
+            vec![
+                ServerMessage::Tags(vec![admin, Tags::default(), Tags::default(), admin]).encode(),
+            ],
+        ),
+        0.1,
+        &layout(),
+    );
+    assert_eq!(
+        session.tags(),
+        &[Tags::default(), admin, admin, Tags::default()]
+    );
+    assert_eq!(
+        super::tags_json(session.tags()),
+        r#"[{"admin":false},{"admin":true},{"admin":true},{"admin":false}]"#
+    );
+    assert_eq!(super::tags_json(&[]), "null");
 }

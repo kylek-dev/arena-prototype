@@ -1,0 +1,33 @@
+# Words players may not use (social-identity step 3, chat). One word per
+# line, lowercase, matched after common digit swaps (0→o, 1→i or l, 3→e,
+# 4→a, 5→s, 7→t, 8→b) are undone. Words under [reserved] are refused only
+# in names; words under [abuse] are refused in names and masked in chat.
+# Operators add abuse words with ARENA_BLOCKED_NAMES (one word per line).
+#
+# Names that could pass for staff, the system or a guest.
+[reserved]
+admin
+moderator
+staff
+official
+system
+support
+guest
+arena
+pitborn
+# Common abuse. Kept short on purpose: substrings that appear inside
+# ordinary words would refuse innocent names.
+[abuse]
+fuck
+shit
+cunt
+bitch
+whore
+slut
+nigg
+fagg
+retard
+nazi
+hitler
+tranny
+kike

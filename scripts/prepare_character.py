@@ -113,25 +113,21 @@ def prepare(characters=CHARACTERS, directory=DIRECTORY, enabled=None):
     if enabled is None:
         enabled = setting != '0'
     (directory / 'characters').mkdir(parents=True, exist_ok=True)
-    quaternius = (enabled and characters is CHARACTERS
-                  and quaternius_character.MODEL.is_file()
-                  and quaternius_character.LIBRARY.is_file())
+    # Customizable kits: the finished kits tracked in assets/ (ADR 0053), plus any Quaternius kits that
+    # character_kits ships when their local sources are installed.
+    kits = character_kits.prepare(directory) if enabled and characters is CHARACTERS else []
+    quaternius = bool(kits)
     # Do not silently publish the legacy, license-unconfirmed character sources.
     legacy = enabled and (characters is not CHARACTERS or setting == '1')
     chosen = next((c for c in characters if c[1].is_file()), None) if legacy else None
     if quaternius:
-        chosen = (character_kits.IDENTIFIER, None, 'Quaternius customizable')
+        chosen = (character_kits.IDENTIFIER, None, 'customizable kits')
     for identifier, _, _ in characters:
         if chosen is None or identifier != chosen[0]:
             (directory / model_path(identifier)).unlink(missing_ok=True)
     # The single dressed female was replaced by customizable kits.
     (directory / model_path(quaternius_character.IDENTIFIER)).unlink(missing_ok=True)
-    kits = []
-    if quaternius:
-        kits = character_kits.prepare(directory)
-        if not kits:
-            raise ValueError('Quaternius sources are installed but no kit could be built')
-    else:
+    if not quaternius:
         shutil.rmtree(directory / character_kits.DIRECTORY, ignore_errors=True)
     if chosen and not quaternius:
         identifier, source, name = chosen
@@ -140,7 +136,7 @@ def prepare(characters=CHARACTERS, directory=DIRECTORY, enabled=None):
     if kits:
         manifest['kits'] = kits
     (directory / 'character.json').write_text(json.dumps(manifest) + '\n')
-    print('Character asset:', f'{len(kits)} Quaternius kits ({", ".join(k["id"] for k in kits)})'
+    print('Character asset:', f'{len(kits)} customizable kits ({", ".join(k["id"] for k in kits)})'
           if quaternius else f'{chosen[2]} rig and 8 clips' if chosen
           else 'procedural character (no character source installed)' if enabled
           else f'procedural character (rigged models disabled; unset {ENV})')

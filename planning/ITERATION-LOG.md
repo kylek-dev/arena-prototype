@@ -26,6 +26,8 @@ Reusable repo invariants, canonical helpers, and CI traps promoted across iterat
 - **Per-fighter kits & appearance relay (`PROTOCOL_VERSION = 6`):** Share kit GLBs and `AnimationGraph`s via `character::KitCache` and deduplicate overridden `StandardMaterial`s per `(KitInstance, GltfMaterialName)` storing the original base material alongside the handle; protect both `Welcome` (variant 0) and `Appearances` (variant 4) from `MAX_QUEUED` eviction in `web/src/runtime/network.ts` and clear `remoteAppearances` synchronously on `end()` and new socket generations.
 - **Private custom lobbies & top-bar coordination:** Keep custom lobby state inside `Matchmaker` (`matchmaker_custom.rs`) sharing `/api/queue`'s `OpenPerAddress` + `RateWindow` and enforcing `door.creations` per-address rate limiting on `start_lobby`; coordinate top-center `.below-queue` spacing across `QueueBar`, `RoundClock`, `MatchStatus`, `CombatErrors`, and `Scoreboard` through the single canonical `useQueueBarVisible()` hook (suppressing the minimized lobby pill behind `Scoreboard` and active matches).
 - **Live spectating & anti-ghosting boundaries (`PROTOCOL_VERSION = 7`, ADR 0050):** Separate player and watch-only credentials structurally via signed `ticket::Role::{Player { seat }, Spectator}` (`allow_spectators` enforced in both front door and match server); always drain `spectator_queue` in both `tick()` and `tick_encoded()` even when temporarily empty (and flush due frames before `Phase::Finished` close so `linger == 0` never drops the final scoreboard); refuse `Phase::Finished` spectator attachments unless a queued or finished snapshot exists; share one serialized `Arc<[u8]>` (`Bytes::from_owner`) across all spectators per tick; clear incompatible combat UI modes (`spellbook`/`layout`/`quick`) when entering spectating and hold `result[14]` while `Space` is active in free-cam without changing seated-player edge-triggered jumping.
+- **Server/door logs & metrics (ADR 0054):** Log with `tracing` events carrying explicit `match_id = %logging::MatchId(id)`, `seat`, `conn_id`, `error_code` fields (never wrap the 30 Hz match task in a span), never log tickets/links/keys (`tests/logging.rs` captures a door-issued match with `--debug-json` and fails on any leak; wire payloads go under `payload`, not `message`, which collides with the event text in JSON), and add latency distributions with the lock-free `metrics::Histogram<N>` (`&'static` bounds, inclusive `le`) instead of new max/total pairs.
+- **Control-plane traces (ADR 0054 Phase 2):** Create spans only with `crate::control_span!` (records `trace_id`/`span_id` for log↔trace links) on control-plane steps; give long-lived spans (`match`, `queue.search`) an explicit `parent: None`, use them only as parents (never `enter()` them across ticks or `.await`s), end every per-connection span on all exit paths (including `Closed::Replaced`, which sends no `Gone`), report anomalies through `anomaly::SharedThrottle` statics, and keep `logging::init` before the Tokio runtime (the OTLP HTTP client blocks).
 
 ## Entry Template
 
@@ -427,3 +429,214 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fresh-Eyes Review:** One Important finding fixed: the first pressed rule (`button:not(.rt-Button):active…`, specificity 0,3,1) would have greyed action-bar slots and unit entries while pressed; it is now wrapped in `:where()`. Minors addressed: guard-test bypasses, mixed 24/28 px heights within rows, dead tab-hover border, UI-REVIEW note that host rows wrap to two lines. Not built: a per-slot overflow menu (wrapping satisfies "wrap or collapse").
 - **Learnings:** `base.css` element rules with `:not()`/pseudo-classes reach (0,3,1) specificity and beat feature classes; new global button states belong in `:where()`. Vitest cannot see CSS, so style invariants are guarded with node source scans in `tests/unit`.
 - **Next Recommended Slice:** Playtest Inbox is empty — human browser review of the six stacked PRs (#82–#87), then the Lane A observability queue.
+
+## 2026-11-25 — Observability Phase 1: structured logs, tick histograms, door metrics, local LGTM
+- **Branch / Commit:** `auto/observability-logging`
+- **Base / PR:** `feat/finished-human-male-kit` (stacked on PR #89) — PR #90
+- **Lane:** A (machine-verified)
+- **Task:** [observability-telemetry](issues/observability-telemetry.md) Phase 1 (first Lane A backlog item); [ADR 0054](../docs/decisions/0054-observability-logs-metrics-and-local-lgtm.md)
+- **Changes:**
+  - `arena-server`/`arena-door` log through `tracing` (`logging.rs`: `ARENA_LOG_FORMAT=pretty|json`, `RUST_LOG`, warnings for bad values, ANSI only on a terminal) with shared structured fields; `--debug-json` wire lines under `payload`, repeated-`Hello` tickets redacted; `tests/logging.rs` proves no ticket/key/link leaks (mutation-checked twice).
+  - `metrics::Histogram<N>` → `arena_tick_duration_microseconds` (`_count`/`_sum` = `arena_ticks_total`/`arena_tick_microseconds_total`); door: queued by mode, queue connections, parties, lobbies, searches by party size, tickets, ready checks started/completed/failed, accepts, declines, `arena_door_queue_wait_milliseconds` (matchmaker `Stats` + bounded found-wait buffer); `process_*` RSS/CPU/FDs and `arena_draining`.
+  - `deploy/compose.yaml` `obs` profile (`grafana/otel-lgtm:0.41.1`, loopback ports, 1 GiB cap), `deploy/observability/{prometheus.yaml,dashboards.yaml,dashboards/*.json}`; JSON logs in Docker; `docs/DEPLOYMENT.md` "Observability" + dated trial.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base feat/finished-human-male-kit` (`smoke=true web_build=false wasm=true`): pass
+    - `./scripts/check.sh`: pass (417 Rust tests, 1 pre-existing ignored; 58 Python; 50 Node; 41 Vitest files / 320 tests).
+    - `cargo run -p arena-headless --locked`: pass (scripted duel, winner 0 at tick 90).
+    - `./scripts/server-smoke.sh`: pass (494 ticks, 0 overruns, mean 11.7 µs, drained cleanly).
+    - WASM clippy: pass. `npm run build` / `build-web.sh`: not applicable (no `web/` changes).
+  - Docker `--profile obs` (twice): both targets `up`, histogram count = ticks, all 28 dashboard panel queries returned data; `lgtm` 550 MiB.
+  - Release A/B, 60×3v3 bot matches × 20 s, seed 7: mean tick 8.28/8.80 µs base vs 8.43/8.22 µs branch, 0 overruns.
+- **Fresh-Eyes Review:** No Critical. Important fixed: tick buckets started at 50 µs while ticks take ~8 µs (added 1–20 µs buckets); wire log `message` field collided with the event text in JSON (renamed `payload`, test parses it); party-size metric and recorded trial evidence were missing (added `arena_door_searches_total{party_size}` + panel, dated trial in `docs/DEPLOYMENT.md`). Minors fixed: buffer comment, accept/decline HELP wording (counters cannot decrement), `RUST_LOG` parse warning, ANSI only on a TTY, redacted `Hello` keeps `appearance`, shared `write_metric`, histogram bounds out of the counter cache lines.
+- **Learnings:** `grafana/otel-lgtm`'s bundled Prometheus has no scrape jobs (OTLP push only): mount a full `/otel-lgtm/prometheus.yaml`. Prometheus 3 normalizes `le` labels to floats (`le="20.0"`). `arena-bot` cannot use door-issued `wss://` links, so local obs checks need a loopback override and a small WebSocket script.
+- **Next Recommended Slice:** Observability Phase 2 — opt-in OTLP traces, `trace_id` in JSON logs, log shipping and alert rules.
+
+## 2026-11-25 — Observability Phase 2: OTLP traces, log↔trace ids, shipping and alerts
+- **Branch / Commit:** `auto/observability-tracing`
+- **Base / PR:** `auto/observability-logging` (stacked on PR #90) — PR #91
+- **Lane:** A (machine-verified)
+- **Task:** [observability-telemetry](issues/observability-telemetry.md) Phase 2; [ADR 0054](../docs/decisions/0054-observability-logs-metrics-and-local-lgtm.md) amended
+- **Changes:**
+  - `logging::init(service)` → `Telemetry`: OTLP/HTTP span exporter only when `OTEL_EXPORTER_OTLP_ENDPOINT` is non-blank, started before and flushed after the Tokio runtime (blocking client); `control_span!` records `trace_id`/`span_id`; JSON lines carry the current span.
+  - Spans: `http.request` (tower-http, matched route or `unmatched`, never the query, probes/scrapes skipped, failures at debug), `party.create`/`party.join`, per-player `queue.search` + `queue.step`s (ends on matched/stopped/left/replaced; debug-asserted bound), `lobby.start`, `ws.hello`, one `match` span with seat/spectator children (never entered while ticking), `server.drain`. Throttled process-wide anomaly warnings (`anomaly.rs`). Tokio runtime gauges.
+  - `deploy/`: Alloy (`alloy.alloy`): scrape + remote-write, Docker-socket logs for this project's server/door/caddy to Loki's push API (`service_name`, lowercase `level`, `trace_id` structured metadata), OTLP trace forwarding; destinations from env. Eight alert rules + webhook contact point; Prometheus 7-day retention; `OTEL_EXPORTER_OTLP_TIMEOUT=3000`. Production topology in `docs/DEPLOYMENT.md`.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/observability-logging` (`smoke=true web_build=false wasm=true`): pass
+    - `./scripts/check.sh`: pass (423 Rust tests, 1 pre-existing ignored; 58 Python; 50 Node; 41 Vitest files / 320 tests).
+    - `cargo run -p arena-headless --locked`: pass. `./scripts/server-smoke.sh`: pass (492 ticks, 0 overruns, mean 7.4 µs, drained cleanly). WASM clippy: pass.
+  - Docker `--profile obs` with `OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4318` (final run on a fresh rebuild): metrics via Alloy remote write (`up`=1 both), Loki `service_name` server/door with `trace_id` structured metadata whose id opened its `match` trace in Tempo, door and server traces present, 8 rules healthy, retention `1w`, and a firing "Front door not scraped" alert delivered to a webhook catcher 3 min 33 s after stopping the door. Details in `docs/DEPLOYMENT.md` "Observability trial".
+- **Fresh-Eyes Review:** No Critical. Important fixed: a reconnecting guest leaked its `queue.search` span forever (now ended as `replaced`, test + mutation check + debug assert); an unobserved "delivered alert" claim; party create/join spans and door-side refusal warnings were missing (added; exemplars explicitly deferred in the ADR); the log→trace link needed `trace_id` as Loki structured metadata (added in Alloy). Minors fixed: tower-http failure events at debug, per-code and process-wide throttles, `suppressed_reports` naming, matched-route paths, Alloy project filter and lowercase levels, per-job "not scraped" rules, query/unknown-path/invite-code leak checks, export timeout.
+- **Also found live:** a queue client closing normally was answered as `bad_request` (now a Close frame just ends the connection; logging test + mutation check).
+- **Learnings:** Loki's OTLP intake replaces a Loki `service_name` label with the resource's service name: push Docker logs through `loki.write` instead. Grafana's alert notification log persists on its data volume, so recreating the container does not resend an already-notified group. The `opentelemetry-otlp` blocking HTTP client must not be built or shut down inside an async context: start telemetry before the runtime.
+- **Next Recommended Slice:** Observability Phase 3 — scrubbed browser telemetry and opt-in profiling.
+
+## 2026-11-25 — Observability Phase 3: scrubbed browser reports and opt-in profiling
+- **Branch / Commit:** `auto/observability-rum`
+- **Base / PR:** `auto/observability-tracing` (stacked on PR #91) — PR #92
+- **Lane:** A (machine-verified; a real-browser beacon check is pending and recorded as such)
+- **Task:** [observability-telemetry](issues/observability-telemetry.md) Phase 3; [ADR 0054](../docs/decisions/0054-observability-logs-metrics-and-local-lgtm.md) amended (status: all three phases implemented)
+- **Changes:**
+  - Door `POST /api/telemetry` (`door/browser.rs`): origin and rate checks before parsing, closed `kind`-tagged schema, 2 KB limit, bounded numbers, server-side scrub, `info` log lines (`arena_door::browser`), `arena_door_browser_reports_total{kind}` / `_refused_total{reason}` / `_rejected_total`.
+  - `web/src/domain/telemetry.ts` (scrub page/text incl. URL passwords, separate error and summary budgets, DNT/GPC/remembered `?telemetry=off`, WASM panic classification, reservoir-sampled `MatchSummaryCollector`) and `web/src/runtime/telemetry.ts` (uncaught + caught failures via `start.ts`, WebGL context loss, startup time since navigation, one summary per finished match, `sendBeacon`); shared `tests/fixtures/scrub-cases.json` run by both scrubbers.
+  - `profiling` feature (`pyroscope` 2.1.5 pprof, no TLS) started by `ARENA_PYROSCOPE_URL`, bounded 11 s stop, `log` bridged into `tracing` with the agent at `warn`; image built with it; `check.sh` clippies it; `stop_grace_period` 1230 s; Front Door "Browser reports" panel.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/observability-tracing` (`smoke=true web_build=true wasm=true`): pass (`./scripts/check.sh`: 430 Rust tests, 1 pre-existing ignored, incl. `--features profiling` clippy; 58 Python; 50 Node; 42 Vitest files / 334 tests; headless pass; server smoke 496 ticks, 0 overruns, mean 13.6 µs, drained cleanly; `npm run build` 373 modules; WASM clippy pass).
+  - `./scripts/build-web.sh`: pass (28 static resources; no browser launched).
+  - Docker: reports scrubbed in door logs/Loki with no ticket, 422/403 refusals, Pyroscope listing `arena-server` under load, bounded profiler stop (5.7 s).
+- **Fresh-Eyes Review:** No Critical. Important fixed: failures caught by `start.ts` (engine load, `onState`) never reached telemetry, and the startup timer polled forever; match summaries shared the 20-report budget. Minors fixed: scrubbers aligned on whitespace and URL passwords with shared fixtures; parse after origin/rate checks; separate refusal counters; client reports at `info`; reservoir sampling; lazy frame-time read; startup measured from navigation; remembered opt-out; compose `ARENA_PYROSCOPE_HZ`; bounded profiler stop; `log` bridge; profiling clippy in `check.sh`; counters sized by kinds; new runtime tests. Documented rather than changed: `frame_ms` is the median of recent engine frames, and a rejoin after the link ended starts a new summary.
+- **Learnings:** `pyroscope` 2.x bundles its pprof backend (the separate `pyroscope_pprofrs` crate is the old API) and with default features pulls rustls/aws-lc; `default-features = false` keeps it plain HTTP. Its `stop()` waits for the current 10 s cycle. With no CPU load it uploads nothing, so Pyroscope lists no service until there is traffic.
+- **Next Recommended Slice:** Accounts research & login decision (social-identity step 1).
+
+## 2026-11-25 — Accounts research and login decision
+- **Branch / Commit:** `auto/accounts-decision`
+- **Base / PR:** `auto/observability-rum` (stacked on PR #92) — PR #93
+- **Lane:** A (documentation only)
+- **Task:** [social-identity](issues/social-identity.md) step 1
+- **Changes:**
+  - `docs/research/accounts-2026-11-25.md`: own OAuth/OIDC vs WorkOS, Clerk, Supabase Auth, Auth0, Ory Kratos, Keycloak and own passwords, on price at playtest and modest scale, lock-in, stored data, deletion and single-host load, with sources (third-party 2026 pricing summaries and vendor docs; vendor pages not opened directly, said so).
+  - `docs/decisions/0055-accounts-oauth-login-in-arena-door.md` (Proposed): Discord/Google/GitHub via OAuth code + PKCE in an identity module beside `arena-door`; no passwords; minimal SQLite store (account id, provider subject, handle, timestamps, admin flag); own signed session cookie keyed by `ARENA_SESSION_KEY`; account id in tickets; guests first-class; deletion removes our rows; WorkOS AuthKit as the hosted fallback.
+- **Checks Observed:** `./scripts/check.sh`: pass (430 Rust tests, 1 pre-existing ignored; 58 Python; 50 Node; 42 Vitest files / 334 tests). `cargo run -p arena-headless --locked`: pass (winner 0). Server smoke, web build and WASM: not applicable (docs only).
+- **Fresh-Eyes Review:** No Critical. Important fixed in the ADR and the note: the door was not stateless and had no volume (a `door-data` volume, online backups and doc follow-ups are now consequences); a deleted account could keep using its cookie (sessions are checked against the database with a generation counter; ticket, backup and log retention are stated); the CSRF design was underspecified (`__Host-` cookies, required `Origin` on cookie POSTs and the queue handshake, cookie auth off under `--any-origin`, state and PKCE in a signed short-lived cookie, fixed redirects); identity keys and linking were not decided (permanent numeric ids, no auto-merge, linking out of scope, the WorkOS migration caveat); privacy and provider limits were understated (a privacy notice, Google's 100-test-user Testing mode). Minors: admin from config only, minimal scopes, sources for Google and GitHub, community-report labels, wording.
+- **Learnings:** At our scale every hosted option is free, so the choice turns on lock-in, privacy and what runs next to the match loop. Supabase free projects pause after a week idle, which would lock players out between playtests.
+- **Next Recommended Slice:** Identity service & signed account ids (social-identity step 2).
+
+## 2026-11-25 — Identity service and signed account ids
+- **Branch / Commit:** `auto/identity-service`
+- **Base / PR:** `auto/accounts-decision` (stacked on PR #93) — PR #94
+- **Lane:** A (machine-verified; the login UI is queued as Lane B)
+- **Task:** [social-identity](issues/social-identity.md) step 2; [ADR 0055](../docs/decisions/0055-accounts-oauth-login-in-arena-door.md)
+- **Changes:**
+  - `crates/arena-server/src/identity/`: SQLite `Store` (one account per provider + permanent subject, random non-zero ids, session generation, delete), `cookie` (domain-separated HMAC session and login cookies, `__Host-` names, PKCE S256, base64url), `provider` (Discord `identify`, Google `openid`, GitHub no scope; Discord id / Google `sub` / GitHub numeric id; HTTPS via rustls + `ring`), `Identity` (store checks on every session use, `Origin` rules, admins from `ARENA_ADMIN_ACCOUNTS`).
+  - `door/auth.rs`: `/api/auth/me`, `<provider>/login`, `<provider>/callback`, `logout`, `logout_everywhere`, `delete`; per-address limit; fixed redirect to the game page; login/failure/deletion metrics.
+  - `ticket::Claims.account` and `ticket::issue_seats`; the queue resolves the session at the WebSocket handshake (allowed `Origin` required) and signs each seat's or spectator's account into their ticket.
+  - `arena-door --identity-db`, `ARENA_SESSION_KEY`, `ARENA_OAUTH_*`; Dockerfile CA certificates and `/var/lib/arena`; Compose `door-data` volume and variables; PROTOCOL "Accounts", DEPLOYMENT "Accounts" (setup, privacy notice, backups), ARCHITECTURE.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/accounts-decision` (`smoke=true web_build=false wasm=true`): pass (`./scripts/check.sh`: 445 Rust tests, 1 pre-existing ignored; 58 Python; 50 Node; 42 Vitest files / 334 tests; headless pass; server smoke 496 ticks, 0 overruns, mean 14.2 µs, drained cleanly; WASM clippy pass).
+  - `tests/identity.rs` against a fake provider; the forged-state case was mutation-checked (it first passed for the wrong reason, because the fake's PKCE check refused it; the test now lets only the state check stop it).
+  - Docker image: accounts on with a key (SQLite on the volume as `arena`, Discord redirect with the right callback), guest-only without a key despite `--identity-db`, CA bundle present, the WAL folded into the file after `docker stop`.
+- **Fresh-Eyes Review:** No Critical. Important fixed:
+  - Open queue connections kept signing a deleted or logged-out-everywhere account into new tickets. They now get `Command::Revoke`, with an integration test and a mutation check.
+  - Backups copied only the main file of a WAL-mode database. They now copy every `identity.sqlite3*` file; the clean-stop fold was checked live.
+
+  Minors fixed: negative tests (no `Origin` on the queue handshake, a login replayed at another provider's callback, delete without `Origin`, the login rate limit, `issue_seats` and account 0); the upgrade note for the ticket format; a Caddy log filter dropping `code` and `state` (validated with `caddy validate` and a live request); SQLite subject conflicts now error instead of looping; a session key equal to the ticket key is refused; every `Cookie` header is read; the account lookup moved after the connection limit. Not done: capping provider response bodies (fixed, trusted endpoints with a 10 s timeout).
+- **Learnings:** A forged-state test can pass for the wrong reason when a later check (here the fake provider's PKCE check) also refuses; make only the check under test able to stop it, then mutation-check. A clean `docker stop` closes SQLite and folds its WAL. Caddy's `format filter` can delete query keys from `request>uri` and still writes JSON.
+- **Next Recommended Slice:** `Name#1234` display names (social-identity step 3).
+
+## 2026-11-25 — `Name#1234` display names
+- **Branch / Commit:** `auto/display-names`
+- **Base / PR:** `auto/identity-service` (stacked on PR #94) — PR #95
+- **Lane:** A (machine-verified; HUD display and the name picker queued as Lane B)
+- **Task:** [social-identity](issues/social-identity.md) step 3
+- **Changes:**
+  - `arena_protocol::Handle` (fixed 16-byte zero-padded name, 3–16 ASCII letters/digits starting with a letter, number 1–9999, `Name#0042` display) and `ServerMessage::Handles` (variant 5, even 2–6 seats, validated at decode); `PROTOCOL_VERSION = 9` in Rust and web, golden frames and fuzz seeds updated.
+  - Tickets: `Claims.handle`, `ticket::Holder`; door naming policy (`identity/names.rs` + `blocked-names.txt`, digit-swap folding, `ARENA_BLOCKED_NAMES`), store handles (case-insensitive unique index per number, random free number with a lowest-free fallback, one rename per 7 days, free first pick and case changes, migration adding columns to older stores), `POST /api/auth/handle`, `handle`/`rename_at` in `/api/auth/me`.
+  - Queue `Holder`s: account handle or a temporary `Guest#NNNN`; `Command::Rename` and `Revoke` update open searches. Match server locks a seat's handle from its first naming ticket and relays `Handles` to players and spectators. `arena-client` keeps them in local order and publishes `onHandles` → `remoteHandles` (web), with strict parsing; bot ignores them; the web queue protects variant 5 from eviction.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/identity-service` (`smoke=true web_build=true wasm=true`): pass (`./scripts/check.sh`: 457 Rust tests, 1 pre-existing ignored; 58 Python; 50 Node; 43 Vitest files / 337 tests; headless pass; server smoke 496 ticks, 0 overruns, mean 15.0 µs, drained cleanly; `npm run build` 374 modules; WASM clippy pass). `./scripts/build-web.sh`: pass (28 static resources; no browser launched).
+  - Found on the way: the "tampered session" test I wrote in the identity slice was flaky (replacing a final `0` with `0`), now always changes the digit; the palette guard reads `#1234` in comments as a colour, so web comments say `Name#number`.
+- **Fresh-Eyes Review:** No Critical. Important fixed: `arena-client` never cleared relayed handles on a new connection or match, so a rejoin or a lobby-link match could show stale or no handles; they are now cleared on every new generation and Welcome for another match (unconditionally, not only when looks were relayed), with a test. Minors fixed: misplaced doc comment; docs now say the first pick starts the 7-day clock, that `None` also means "not joined yet", and that guest handles repeat; `1` is folded as both `i` and `l`; tests document the substring trade-off (`Badminton`, `Quarterstaff`, `Scunthorpe` are refused); handle endpoint tests for a missing `Origin` (403) and malformed bodies (422). Noted for the admin step: no way yet to clear a stored handle that a later blocklist covers.
+- **Learnings:** The palette guard (`tests/unit/palette.test.mjs`) treats any `#` followed by 3, 4, 6 or 8 hex digits in web sources as a colour, comments included. Clear per-match client state outside "only if non-empty" guards that belong to a sibling field.
+- **Next Recommended Slice:** Friends & friend invites (social-identity step 4).
+
+## 2026-11-25 — Friends and friend invites
+- **Branch / Commit:** `auto/friends`
+- **Base / PR:** `auto/display-names` (stacked on PR #95) — PR #96
+- **Lane:** A (machine-verified; friends UI queued as Lane B)
+- **Task:** [social-identity](issues/social-identity.md) step 4
+- **Changes:**
+  - `identity/friends.rs`: `friends` (unordered pair, requester, accepted) and `blocks` tables beside the accounts; request (crossed requests become friendships), accept, remove (decline/withdraw/unfriend), block (ends the edge), unblock, `friends_of` with handles; caps of 50 waiting requests and 200 friends; blocks look like missing players; account deletion forgets everything. `Store::find_handle` (exactly `Name#NNNN`, case-insensitive).
+  - `door/friends.rs`: `GET /api/friends` (relations, presence for friends, blocked handles) and `POST /api/friends/<action>`; `Origin` and login rules as for accounts; `pick_a_name_first`; `friends_changed` pushes (a block tells only the blocker).
+  - Queue: `invite` checked in the connection task (logged in, per-account limit, friendship in the store) then delivered by the matchmaker task with the inviter's lobby or party code (`Matchmaker::invite_code`, creating a party for a solo player), `invite_sent`, `offline`/`no_such_friend` refusals; presence computed from holders, searches, lobbies and recent match tickets; `ingress::RateLimit<K>` with `RatePerAccount`; `DoorConfig::auth_burst`.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/display-names` (`smoke=true web_build=false wasm=true`): pass (`./scripts/check.sh`: 463 Rust tests, 1 pre-existing ignored; 58 Python; 50 Node; 43 Vitest files / 337 tests; headless pass; server smoke 496 ticks, 0 overruns, mean 16.5 µs, drained cleanly; WASM clippy pass).
+  - End-to-end test: request, `friends_changed` push, accept, presence online/offline/searching, one-click invite and join by code, offline/stranger/self refusals, nameless requester, blocks, request and invite spam limits, login and Origin rules.
+- **Fresh-Eyes Review:** No Critical. Important fixed:
+  - A blocked player could detect the block by comparing `request` (404) with `unblock`/`accept` (409) answers. Every action now answers unknown handles exactly as it would a blocker, and an unblock notifies nobody (tested pairwise).
+  - A connection logged out everywhere could still invite friends from its stale copy of the account. `Command::Invite` now carries the account and the matchmaker task refuses `not_logged_in` unless the connection still holds it (test, mutation-checked).
+  - Polling `GET /api/friends` could flood the single matchmaker task with O(friends × connections) scans. It now has a per-account read limit, and the task keeps an account → connections index.
+
+  Minors fixed: the friend cap is counted for both sides; friend actions have their own per-account limit; unreadable bodies answer `bad_request`; the presence comment; spectators of lobbies that forbid them no longer count as in a match; plain-logout behaviour documented; the rate limiter comment. Tests added: a stranger never receives the code, requests carry no presence, a block sends nothing. Not done: `in_lobby`/`in_match` presence and lobby invites end to end (covered by the presence ordering code but not by a test), blocks of accounts without a handle cannot be listed or undone by handle.
+- **Learnings:** "Indistinguishable" privacy claims have to hold across every endpoint that takes the same input, not just the obvious one. A connection task's copy of the account goes stale; authority belongs to the task that sees `Revoke`.
+- **Next Recommended Slice:** Admin role & tag (social-identity step 5).
+
+## 2026-11-25 — Admin role and tag
+- **Branch / Commit:** `auto/admin-role`
+- **Base / PR:** `auto/friends` (stacked on PR #96) — PR #97
+- **Lane:** A (machine-verified; the tag display and the editor's server save queued as Lane B)
+- **Task:** [social-identity](issues/social-identity.md) step 5
+- **Changes:**
+  - Role from `ARENA_ADMIN_ACCOUNTS` (identity step), now carried as `Claims.admin` / `Holder.admin` (never without an account; cleared on revoke) and relayed by the match server as `ServerMessage::Tags` (variant 6) with the seat's handle; `PROTOCOL_VERSION = 10` in Rust and web, golden frames, fuzz seeds, decode limits; `arena-client` keeps tags in local order, clears them per match and publishes `onTags` → `remoteTags` (strict `parseTags`); the web queue protects variant 6 from eviction.
+  - `door/admin.rs`: shared `require_admin` (accounts on, allowed `Origin` for writes, logged in, admin from config) and the first tools: `GET /api/admin/maps`, `GET`/`PUT /api/admin/maps/<id>.json` (id allowlist, 256 KiB, `arena_map::parse`, canonical JSON, atomic write into `maps/` beside the account store) and `POST /api/admin/handles/clear` (`Store::clear_handle`, open searches renamed to a guest handle).
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/friends` (`smoke=true web_build=true wasm=true`): pass (`./scripts/check.sh`: 469 Rust tests, 1 pre-existing ignored; 58 Python; 50 Node; 43 Vitest files / 338 tests; headless pass; server smoke 496 ticks, 0 overruns, mean 14.2 µs, drained cleanly; `npm run build` 374 modules; WASM clippy pass). `./scripts/build-web.sh`: pass (no browser launched).
+  - Door test with two door processes over one file store (accounts first, then the operator names an admin): `/me` admin flag, maps GET/PUT for admin vs non-admin vs guest vs missing `Origin`, invalid map problems, bad id, the file on disk, clearing a handle and picking again, `admin` in the admin's queue ticket only. Server test: `Tags` follows `Handles`. Client test: tags in local order.
+- **Fresh-Eyes Review:** No Critical or Important findings (server gate complete, tag unforgeable, revocation clears it). Minors fixed:
+  - Two saves of one map shared a temporary file and could leave corrupt JSON; each save now uses its own synced temporary file.
+  - One unreadable or special file no longer fails or hangs the map list.
+  - The docs say tickets already issued keep their tag until they expire, and that the tools are off under `--any-origin`.
+  - Tests added: a signed admin claim without an account is refused, traversal attempts over HTTP are refused, oversize bodies get 413, and `Tags` reaches later players and spectators.
+
+  Not done: reading PUT bodies only after the admin check (other routes allow similar sizes), and an audit trail of which admin acted (needs a store table; noted for when there are several admins).
+- **Learnings:** `#[serde(default)]` is no help for postcard tickets; new claims change the format, which ships with the door and server together. Box a `Response` error once a handler returns `Result<_, Response>` (Clippy `result_large_err`).
+- **Next Recommended Slice:** Chat server (the last Lane A item).
+
+## 2026-11-25 — Chat server
+- **Branch / Commit:** `auto/chat-server`
+- **Base / PR:** `auto/admin-role` (stacked on PR #97) — PR #98
+- **Lane:** A (machine-verified; chat box, system messages and slash commands queued as Lane B)
+- **Task:** [chat](issues/chat.md), server side — the last Lane A backlog item
+- **Changes:**
+  - Chat over the queue WebSocket: client `chat {channel, text}`, `whisper {to, text}`, `ignore`/`unignore {handle}`; door `chat {channel, from, to?, admin, text}` with the sender and tag set by the door.
+  - Routing in the matchmaker task (`door/queue.rs` `Chat`, `ChatState`): `public` (logged-in posters); `match` and `team` from the tickets the door issued (team falls back to the custom lobby, then the party); `spectator` for spectators only, who may post or whisper nowhere else; whispers to friends (checked like invites, re-checked against the connection's account). Anti-ghosting invariant: a player in a live match hears only `match` and `team` from players of that match, so second tabs, second accounts and lobby-mates cannot feed them.
+  - Rules (`door/chat.rs`): cleaning and a 200-character cap, a per-connection budget (5, then one a second), abuse words masked (the word list now separates `[reserved]` names from `[abuse]`), per-connection ignore (200), account blocks loaded at hello and updated live, admin mutes (`POST /api/admin/mute`). `system` and sender fields cannot be posted.
+  - Review fixes: spectator whispers and second-tab/lobby ghosting closed by the invariant; ignores and mutes keyed on account or guest id (mutes survive logout); chat keeps 8 outbox slots free for tickets; per-account public budget; 4 KiB queue frames so 200 characters fit in any script; invisible, bidi and line-separator characters stripped and combining marks capped; blocks read after hello (no lost block); seats indexed per match.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/admin-role` (`smoke=true web_build=false wasm=true`): pass (`./scripts/check.sh`: 480 Rust tests, 1 pre-existing ignored; 58 Python; 50 Node; 43 Vitest files / 338 tests; headless pass; server smoke 496 ticks, 0 overruns, mean 15.3 µs, drained cleanly; WASM clippy pass).
+  - `tests/chat.rs` (guests): door-set sender, masking, oversized/empty/`system`/guest-`public` refusals, 200 CJK and emoji characters, spoofed sender closes the connection, flood limit, ignore/unignore and unknown-handle refusals, party and lobby team chat, match/team/spectator isolation, a mid-match lobby joiner never reaching players, 2v2 team chat. `tests/identity.rs`: whispers, stranger and guest refusals, admin mute and unmute, a block silencing chat live, a spectating friend's whisper refused, a second tab's public chat and whispers never reaching live players. Spectator confinement, spectator whispers, the public filter and the lobby filter each mutation-checked.
+
+## 2026-11-25 — Accounts on WorkOS and PostgreSQL
+- **Branch / Commit:** `auto/accounts-workos`
+- **Base / PR:** `auto/chat-server` (stacked on PR #98)
+- **Lane:** A (machine-verified; requested by the user after the Lane A queue emptied)
+- **Task:** revise [ADR 0055](../docs/decisions/0055-accounts-oauth-login-in-arena-door.md): login without a social account, PostgreSQL in its own database
+- **Changes:**
+  - `identity/workos.rs` replaces the three direct OAuth providers:
+    - AuthKit authorize link with state and PKCE (and `?sign_up`);
+    - code exchange at `/user_management/authenticate`;
+    - logout link from the access token's `sid`;
+    - user deletion.
+  - Routes are now `/api/auth/login` and `/api/auth/callback`. `me` reports `login` instead of `providers`.
+  - `identity/store.rs` and `friends.rs` moved from SQLite to PostgreSQL:
+    - `tokio-postgres` with a `deadpool-postgres` pool, and numbered migrations under an advisory lock;
+    - friends and blocks are deleted with their account (`ON DELETE CASCADE`);
+    - picking a handle takes a per-name advisory lock, and friend actions lock both accounts' rows;
+    - `rusqlite` is gone, and blocking store calls became plain `await`s.
+  - The session cookie (v2) carries the WorkOS session id. Logout answers `{"logout_url"}`, and deletion removes the WorkOS user first (502 and no change if WorkOS cannot be reached).
+  - Compose:
+    - new `identity-db` container (PostgreSQL 18.7, private network, 256 MB, health check) that the door waits for;
+    - `ARENA_DATABASE_URL`, `ARENA_WORKOS_*` and `ARENA_IDENTITY_DB_PASSWORD`;
+    - admin maps move to `--maps-dir`.
+  - `check.sh` starts a throwaway PostgreSQL when `ARENA_TEST_DATABASE_URL` is unset, and CI gains a PostgreSQL service.
+  - Docs: ADR 0055 rewritten, research addendum (WorkOS pricing and API, read 2026-11-25), PROTOCOL, DEPLOYMENT (setup, `pg_dump` backups), ARCHITECTURE and AGENTS.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/chat-server` with `ARENA_TEST_DATABASE_URL` unset (`smoke=true web_build=false wasm=true`): pass. `check.sh` started and removed its own `postgres:18.7-alpine`, and no test reported skipping. Results:
+    - 482 Rust tests, 1 pre-existing ignored;
+    - 58 Python, 50 Node, 43 Vitest files / 338 tests;
+    - headless pass;
+    - server smoke: 495 ticks, 0 overruns, mean 19.4 µs, drained cleanly;
+    - WASM clippy pass.
+  - Account tests against PostgreSQL: 25 identity unit tests (including 8 players racing for one handle) and 7 end-to-end tests with a fake WorkOS, which cover:
+    - PKCE and the API key at code exchange;
+    - forged, unstarted and WorkOS-refused callbacks;
+    - logout links carrying the session id;
+    - deletion at WorkOS first, with a 502 and no change when WorkOS refuses;
+    - restarts sharing one database.
+  - Live Docker Compose check (rebuilt image; `identity-db`, `server`, `door`, `caddy`; placeholder WorkOS ids):
+    - `identity-db` healthy, and the door logged "accounts are on (WorkOS login, PostgreSQL store)";
+    - `GET https://localhost:8443/api/auth/me` answered `{"account":null,"admin":false,"login":true,...}`;
+    - `/api/auth/login` answered 303 to `api.workos.com/user_management/authorize` with `provider=authkit`, the callback `https://localhost:8443/api/auth/callback` and S256 PKCE, and set a `__Host-arena_oauth` cookie (`Max-Age=600; HttpOnly; Secure; SameSite=Lax`);
+    - `psql` listed `accounts`, `blocks`, `friends` and `schema_migrations` (version 1).
+
+    Then `docker compose down`.
+  - Real WorkOS login, reported by the user on 2026-11-25. They set up a WorkOS staging application, put its client id and API key in `deploy/.env`, and logged in through the local Compose stack at `https://localhost:8443`. Before that, the door's login link got a 302 from WorkOS to the application's hosted AuthKit page. The user approved the slice. A Grafana login (anonymous access is admin, on loopback only) was discussed and deferred.
+

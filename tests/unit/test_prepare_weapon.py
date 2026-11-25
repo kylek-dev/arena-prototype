@@ -19,6 +19,28 @@ def document(data):
 
 
 class WeaponExportTests(unittest.TestCase):
+    def test_finished_weapons_ship_as_built_and_bad_folders_fail(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            source, target = Path(tmp) / 'weapons', Path(tmp) / 'public'
+            (source / 'great').mkdir(parents=True)
+            (source / 'great' / 'great.glb').write_bytes(b'glTF-bytes')
+            self.assertEqual(prepare.finished_weapons(source, target), ['great'])
+            self.assertEqual((target / 'great.glb').read_bytes(), b'glTF-bytes')
+            (source / 'empty').mkdir()
+            with self.assertRaisesRegex(ValueError, 'empty.glb is missing'):
+                prepare.finished_weapons(source, target)
+            (source / 'empty' / 'empty.glb').write_bytes(b'not a glb')
+            with self.assertRaisesRegex(ValueError, 'not a GLB'):
+                prepare.finished_weapons(source, target)
+
+    def test_the_tracked_greatsword_is_a_finished_weapon(self):
+        glb = ROOT / 'assets/weapons/gladiator-greatsword/gladiator-greatsword.glb'
+        doc, _ = document(glb.read_bytes())
+        self.assertEqual([n['name'] for n in doc['nodes']], ['Greatsword'])
+        self.assertNotIn('skins', doc)                    # rigid: the client parents it under the hand socket
+        self.assertLessEqual(sum(doc['accessors'][p['indices']]['count'] for m in doc['meshes'] for p in m['primitives']) // 3, 5000)
+
     def test_staff_keeps_only_complete_weapon_hierarchy_and_preserves_source(self):
         path = ROOT / 'assets/Aetherthorn.glb'
         source = path.read_bytes()

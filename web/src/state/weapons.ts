@@ -25,7 +25,15 @@ function initialWeapons() {
 }
 export const weapons = createStore(initialWeapons());
 export const weaponsSaveError = createStore("");
-export const readWeapons = () => weaponValues(weapons.get());
+/**
+ * Whether the local player's weapon rests on the back (presentation only, not
+ * saved and not part of the combat input). Fighters start with it sheathed; the
+ * keybind toggles it and using an ability draws it.
+ */
+export const sheathed = createStore(true);
+export const toggleSheath = () => sheathed.set(!sheathed.get());
+export const drawWeapon = () => sheathed.set(false);
+export const readWeapons = () => [...weaponValues(weapons.get()), sheathed.get() ? 1 : 0];
 export function updateWeapons(patch: Partial<Pick<WeaponPreferences, "weapon" | "color">>) {
   const next = parseWeapons({ ...weapons.get(), ...patch });
   if (!next) return;

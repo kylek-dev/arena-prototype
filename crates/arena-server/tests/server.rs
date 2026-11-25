@@ -274,6 +274,9 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 team_size: 1,
                 expires: 1,
                 settings: None,
+                account: None,
+                handle: None,
+                admin: false,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -286,6 +289,9 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 team_size: 1,
                 expires: far_future,
                 settings: None,
+                account: None,
+                handle: None,
+                admin: false,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -298,6 +304,9 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 team_size: 4,
                 expires: far_future,
                 settings: None,
+                account: None,
+                handle: None,
+                admin: false,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -315,6 +324,9 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                     round_seconds: 600,
                     allow_spectators: true,
                 }),
+                account: None,
+                handle: None,
+                admin: false,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -332,6 +344,9 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                     round_seconds: 123,
                     allow_spectators: true,
                 }),
+                account: None,
+                handle: None,
+                admin: false,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -349,6 +364,9 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                     round_seconds: 600,
                     allow_spectators: false,
                 }),
+                account: None,
+                handle: None,
+                admin: false,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -361,6 +379,9 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 team_size: 1,
                 expires: far_future,
                 settings: None,
+                account: None,
+                handle: None,
+                admin: false,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -489,6 +510,20 @@ async fn operations_endpoints_and_development_guards() {
         "{metrics}"
     );
     assert!(metrics.contains("arena_matches_active 1\n"), "{metrics}");
+    assert!(metrics.contains("arena_draining 0\n"), "{metrics}");
+    assert!(metrics.contains("\ntokio_workers "), "{metrics}");
+    assert!(metrics.contains("\ntokio_alive_tasks "), "{metrics}");
+    assert!(
+        metrics.contains("# TYPE arena_tick_duration_microseconds histogram\n"),
+        "{metrics}"
+    );
+    if cfg!(target_os = "linux") {
+        assert!(
+            metrics.contains("\nprocess_resident_memory_bytes "),
+            "{metrics}"
+        );
+        assert!(metrics.contains("\nprocess_open_fds "), "{metrics}");
+    }
     running.shut_down(Duration::ZERO).await.unwrap();
 
     // Without --dev there is no ticket issuing endpoint.
@@ -576,6 +611,8 @@ async fn draining_keeps_running_matches_until_stopped() {
     assert_eq!(running.active_matches(), 1);
     // No new matches and not ready, but the running match plays on ...
     assert_eq!(http(addr, "GET", "/readyz").await.0, 503);
+    let (_, metrics) = http(addr, "GET", "/metrics").await;
+    assert!(metrics.contains("arena_draining 1\n"), "{metrics}");
     assert_eq!(http(addr, "POST", "/dev/match").await.0, 503);
     let before = first
         .snapshot_until(|snapshot| snapshot.tick > 0)
@@ -1326,6 +1363,7 @@ async fn server_validates_locks_and_relays_player_appearances_across_reconnects(
         body: "female".into(),
         skin_tone: "natural".into(),
         hair_color: "auburn".into(),
+        facial_hair_color: "auburn".into(),
         eyes: "brown".into(),
         build: 0,
         groups: vec![
@@ -1339,6 +1377,7 @@ async fn server_validates_locks_and_relays_player_appearances_across_reconnects(
         body: "male".into(),
         skin_tone: "fair".into(),
         hair_color: "platinum".into(),
+        facial_hair_color: "platinum".into(),
         eyes: "blue".into(),
         build: 50,
         groups: vec![("hair".into(), "Race_Hair".into())],
@@ -1349,6 +1388,7 @@ async fn server_validates_locks_and_relays_player_appearances_across_reconnects(
         body: "male".into(),
         skin_tone: "olive".into(),
         hair_color: "black".into(),
+        facial_hair_color: "black".into(),
         eyes: "amber".into(),
         build: 100,
         groups: Vec::new(),
@@ -1363,7 +1403,7 @@ async fn server_validates_locks_and_relays_player_appearances_across_reconnects(
         .send(&ClientMessage::Hello {
             protocol: PROTOCOL_VERSION,
             ticket: from_hex(&created.tickets[0]).unwrap(),
-            appearance: Some(bad_look),
+            appearance: Some(Box::new(bad_look)),
         })
         .await;
     assert_eq!(bad_client.error().await, ErrorCode::Malformed);
@@ -1373,7 +1413,7 @@ async fn server_validates_locks_and_relays_player_appearances_across_reconnects(
     a.send(&ClientMessage::Hello {
         protocol: PROTOCOL_VERSION,
         ticket: from_hex(&created.tickets[0]).unwrap(),
-        appearance: Some(look_a.clone()),
+        appearance: Some(Box::new(look_a.clone())),
     })
     .await;
     assert!(matches!(a.next().await, Some(ServerMessage::Welcome(_))));
@@ -1388,7 +1428,7 @@ async fn server_validates_locks_and_relays_player_appearances_across_reconnects(
     b.send(&ClientMessage::Hello {
         protocol: PROTOCOL_VERSION,
         ticket: from_hex(&created.tickets[1]).unwrap(),
-        appearance: Some(look_b.clone()),
+        appearance: Some(Box::new(look_b.clone())),
     })
     .await;
     assert!(matches!(b.next().await, Some(ServerMessage::Welcome(_))));
@@ -1415,7 +1455,7 @@ async fn server_validates_locks_and_relays_player_appearances_across_reconnects(
     a2.send(&ClientMessage::Hello {
         protocol: PROTOCOL_VERSION,
         ticket: from_hex(&created.tickets[0]).unwrap(),
-        appearance: Some(swapped),
+        appearance: Some(Box::new(swapped)),
     })
     .await;
     assert!(matches!(a2.next().await, Some(ServerMessage::Welcome(_))));
@@ -1555,5 +1595,99 @@ async fn live_ws_spectators_cannot_act_trail_by_delay_respect_cap_and_receive_no
     spec2.leave().await;
     a.leave().await;
     b.leave().await;
+    running.shut_down(Duration::ZERO).await.unwrap();
+}
+
+/// Reads until a `Handles` relay arrives.
+async fn next_handles(client: &mut Client) -> Vec<Option<arena_protocol::Handle>> {
+    loop {
+        match client.next().await {
+            Some(ServerMessage::Handles(handles)) => return handles,
+            Some(_) => {}
+            None => panic!("closed before a Handles relay"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn seats_show_the_handles_their_tickets_name() {
+    use arena_protocol::Handle;
+    use arena_server::ticket::{Holder, issue_seats, to_hex};
+    let mut config = config(false);
+    config.origins = arena_server::ingress::Origins::Any;
+    let key = config.key.clone();
+    let running = start(config).await.unwrap();
+    let addr = running.addr;
+    let rook = Handle::new("Rook", 42);
+    let ash = Handle::new("Ash", 7);
+    let watcher = Holder {
+        account: None,
+        handle: Handle::new("Watcher", 1),
+        admin: false,
+    };
+    let created = issue_seats(
+        &key,
+        1,
+        None,
+        &[
+            Holder {
+                account: Some(5),
+                handle: rook,
+                admin: true,
+            },
+            Holder {
+                account: None,
+                handle: ash,
+                admin: false,
+            },
+        ],
+        &[watcher],
+        u64::MAX,
+    )
+    .unwrap();
+    let (mut first, _) = Client::join(addr, &created.tickets[0]).await;
+    assert_eq!(next_handles(&mut first).await, [rook, None]);
+    // Seat 0 is an admin: its tag follows the handles.
+    let admin = arena_protocol::Tags { admin: true };
+    assert_eq!(
+        first.next().await,
+        Some(ServerMessage::Tags(vec![
+            admin,
+            arena_protocol::Tags::default()
+        ]))
+    );
+    // The second seat's arrival is relayed to everyone already there.
+    let (mut second, _) = Client::join(addr, &created.tickets[1]).await;
+    assert_eq!(next_handles(&mut second).await, [rook, ash]);
+    let tags = vec![admin, arena_protocol::Tags::default()];
+    assert_eq!(second.next().await, Some(ServerMessage::Tags(tags.clone())));
+    assert_eq!(next_handles(&mut first).await, [rook, ash]);
+    // Spectators see the seats' handles; their own is never a seat's.
+    let (mut spectator, _) = Client::join(addr, &created.spectator_tickets[0]).await;
+    assert_eq!(next_handles(&mut spectator).await, [rook, ash]);
+    assert_eq!(spectator.next().await, Some(ServerMessage::Tags(tags)));
+    // A reconnect keeps the seat's handle even with a ticket naming nobody
+    // for that seat (the handle is locked by the first one that does).
+    let other = issue_seats(&key, 1, None, &[], &[], u64::MAX).unwrap();
+    let same_match_unnamed = {
+        let mut claims = key
+            .verify(
+                &arena_server::ticket::from_hex(&other.tickets[0]).unwrap(),
+                0,
+            )
+            .unwrap();
+        let original = key
+            .verify(
+                &arena_server::ticket::from_hex(&created.tickets[0]).unwrap(),
+                0,
+            )
+            .unwrap();
+        claims.match_id = original.match_id;
+        claims.team_size = original.team_size;
+        to_hex(&key.issue(&claims))
+    };
+    first.leave().await;
+    let (mut back, _) = Client::join(addr, &same_match_unnamed).await;
+    assert_eq!(next_handles(&mut back).await, [rook, ash]);
     running.shut_down(Duration::ZERO).await.unwrap();
 }

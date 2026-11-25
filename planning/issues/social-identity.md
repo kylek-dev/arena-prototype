@@ -1,5 +1,21 @@
 Give players a persistent identity outside the match: accounts, a chosen `Name#1234` handle, friends and invites, and an admin role. This is a social layer that sits beside the match server, not inside the simulation or match protocol.
 
+**Status (2026-11-25):** step 1 is done. See the
+[research note](../../docs/research/accounts-2026-11-25.md) and the proposed
+[ADR 0055](../../docs/decisions/0055-accounts-oauth-login-in-arena-door.md):
+login through WorkOS AuthKit (email and password, emailed codes, Google or
+GitHub, so no social account is needed), handled by `arena-door`; no
+passwords or email of our own; a minimal PostgreSQL store in its own
+database; guests stay. Step 2 (the identity service, with the
+account id in tickets) is implemented on `auto/identity-service`. The login
+UI is queued as a Lane B follow-up. Step 3 (handles, guests' temporary
+`Guest#NNNN`, the protocol relay) is implemented on `auto/display-names`;
+showing them in the HUD is queued as Lane B. Step 4 (friends, presence and
+invites) is implemented on `auto/friends`, with its UI queued as Lane B. Step 5 (admin role from
+configuration, the tag relay, and the first server-gated tools: map storage
+for the editor and clearing a handle) is implemented on `auto/admin-role`,
+with its UI queued as Lane B.
+
 Acceptance criteria, in shipping order (each step is its own PR):
 
 - **1. Accounts research and decision (do first):**

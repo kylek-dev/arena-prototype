@@ -1,6 +1,6 @@
 //! `arena-door --match-server URL --page URL [--bind ADDR] [--dev]
 //!  [--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]...
-//!  [--ticket-minutes N]`
+//!  [--ticket-minutes N] [--maps-dir PATH]`
 //!
 //! The front door (ADR 0045): creates matches for remote players and hands
 //! out one join link per seat. `--match-server` is the match server's
@@ -13,27 +13,50 @@
 //! the links carry credentials. Match creation is allowed from the game
 //! page's origin unless `--allow-origin` or `--any-origin` says otherwise.
 //! `--dev` allows plain URLs and any origin, and only binds to loopback.
+//!
+//! Accounts (ADR 0055) are on when `ARENA_SESSION_KEY` (hex, at least 32
+//! bytes, not the ticket key) is set. Players then log in through WorkOS
+//! AuthKit (`ARENA_WORKOS_CLIENT_ID`, `ARENA_WORKOS_API_KEY`), and accounts
+//! live in the PostgreSQL database `ARENA_DATABASE_URL`, kept for accounts
+//! alone. `ARENA_ADMIN_ACCOUNTS` lists admin account ids. Login cookies act
+//! only for named pages, never with `--any-origin`. Admins' saved maps go
+//! to `--maps-dir` (in memory without it).
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use arena_server::door::{DoorConfig, start};
+use arena_server::identity::IdentityConfig;
 use arena_server::ingress::{Cidr, Origins};
 use arena_server::ticket::TicketKey;
 
 const USAGE: &str = "usage: arena-door --match-server URL --page URL [--bind ADDR] [--dev] \
-[--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]... [--ticket-minutes N]";
+[--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]... [--ticket-minutes N] [--maps-dir PATH]";
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    match run().await {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(message) => {
-            eprintln!("arena-door: {message}");
+fn main() -> ExitCode {
+    // Telemetry starts before and stops after the runtime: the OTLP HTTP
+    // exporter blocks, which an async context must not do.
+    let telemetry = arena_server::logging::init("arena-door");
+    let code = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => {
+            let result = runtime.block_on(run());
+            drop(runtime);
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(message) => {
+                    tracing::error!(reason = %message, "arena-door failed");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Err(error) => {
+            tracing::error!(reason = %error, "arena-door could not start its runtime");
             ExitCode::FAILURE
         }
-    }
+    };
+    telemetry.shutdown();
+    code
 }
 
 /// The scheme and authority of a URL: `https://a.example:8443/x` gives
@@ -85,6 +108,7 @@ async fn run() -> Result<(), String> {
     let mut any_origin = false;
     let mut trusted_proxies = Vec::new();
     let mut ticket_minutes = None;
+    let mut maps = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| USAGE.to_owned());
@@ -119,6 +143,7 @@ async fn run() -> Result<(), String> {
                         ))?,
                 );
             }
+            "--maps-dir" => maps = Some(std::path::PathBuf::from(value()?)),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
@@ -153,13 +178,39 @@ async fn run() -> Result<(), String> {
     if let Some(minutes) = ticket_minutes {
         config.ticket_ttl = Duration::from_secs(minutes * 60);
     }
+    config.maps = maps;
+    config.identity = IdentityConfig::from_env()?;
+    if std::env::var("ARENA_SESSION_KEY")
+        .ok()
+        .map(|k| k.trim().to_ascii_lowercase())
+        == std::env::var("ARENA_TICKET_KEY")
+            .ok()
+            .map(|k| k.trim().to_ascii_lowercase())
+        && config.identity.is_some()
+    {
+        return Err("ARENA_SESSION_KEY must differ from ARENA_TICKET_KEY".into());
+    }
+    match &config.identity {
+        None => tracing::info!("accounts are off (no ARENA_SESSION_KEY): guests only"),
+        Some(identity) => {
+            if matches!(config.origins, Origins::Any) {
+                tracing::warn!("accounts are on, but login cookies never act with --any-origin");
+            }
+            tracing::info!(
+                workos_client = %identity.workos.client_id,
+                "accounts are on (WorkOS login, PostgreSQL store)"
+            );
+        }
+    }
     let running = start(config).await.map_err(|error| error.to_string())?;
-    eprintln!(
-        "arena-door: listening on http://{}; lobby at /lobby/",
+    tracing::info!(
+        addr = %running.addr,
+        "arena-door listening on http://{}; lobby at /lobby/",
         running.addr
     );
     stop_signal().await;
-    // Stateless: nothing to drain beyond requests already being answered.
+    // Nothing to drain beyond requests already being answered: accounts
+    // live in PostgreSQL.
     running.stop().await.map_err(|error| error.to_string())
 }
 

@@ -22,6 +22,7 @@ fn sample_appearance() -> WireAppearance {
         body: "female".into(),
         skin_tone: "natural".into(),
         hair_color: "auburn".into(),
+        facial_hair_color: "auburn".into(),
         eyes: "brown".into(),
         build: 30,
         groups: vec![
@@ -42,7 +43,7 @@ fn client_samples() -> Vec<ClientMessage> {
         ClientMessage::Hello {
             protocol: PROTOCOL_VERSION,
             ticket: vec![7; 64],
-            appearance: Some(sample_appearance()),
+            appearance: Some(Box::new(sample_appearance())),
         },
         ClientMessage::Hello {
             protocol: 0,
@@ -169,6 +170,9 @@ fn server_samples() -> Vec<ServerMessage> {
         ServerMessage::Error(ErrorCode::ServerShutdown),
         ServerMessage::Appearances(vec![Some(sample_appearance()), None]),
         ServerMessage::Appearances(vec![Some(sample_appearance()); MAX_FIGHTERS]),
+        ServerMessage::Handles(vec![Handle::new("Rook7", 42), None]),
+        ServerMessage::Handles(vec![Handle::new("abcdefghijklmnop", 9999); MAX_FIGHTERS]),
+        ServerMessage::Tags(vec![Tags { admin: true }, Tags::default()]),
     ]
 }
 
@@ -203,21 +207,22 @@ fn ordinary_traffic_is_small() {
 #[test]
 fn the_wire_layout_is_pinned() {
     // Golden frames: changing them requires a PROTOCOL_VERSION bump.
-    assert_eq!(PROTOCOL_VERSION, 7);
+    assert_eq!(PROTOCOL_VERSION, 10);
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 7,
+            protocol: 10,
             ticket: vec![0xAB, 0xCD],
             appearance: None,
         }
         .encode(),
-        [0, 7, 2, 0xAB, 0xCD, 0]
+        [0, 10, 2, 0xAB, 0xCD, 0]
     );
     let compact = WireAppearance {
         ancestry: "elf".into(),
         body: "male".into(),
         skin_tone: "fair".into(),
         hair_color: "black".into(),
+        facial_hair_color: "grey".into(),
         eyes: "blue".into(),
         build: 50,
         groups: vec![("hair".into(), "Hair_Long".into())],
@@ -225,17 +230,18 @@ fn the_wire_layout_is_pinned() {
     };
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 7,
+            protocol: 10,
             ticket: vec![0xAB, 0xCD],
-            appearance: Some(compact),
+            appearance: Some(Box::new(compact)),
         }
         .encode(),
         [
-            0, 7, 2, 0xAB, 0xCD, 1, // Hello variant 0, protocol 7, ticket, Some
+            0, 10, 2, 0xAB, 0xCD, 1, // Hello variant 0, protocol 10, ticket, Some
             3, b'e', b'l', b'f', // ancestry
             4, b'm', b'a', b'l', b'e', // body
             4, b'f', b'a', b'i', b'r', // skin_tone
             5, b'b', b'l', b'a', b'c', b'k', // hair_color
+            4, b'g', b'r', b'e', b'y', // facial_hair_color
             4, b'b', b'l', b'u', b'e', // eyes
             50,   // build
             1, 4, b'h', b'a', b'i', b'r', 9, b'H', b'a', b'i', b'r', b'_', b'L', b'o', b'n',
@@ -402,6 +408,10 @@ fn malformed_frames_are_rejected_not_trusted() {
             ..sample_appearance()
         },
         WireAppearance {
+            facial_hair_color: "no.dots".into(),
+            ..sample_appearance()
+        },
+        WireAppearance {
             eyes: "has space".into(),
             ..sample_appearance()
         },
@@ -434,7 +444,7 @@ fn malformed_frames_are_rejected_not_trusted() {
         let hello = ClientMessage::Hello {
             protocol: PROTOCOL_VERSION,
             ticket: vec![1, 2],
-            appearance: Some(bad.clone()),
+            appearance: Some(Box::new(bad.clone())),
         };
         assert_eq!(
             ClientMessage::decode(&hello.encode()),
@@ -458,12 +468,12 @@ fn malformed_frames_are_rejected_not_trusted() {
     let huge_hello = ClientMessage::Hello {
         protocol: PROTOCOL_VERSION,
         ticket: vec![0; MAX_TICKET],
-        appearance: Some(WireAppearance {
+        appearance: Some(Box::new(WireAppearance {
             groups: (0..MAX_APPEARANCE_GROUPS)
                 .map(|i| (format!("g{i:0>30}"), "v".repeat(MAX_APPEARANCE_ID)))
                 .collect(),
             ..sample_appearance()
-        }),
+        })),
     };
     assert_eq!(
         ClientMessage::decode(&huge_hello.encode()),
@@ -487,7 +497,7 @@ fn malformed_frames_are_rejected_not_trusted() {
         let hello = ClientMessage::Hello {
             protocol: PROTOCOL_VERSION,
             ticket: vec![1, 2],
-            appearance: Some(bad_pair),
+            appearance: Some(Box::new(bad_pair)),
         };
         assert_eq!(
             ClientMessage::decode(&hello.encode()),
@@ -1420,7 +1430,7 @@ fn fuzz_client_and_server_frames_preserve_all_wire_invariants() {
                     appearance,
                 } => {
                     assert!(ticket.len() <= MAX_TICKET);
-                    assert!(appearance.as_ref().is_none_or(WireAppearance::is_valid));
+                    assert!(appearance.as_deref().is_none_or(WireAppearance::is_valid));
                     assert_eq!(peeked, Some(*protocol));
                 }
                 _ => assert_eq!(peeked, None),
@@ -1511,10 +1521,87 @@ fn fuzz_client_and_server_frames_preserve_all_wire_invariants() {
                         assert!(look.is_valid());
                     }
                 }
+                ServerMessage::Tags(tags) => {
+                    let count = tags.len();
+                    assert!((2..=MAX_FIGHTERS).contains(&count) && count.is_multiple_of(2));
+                }
+                ServerMessage::Handles(handles) => {
+                    let count = handles.len();
+                    assert!((2..=MAX_FIGHTERS).contains(&count) && count.is_multiple_of(2));
+                    for handle in handles.iter().flatten() {
+                        assert!(handle.is_valid(), "{:?}", handle.name());
+                    }
+                }
             }
             let reencoded = message.encode();
             assert_eq!(ServerMessage::decode(&reencoded), Ok(message.clone()));
             assert!(serde_json::from_str::<serde_json::Value>(&message.to_debug_json()).is_ok());
         }
+    }
+}
+
+#[test]
+fn handles_are_bounded_server_set_names_and_numbers() {
+    let handle = Handle::new("Rook7", 42).unwrap();
+    assert_eq!(handle.to_string(), "Rook7#0042");
+    assert_eq!(handle.name(), "Rook7");
+    for (name, number) in [
+        ("ab", 1),                // too short
+        ("abcdefghijklmnopq", 1), // 17: too long
+        ("7rook", 1),             // starts with a digit
+        ("ro ok", 1),             // space
+        ("rök", 1),               // not ASCII
+        ("rook", 0),              // number 0
+        ("rook", MAX_HANDLE_NUMBER + 1),
+    ] {
+        assert!(Handle::new(name, number).is_none(), "{name:?} #{number}");
+    }
+    assert!(
+        Handle::new("abcdefghijklmnop", MAX_HANDLE_NUMBER).is_some(),
+        "16 and 9999 fit"
+    );
+    // The wire layout: Handles is variant 5, then the seats.
+    let message = ServerMessage::Handles(vec![Some(handle), None]);
+    let mut expected = vec![5, 2, 1];
+    expected.extend_from_slice(b"Rook7");
+    expected.extend_from_slice(&[0; 11]);
+    expected.extend_from_slice(&[42, 0]);
+    assert_eq!(message.encode(), expected);
+    assert_eq!(ServerMessage::decode(&message.encode()), Ok(message));
+}
+
+#[test]
+fn hostile_handles_are_refused_at_decode() {
+    let encoded = |handles: Vec<Option<Handle>>| ServerMessage::Handles(handles).encode();
+    let rook = Handle::new("Rook", 1).unwrap();
+    // Seat counts outside 2..=6 or odd.
+    assert!(ServerMessage::decode(&encoded(vec![Some(rook)])).is_err());
+    assert!(ServerMessage::decode(&encoded(vec![None; 8])).is_err());
+    assert!(ServerMessage::decode(&encoded(vec![None; 3])).is_err());
+    // Bytes that no valid Handle encodes: garbage after the padding starts,
+    // a space in the name, number 0.
+    let mut frame = encoded(vec![Some(rook), None]);
+    frame[3 + 5] = b'x'; // a byte after the zero that ends "Rook"
+    let mut frame2 = encoded(vec![Some(rook), None]);
+    frame2[3 + 1] = b' ';
+    let mut frame3 = encoded(vec![Some(rook), None]);
+    frame3[3 + 16] = 0; // number 1 -> 0
+    for bad in [frame, frame2, frame3] {
+        assert!(ServerMessage::decode(&bad).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn tags_are_one_flag_byte_per_seat_for_two_to_six_seats() {
+    let message = ServerMessage::Tags(vec![Tags { admin: true }, Tags::default()]);
+    assert_eq!(message.encode(), [6, 2, 1, 0]);
+    assert_eq!(ServerMessage::decode(&message.encode()), Ok(message));
+    for bad in [
+        vec![6, 1, 1],
+        vec![6, 3, 0, 0, 0],
+        vec![6, 8, 0, 0, 0, 0, 0, 0, 0, 0],
+        vec![6, 2, 2, 0],
+    ] {
+        assert!(ServerMessage::decode(&bad).is_err(), "{bad:?}");
     }
 }

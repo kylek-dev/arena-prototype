@@ -33,7 +33,7 @@ export function StartScreen() {
         <h2>Your fighter</h2>
         <p className="customizer-summary">{describe(kit, look)}</p>
         <div className="start-actions">
-          <Button size="3" variant="soft" color="gray" onClick={() => customizerVisible.set(true)}>
+          <Button size="3" variant="soft" onClick={() => customizerVisible.set(true)}>
             Customize character
           </Button>
           <div className="start-setup">

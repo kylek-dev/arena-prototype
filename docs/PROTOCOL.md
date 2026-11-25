@@ -57,7 +57,7 @@ yet.
 
 | Message | Fields | Notes |
 | --- | --- | --- |
-| `Hello` | `protocol: u16`, `ticket: bytes (≤ 512)`, `appearance: Option<WireAppearance>` | Must be the first message, within 5 s of connecting. Stays variant 0 with `protocol` first in every version; `peek_hello_protocol` reads it from any version so the server can answer `VersionMismatch`. `appearance` carries bounded ASCII identifiers (`ancestry`, `body`, `skin_tone`, `hair_color`, `eyes`, `build: 0..=100`, `≤ 10` unique `groups`, `≤ 8` unique `variants`; every identifier `1..=32` `[A-Za-z0-9_-]`, never free-form paths) and is locked per seat on first join. |
+| `Hello` | `protocol: u16`, `ticket: bytes (≤ 512)`, `appearance: Option<WireAppearance>` | Must be the first message, within 5 s of connecting. Stays variant 0 with `protocol` first in every version; `peek_hello_protocol` reads it from any version so the server can answer `VersionMismatch`. `appearance` carries bounded ASCII identifiers (`ancestry`, `body`, `skin_tone`, `hair_color`, `facial_hair_color`, `eyes`, `build: 0..=100`, `≤ 24` unique `groups`, `≤ 8` unique `variants`; every identifier `1..=32` `[A-Za-z0-9_-]`, never free-form paths) and is locked per seat on first join. |
 | `Input` | `seq: u32`, `movement: [i16; 2]`, `facing: u16`, `jump: bool`, `action: WireAction`, `view_tick: u64` | `seq` increases by 1 per message; gaps are allowed, repeats and regressions are dropped. Axes must lie in ±1000; the rules reject anything else. `action` is `None`, `Cast { spell, target }` (`Pulse`, `RiftBolt`, `Quell`, `Mend`), or `CancelCast`. `view_tick` is the monotonic server tick of remote fighters rendered on the client (`0` = unspecified / present tick only); the server never trusts coordinates and clamps `view_tick` monotonically to at most `MAX_LAG_COMP_TICKS` (6 ticks = 200 ms) behind the current tick for cast-start geometry validation ([ADR 0049](decisions/0049-bounded-targeting-lag-comp-and-adaptive-interp.md)). |
 | `Ping` | `nonce: u32` | Echoed in `Pong` for RTT measurement. |
 
@@ -70,6 +70,8 @@ yet.
 | `Pong` | `nonce: u32` | |
 | `Error` | `code` | Sent before the server closes: `VersionMismatch`, `BadTicket`, `MatchFull`, `MatchOver`, `RateLimited`, `Malformed`, `HelloTimeout`, `ServerShutdown`, `Replaced` (a newer connection with the same ticket took the seat). Stays variant 3 (`[3, code]`). |
 | `Appearances` | `Vec<Option<WireAppearance>>` (`2..=6`, even) | Sent on join (when any seat has a locked look) and broadcast whenever a seat locks a new look on first join, in server actor order. Never carries paths; clients validate against their local kit catalog and fall back to defaults. |
+| `Handles` | `Vec<Option<Handle>>` (`2..=6`, even) | Each seat's `Name#1234` from the first ticket for that seat that names one, in server actor order; `None` for a seat not joined yet or joined by a lobby link. Guest handles are not unique: two guests may share one. Sent on join (when any seat has one) to the new connection and spectators, and broadcast when a seat's handle is first locked. A `Handle` is 16 name bytes (3–16 ASCII letters and digits starting with a letter, zero-padded) and a `u16` number `1..=9999`; anything else fails decoding. Clients never name themselves. |
+| `Tags` | `Vec<Tags>` (`2..=6`, even; `Tags { admin: bool }`) | Each seat's tags from the same ticket as its handle, in server actor order. Sent right after `Handles` whenever any seat has a tag. The door sets `admin` from deploy configuration. |
 
 Snapshots go out every tick to start with. Live `PROTOCOL_VERSION = 3` combat
 measurements ([netcode-measurements-2026-11-21.md](research/netcode-measurements-2026-11-21.md))
@@ -110,7 +112,7 @@ connection, which can discard the `Error` before the client reads it.
 
 ## Versioning
 
-`PROTOCOL_VERSION` (currently 7: adds `Welcome.spectator` watch-only handshake for live delayed spectating; [ADR 0050](decisions/0050-spectating-and-anti-ghosting-delay.md)) changes with any
+`PROTOCOL_VERSION` (currently 10: `ServerMessage::Tags`; 9 added `ServerMessage::Handles`; 8 gave `WireAppearance` `facial_hair_color` and 24 part groups for the armour slots, [ADR 0053](decisions/0053-finished-character-kits.md)) changes with any
 incompatible layout change; the golden-frame test fails until it is bumped
 deliberately.
 `RULES_VERSION` (currently 6: timed casts charge their resource and health costs
@@ -121,7 +123,12 @@ could alter a replayed outcome. `Welcome.map` identifies the layout.
 ## Join tickets
 
 A ticket is the postcard encoding of
-`{match_id, player, role, team_size, expires, settings}` (`role` is `Player { seat }` or `Spectator`, so player and spectator credentials are never interchangeable; `expires` in Unix
+`{match_id, player, role, team_size, expires, settings, account, handle, admin}`
+(`account` is the logged-in player's account id, or none for guests and lobby
+links; `handle` is the `Name#1234` to show: the account's own, or a
+temporary `Guest#NNNN` from the queue, and none for lobby links; `admin`
+marks an account holding the admin role and is never set without one;
+`role` is `Player { seat }` or `Spectator`, so player and spectator credentials are never interchangeable; `expires` in Unix
 seconds; optional versioned `MatchSettings { version: 1, map, round_seconds, allow_spectators }`
 for private custom matches) followed by a 32-byte HMAC-SHA256 tag over those
 bytes, under a key shared by whatever issues tickets and the match servers
@@ -140,7 +147,7 @@ start nothing. A match that has ended stays ended while its tickets are valid
 (`MatchOver`), as long as the process runs. A draining server answers the
 first ticket of a new match with `ServerShutdown`.
 
-There are no accounts. The front door (`arena-door`, `POST /api/matches`
+Accounts are optional (see [Accounts](#accounts)). The front door (`arena-door`, `POST /api/matches`
 and the `/lobby/` page) issues one join link per seat, with the ticket in
 the URL fragment. With `--dev`, `POST /dev/match?team_size=1|2|3&spectators=0..N` on the
 match server returns the match id, one hex ticket per seat, and optional watch-only `spectator_tickets`. It refuses
@@ -168,6 +175,10 @@ the connection with `error`.
 | `{"type":"leave_party"}` | Back on one's own; the next member leads. |
 | `{"type":"queue","mode":"1v1"\|"2v2"\|"3v3"}` | Leader only. 1v1 takes one player; 2v2 and 3v3 take players alone or parties up to the team size ([ADR 0047](decisions/0047-accepting-matches-and-queue-status.md)). |
 | `{"type":"cancel"}` | Any member stops the party's search. |
+| `{"type":"chat","channel":"public"\|"match"\|"team"\|"spectator","text"}` | Chat (see [Chat](#chat)). Refused `rate_limited`, `too_long`, `empty`, `no_such_channel`, `log_in` (guests in `public`), `muted`, `no_name`, `not_in_match`, `not_spectating` or `spectators_only`. |
+| `{"type":"whisper","to":"Name#1234","text"}` | Chat to a friend. Refused like `chat`, or `not_logged_in`, `no_such_friend`, `offline`, `in_match` (they are playing). |
+| `{"type":"ignore"\|"unignore","handle":"Name#1234"}` | Stop or resume hearing whoever is connected as that handle, on this connection (up to 200; refused `no_such_player`, `too_many`). The ignore follows the account or guest, not the name. |
+| `{"type":"invite","handle":"Name#1234"}` | Logged-in players: invite a friend to this player's custom lobby, else party (a player on their own gets a party first). Refused `not_logged_in`, `no_such_friend` (no such handle and not a friend look alike), `offline`, `rate_limited` (5 at once, then one per 6 s per account), or as joining would be. |
 | `{"type":"accept"}` | Accepts the match on offer. |
 | `{"type":"decline"}` | Declines it: the check ends for everyone, and this player's party leaves the queue. |
 | `{"type":"create_lobby","mode":"1v1"\|"2v2"\|"3v3"}` | Creates a private custom lobby with a 6-char invite code (leaving any idle party). `mode` defaults to `"1v1"`. |
@@ -190,9 +201,186 @@ the connection with `error`.
 | `stopped` `{reason}` | `cancelled`, `member_left`, `declined`, `not_accepted`, `member_declined` or `member_not_accepted`. The connection stays open. |
 | `lobby` `{code, mode, settings, spectator_slots, you, host, can_start, members}` | Current custom lobby roster (`members`: `{id, slot, host, you}`), settings, and readiness. |
 | `lobby_left` `{reason}` | `left` or `kicked`. |
+| `invite` `{from, kind, code}` | A friend invites this player: `kind` is `party` or `lobby`; accepting is `join_party` / `join_lobby` with `code`, declining is doing nothing. |
+| `invite_sent` `{to}` | The invite reached `to`. |
+| `chat` `{channel, from, to?, admin, text}` | A chat message. `from` and `admin` are the door's (the sender's handle and admin tag); `to` is set on the sender's own copy of a whisper. `channel` is `public`, `match`, `team`, `spectator` or `whisper`. |
+| `friends_changed` `{}` | Requests or friendships changed; fetch `GET /api/friends`. |
 | `refused` `{code}` | `not_leader`, `party_too_big`, `party_full`, `party_busy`, `no_such_party`, `in_lobby`, `no_such_lobby`, `lobby_full`, `not_host`, `slot_full`, `lobby_not_full`, `lobby_too_big`, `no_such_member`, `invalid_settings`, `spectators_disabled`, `spectators_occupied` or `rate_limited`; nothing changed. |
 | `match` `{mode, match_id, seat, spectator?, server, ticket, expires}` | This player's seat ticket (or watch-only spectator ticket when `spectator: true`). The connection stays open. |
 | `error` `{code, message}` | Then the door closes: `bad_request`, `rate_limited`, `replaced` or `shutdown`. |
+
+## Accounts
+
+Login is optional and handled by the front door
+([ADR 0055](decisions/0055-accounts-oauth-login-in-arena-door.md),
+`crates/arena-server/src/identity/`, `door/auth.rs`). It is on when the door
+has `ARENA_SESSION_KEY`, and then also needs `ARENA_DATABASE_URL` and the
+WorkOS application (`ARENA_WORKOS_CLIENT_ID`, `ARENA_WORKOS_API_KEY`).
+Players log in on WorkOS AuthKit's hosted page with email and password, an
+emailed code, Google or GitHub.
+
+| Request | Answer |
+| --- | --- |
+| `GET /api/auth/me` | `{account, admin, login, handle, rename_at}`: the account id in hex or `null`, whether deploy configuration makes it an admin, and whether this door offers login. |
+| `GET /api/auth/login[?sign_up]` | 303 to WorkOS AuthKit (`provider=authkit`), with state and an S256 PKCE challenge; `sign_up` opens the sign-up screen. Sets `__Host-arena_oauth` (signed state and verifier, 10 minutes). Also the dashboard's initiate-login URI. |
+| `GET /api/auth/callback?code&state` | Checks the state against that cookie, trades the code (with the verifier) for the WorkOS user id, and sets `__Host-arena_session`. Always a 303 to the game page; 400 when anything is off, including WorkOS's `error`. |
+| `POST /api/auth/logout` | Clears this browser's session cookie. Answers `{"logout_url"}` (WorkOS's page that ends its session there and returns to the game; the page should open it), or 204 when there is no WorkOS session to end. |
+| `POST /api/auth/logout_everywhere` | Ends every session of the account; answers like `logout`. |
+| `POST /api/auth/delete` | Deletes the user at WorkOS, then the account; its sessions end at once. 502 `unavailable` (nothing deleted) when WorkOS cannot be reached. |
+| `POST /api/auth/handle` `{"name"}` | Picks or changes the account's `Name#1234`. Answers `{"handle"}`, or `{"error"}`: `invalid_name` or `blocked_name` (422), `name_full` (409), `too_soon` with `rename_at` (429), `not_logged_in` (401). |
+
+How the cookies behave:
+- Both are `HttpOnly; Secure; SameSite=Lax; Path=/`, signed with
+  `ARENA_SESSION_KEY`, and the session lasts 30 days.
+- A session counts only if its account still exists at the same generation.
+  Logging out everywhere and deleting raise the generation or remove the
+  row.
+- A `POST`, and the queue WebSocket's handshake, use the session only with
+  an allowed `Origin`, and never when the door runs with `--any-origin`.
+- The queue signs the session's account and handle into the player's seat
+  or spectator ticket. A player without a handle, and every guest, gets a
+  temporary `Guest#NNNN` (not unique). Links from `POST /api/matches` carry
+  neither. A new handle or a revoked account reaches open queue connections
+  at once.
+- **Handles.** The player picks the name: 3–16 ASCII letters and digits,
+  starting with a letter. Names containing a reserved or blocked word (after
+  undoing digit swaps such as `4dm1n`) are refused; operators extend the list
+  with `ARENA_BLOCKED_NAMES`. The door picks a random free number, so
+  `Name#1234` is unique, comparing names without case. The first pick is
+  allowed at any time and starts a 7-day clock; a different name is allowed
+  again when it runs out. Changing only the letter case keeps the number and
+  the clock. Plain substring matching refuses some innocent names (for
+  example `Badminton` contains `admin`); that trade-off is tested.
+  `GET /api/auth/me` also returns `handle` and `rename_at`.
+- Login routes are rate-limited per address. Account ids, codes and tokens
+  are never logged.
+
+## Admin tools
+
+The admin role comes from deploy configuration (`ARENA_ADMIN_ACCOUNTS`) and
+is checked by the door on every request; the page hiding a button is never
+the gate (social-identity step 5, `door/admin.rs`). `GET /api/auth/me`
+reports `admin`, and match tickets carry it for the tag shown beside the
+handle.
+
+| Request | Answer |
+| --- | --- |
+| `GET /api/admin/maps` | `{maps: [{id, name}]}`: maps saved by admins. |
+| `GET /api/admin/maps/<id>.json` | The map file. |
+| `PUT /api/admin/maps/<id>.json` | Validates the body with `arena_map` (as the editor and build do) and stores it: `{id, name}`, or 422 `{error: "invalid_map", problems}` / `invalid_id`. At most 256 KiB; ids are lowercase letters, digits and dashes. |
+| `POST /api/admin/mute` `{"handle", "minutes"}` | Stops a logged-in player's chat for up to a week (`0` unmutes); 204, or 404 `no_such_player`. Mutes last until the door restarts. |
+| `POST /api/admin/handles/clear` `{"handle"}` | Removes a player's handle (204, or 404 `no_such_player`); they pick again with no wait. |
+
+Everyone else gets 401 `not_logged_in` or 403 `not_admin`. Writes need an
+allowed `Origin`, and with `--any-origin` the tools are off (cookies never
+act there). Maps live in `maps/` beside the account store, written through
+a synced temporary file; matches still play the built-in colosseum. A
+change to `ARENA_ADMIN_ACCOUNTS` applies to new tickets after the door
+restarts; tickets already issued keep their tag until they expire (2 hours),
+as a cleared handle stays shown in a match already running.
+
+## Friends
+
+Logged-in players with a handle can befriend each other (social-identity
+step 4, `door/friends.rs`, `identity/friends.rs`). Players are addressed by
+`Name#1234` only.
+
+| Request | Answer |
+| --- | --- |
+| `GET /api/friends` | `{friends: [{handle, relation, presence}], blocked: [handle]}`. `relation` is `friend`, `incoming` or `outgoing`; friends also get `presence`: `offline`, `online`, `searching`, `in_lobby` or `in_match` (a match ticket in the last 21 minutes; the door never hears when a match ends). |
+| `POST /api/friends/<request\|accept\|decline\|remove\|block\|unblock>` `{"handle"}` | `request` answers `{"relation"}` (`outgoing`, or `friend` when they had asked you); the others answer 204. Errors are `{"error"}`: `no_such_player` (404; also when they blocked you), `yourself` (422), `bad_request` (422), `already_friends`, `already_asked`, `too_many` (50 waiting requests, or 200 friends on either side), `nothing_there`, `pick_a_name_first` (409), `not_logged_in` (401), `rate_limited` (429). |
+
+Acting needs an allowed `Origin`. Rate limits are per account:
+- requests: 10 at once, then one per 6 minutes;
+- other actions: 30 at once, then one per 2 s;
+- list reads: 10 at once, then one per 3 s.
+
+A block is invisible to the blocked player:
+- `request` to the blocker answers like an unknown handle.
+- `accept`, `decline`, `remove` and `unblock` answer `nothing_there` for
+  unknown handles too.
+- `block` succeeds on unknown handles.
+- Neither a block nor an unblock sends the other player `friends_changed`.
+
+Every other change reaches both players' open queue connections. Deleting an
+account deletes its friendships, requests and blocks. "Log out everywhere"
+also stops that account's open connections from inviting or being shown as
+it. A plain logout affects only the browser it came from: other open tabs
+keep receiving invites until they close.
+
+## Chat
+
+Chat travels over the queue WebSocket, so the game page needs nothing
+else (planning/issues/chat.md, `door/chat.rs`). The client sends only text
+and a channel; the door names the sender (`from`, `admin`) and picks who
+hears it:
+
+| Channel | Who hears it |
+| --- | --- |
+| `public` | Everyone connected to the door who is not playing a live match. Logged-in players only. |
+| `match` | The players of the sender's match. |
+| `team` | The sender's team in that match; outside one, their custom lobby or else their party, except members now playing a match. |
+| `spectator` | The spectators of the sender's match. Players never hear it, and a spectator can post (or whisper) nowhere else. |
+| `whisper` | One friend, on every open tab of theirs not playing a live match (logged-in players only). |
+
+One rule keeps spectators from feeding players hidden information
+(ghosting), even from a second tab or account: **a player in a live match
+hears only `match` and `team`, and only players of that match post there.**
+
+A player is "in a match" for 21 minutes after the door issued their ticket
+from the queue or a custom lobby, unless they search again; players who
+joined by a lobby link have no `match`, `team` or `spectator` channel.
+
+Rules:
+- Text is cleaned (control characters and line separators become spaces,
+  zero-width and bidi-override characters are dropped, combining marks stop
+  at three per character, the ends are trimmed) and holds 1–200
+  characters. Queue messages may be 4 KiB, so 200 characters fit in any
+  script.
+- Words containing a blocked abuse word (the `[abuse]` list in
+  `identity/blocked-names.txt` and `ARENA_BLOCKED_NAMES`) are masked with
+  asterisks.
+- Each connection may post 5 messages at once, then one a second; `public`
+  also counts per account across its tabs. Chat leaves 8 slots of each
+  player's outbox free, so a busy channel never pushes out a ticket or
+  ready check.
+- Unknown fields close the connection, so a client cannot claim a sender,
+  tag or channel such as `system`, which is reserved for the server and the
+  page.
+- A player stops hearing someone they ignore (per connection, by account or
+  guest id) or blocked (per account). An admin can mute an account; the
+  mute holds on tabs that log out.
+
+## Browser telemetry
+
+The game page reports a few scrubbed facts to the front door's
+`POST /api/telemetry` ([ADR 0054](decisions/0054-observability-logs-metrics-and-local-lgtm.md),
+`web/src/domain/telemetry.ts`, `crates/arena-server/src/door/browser.rs`). Each
+request is one JSON object tagged by `kind`, at most 2 KB, from an allowed
+`Origin`, within a per-address rate limit. Unknown kinds or fields are refused
+(422), and the door answers 204 with no body.
+
+| `kind` | Fields besides `page` |
+| --- | --- |
+| `error`, `rejection`, `wasm_panic` | `message` |
+| `webgl_context_lost` | none |
+| `startup` | `first_state_ms` |
+| `match_summary` | `spectator`, `seconds`, `rtt_p95_ms`, `corrections`, `reconnects`, `hash_mismatches`, `underruns`, `tick_rate`, `frame_ms` |
+
+`page` is the origin and path only. Both the page and the door remove URL
+passwords (`//user:pass@`), any query or fragment, and any hex run of 16 or
+more digits from text, so join tickets cannot travel. Both scrubbers are
+tested against the shared cases in `tests/fixtures/scrub-cases.json`.
+
+A page load sends at most 20 error reports, each distinct message once. It
+also sends one summary per finished match, with a separate cap of 200. In
+`match_summary`, `frame_ms` is the median of the engine's most recent frames
+(up to 3600) when the match ends. A rejoin after the link has ended starts a
+new summary.
+
+Nothing is sent when the browser sends Do Not Track or Global Privacy
+Control. `?telemetry=off` also turns reports off, and the choice is
+remembered on that device until `?telemetry=on`.
 
 ## Match lifecycle
 

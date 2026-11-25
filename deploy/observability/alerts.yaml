@@ -1,0 +1,244 @@
+# Grafana alert rules for the arena services (ADR 0054), mounted at
+# /otel-lgtm/grafana/conf/provisioning/alerting/arena.yaml. Generated; the
+# webhook comes from ARENA_ALERT_WEBHOOK_URL (Discord, Slack or any webhook).
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: arena-webhook
+    receivers:
+      - uid: arena-webhook
+        type: webhook
+        settings:
+          url: $ARENA_ALERT_WEBHOOK_URL
+
+policies:
+  - orgId: 1
+    receiver: arena-webhook
+    group_by: [alertname, job]
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h
+
+groups:
+  - orgId: 1
+    name: arena
+    folder: Arena
+    interval: 1m
+    rules:
+      - uid: arena-tick-overruns
+        title: Tick overruns
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: 'sum(rate(arena_tick_overruns_total[5m]))'
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0.1]}
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "Ticks are overrunning the 33 ms interval"
+          description: "More than one tick in ten seconds is slower than the tick interval; players feel it as stutter. Check CPU on the host and the Tick Latency dashboard."
+      - uid: arena-refusal-spike
+        title: Bad ticket or rate-limited spike
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: 'sum(rate(arena_errors_total{code=~"BadTicket|RateLimited"}[5m]))'
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [1]}
+        for: 5m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "Many connections refused for bad tickets or flooding"
+          description: "More than one refusal a second for five minutes: expired links, a client bug or someone probing the server."
+      - uid: arena-server-down
+        title: Match server not scraped
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: 'min(up{job="arena-server"}) or vector(0)'
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: lt, params: [1]}
+        for: 2m
+        noDataState: Alerting
+        execErrState: Error
+        labels:
+          severity: critical
+        annotations:
+          summary: "The match server is down or unreachable"
+          description: "Alloy could not scrape server:8080/metrics for two minutes (or reported nothing at all)."
+      - uid: arena-door-down
+        title: Front door not scraped
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: 'min(up{job="arena-door"}) or vector(0)'
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: lt, params: [1]}
+        for: 2m
+        noDataState: Alerting
+        execErrState: Error
+        labels:
+          severity: critical
+        annotations:
+          summary: "The front door is down or unreachable"
+          description: "Alloy could not scrape door:8090/metrics for two minutes (or reported nothing at all)."
+      - uid: arena-draining
+        title: Server draining
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: 'max(arena_draining)'
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+        for: 1m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: info
+        annotations:
+          summary: "The match server is draining"
+          description: "A stop signal arrived: readiness fails and no new match starts while running ones finish."
+      - uid: arena-drain-near-grace
+        title: Drain approaching grace period
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: 'max(arena_draining)'
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0]}
+        for: 18m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "Drain near the 1230 s stop grace period"
+          description: "The server has drained for 18 minutes; matches still running when the grace period ends are closed with ServerShutdown."
+      - uid: arena-high-memory
+        title: High memory
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: 'max by (job) (process_resident_memory_bytes{job=~"arena-server|arena-door"})'
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [1500000000.0]}
+        for: 10m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "An arena service uses more than 1.5 GB"
+          description: "Resident memory stayed above 1.5 GB for ten minutes."
+      - uid: arena-high-fds
+        title: High open file descriptors
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange: {from: 600, to: 0}
+            datasourceUid: prometheus
+            model:
+              refId: A
+              expr: 'max by (job) (process_open_fds{job=~"arena-server|arena-door"})'
+              instant: true
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [20000]}
+        for: 10m
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: warning
+        annotations:
+          summary: "An arena service holds more than 20 000 file descriptors"
+          description: "Open descriptors stayed above 20 000 for ten minutes: a connection leak or a flood."

@@ -1,5 +1,16 @@
 Let players talk to each other and run commands from a chat box.
 
+**Status (2026-11-25):** the server side is implemented on
+`auto/chat-server` (`docs/PROTOCOL.md` "Chat"): channels, whispers, server-set
+senders, limits, filter, ignore, blocks and admin mutes. Still to do:
+- the chat box (Lane B);
+- system messages and slash commands (Lane B; `system` is already reserved,
+  so clients cannot post to it).
+- a seat lasts the 21-minute in-match window even when the match ends
+  sooner, so right after a short match `team` still means the old match
+  team and a finished spectator is still confined; clearing seats needs the
+  match server to tell the door a match ended.
+
 Acceptance criteria:
 
 - **Channels:**

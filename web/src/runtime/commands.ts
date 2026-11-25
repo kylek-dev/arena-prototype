@@ -7,6 +7,7 @@ import { nextTarget } from "../domain/units/selection";
 import { resolveUnit, type UnitTag, type UnitRoster } from "../domain/units/tags";
 import type { Snapshot } from "../bridge/snapshot";
 import { config } from "../state/config";
+import { drawWeapon, toggleSheath } from "../state/weapons";
 import {
   draggingSpell,
   blocksGameplay,
@@ -90,6 +91,7 @@ export function activateSlot(id: string) {
     rejectCast(availability(state, slot.ability));
     return;
   }
+  drawWeapon(); // fighting draws the sword from the back
   beginCast(state, slot.ability);
   input.requestCast(slot.ability);
 }
@@ -161,6 +163,9 @@ export function dispatch(action: string) {
       break;
     case "stopCasting":
       stopCasting();
+      break;
+    case "toggleSheath":
+      toggleSheath();
       break;
     case "autorun":
       input.autorun = !input.autorun;

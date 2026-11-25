@@ -14,8 +14,8 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use arena_protocol::{
-    EncodedSnapshotBody, ErrorCode, FighterScore, FighterState, InputFrame, MAX_FIGHTERS,
-    PROTOCOL_VERSION, RULES_VERSION, ServerMessage, Snapshot, TickEvent, Welcome, WireAction,
+    EncodedSnapshotBody, ErrorCode, FighterScore, FighterState, Handle, InputFrame, MAX_FIGHTERS,
+    PROTOCOL_VERSION, RULES_VERSION, ServerMessage, Snapshot, Tags, TickEvent, Welcome, WireAction,
     WireAppearance, WireEvent, WireResult,
 };
 use arena_sim::TICKS_PER_SECOND;
@@ -113,6 +113,10 @@ struct Seat {
     score: FighterScore,
     /// Character look locked on this seat's first join (`None` until the seat joins).
     appearance: Option<Option<WireAppearance>>,
+    /// `Name#1234` from the first ticket for this seat that names one.
+    handle: Option<Handle>,
+    /// Tags from that same ticket.
+    tags: Tags,
 }
 
 /// One seat's input flow since the last report (development diagnostics).
@@ -187,6 +191,73 @@ impl Session {
     pub fn scoreboard(&self) -> Vec<FighterScore> {
         self.seats.iter().map(|seat| seat.score).collect()
     }
+    /// Each seat's handle, in actor order (`None` until a ticket names one).
+    pub fn handles(&self) -> Vec<Option<Handle>> {
+        self.seats.iter().map(|seat| seat.handle).collect()
+    }
+
+    /// Each seat's tags, in actor order.
+    pub fn tags(&self) -> Vec<Tags> {
+        self.seats.iter().map(|seat| seat.tags).collect()
+    }
+
+    /// The `Handles` relay, and `Tags` when any seat has one, for `to`.
+    fn identity_relay(&self, to: ConnId, out: &mut Vec<Out>) {
+        let handles = self.handles();
+        if handles.iter().all(Option::is_none) {
+            return;
+        }
+        out.push(Out::Send {
+            conn: to,
+            message: ServerMessage::Handles(handles),
+        });
+        let tags = self.tags();
+        if tags.iter().any(|tags| *tags != Tags::default()) {
+            out.push(Out::Send {
+                conn: to,
+                message: ServerMessage::Tags(tags),
+            });
+        }
+    }
+
+    /// After `conn` was welcomed to `seat`: locks the seat's handle and tags
+    /// from its ticket the first time one names a handle, and returns the
+    /// `Handles` (and `Tags`) relay, to everyone when they changed, else to
+    /// `conn` alone. Nothing while no seat has a handle.
+    pub fn relay_handles(
+        &mut self,
+        seat: usize,
+        conn: ConnId,
+        handle: Option<Handle>,
+        tags: Tags,
+    ) -> Vec<Out> {
+        let changed = match self.seats.get_mut(seat) {
+            Some(slot) if slot.handle.is_none() && handle.is_some() => {
+                slot.handle = handle;
+                slot.tags = tags;
+                true
+            }
+            _ => false,
+        };
+        let targets: Vec<ConnId> = if changed {
+            self.connections().collect()
+        } else {
+            vec![conn]
+        };
+        let mut out = Vec::new();
+        for to in targets {
+            self.identity_relay(to, &mut out);
+        }
+        out
+    }
+
+    /// The `Handles` (and `Tags`) relay for a newly attached spectator.
+    pub fn handles_for(&self, conn: ConnId) -> Vec<Out> {
+        let mut out = Vec::new();
+        self.identity_relay(conn, &mut out);
+        out
+    }
+
     /// Locked character looks in server actor order (`None` for seats without a look).
     pub fn appearances(&self) -> Vec<Option<WireAppearance>> {
         self.seats

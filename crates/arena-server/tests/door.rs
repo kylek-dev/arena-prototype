@@ -75,6 +75,74 @@ fn fragment(link: &str) -> (String, String) {
 }
 
 #[tokio::test]
+async fn browser_reports_are_checked_limited_and_counted() {
+    let mut config = DoorConfig::new(
+        TicketKey::random(),
+        "ws://127.0.0.1:1/play".into(),
+        PAGE.into(),
+    );
+    config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
+    config.origins = Origins::Only(vec!["https://arena.example.com".into()]);
+    let door = door::start(config).await.unwrap();
+    let addr = door.addr;
+    let post = |extra: &'static str, body: String| async move {
+        request(
+            addr,
+            "POST",
+            "/api/telemetry",
+            &format!("{JSON}{extra}"),
+            &body,
+        )
+        .await
+    };
+    let page = "https://arena.example.com/";
+    let ours = "Origin: https://arena.example.com\r\n";
+    let error = format!(r#"{{"kind":"error","page":"{page}","message":"boom"}}"#);
+    assert_eq!(post(ours, error.clone()).await.status, 204);
+    let summary = format!(
+        r#"{{"kind":"match_summary","page":"{page}","spectator":false,"seconds":300,"rtt_p95_ms":48,"corrections":3,"reconnects":1,"hash_mismatches":0,"underruns":2,"tick_rate":29.9,"frame_ms":16.7}}"#
+    );
+    assert_eq!(post(ours, summary).await.status, 204);
+    // A foreign page, unknown kinds and fields, bad values and big bodies.
+    assert_eq!(
+        post("Origin: https://evil.example\r\n", error.clone())
+            .await
+            .status,
+        403
+    );
+    let unknown = format!(r#"{{"kind":"keylog","page":"{page}"}}"#);
+    assert_eq!(post(ours, unknown).await.status, 422);
+    let extra = format!(r#"{{"kind":"error","page":"{page}","message":"x","ticket":"00"}}"#);
+    assert_eq!(post(ours, extra).await.status, 422);
+    let fast = format!(
+        r#"{{"kind":"match_summary","page":"{page}","spectator":false,"seconds":1,"rtt_p95_ms":null,"corrections":0,"reconnects":0,"hash_mismatches":0,"underruns":0,"tick_rate":9999,"frame_ms":null}}"#
+    );
+    assert_eq!(post(ours, fast).await.status, 422);
+    let big = format!(
+        r#"{{"kind":"error","page":"{page}","message":"{}"}}"#,
+        "x".repeat(4096)
+    );
+    assert_eq!(post(ours, big).await.status, 413);
+    // Each address sends a few dozen per burst, then waits.
+    let mut statuses = Vec::new();
+    for _ in 0..40 {
+        statuses.push(post(ours, error.clone()).await.status);
+    }
+    assert!(statuses.contains(&429), "{statuses:?}");
+    let metrics = request(addr, "GET", "/metrics", "", "").await.body;
+    for line in [
+        "arena_door_browser_reports_total{kind=\"match_summary\"} 1\n",
+        "arena_door_browser_reports_total{kind=\"wasm_panic\"} 0\n",
+        "arena_door_browser_reports_refused_total{reason=\"origin\"} 1\n",
+        // Unknown kind, unknown field, out-of-range value, oversized body.
+        "arena_door_browser_reports_rejected_total 4\n",
+    ] {
+        assert!(metrics.contains(line), "missing {line:?} in {metrics}");
+    }
+    door.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn links_from_the_front_door_start_and_join_a_match() {
     let key = TicketKey::random();
     let mut server_config = Config::new(key.clone());
@@ -408,10 +476,21 @@ mod queue {
         assert_eq!(actors, [0, 1, 2, 3], "four distinct seats in one match");
         assert_eq!(server.active_matches(), 1);
         let metrics = request(door.addr, "GET", "/metrics", "", "").await.body;
-        assert!(
-            metrics.contains("arena_door_queue_matches_total 1\n"),
-            "{metrics}"
-        );
+        for line in [
+            "arena_door_queue_matches_total 1\n",
+            "arena_door_tickets_issued_total 4\n",
+            "arena_door_ready_checks_started_total 1\n",
+            "arena_door_ready_checks_completed_total 1\n",
+            "arena_door_ready_checks_failed_total 0\n",
+            "arena_door_ready_accepts_total 4\n",
+            "arena_door_queued_by_mode{mode=\"2v2\"} 0\n",
+            "arena_door_queue_connections 4\n",
+            // Four parties' waits, every one found within the first minute.
+            "arena_door_queue_wait_milliseconds_bucket{le=\"60000\"} 4\n",
+            "arena_door_queue_wait_milliseconds_count 4\n",
+        ] {
+            assert!(metrics.contains(line), "missing {line:?} in {metrics}");
+        }
         door.stop().await.unwrap();
         server.stop().await.unwrap();
     }
@@ -485,6 +564,15 @@ mod queue {
             sockets.push(join_match(&play, &ticket).await.0);
         }
         assert_eq!(server.active_matches(), 1);
+        let metrics = request(door.addr, "GET", "/metrics", "", "").await.body;
+        for line in [
+            "arena_door_searches_total{party_size=\"1\"} 2\n",
+            "arena_door_searches_total{party_size=\"2\"} 1\n",
+            "arena_door_searches_total{party_size=\"3\"} 0\n",
+            "arena_door_parties 1\n",
+        ] {
+            assert!(metrics.contains(line), "missing {line:?} in {metrics}");
+        }
         door.stop().await.unwrap();
         server.stop().await.unwrap();
     }
@@ -564,6 +652,19 @@ mod queue {
                     reason: "not_accepted".into()
                 })
             );
+        }
+        let metrics = request(door.addr, "GET", "/metrics", "", "").await.body;
+        for line in [
+            "arena_door_ready_checks_started_total 1\n",
+            "arena_door_ready_checks_failed_total 1\n",
+            "arena_door_ready_accepts_total 1\n",
+            "arena_door_ready_declines_total 1\n",
+            "arena_door_tickets_issued_total 0\n",
+            // The player who accepted is searching again.
+            "arena_door_queued_by_mode{mode=\"2v2\"} 1\n",
+            "arena_door_queue_wait_milliseconds_count 0\n",
+        ] {
+            assert!(metrics.contains(line), "missing {line:?} in {metrics}");
         }
         door.stop().await.unwrap();
         server.stop().await.unwrap();

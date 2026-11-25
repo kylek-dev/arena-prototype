@@ -87,7 +87,6 @@ export function GameMenu() {
       {customizable && !inMatch && (
         <Button
           variant="surface"
-          color="gray"
           onClick={() => {
             setPanel(null);
             customizerVisible.set(true);

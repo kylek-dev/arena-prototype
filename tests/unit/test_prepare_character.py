@@ -226,11 +226,25 @@ class CharacterPreparation(unittest.TestCase):
             characters = (('base-female', legacy, 'BaseFemale'),)
             with patch.dict(os.environ, {}, clear=True), \
                     patch.object(module, 'CHARACTERS', characters), \
-                    patch.object(module.quaternius_character, 'MODEL', root / 'absent'):
+                    patch.object(module.quaternius_character, 'MODEL', root / 'absent'), \
+                    patch.object(module.character_kits, 'prepare', return_value=[]):
                 module.prepare(characters=characters, directory=root / 'public')
                 self.assertEqual(
                     json.loads((root / 'public/character.json').read_text()),
                     {'available': False, 'model': None})
+
+    def test_finished_kits_ship_without_quaternius_sources(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory = root / 'public'
+            finished = [{'id': 'meshy-human-male'}]
+            with patch.dict(os.environ, {}, clear=True), \
+                    patch.object(module.quaternius_character, 'MODEL', root / 'absent'), \
+                    patch.object(module.quaternius_character, 'LIBRARY', root / 'absent'), \
+                    patch.object(module.character_kits, 'prepare', return_value=finished):
+                module.prepare(directory=directory)
+            self.assertEqual(json.loads((directory / 'character.json').read_text()),
+                             {'available': True, 'model': 'quaternius-kits', 'kits': finished})
 
 if __name__ == '__main__':
     unittest.main()

@@ -23,7 +23,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
+mod admin;
+mod auth;
+mod browser;
+mod chat;
+mod friends;
 mod queue;
+pub use auth::Me;
 pub use queue::ToClient as QueueMessage;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -38,8 +44,10 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-use crate::ingress::{self, Cidr, OpenPerAddress, Origins, RatePerAddress};
-use crate::metrics::Metrics;
+use crate::identity::{Identity, IdentityConfig};
+use crate::ingress::{self, Cidr, OpenPerAddress, Origins, RatePerAccount, RatePerAddress};
+use crate::logging::MatchId;
+use crate::metrics::{Histogram, Metrics, write_metric};
 use crate::ticket::{self, TicketKey};
 
 pub struct DoorConfig {
@@ -63,6 +71,14 @@ pub struct DoorConfig {
     pub ready_timeout: Duration,
     /// Open queue connections one client address may hold.
     pub queue_per_address: u32,
+    /// Accounts and login (ADR 0055); `None` keeps the door guest-only.
+    pub identity: Option<IdentityConfig>,
+    /// Account routes (login, names, friends) one address may call at once,
+    /// then one per 6 s.
+    pub auth_burst: u32,
+    /// Where admins' saved maps go (`--maps-dir`); `None` keeps them in
+    /// memory.
+    pub maps: Option<std::path::PathBuf>,
 }
 impl DoorConfig {
     pub fn new(key: TicketKey, match_server: String, page: String) -> Self {
@@ -78,24 +94,88 @@ impl DoorConfig {
             creation_every: Duration::from_secs(30),
             ready_timeout: Duration::from_secs(15),
             queue_per_address: 12,
+            identity: None,
+            maps: None,
+            auth_burst: 20,
         }
+    }
+}
+
+/// Upper bounds of `arena_door_queue_wait_milliseconds`: 1 s to 10 min.
+const QUEUE_WAIT_BUCKETS_MS: [u64; 11] = [
+    1_000, 2_000, 5_000, 10_000, 20_000, 30_000, 60_000, 120_000, 180_000, 300_000, 600_000,
+];
+
+#[derive(Debug)]
+struct QueueWaits(Histogram<{ QUEUE_WAIT_BUCKETS_MS.len() }>);
+
+impl Default for QueueWaits {
+    fn default() -> Self {
+        Self(Histogram::new(&QUEUE_WAIT_BUCKETS_MS))
     }
 }
 
 #[derive(Debug, Default)]
 struct DoorMetrics {
     issued: AtomicU64,
+    /// Join tickets signed: one per seat and per spectator.
+    tickets: AtomicU64,
     refused_rate: AtomicU64,
     refused_origin: AtomicU64,
     /// Players in a queue or ready check right now.
     queued: AtomicU64,
+    /// The same per queue, indexed by `Mode::index`.
+    queued_by_mode: [AtomicU64; 3],
+    /// Open `/api/queue` connections that said hello.
+    queue_connections: AtomicU64,
+    /// Parties with an invite code, and private custom lobbies.
+    parties: AtomicU64,
+    lobbies: AtomicU64,
     queue_matches: AtomicU64,
     custom_matches: AtomicU64,
+    /// Copied from the matchmaker's running totals.
+    checks_started: AtomicU64,
+    checks_completed: AtomicU64,
+    checks_failed: AtomicU64,
+    accepts: AtomicU64,
+    declines: AtomicU64,
+    /// Searches started, by party size 1, 2 and 3.
+    searches_by_size: [AtomicU64; crate::matchmaker::MAX_PARTY],
+    /// How long each party searched before its match was found.
+    queue_wait: QueueWaits,
+    /// Browser reports accepted, by kind (`browser::KINDS`), and refused for
+    /// their shape.
+    browser_reports: [AtomicU64; browser::KINDS.len()],
+    browser_rejected: AtomicU64,
+    /// Browser reports refused for their origin, then for the rate limit.
+    browser_refused: [AtomicU64; 2],
+    /// Completed logins, failed ones, and deleted accounts.
+    logins: AtomicU64,
+    login_failures: AtomicU64,
+    deletions: AtomicU64,
 }
 
 struct Door {
     config: DoorConfig,
+    identity: Option<Identity>,
+    /// Login routes per address.
+    auth_rate: RatePerAddress,
+    /// Friend requests and invites per account (social-identity step 4).
+    friend_requests: RatePerAccount,
+    invites: RatePerAccount,
+    /// Other friend actions, and friends-list reads (each asks the
+    /// matchmaker task for presence), per account.
+    friend_actions: RatePerAccount,
+    friend_reads: RatePerAccount,
+    /// Admin-saved maps (social-identity step 5).
+    maps: Arc<admin::MapStore>,
+    /// Words masked in chat (and refused in names).
+    words: crate::identity::names::Blocklist,
+    /// Accounts an admin muted, until when.
+    muted: std::sync::Mutex<std::collections::HashMap<u64, Instant>>,
     creations: RatePerAddress,
+    /// Browser telemetry reports per address.
+    reports: RatePerAddress,
     metrics: DoorMetrics,
     queue: mpsc::Sender<queue::Command>,
     queue_open: Arc<OpenPerAddress>,
@@ -152,7 +232,7 @@ pub fn join_link(page: &str, server: &str, ticket: &str, expires: u64) -> String
     )
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs())
@@ -204,12 +284,12 @@ async fn create(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     Metrics::add(&door.metrics.issued, 1);
-    eprintln!(
-        "match {:016x}: issued {} tickets for {}v{}",
-        created.match_id,
-        created.tickets.len(),
-        created.team_size,
-        created.team_size
+    Metrics::add(&door.metrics.tickets, created.tickets.len() as u64);
+    tracing::info!(
+        match_id = %MatchId(created.match_id),
+        team_size = created.team_size,
+        tickets = created.tickets.len(),
+        "match links issued"
     );
     let seats = created
         .tickets
@@ -238,43 +318,185 @@ async fn create(
 }
 
 async fn render_metrics(State(door): State<Arc<Door>>) -> String {
+    let mut text = render_door_metrics(&door.metrics);
+    crate::metrics::ProcessStats::read().render(&mut text);
+    crate::metrics::render_runtime(&mut text);
+    text
+}
+
+fn render_door_metrics(metrics: &DoorMetrics) -> String {
     let mut text = String::new();
     let _ = writeln!(
         text,
         "# HELP arena_door_queued Players in a queue or ready check.\n# TYPE arena_door_queued gauge\narena_door_queued {}",
-        Metrics::get(&door.metrics.queued)
+        Metrics::get(&metrics.queued)
     );
+    let _ = writeln!(
+        text,
+        "# HELP arena_door_queued_by_mode Players in a queue or ready check, by queue.\n# TYPE arena_door_queued_by_mode gauge"
+    );
+    for (mode, counter) in crate::matchmaker::Mode::ALL
+        .iter()
+        .zip(&metrics.queued_by_mode)
+    {
+        let _ = writeln!(
+            text,
+            "arena_door_queued_by_mode{{mode=\"{}\"}} {}",
+            mode.id(),
+            Metrics::get(counter)
+        );
+    }
+    for (name, help, gauge) in [
+        (
+            "door_queue_connections",
+            "Open queue connections that said hello.",
+            &metrics.queue_connections,
+        ),
+        (
+            "door_parties",
+            "Parties with an invite code.",
+            &metrics.parties,
+        ),
+        (
+            "door_lobbies",
+            "Open private custom lobbies.",
+            &metrics.lobbies,
+        ),
+    ] {
+        write_metric(
+            &mut text,
+            &format!("arena_{name}"),
+            "gauge",
+            help,
+            Metrics::get(gauge),
+        );
+    }
     for (name, help, counter) in [
         (
             "door_queue_matches_total",
             "Matches formed from the queues.",
-            &door.metrics.queue_matches,
+            &metrics.queue_matches,
         ),
         (
             "door_custom_matches_total",
             "Matches started from private custom lobbies.",
-            &door.metrics.custom_matches,
+            &metrics.custom_matches,
         ),
         (
             "door_matches_issued_total",
             "Matches whose tickets were issued.",
-            &door.metrics.issued,
+            &metrics.issued,
+        ),
+        (
+            "door_tickets_issued_total",
+            "Join tickets signed, one per seat and per spectator.",
+            &metrics.tickets,
+        ),
+        (
+            "door_logins_total",
+            "Completed account logins.",
+            &metrics.logins,
+        ),
+        (
+            "door_login_failures_total",
+            "Logins refused or failed (state, provider or store).",
+            &metrics.login_failures,
+        ),
+        (
+            "door_account_deletions_total",
+            "Accounts deleted by their players.",
+            &metrics.deletions,
+        ),
+        (
+            "door_ready_checks_started_total",
+            "Ready checks offered when a queue could fill a match.",
+            &metrics.checks_started,
+        ),
+        (
+            "door_ready_checks_completed_total",
+            "Ready checks everyone accepted.",
+            &metrics.checks_completed,
+        ),
+        (
+            "door_ready_checks_failed_total",
+            "Ready checks ended by a decline, a timeout or a player leaving.",
+            &metrics.checks_failed,
+        ),
+        (
+            "door_ready_accepts_total",
+            "Players who accepted a ready check (a later decline is counted in declines too).",
+            &metrics.accepts,
+        ),
+        (
+            "door_ready_declines_total",
+            "Players who declined a ready check.",
+            &metrics.declines,
         ),
         (
             "door_refused_rate_total",
-            "Match creations refused by the per-address limit.",
-            &door.metrics.refused_rate,
+            "Match creations and queue connections refused by a per-address limit.",
+            &metrics.refused_rate,
         ),
         (
             "door_refused_origin_total",
-            "Match creations refused because their page origin is not allowed.",
-            &door.metrics.refused_origin,
+            "Match creations and queue connections refused because their page origin is not allowed.",
+            &metrics.refused_origin,
         ),
     ] {
-        let _ = writeln!(text, "# HELP arena_{name} {help}");
-        let _ = writeln!(text, "# TYPE arena_{name} counter");
-        let _ = writeln!(text, "arena_{name} {}", Metrics::get(counter));
+        write_metric(
+            &mut text,
+            &format!("arena_{name}"),
+            "counter",
+            help,
+            Metrics::get(counter),
+        );
     }
+    let _ = writeln!(
+        text,
+        "# HELP arena_door_searches_total Queue searches started, by party size.\n# TYPE arena_door_searches_total counter"
+    );
+    for (size, counter) in metrics.searches_by_size.iter().enumerate() {
+        let _ = writeln!(
+            text,
+            "arena_door_searches_total{{party_size=\"{}\"}} {}",
+            size + 1,
+            Metrics::get(counter)
+        );
+    }
+    let _ = writeln!(
+        text,
+        "# HELP arena_door_browser_reports_total Scrubbed browser reports accepted, by kind.\n# TYPE arena_door_browser_reports_total counter"
+    );
+    for (kind, counter) in browser::KINDS.iter().zip(&metrics.browser_reports) {
+        let _ = writeln!(
+            text,
+            "arena_door_browser_reports_total{{kind=\"{kind}\"}} {}",
+            Metrics::get(counter)
+        );
+    }
+    let _ = writeln!(
+        text,
+        "# HELP arena_door_browser_reports_refused_total Browser reports refused before reading, by reason.\n# TYPE arena_door_browser_reports_refused_total counter"
+    );
+    for (reason, counter) in ["origin", "rate"].iter().zip(&metrics.browser_refused) {
+        let _ = writeln!(
+            text,
+            "arena_door_browser_reports_refused_total{{reason=\"{reason}\"}} {}",
+            Metrics::get(counter)
+        );
+    }
+    write_metric(
+        &mut text,
+        "arena_door_browser_reports_rejected_total",
+        "counter",
+        "Browser reports refused for their shape or values.",
+        Metrics::get(&metrics.browser_rejected),
+    );
+    metrics.queue_wait.0.render(
+        &mut text,
+        "door_queue_wait_milliseconds",
+        "How long parties searched before their match was found, in milliseconds.",
+    );
     text
 }
 
@@ -316,10 +538,35 @@ fn page(content_type: &'static str, body: impl Into<axum::body::Body>) -> Respon
 
 /// The door's routes, with its matchmaker task started. Must be called
 /// inside the Tokio runtime.
-fn build(config: DoorConfig) -> (Router, Arc<Door>) {
+async fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
+    let identity = match config.identity.clone() {
+        Some(identity) => Some(
+            Identity::start(identity, &config.page)
+                .await
+                .map_err(io::Error::other)?,
+        ),
+        None => None,
+    };
     let (commands, receiver) = mpsc::channel(1024);
     let door = Arc::new(Door {
+        identity,
+        auth_rate: RatePerAddress::new(config.auth_burst, Duration::from_secs(6)),
+        // A burst of 10 requests, then one every 6 minutes (10 an hour).
+        friend_requests: RatePerAccount::new(10, Duration::from_secs(6 * 60)),
+        // A burst of 5 invites, then one every 6 seconds.
+        invites: RatePerAccount::new(5, Duration::from_secs(6)),
+        friend_actions: RatePerAccount::new(30, Duration::from_secs(2)),
+        friend_reads: RatePerAccount::new(10, Duration::from_secs(3)),
+        words: config
+            .identity
+            .as_ref()
+            .map(|identity| identity.blocked.clone())
+            .unwrap_or_else(|| crate::identity::names::Blocklist::new("")),
+        muted: std::sync::Mutex::default(),
+        maps: Arc::new(admin::MapStore::at(config.maps.as_deref())),
         creations: RatePerAddress::new(config.creation_burst, config.creation_every),
+        // A visit sends a handful (startup, a summary per match, a few errors).
+        reports: RatePerAddress::new(30, Duration::from_secs(10)),
         queue_open: OpenPerAddress::new(config.queue_per_address),
         config,
         metrics: DoorMetrics::default(),
@@ -335,6 +582,10 @@ fn build(config: DoorConfig) -> (Router, Arc<Door>) {
             post(create).layer(DefaultBodyLimit::max(1024)),
         )
         .route("/api/queue", get(queue::upgrade))
+        .route(
+            "/api/telemetry",
+            post(browser::receive).layer(DefaultBodyLimit::max(browser::MAX_REPORT)),
+        )
         .route("/lobby", get(|| async { Redirect::permanent("/lobby/") }))
         .route(
             "/lobby/",
@@ -355,10 +606,41 @@ fn build(config: DoorConfig) -> (Router, Arc<Door>) {
                 async move { page("text/css; charset=utf-8", palette) }
             }),
         )
+        .route("/api/auth/me", get(auth::me))
+        .route("/api/auth/login", get(auth::login))
+        .route("/api/auth/callback", get(auth::callback))
+        .route("/api/auth/logout", post(auth::logout))
+        .route("/api/auth/logout_everywhere", post(auth::logout_everywhere))
+        .route("/api/auth/delete", post(auth::delete))
+        .route(
+            "/api/auth/handle",
+            post(auth::choose_handle).layer(DefaultBodyLimit::max(256)),
+        )
+        .route("/api/admin/maps", get(admin::list_maps))
+        .route(
+            "/api/admin/maps/{file}",
+            get(admin::get_map)
+                .put(admin::put_map)
+                .layer(DefaultBodyLimit::max(admin::MAX_MAP)),
+        )
+        .route(
+            "/api/admin/mute",
+            post(admin::mute).layer(DefaultBodyLimit::max(256)),
+        )
+        .route(
+            "/api/admin/handles/clear",
+            post(admin::clear_handle).layer(DefaultBodyLimit::max(256)),
+        )
+        .route("/api/friends", get(friends::list))
+        .route(
+            "/api/friends/{action}",
+            post(friends::act).layer(DefaultBodyLimit::max(256)),
+        )
         .route("/healthz", get(|| async { "ok" }))
         .route("/metrics", get(render_metrics))
         .with_state(door.clone());
-    (router, door)
+    let router = crate::traced(router);
+    Ok((router, door))
 }
 
 /// A started front door.
@@ -377,7 +659,7 @@ impl DoorRunning {
 pub async fn start(config: DoorConfig) -> io::Result<DoorRunning> {
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     let addr = listener.local_addr()?;
-    let (router, door) = build(config);
+    let (router, door) = build(config).await?;
     let stop = door.shutdown.clone();
     let mut stopped = stop.subscribe();
     let service = router.into_make_service_with_connect_info::<SocketAddr>();

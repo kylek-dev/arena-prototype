@@ -189,14 +189,80 @@ class KitTests(unittest.TestCase):
         self.assertEqual(len(document['materials']), 2)
         self.assertEqual([p['material'] for p in document['meshes'][0]['primitives']], [0, 0, 1])
 
+    def test_prebuilt_kits_ship_as_built_at_the_shared_scale(self):
+        with tempfile.TemporaryDirectory() as temp:
+            source, out = Path(temp) / 'source', Path(temp) / 'out'
+            out.mkdir()
+            self.assertEqual(k.prebuilt(out, source), [])
+            entry = {'id': 'hero-male', 'ancestry': 'human', 'body': 'male', 'sole': 0.0,
+                     'path': 'characters/kits/hero-male.glb', 'regions': ['Body_Head'],
+                     'groups': {}, 'materials': {'Skin': {'tint': 'skin'}}, 'sockets': {}}
+            folder = source / 'hero-male'
+            folder.mkdir(parents=True)
+            (folder / 'kit.json').write_text(json.dumps(entry))
+            with self.assertRaisesRegex(ValueError, 'hero-male.glb is missing'):
+                k.prebuilt(out, source)
+            (folder / 'hero-male.glb').write_bytes(b'glTF-bytes')
+            self.assertEqual(k.prebuilt(out, source), [{**entry, 'scale': k.SCALE}])
+            self.assertEqual((out / 'hero-male.glb').read_bytes(), b'glTF-bytes')
+            for bad in ({**entry, 'path': 'characters/kits/other.glb'}, {**entry, 'id': 'other'},
+                        {k_: v for k_, v in entry.items() if k_ != 'regions'}):
+                (folder / 'kit.json').write_text(json.dumps(bad))
+                with self.assertRaises(ValueError):
+                    k.prebuilt(out, source)
+
+    def test_only_finished_kits_ship_by_default(self):
+        self.assertEqual(k.SHIPPED, ())
+        with tempfile.TemporaryDirectory() as tmp:
+            source, out = Path(tmp) / 'source', Path(tmp)
+            folder = source / 'hero-male'
+            folder.mkdir(parents=True)
+            entry = {'id': 'hero-male', 'ancestry': 'human', 'body': 'male', 'sole': 0.0,
+                     'path': 'characters/kits/hero-male.glb', 'regions': ['Body_Head'],
+                     'groups': {}, 'materials': {}}
+            (folder / 'kit.json').write_text(json.dumps(entry))
+            (folder / 'hero-male.glb').write_bytes(b'glTF-bytes')
+            stale = out / k.DIRECTORY / 'human-female.glb'
+            stale.parent.mkdir(parents=True)
+            stale.write_bytes(b'old')
+            # No Quaternius source is read: the iris and outfit textures are not needed.
+            self.assertEqual([e['id'] for e in k.prepare(out, prebuilt_path=source)], ['hero-male'])
+            self.assertFalse(stale.exists())
+            self.assertEqual(sorted(p.name for p in (out / k.DIRECTORY).glob('*.glb')), ['hero-male.glb'])
+
+    def test_installed_finished_kits_offer_hair_the_client_can_show(self):
+        # featureGroups and the tint kinds in web/src/domain/appearance.ts
+        features, tints = {'face', 'hair', 'brows', 'beard', 'horns'}, {'skin', 'hair', 'facialHair', 'eyes'}
+        manifests = sorted(k.PREBUILT.glob('*/kit.json'))
+        self.assertTrue(manifests)
+        for manifest in manifests:
+            entry = json.loads(manifest.read_text())
+            for name, material in entry['materials'].items():
+                self.assertIn(material.get('tint', 'skin'), tints, name)
+            for group in ('hair', 'beard'):
+                options = entry['groups'].get(group)
+                if options is None:
+                    continue
+                self.assertIn(group, features)
+                # a look naming another kit's option falls back to "none"
+                self.assertEqual([o['id'] for o in options].count('none'), 1, f'{manifest}: {group}')
+                for option in options:
+                    for node in option['nodes']:
+                        # every piece follows the face presets and has its own tinted material
+                        self.assertIn(node, entry['morphNodes'], node)
+                        tint = 'hair' if group == 'hair' else 'facialHair'
+                        self.assertEqual(entry['materials'][node]['tint'], tint, node)
+                        self.assertLessEqual(entry['triangles'][node], 8000, node)
+
     def test_optional_race_kits_are_skipped_when_not_installed(self):
         missing = k.race('elf', 'female')
         missing.base = Path('/nonexistent/Elf_Female.glb')
         self.assertTrue(missing.optional)
         self.assertFalse(k.available(missing))
         with tempfile.TemporaryDirectory() as tmp:
+            # No finished kits either: the test must not pick up locally installed ones.
             self.assertEqual(k.prepare(Path(tmp), texture_processor=None, iris_processor=None,
-                                       kits=(missing,)), [])
+                                       kits=(missing,), prebuilt_path=Path(tmp) / 'none'), [])
 
 
 if __name__ == '__main__':

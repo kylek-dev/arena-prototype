@@ -2,10 +2,20 @@
 # serves the browser client; one match server and one front door sit behind
 # it on a private network. From the repository root, after building dist/:
 #   docker compose -f deploy/compose.yaml --env-file deploy/.env up -d --build
+# Add `--profile obs` for Grafana, Prometheus, Loki and Tempo (ADR 0054) on
+# 127.0.0.1 only; see docs/DEPLOYMENT.md "Observability".
 name: arena
 
 x-public: &public
   ARENA_TICKET_KEY: ${ARENA_TICKET_KEY:?set ARENA_TICKET_KEY in deploy/.env}
+  # One JSON object per log line, like Caddy's log; RUST_LOG filters.
+  ARENA_LOG_FORMAT: json
+  RUST_LOG: ${RUST_LOG:-info}
+  # Empty (the default) exports no spans. With `--profile obs`, set it to
+  # http://alloy:4318 in deploy/.env.
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  # Bound the final span flush on stop, within the door's 10 s grace.
+  OTEL_EXPORTER_OTLP_TIMEOUT: ${OTEL_EXPORTER_OTLP_TIMEOUT:-3000}
 
 services:
   server:
@@ -24,9 +34,16 @@ services:
       - https://${ARENA_HOST:?set ARENA_HOST in deploy/.env}
       - --trusted-proxy
       - 172.30.10.2
-    environment: *public
-    # ... and allow a little longer than the drain before killing it.
-    stop_grace_period: 1215s
+    environment:
+      <<: *public
+      # Continuous CPU profiling: empty (the default) is off. With
+      # `--profile obs`, http://lgtm:4040 sends flame graphs to Pyroscope.
+      ARENA_PYROSCOPE_URL: ${ARENA_PYROSCOPE_URL:-}
+      ARENA_PYROSCOPE_HZ: ${ARENA_PYROSCOPE_HZ:-}
+    # ... and allow a little longer than the drain before killing it: the
+    # drain, then at most 11 s for the profiler's last upload and 3 s for
+    # the last spans.
+    stop_grace_period: 1230s
     restart: unless-stopped
     networks:
       arena:
@@ -34,7 +51,11 @@ services:
 
   door:
     image: arena-server:local
-    depends_on: [server]
+    depends_on:
+      server:
+        condition: service_started
+      identity-db:
+        condition: service_healthy
     entrypoint: [arena-door]
     command:
       - --bind
@@ -45,11 +66,49 @@ services:
       - https://${ARENA_HOST}/
       - --trusted-proxy
       - 172.30.10.2
-    environment: *public
+      # Maps saved by admins in the server-backed editor.
+      - --maps-dir
+      - /var/lib/arena/maps
+    environment:
+      <<: *public
+      # Accounts are off (guests only) until ARENA_SESSION_KEY is set: hex,
+      # at least 32 bytes, different from ARENA_TICKET_KEY. With it, login
+      # goes through WorkOS AuthKit and accounts live in identity-db.
+      ARENA_SESSION_KEY: ${ARENA_SESSION_KEY:-}
+      ARENA_WORKOS_CLIENT_ID: ${ARENA_WORKOS_CLIENT_ID:-}
+      ARENA_WORKOS_API_KEY: ${ARENA_WORKOS_API_KEY:-}
+      ARENA_DATABASE_URL: postgres://arena_identity:${ARENA_IDENTITY_DB_PASSWORD:?set ARENA_IDENTITY_DB_PASSWORD in deploy/.env}@identity-db:5432/arena_identity
+      ARENA_ADMIN_ACCOUNTS: ${ARENA_ADMIN_ACCOUNTS:-}
+      ARENA_BLOCKED_NAMES: ${ARENA_BLOCKED_NAMES:-}
+    volumes:
+      - door-data:/var/lib/arena
     restart: unless-stopped
     networks:
       arena:
         ipv4_address: 172.30.10.11
+
+  # The accounts database (ADR 0055): PostgreSQL holding accounts, handles,
+  # friends and blocks, and nothing else. Reachable only on the private
+  # network; back it up with `pg_dump` (docs/DEPLOYMENT.md "Accounts").
+  identity-db:
+    image: postgres:18.7-alpine
+    environment:
+      POSTGRES_DB: arena_identity
+      POSTGRES_USER: arena_identity
+      POSTGRES_PASSWORD: ${ARENA_IDENTITY_DB_PASSWORD:?set ARENA_IDENTITY_DB_PASSWORD in deploy/.env}
+    volumes:
+      - identity-db-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "arena_identity", "-d", "arena_identity", "-h", "127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    # A small database next to the 30 Hz match loop.
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      arena:
+        ipv4_address: 172.30.10.12
 
   caddy:
     image: caddy:2.11.9
@@ -69,6 +128,70 @@ services:
       arena:
         ipv4_address: 172.30.10.2
 
+  # Opt-in observability (`--profile obs`): one container with Grafana,
+  # Prometheus, Loki, Tempo and an OTLP collector. Every port is bound to
+  # loopback: reach Grafana at http://127.0.0.1:3000 on this machine, or over
+  # an SSH tunnel. Alloy (below) feeds it; Caddy never routes to any of it.
+  lgtm:
+    image: grafana/otel-lgtm:0.41.1
+    profiles: [obs]
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+    volumes:
+      - ./observability/prometheus.yaml:/otel-lgtm/prometheus.yaml:ro
+      - ./observability/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/custom.yaml:ro
+      - ./observability/dashboards:/otel-lgtm/grafana/conf/provisioning/dashboards/custom:ro
+      - ./observability/alerts.yaml:/otel-lgtm/grafana/conf/provisioning/alerting/arena.yaml:ro
+      - lgtm-data:/data
+    environment:
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /otel-lgtm/grafana/conf/provisioning/dashboards/custom/match-server-health.json
+      # Where alerts are posted. The default goes nowhere (the discard
+      # port); set a Discord, Slack or other webhook URL in deploy/.env.
+      ARENA_ALERT_WEBHOOK_URL: ${ARENA_ALERT_WEBHOOK_URL:-http://127.0.0.1:9/}
+      # A week of metrics is plenty for playtests and bounds the disk.
+      PROMETHEUS_EXTRA_ARGS: --storage.tsdb.retention.time=7d
+    # Keep the stack from competing with the 30 Hz match loop for memory.
+    mem_limit: 1g
+    restart: unless-stopped
+    networks:
+      arena:
+        ipv4_address: 172.30.10.20
+
+  # Ships the game host's telemetry to lgtm: scrapes server and door
+  # /metrics, tails the server, door and Caddy logs through the Docker
+  # socket (read-only, but Docker API access is root-equivalent: keep this
+  # container's UI on loopback), and forwards OTLP traces. Point it at a
+  # remote stack with ARENA_OBS_OTLP_ENDPOINT, ARENA_OBS_REMOTE_WRITE_URL and
+  # ARENA_OBS_LOKI_URL.
+  alloy:
+    image: grafana/alloy:v1.22.0
+    profiles: [obs]
+    depends_on: [lgtm]
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    ports:
+      - "127.0.0.1:12345:12345"
+    volumes:
+      - ./observability/alloy.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    environment:
+      ARENA_OBS_OTLP_ENDPOINT: ${ARENA_OBS_OTLP_ENDPOINT:-}
+      ARENA_OBS_REMOTE_WRITE_URL: ${ARENA_OBS_REMOTE_WRITE_URL:-}
+      ARENA_OBS_LOKI_URL: ${ARENA_OBS_LOKI_URL:-}
+      # Ship only this project's containers (`docker compose -p NAME`).
+      ARENA_OBS_PROJECT: ${COMPOSE_PROJECT_NAME:-arena}
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      arena:
+        ipv4_address: 172.30.10.21
+
 networks:
   arena:
     ipam:
@@ -76,5 +199,9 @@ networks:
         - subnet: 172.30.10.0/24
 
 volumes:
+  door-data:
+  identity-db-data:
   caddy-data:
   caddy-config:
+  lgtm-data:
+  alloy-data:

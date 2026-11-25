@@ -166,7 +166,7 @@ export function endsLink(error: string | null) {
 // same bytes; everything else is decoded by the engine.
 
 /** Must match `arena_protocol::PROTOCOL_VERSION`. */
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 10;
 /** `ServerMessage::Error` codes in declaration order (`[3, index]`). */
 export const ERROR_CODES = [
   "VersionMismatch",
@@ -193,7 +193,7 @@ function varint(value: number): number[] {
 
 const WIRE_ID_RE = /^[A-Za-z0-9_-]{1,32}$/;
 const MAX_CLIENT_FRAME = 1024;
-const MAX_APPEARANCE_GROUPS = 10;
+const MAX_APPEARANCE_GROUPS = 24;
 const MAX_APPEARANCE_VARIANTS = 8;
 
 function encodeAsciiString(value: string): number[] {
@@ -208,6 +208,7 @@ function encodeWireAppearance(look: Appearance): number[] | null {
     !WIRE_ID_RE.test(look.body) ||
     !WIRE_ID_RE.test(look.skinTone) ||
     !WIRE_ID_RE.test(look.hairColor) ||
+    !WIRE_ID_RE.test(look.facialHairColor) ||
     !WIRE_ID_RE.test(look.eyes)
   ) {
     return null;
@@ -228,6 +229,7 @@ function encodeWireAppearance(look: Appearance): number[] | null {
     ...encodeAsciiString(look.body),
     ...encodeAsciiString(look.skinTone),
     ...encodeAsciiString(look.hairColor),
+    ...encodeAsciiString(look.facialHairColor),
     ...encodeAsciiString(look.eyes),
     build,
     ...varint(groups.length),
@@ -275,6 +277,16 @@ export function isWelcome(frame: Uint8Array) {
 /** Whether a frame is the server's `Appearances` relay (variant 4). */
 export function isAppearances(frame: Uint8Array) {
   return frame.length > 0 && frame[0] === 4;
+}
+
+/** Whether a frame is the server's `Handles` relay (variant 5). */
+export function isHandles(frame: Uint8Array) {
+  return frame.length > 0 && frame[0] === 5;
+}
+
+/** Whether a frame is the server's `Tags` relay (variant 6). */
+export function isTags(frame: Uint8Array) {
+  return frame.length > 0 && frame[0] === 6;
 }
 
 /** Delay before reconnect attempt `attempt` (0-based): 0.5 s doubling to 8 s. */

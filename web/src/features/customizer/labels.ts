@@ -16,7 +16,11 @@ const optionNames: Record<string, string> = {
   Peasant: "Peasant",
 };
 const raceHair: Record<string, string> = { elf: "Elven locks", orc: "Warrior mane" };
-export const ancestryNames: Record<string, string> = { human: "Human", elf: "Elf", orc: "Orc" };
+export const ancestryNames: Record<string, string> = {
+  human: "Human",
+  elf: "Elf",
+  orc: "Orc",
+};
 export const bodyNames: Record<string, string> = { female: "Female", male: "Male" };
 
 export function optionName(kit: Kit, option: { id: string; label: string }) {

@@ -26,8 +26,8 @@ use std::sync::OnceLock;
 
 use arena_protocol::prediction::{InterpDelay, Pacer, Predictor, TickRate};
 use arena_protocol::{
-    ClientMessage, ErrorCode, FighterScore, FighterState, InputFrame, ServerMessage, WireAction,
-    WireAppearance, WireEvent,
+    ClientMessage, ErrorCode, FighterScore, FighterState, Handle, InputFrame, ServerMessage, Tags,
+    WireAction, WireAppearance, WireEvent,
 };
 use arena_sim::arena::{
     ActorInput, Arena, Axes, CastAction, Combatant, InterruptReason, MAX_ROUND_TICKS, Rejection,
@@ -240,7 +240,35 @@ pub struct Session {
     /// Relayed per-seat locked looks in local actor order.
     appearances: Vec<Option<WireAppearance>>,
     appearances_version: u64,
+    /// Relayed per-seat `Name#1234` handles in local actor order (empty
+    /// until the server sends them).
+    handles: Vec<Option<Handle>>,
+    /// Relayed per-seat tags (the admin tag) in local actor order.
+    tags: Vec<Tags>,
     pub stats: Stats,
+}
+
+/// Relayed tags for the page: an array of `{"admin": bool}` per local
+/// actor, or `null` when no seat has a tag.
+pub fn tags_json(tags: &[Tags]) -> String {
+    if tags.is_empty() {
+        return "null".to_owned();
+    }
+    let entries: Vec<serde_json::Value> = tags
+        .iter()
+        .map(|tags| serde_json::json!({ "admin": tags.admin }))
+        .collect();
+    serde_json::Value::Array(entries).to_string()
+}
+
+/// Relayed handles for the page: an array of `"Name#1234"` or `null` per
+/// local actor.
+pub fn handles_json(handles: &[Option<Handle>]) -> String {
+    let entries: Vec<serde_json::Value> = handles
+        .iter()
+        .map(|handle| handle.map_or(serde_json::Value::Null, |h| h.to_string().into()))
+        .collect();
+    serde_json::Value::Array(entries).to_string()
 }
 
 /// Local order for `seat` among `count` actors: `order[local] = actor`.
@@ -287,6 +315,16 @@ impl Session {
     pub fn appearances(&self) -> &[Option<WireAppearance>] {
         &self.appearances
     }
+    /// Relayed per-seat handles in local actor order: the server's, from
+    /// signed tickets, never a client's claim.
+    pub fn handles(&self) -> &[Option<Handle>] {
+        &self.handles
+    }
+    /// Relayed per-seat tags in local actor order (empty when no seat has
+    /// one).
+    pub fn tags(&self) -> &[Tags] {
+        &self.tags
+    }
     /// JSON representation of the relayed local-order appearances for the browser
     /// kit catalog (`null` until received, otherwise an array of `Appearance | null`).
     pub fn appearances_json(&self) -> String {
@@ -315,6 +353,7 @@ impl Session {
                         "body": look.body,
                         "skinTone": look.skin_tone,
                         "hairColor": look.hair_color,
+                        "facialHairColor": look.facial_hair_color,
                         "eyes": look.eyes,
                         "build": f64::from(look.build) / 100.0,
                         "groups": groups,
@@ -363,7 +402,10 @@ impl Session {
             self.last_view_tick = 0;
             self.frame_inputs = (f64::NAN, 0);
             self.own = None;
-            // The server always sends Appearances right after Welcome when any look is locked.
+            // The server always sends Appearances (and Handles) right after
+            // Welcome when any seat has one.
+            self.handles.clear();
+            self.tags.clear();
             if !self.appearances.is_empty() {
                 self.appearances.clear();
                 self.appearances_version += 1;
@@ -403,6 +445,8 @@ impl Session {
                         self.view_tick = None;
                         self.last_view_tick = 0;
                         self.heading_taken = false;
+                        self.handles.clear();
+                        self.tags.clear();
                         if !self.appearances.is_empty() {
                             self.appearances.clear();
                             self.appearances_version += 1;
@@ -560,6 +604,26 @@ impl Session {
                         self.appearances = local;
                         self.appearances_version += 1;
                     }
+                }
+                ServerMessage::Handles(server_handles) => {
+                    if (self.seat.is_none() && !self.spectator)
+                        || server_handles.len() != self.order.len()
+                    {
+                        continue;
+                    }
+                    self.handles = self
+                        .order
+                        .iter()
+                        .map(|&actor| server_handles[actor])
+                        .collect();
+                }
+                ServerMessage::Tags(server_tags) => {
+                    if (self.seat.is_none() && !self.spectator)
+                        || server_tags.len() != self.order.len()
+                    {
+                        continue;
+                    }
+                    self.tags = self.order.iter().map(|&actor| server_tags[actor]).collect();
                 }
             }
         }

@@ -31,7 +31,8 @@ OUTFIT_TEXTURES = ROOT / 'outfits/Textures'
 RACES = ROOT / 'races/Exports/GLB (Godot-Unreal)'
 RACE_TEXTURES = ROOT / 'races/Textures'
 DIRECTORY = 'characters/kits'
-# character.json model id: the player is assembled from a kit at runtime.
+# character.json model id: the player is assembled from a kit at runtime. The name is historical: it now
+# means any customizable kits (arena-client's KITS_MODEL).
 IDENTIFIER = 'quaternius-kits'
 # One scale for every kit, so bodies keep their authored relative heights.
 # It matches the previous dressed-female normalization (1.9 m boot-to-buns).
@@ -81,6 +82,9 @@ PIECES = {
     'Hood': ('head', ()),
 }
 OUTFIT_SLOTS = ('head', 'shoulders', 'torso', 'arms', 'legs', 'feet')
+# Finished kits built offline (docs/ART-PRODUCTION.md, ADR 0053): one folder per kit holding
+# <id>.glb and kit.json, its manifest entry. They ship as built, after the Quaternius kits.
+PREBUILT = ROOT.parent / 'characters/kits'
 OUTFIT_SETS = (('Ranger', 'Ranger'), ('Peasant', 'Peasant'))
 
 
@@ -154,6 +158,9 @@ def race(name, body):
 KITS = (human('female'), human('male'),
         race('elf', 'female'), race('elf', 'male'),
         race('orc', 'female'), race('orc', 'male'))
+# The kits the game ships. Since 2026-11-25 only finished kits (ADR 0053, prebuilt under assets/) are offered;
+# the Quaternius kits above stay buildable: pass kits=KITS to prepare().
+SHIPPED = ()
 
 # Eye colours: recoloured from the CC0 brown iris, plus the races' own eyes.
 IRIS = BASE / 'T_Eye_Brown.png'
@@ -594,14 +601,37 @@ def assemble(kit, library_path=q.LIBRARY, strafe_path=q.STRAFE_LIBRARY,
     return glb, groups, regions, (low, high)
 
 
-def prepare(directory, texture_processor=kit_png, iris_processor=iris_png, kits=KITS,
-            library_path=q.LIBRARY, strafe_path=q.STRAFE_LIBRARY):
+def prebuilt(out, source=PREBUILT):
+    """Copy every finished kit under `source` into `out`; return their manifest entries."""
+    entries = []
+    for manifest in sorted(source.glob('*/kit.json')):
+        entry = json.loads(manifest.read_text())
+        identifier = entry.get('id')
+        if identifier != manifest.parent.name or entry.get('path') != f'{DIRECTORY}/{identifier}.glb':
+            raise ValueError(f'{manifest}: id and path must match the kit folder name')
+        if not all(isinstance(entry.get(key), kind) for key, kind in (
+                ('ancestry', str), ('body', str), ('regions', list), ('groups', dict),
+                ('materials', dict), ('sole', (int, float)))):
+            raise ValueError(f'{manifest}: incomplete kit manifest')
+        glb = manifest.with_name(f'{identifier}.glb')
+        if not glb.is_file():
+            raise ValueError(f'{manifest}: {glb.name} is missing')
+        (out / glb.name).write_bytes(glb.read_bytes())
+        # Every kit is drawn at the one shared scale (ADR 0040).
+        entries.append({**entry, 'scale': SCALE})
+    return entries
+
+
+def prepare(directory, texture_processor=kit_png, iris_processor=iris_png, kits=SHIPPED,
+            library_path=q.LIBRARY, strafe_path=q.STRAFE_LIBRARY, prebuilt_path=PREBUILT):
     """Write every installed kit and its variant textures; return the manifest."""
     out = directory / DIRECTORY
     textures = out / 'textures'
     textures.mkdir(parents=True, exist_ok=True)
     for stale in list(out.glob('*.glb')) + list(textures.glob('*.png')):
         stale.unlink()
+    if not any(available(k) for k in kits):                 # finished kits only: no Quaternius sources needed
+        return prebuilt(out, prebuilt_path)
     cache = {}
 
     def processed(data, kind):
@@ -663,4 +693,4 @@ def prepare(directory, texture_processor=kit_png, iris_processor=iris_png, kits=
             'morph': 'Body_Full' if kit.morph else None,
             'eyes': 'elf' if kit.ancestry == 'elf' else 'orc' if kit.ancestry == 'orc' else 'brown',
         })
-    return manifest
+    return manifest + prebuilt(out, prebuilt_path)

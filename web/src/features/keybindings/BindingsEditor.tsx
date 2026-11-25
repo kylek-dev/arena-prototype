@@ -9,6 +9,7 @@ const actionName = (action: string) =>
   ({
     spellbook: "Spells",
     stopCasting: "Stop casting",
+    toggleSheath: "Sheathe / draw weapon",
     toggleEnemyNameplates: "Toggle enemy nameplates",
     toggleFriendlyNameplates: "Toggle friendly nameplates",
   })[action] ?? action;
@@ -44,7 +45,16 @@ export function BindingsEditor() {
   const group = (a: string) =>
     a.startsWith("slot:")
       ? "slots"
-      : ["forward", "back", "left", "right", "autorun", "jump", "stopCasting"].includes(a)
+      : [
+            "forward",
+            "back",
+            "left",
+            "right",
+            "autorun",
+            "jump",
+            "stopCasting",
+            "toggleSheath",
+          ].includes(a)
         ? "movement"
         : [
               "menu",

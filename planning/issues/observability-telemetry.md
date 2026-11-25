@@ -1,5 +1,13 @@
 # Production-Grade Observability & Telemetry (OpenTelemetry + Self-Hosted Grafana LGTM)
 
+**Status (2026-11-25):** Phases 1–3 are implemented on stacked branches
+(`auto/observability-logging`, `auto/observability-tracing`,
+`auto/observability-rum`; [ADR 0054](../../docs/decisions/0054-observability-logs-metrics-and-local-lgtm.md)).
+They were verified locally with Docker through Grafana's HTTP API. Still open:
+a person looking at the dashboards in a browser, a public host, and metric
+exemplars, which are deferred because the tick path may not carry a trace
+context. The page sends its own scrubbed reports instead of using the Faro SDK.
+
 Add Datadog-style structured logging, metrics, distributed tracing (APM), dashboards, alerting, continuous profiling, and browser error/session telemetry that run identically **locally and in production** with **$0 software licensing cost** and zero vendor lock-in.
 
 ## Architecture & Stack Choice

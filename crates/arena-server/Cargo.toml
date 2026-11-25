@@ -11,7 +11,7 @@ arena-sim = { path = "../arena-sim" }
 arena-map = { path = "../arena-map" }
 arena-protocol = { path = "../arena-protocol" }
 arena-palette = { path = "../arena-palette" }
-axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "ws", "query", "json"] }
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "ws", "query", "json", "matched-path"] }
 tokio = { version = "=1.54.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
@@ -19,8 +19,34 @@ hmac = "=0.13.0"
 sha2 = "=0.11.1"
 getrandom = "=0.4.3"
 postcard = { version = "=1.2.0", default-features = false, features = ["alloc"] }
+tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["std", "fmt", "ansi", "env-filter", "json", "smallvec", "tracing-log"] }
+# OpenTelemetry tracing over OTLP/HTTP, active only when
+# OTEL_EXPORTER_OTLP_ENDPOINT is set (ADR 0054).
+opentelemetry = { version = "=0.33.1", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "=0.33.1", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "=0.33.1", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"] }
+tracing-opentelemetry = { version = "=0.34.0", default-features = false }
+tower-http = { version = "=0.7.1", default-features = false, features = ["trace"] }
+# Continuous CPU profiling, built only with `--features profiling` and
+# started only when ARENA_PYROSCOPE_URL is set (ADR 0054). Plain HTTP: the
+# Pyroscope server sits on the private network.
+pyroscope = { version = "=2.1.5", default-features = false, features = ["backend-pprof-rs"], optional = true }
+
+# Accounts (ADR 0055): the account store, and HTTPS to OAuth providers with
+# rustls on `ring` and the system certificate store.
+tokio-postgres = { version = "=0.7.18", default-features = false, features = ["runtime"] }
+deadpool-postgres = { version = "=0.14.2", default-features = false, features = ["rt_tokio_1"] }
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls-no-provider", "json", "form"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std"] }
+
+[features]
+profiling = ["dep:pyroscope"]
 
 [dev-dependencies]
+# The fake OAuth provider in tests/identity.rs reads form bodies.
+axum = { version = "=0.8.9", default-features = false, features = ["form"] }
+opentelemetry_sdk = { version = "=0.33.1", default-features = false, features = ["trace", "testing"] }
 tokio-tungstenite = "=0.30.0"
 futures-util = "=0.3.34"
 

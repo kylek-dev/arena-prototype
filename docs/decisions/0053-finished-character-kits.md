@@ -1,0 +1,232 @@
+# ADR 0053: Finished character kits rebuilt from generated models
+
+Date: 2026-11-24. **Status: accepted for the human male.** Implemented
+locally and reviewed by the user in the browser on 2026-11-24. Requested by the
+user: a base male "more generic with blank customizable pieces", ready for
+generated equipment. Hair and facial hair were added the same day: three
+hairstyles, two beards and stubble (see "Hair and beards"). On 2026-11-25 the
+user accepted the kit with its hair and asked for it to be **the only
+character the game offers** until more kits are built the same way (see
+"Only finished kits ship").
+
+## Context
+
+The first Meshy body ([ART-PRODUCTION.md](../ART-PRODUCTION.md)) went in game
+as one mesh with one baked texture. Skin tone and eye colour were recovered by
+detecting painted regions in that texture. The user called that approach hacky
+and asked for a kit built from separate pieces instead, with clean topology,
+proper UVs, a standard rest pose, attachment sockets and body regions for these
+slots: head, shoulders, back, chest, shirt, tabard, bracers, gloves, belt,
+pants, boots, and main hand, off hand, two-handed, ranged.
+
+The generated model supplies the look the user approved (face, proportions,
+painted style). Its structure does not fit a kit: a uniform grid mesh with no
+eye sockets, fused toes, a 28-joint rig without fingers, and clothing sculpted
+and painted into the body.
+
+## Decision
+
+**The generator supplies the art; the kit supplies the structure.** A finished
+kit keeps the generated shape and paint and replaces everything else.
+
+- **Topology.** The CC0 MakeHuman base mesh is fitted to the generated sculpt
+  (pose alignment, then a non-rigid surface fit; 0.13 mm median distance on the
+  human male). It is used as scaffolding only: edge loops, separate fingers and
+  toes, eyelids, skin weights for a UE-named rig and face shape targets. Ears
+  and the insides of the eyelids keep the scaffold's forms. The scaffold's
+  mouth cavity is removed: the lips close on the generated model's painted
+  mouth line, with both lip edges on one curve.
+- **Paint.** The generated paint is transferred to the new UVs. Painted
+  clothing becomes skin by re-colouring its own painted shading with the skin
+  tones measured on the body, so the body is blank skin everywhere. The painted
+  eyebrows are lifted out. Sculpted hems are smoothed out of the sculpt before
+  the normal map is baked. Dark blots in the generated paint are refilled from
+  the good paint around them, and every old garment edge (neckline, armholes,
+  waist, leg hems) is blended across. Last, the skin is graded onto the
+  palette's `skin-natural` (hue and chroma moved in Lab, shading kept), so each
+  skin tone's tint lands on its swatch. The generated paint was a saturated
+  salmon, which made dark tones too red.
+- **Separate pieces, one material slot each.**
+
+  | Feature | Nodes | Material | Runtime control |
+  | --- | --- | --- | --- |
+  | Skin | `Body_*` regions | `Skin`, `Skin_Head` | skin tone tint |
+  | Eyes | `Eyes` | `Eye_White`, `Eye_Iris` (grey) | eye colour tint |
+  | Eyebrows | `Brows_*` (alpha-blended) | `Brows_*` (grey) | shape; hair colour tint |
+  | Hair | `Hair_*` | `Hair_*`, one per style (grey) | style; hair colour tint |
+  | Facial hair | `Beard_*` (stubble alpha-blended) | `Beard_*`, one per style (grey) | style; its own colour tint |
+  | Face | morph targets on `Body_Head` | | preset |
+  | Underclothes | `Trunks` | `Trunks` | hidden by pants |
+
+- **Rest pose and skeleton.** The kit skeleton keeps the 65 joints, names,
+  order and hierarchy of [ADR 0040](0040-character-customization-kits.md). The
+  body is bound in its own A-pose, which is also the file's rest pose. Torso,
+  head, clavicle, leg and foot joints keep the kit's rest orientations and the
+  arm and hand joints the previous kit's, so the existing clips move the body
+  and wrists as before. Finger joints sit on the fitted fingers and are aligned
+  to them, and the clips' finger keys are re-based onto this hand. Pelvis translation
+  keys are scaled to the body's hip height. The pelvis, spine and neck-base
+  joints sit where the previous kit had them, and the torso weights are
+  redistributed by height around them: the clips' back arch was tuned on those
+  pivots, and on the scaffold's lower pivots it thrust the chest out. Each
+  hand-over runs from the joint below to the joint above, because Attack bends
+  one spine joint by 32 degrees and a short hand-over creased the bare chest.
+- **Clips without finger animation.** A clip that leaves every finger at the
+  kit's flat rest pose (Meshy's rig has no fingers, so its run clips do) takes
+  the hands of the Idle clip. Otherwise the fingers spring flat open.
+- **Regions.** The body is cut along edge loops of the mesh into `Head`,
+  `Neck`, `Chest`, `Abdomen`, `Shoulders`, `UpperArms`, `Forearms`, `Hands`,
+  `Knees`, `Calves`, `Shins` and `Feet`. `Hips` and `Thighs` lie under the
+  `Trunks` piece and are not shipped. The waist and leg-opening loops are
+  flattened onto planes, so garment edges are straight, and the trunks carry a
+  plain painted waistband and hems on those edges. Each equipment piece lists
+  the regions it covers, as in ADR 0040.
+
+  | Slot | Attached | Covers by default |
+  | --- | --- | --- |
+  | head | rigid on `socket_head` | hair |
+  | shoulders | rigid on `socket_shoulder_l/r` | nothing |
+  | back | skinned to the spine, placed from `socket_back` | nothing |
+  | chest | skinned | `Chest`, `Abdomen`, the shirt beneath |
+  | shirt | skinned | `Chest`, `Abdomen`, plus `Shoulders`, `UpperArms`, `Forearms` by sleeve length |
+  | tabard, belt | skinned | nothing |
+  | bracers | skinned | `Forearms` |
+  | gloves | skinned | `Hands` |
+  | pants | skinned | `Trunks`, `Knees`, `Calves` by length |
+  | boots | skinned | `Feet`, `Shins`, plus `Calves` when tall |
+  | main hand, two-handed | `socket_weapon_r` | |
+  | off hand | `socket_weapon_l` | |
+  | ranged | bow in `socket_weapon_l`, crossbow in `socket_weapon_r` | |
+
+- **Sockets.** Plain named nodes under a joint, outside the skin, so clips and
+  skinning are unaffected: `socket_head`, `socket_shoulder_l/r`,
+  `socket_back`, `socket_back_l/r`, `socket_chest`, `socket_belt`,
+  `socket_hip_l/r` and `socket_weapon_l/r`. Body sockets are aligned to the
+  model's axes in the rest pose. Grip sockets have +Y along the gripped shaft
+  towards the thumb side and +Z the way the knuckles point. The game has no
+  shields, so the shield socket of the first build was removed (2026-11-25).
+- **Hair and beards.** Each style is generated in Meshy as a bust: an image
+  edit adds the style to front, side and back renders of the kit's own bald
+  head, and multi-image to 3D turns it into a model. The bust is fitted to
+  the kit head on skin that is skin on both, and the piece is cut out of it:
+  by how far it stands clear of the kit head (the swept-back cut), or, for
+  pieces too thin to tell from the generated skin that way (a fade, a
+  moustache), by where the generator painted hair. The user approved the
+  paint-guided cut on 2026-11-24; it runs at build time only and the result
+  is still its own mesh and material. The piece's edge is sunk 1.2 mm under
+  the skin, it is reduced to the 8k budget with new UVs, its paint is made
+  grey for tinting, and its normal map is baked from the dense cut. Hair is
+  carved 6 mm clear of the kit's ears, which are not where the generated
+  ears were. Every vertex takes the face targets of the nearest head vertex.
+  Within 8 mm of the head's skin it also takes that skin's weights, blending
+  to rigid on `Head` 20 mm out: the nape and jaw partly follow the neck, and
+  on rigid hair the skin slid out from under the close crop in motion. Only
+  the head's skin counts; following the neck too bent the ponytail into the
+  back. Stubble is a layer of the face's own quads 0.7 mm above the skin,
+  shaped like the full beard's footprint. Groups `hair` and `beard` each have
+  a `none` option, which a look naming another kit's option falls back to.
+- **Manifest.** A kit entry may add `morphNodes` (nodes carrying the face
+  targets), a `face` group whose options carry `weights`, the tint kinds
+  `eyes` and `facialHair`, and informational `sockets` and `slots`. A group
+  without a `none` option defaults to its first option.
+- **Build.** Finished kits are built offline and placed in
+  `assets/characters/kits/<id>/` as `<id>.glb` and `kit.json`.
+  `scripts/character_kits.py` copies them as built and lists them after the
+  Quaternius kits at the shared scale.
+- **Appearance and protocol.** A look gains `facialHairColor` (the hair colour
+  until chosen) and the `face` group. The armour slots join the outfit slots.
+  `PROTOCOL_VERSION` is 8: `WireAppearance` carries `facial_hair_color` and up
+  to 24 part groups.
+
+## Consequences
+
+- Skin, eye, hair and facial hair colours are plain per-material tints. No
+  texture is analysed at run time, and no eye texture variants ship for
+  finished kits. At build time the only texture read for a decision is a
+  generated hair or beard bust's paint, to place the piece's edge.
+- The human male kit is 7.4 MB. It was 13.9 MB with every texture as PNG;
+  since 2026-11-25 opaque textures are embedded as JPEG (base colour at
+  quality 90, normal maps at 95 with full chroma) and only alpha-blended ones
+  stay PNG. The client enables Bevy's `jpeg` feature for this.
+  Its body is 23,156 triangles, inside the 25k body budget of
+  ART-PRODUCTION.md; with trunks, eyes and one brow set it draws 25,796. The
+  dense hands and feet of the scaffold account for 10,920. The hairstyles are
+  7,579 to 7,596 triangles, the beards 6,933 (full) and 4,753 (handlebar) and
+  the stubble 1,682, so the heaviest look (tied back and full beard) draws
+  40,325 before gear.
+- Meshy's image editor refused the "remove the top" concept edit as a content
+  policy matter, so the bare torso is derived from the model's own paint
+  rather than regenerated.
+- A shorter underclothes piece would need the `Hips` and `Thighs` skin
+  exported. Its paint exists.
+- The client attaches the Gladiator's two-handed sword
+  (`assets/weapons/gladiator-greatsword/`, built in the grip socket's frame by
+  `weapon.py` and `weapon_build.py`) under `socket_weapon_r` of every
+  finished kit, with an identity transform. Every clip is unarmed for now
+  (Attack is a punch), so it is held in one hand until two-handed clips exist.
+  A **Sheathe / draw weapon** keybind (default Z) moves the local player's
+  sword to `socket_back`, hilt over the right shoulder; fighters start
+  sheathed and using an ability draws it. The state is presentation only: it
+  is not saved, not part of the combat input, and not sent to other players,
+  so other fighters always hold theirs drawn. The other sockets are unused.
+- Hair and beards have no joints of their own; away from the skin they are
+  rigid on the head. The tied-back ponytail clears the back in all ten clips;
+  longer hair would need its own joints.
+- The offline tooling is in `scripts/finished_kit/` (see its README). It
+  needs Blender, scientific Python packages and the art workspace outside
+  Git, which holds the raw Meshy files and every intermediate file. It is
+  written for this one body.
+- While it was reviewed, the kit was listed as its own ancestry (`meshy`,
+  shown as "Human (new)") beside the Quaternius kits. It is now the `human`
+  ancestry and the only kit shipped; a look saved with `meshy` still resolves
+  to it.
+
+## Only finished kits ship (2026-11-25)
+
+At the user's request the game offers only finished kits until more are built
+like this one. `character_kits.SHIPPED` is empty, so the Quaternius kits of
+[ADR 0040](0040-character-customization-kits.md) are no longer built into the
+game, and the finished kits ship even where the Quaternius sources are not
+installed. Their build code and tracked sources stay; passing `kits=KITS` to
+`character_kits.prepare` builds them again. The default look is the human male
+with swept-back hair and natural brows. A look that names a body, ancestry or
+option the shipped kits lack falls back as before: to the human of that body,
+then to the first kit, and to the option `none` or the group's first option.
+The customizer offers one body type, no ancestry choice and no outfits.
+
+## Evidence
+
+- Offline: clip renders of the shipped GLB in Blender for all ten clips, mesh
+  checks (all quads, no non-manifold edges, exactly symmetric, 1.81 m, soles on
+  the ground), and side-by-side renders against the generated original, which
+  the user approved on 2026-11-24.
+- Tests: `tests/unit/test_character_kits.py` (prebuilt kits),
+  `tests/domain/appearance.test.ts`, `tests/ui/customizer.test.tsx`,
+  `arena-client` appearance spec tests and the `arena-protocol` golden frame.
+- Browser review by the user on 2026-11-24 found five faults: a half
+  skin-coloured, wavy waistband; light bands at the leg openings and harsh
+  dark skin tones; black marks on the back; a line through the mouth; and a
+  thrust-out chest in the clips. All five are fixed in the rebuilt kit and
+  checked offline (renders of the shipped GLB, a simulated `skin-ebony` tint,
+  and the Idle torso outline measured against the previous kit: chest 2.5 cm
+  in front of the belly, previously 2.4 cm on that kit).
+- A second note from the user the same day: in the run the hand was bent and
+  open. The hand joint is now bound as on the previous kit, the finger joints
+  moved onto the fingers (the index knuckle had been 13 mm outside the skin),
+  and the two run clips take the Idle hands. Checked in close-up renders of
+  both hands through the run, and of the Idle and Attack fists.
+- The user reviewed the rebuilt kit in the browser on 2026-11-24 and accepted
+  it ("All that is good"). No automated browser check was run.
+- Hair and beards, 2026-11-24: the user approved the swept-back hairstyle in
+  the browser. Their review of the other pieces found skin showing through
+  the close crop in motion, an unpainted ponytail, the tied back through the
+  ears, and a choppy handlebar beard reaching into the nose. Fixed by the
+  skin-following weights, disc-only UV charts and the ear carve; checked
+  offline in renders of the shipped GLB and clip frames of the close crop,
+  tied back and full beard. The beard change (smoother paint edges and a nose
+  exclusion) looked worse to the user on 2026-11-25 and was reverted: the
+  beards are cut as first reviewed. The user then accepted the fixes except
+  the ponytail, which now bent into the back because it followed the neck
+  skin; hair follows only the head's skin since, and clip frames show the
+  ponytail clear of the back and the close crop's nape covered again. Browser
+  review of that last fix is pending.

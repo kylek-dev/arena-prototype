@@ -30,9 +30,9 @@ In recommended order (2026-11-15):
 | done | Host private custom matches with invites, teams, versioned settings, spectator slots and rematch (browser review pending) | 4 | [custom-matches](issues/custom-matches.md) |
 | done | Make cast times, cooldowns, resources and interrupts server-authoritative ([ADR 0048](../docs/decisions/0048-server-authoritative-casting-and-resources.md)) | 3 | [server-casting-resources](issues/server-casting-resources.md) |
 | done | Spectate matches live (optional configurable delay), free/follow camera and watch-only HUD ([ADR 0050](../docs/decisions/0050-spectating-and-anti-ghosting-delay.md); browser review follow-up pending) | 4 | [spectating](issues/spectating.md) |
-| 2 | Production-grade observability: OpenTelemetry logs, metrics, tracing & self-hosted Grafana LGTM stack (local and prod) | 2 / 5 | [observability-telemetry](issues/observability-telemetry.md) |
-| 3 | Accounts (researched login choice), `Name#1234` handles, friends and friend invites, admin role (added by the user 2026-11-22) | 5 | [social-identity](issues/social-identity.md) |
-| 4 | Team, match and public chat with system messages and slash commands (`/help`, commands to open panels) (added by the user 2026-11-22) | 4 / 5 | [chat](issues/chat.md) |
+| done | Production-grade observability: structured logs, metrics, OTLP traces, browser reports, profiling & self-hosted Grafana LGTM stack ([ADR 0054](../docs/decisions/0054-observability-logs-metrics-and-local-lgtm.md); dashboards checked through the API, browser view pending) | 5 | [observability-telemetry](issues/observability-telemetry.md) |
+| 3 | Accounts (researched login choice), `Name#1234` handles, friends and friend invites, admin role (added by the user 2026-11-22; server side done 2026-11-25 with [ADR 0055](../docs/decisions/0055-accounts-oauth-login-in-arena-door.md), UI follow-ups in Lane B) | 5 | [social-identity](issues/social-identity.md) |
+| 4 | Team, match and public chat with system messages and slash commands (`/help`, commands to open panels) (added by the user 2026-11-22; chat server done 2026-11-25, chat box and commands in Lane B) | 4 / 5 | [chat](issues/chat.md) |
 | ongoing | Review the network match experience across browsers (manual, by the user) | 2 | [network-ui-review](issues/network-ui-review.md) |
 | ongoing | Measure and harden netcode on real networks | ongoing | [netcode-hardening](issues/netcode-hardening.md) |
 
@@ -44,3 +44,18 @@ Why this order:
 - **Server-authoritative casting before spectating.** Spectator views then show cast bars and resources from the start instead of adding them twice.
 - **Observability (OpenTelemetry + self-hosted Grafana LGTM).** Can be pulled forward alongside remote playtests: Phase 1 (structured `tracing` logs, lock-free tick histograms, `arena-door` `/metrics`, and an opt-in local `grafana/otel-lgtm` Compose profile) immediately helps diagnose real WAN playtests, while Phase 2 (OTLP distributed tracing, Alloy log/metric shipping, alerts) and Phase 3 (scrubbed browser RUM + Pyroscope profiling) harden production operations with $0 software cost.
 - **Note on stages.** This pulls part of Stage 4 (lobby and queueing) ahead of the Stage 3 combat slice because remote playtests need it. The stages still describe the exit evidence for each milestone.
+
+## Art production track (added by the user 2026-11-23)
+
+This runs alongside the stages above. The quality bar and scope are in [ADR 0052](../docs/decisions/0052-art-scope-and-quality-bar.md): every shipped piece is finished to the highest quality, from one developer on a small tool budget.
+
+| Order | Item | Target |
+| --- | --- | --- |
+| 1 | Gladiator vertical slice on Meshy Pro: human male and female bodies, Gladiator base gear set, sword and shield, 8 spell icons, in game ([ART-PRODUCTION.md](../docs/ART-PRODUCTION.md)) | 1 class slice |
+| 2 | Base bodies and customization: 2 genders × at least 3 races, faces, hair, colors on the shared kit skeleton | 6+ bodies |
+| 3 | Class identity: base equipment that represents each class | 5+ classes |
+| 4 | Spells: 8+ per class, each with an icon and an animation (procedural where it meets the bar) | 40+ spells |
+| 5 | Maps: a pool of 5+ arenas, each richly dressed with props and clear combat lanes | 5+ maps |
+| 6 | Progression and store equipment per class (building the store and progression systems waits for the core loop) | open |
+
+Each item exits with human review at combat distance and close up, and with recorded provenance and licensing for every asset.
