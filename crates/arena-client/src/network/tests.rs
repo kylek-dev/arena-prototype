@@ -1035,6 +1035,7 @@ fn relayed_appearances_renumber_into_local_order_and_serialize_to_json() {
         body: body.into(),
         skin_tone: "natural".into(),
         hair_color: "auburn".into(),
+        facial_hair_color: "auburn".into(),
         eyes: "brown".into(),
         build: 25,
         groups: vec![("hair".into(), "Hair_Buns".into())],

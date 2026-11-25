@@ -52,3 +52,52 @@ export function humanKit(body = "female"): Kit {
     eyes: "brown",
   };
 }
+
+/** A finished kit (ADR 0053): tinted eyes and facial hair, face presets, armour slots. */
+export function finishedKit(): Kit {
+  return {
+    id: "meshy-human-male",
+    ancestry: "meshy",
+    body: "male",
+    path: "characters/kits/meshy-human-male.glb",
+    sole: 0,
+    scale: 1.0656,
+    license: "LicenseRef-Meshy-Pro-private",
+    regions: ["Body_Head", "Body_Chest", "Body_Forearms", "Body_Hands", "Trunks", "Body_Feet"],
+    groups: {
+      face: [
+        { id: "chiseled", label: "Chiseled", nodes: [], weights: [0, 0] },
+        { id: "broad", label: "Broad", nodes: [], weights: [1, 0] },
+        { id: "lean", label: "Lean", nodes: [], weights: [0, 7] },
+      ],
+      brows: [
+        { id: "Brows_Natural", label: "Natural", nodes: ["Brows_Natural"] },
+        { id: "Brows_None", label: "None", nodes: [] },
+      ],
+      beard: [none, { id: "Beard_Full", label: "Full", nodes: ["Beard_Full"] }],
+      gloves: [
+        none,
+        {
+          id: "Gladiator",
+          label: "Gladiator",
+          nodes: ["Gladiator_Gloves"],
+          covers: ["Body_Hands"],
+        },
+      ],
+      pants: [
+        none,
+        { id: "Gladiator", label: "Gladiator", nodes: ["Gladiator_Pants"], covers: ["Trunks"] },
+      ],
+    },
+    materials: {
+      Skin: { tint: "skin" },
+      Skin_Head: { tint: "skin" },
+      Eye_Iris: { tint: "eyes" },
+      Brows_Natural: { tint: "hair" },
+      FacialHair: { tint: "facialHair" },
+    },
+    morph: null,
+    morphNodes: ["Body_Head", "Brows_Natural"],
+    eyes: "brown",
+  };
+}

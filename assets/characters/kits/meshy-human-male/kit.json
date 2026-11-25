@@ -1,0 +1,270 @@
+{
+ "id": "meshy-human-male",
+ "ancestry": "meshy",
+ "body": "male",
+ "path": "characters/kits/meshy-human-male.glb",
+ "sole": 0.0,
+ "top": 1.8098,
+ "license": "LicenseRef-Meshy-Pro-private",
+ "regions": [
+  "Body_Head",
+  "Body_Neck",
+  "Body_Chest",
+  "Body_Abdomen",
+  "Body_Shoulders",
+  "Body_UpperArms",
+  "Body_Forearms",
+  "Body_Hands",
+  "Body_Knees",
+  "Body_Calves",
+  "Body_Shins",
+  "Body_Feet",
+  "Trunks"
+ ],
+ "groups": {
+  "face": [
+   {
+    "id": "chiseled",
+    "label": "Chiseled",
+    "nodes": [],
+    "weights": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "id": "broad",
+    "label": "Broad",
+    "nodes": [],
+    "weights": [
+     1.0,
+     0.0,
+     0.0
+    ]
+   },
+   {
+    "id": "lean",
+    "label": "Lean",
+    "nodes": [],
+    "weights": [
+     0.0,
+     1.0,
+     0.0
+    ]
+   },
+   {
+    "id": "rugged",
+    "label": "Rugged",
+    "nodes": [],
+    "weights": [
+     0.0,
+     0.0,
+     1.0
+    ]
+   }
+  ],
+  "brows": [
+   {
+    "id": "Brows_Natural",
+    "label": "Natural",
+    "nodes": [
+     "Brows_Natural"
+    ]
+   },
+   {
+    "id": "Brows_Bold",
+    "label": "Bold",
+    "nodes": [
+     "Brows_Bold"
+    ]
+   },
+   {
+    "id": "Brows_Fine",
+    "label": "Fine",
+    "nodes": [
+     "Brows_Fine"
+    ]
+   },
+   {
+    "id": "Brows_None",
+    "label": "None",
+    "nodes": []
+   }
+  ]
+ },
+ "materials": {
+  "Skin": {
+   "tint": "skin"
+  },
+  "Skin_Head": {
+   "tint": "skin"
+  },
+  "Eye_Iris": {
+   "tint": "eyes"
+  },
+  "Brows_Natural": {
+   "tint": "hair"
+  },
+  "Brows_Bold": {
+   "tint": "hair"
+  },
+  "Brows_Fine": {
+   "tint": "hair"
+  }
+ },
+ "morph": null,
+ "morphNodes": [
+  "Body_Head",
+  "Brows_Natural",
+  "Brows_Bold",
+  "Brows_Fine"
+ ],
+ "eyes": "brown",
+ "sockets": {
+  "socket_head": {
+   "joint": "Head",
+   "position": [
+    0.0,
+    1.8098,
+    -0.0045
+   ]
+  },
+  "socket_back": {
+   "joint": "spine_03",
+   "position": [
+    0.0,
+    1.38,
+    -0.1624
+   ]
+  },
+  "socket_chest": {
+   "joint": "spine_03",
+   "position": [
+    0.0,
+    1.36,
+    0.1405
+   ]
+  },
+  "socket_belt": {
+   "joint": "pelvis",
+   "position": [
+    0.0,
+    1.09,
+    0.129
+   ]
+  },
+  "socket_shoulder_l": {
+   "joint": "clavicle_l",
+   "position": [
+    0.2105,
+    1.5469,
+    -0.0301
+   ]
+  },
+  "socket_hip_l": {
+   "joint": "pelvis",
+   "position": [
+    0.1918,
+    1.02,
+    -0.03
+   ]
+  },
+  "socket_back_l": {
+   "joint": "spine_03",
+   "position": [
+    0.12,
+    1.36,
+    -0.1624
+   ]
+  },
+  "socket_weapon_l": {
+   "joint": "hand_l",
+   "position": [
+    0.4381,
+    0.9404,
+    -0.0045
+   ]
+  },
+  "socket_shoulder_r": {
+   "joint": "clavicle_r",
+   "position": [
+    -0.2105,
+    1.5469,
+    -0.0301
+   ]
+  },
+  "socket_hip_r": {
+   "joint": "pelvis",
+   "position": [
+    -0.1918,
+    1.02,
+    -0.03
+   ]
+  },
+  "socket_back_r": {
+   "joint": "spine_03",
+   "position": [
+    -0.12,
+    1.36,
+    -0.1624
+   ]
+  },
+  "socket_weapon_r": {
+   "joint": "hand_r",
+   "position": [
+    -0.4381,
+    0.9404,
+    -0.0045
+   ]
+  },
+  "socket_shield_l": {
+   "joint": "lowerarm_l",
+   "position": [
+    0.3926,
+    1.1883,
+    -0.0595
+   ]
+  }
+ },
+ "slots": {
+  "armor": [
+   "head",
+   "shoulders",
+   "back",
+   "chest",
+   "shirt",
+   "tabard",
+   "bracers",
+   "gloves",
+   "belt",
+   "pants",
+   "boots"
+  ],
+  "weapons": [
+   "mainHand",
+   "offHand",
+   "twoHand",
+   "ranged"
+  ]
+ },
+ "triangles": {
+  "Body_Head": 6044,
+  "Body_Neck": 724,
+  "Body_Chest": 1880,
+  "Body_Abdomen": 788,
+  "Body_Shoulders": 320,
+  "Body_UpperArms": 320,
+  "Body_Forearms": 960,
+  "Body_Hands": 6552,
+  "Body_Knees": 560,
+  "Body_Calves": 320,
+  "Body_Shins": 320,
+  "Body_Feet": 4368,
+  "Trunks": 1672,
+  "Brows_Natural": 408,
+  "Brows_Bold": 408,
+  "Brows_Fine": 408,
+  "Eyes": 560
+ }
+}

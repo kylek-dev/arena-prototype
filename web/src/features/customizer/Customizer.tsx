@@ -4,6 +4,7 @@ import {
   chosen,
   chosenVariant,
   defaultAppearance,
+  eyeColors,
   featureGroups,
   groupLabels,
   hairColors,
@@ -11,6 +12,7 @@ import {
   randomAppearance,
   selectKit,
   skinTones,
+  tintsEyes,
   type Appearance,
   type Group,
   type Kit,
@@ -194,6 +196,8 @@ function BodyTab({ kits, kit, look, set }: TabProps) {
 
 function HeadTab({ kit, look, set }: TabProps) {
   const eyes = kit.materials.Eyes?.variants ?? [];
+  const tintedEyes = tintsEyes(kit);
+  const tintedBeard = Object.values(kit.materials).some((m) => m.tint === "facialHair");
   const hooded = kit.groups.head && chosen(kit, look, "head")?.id !== "none";
   const shades = variantChoices(kit, "Hair_Fantasy");
   return (
@@ -215,8 +219,24 @@ function HeadTab({ kit, look, set }: TabProps) {
         label="Hair colour"
         options={hairColors}
         value={look.hairColor}
-        onChange={(hairColor) => set({ ...look, hairColor })}
+        onChange={(hairColor) =>
+          // The beard follows the hair until it is given its own colour.
+          set({
+            ...look,
+            hairColor,
+            facialHairColor:
+              look.facialHairColor === look.hairColor ? hairColor : look.facialHairColor,
+          })
+        }
       />
+      {tintedBeard && (
+        <Swatches
+          label="Facial hair colour"
+          options={hairColors}
+          value={look.facialHairColor}
+          onChange={(facialHairColor) => set({ ...look, facialHairColor })}
+        />
+      )}
       {shades.length > 1 && (
         <Choices
           label={materialLabels.Hair_Fantasy}
@@ -225,7 +245,15 @@ function HeadTab({ kit, look, set }: TabProps) {
           onChange={(id) => set({ ...look, variants: { ...look.variants, Hair_Fantasy: id } })}
         />
       )}
-      {eyes.length > 0 && (
+      {tintedEyes && (
+        <Swatches
+          label="Eye colour"
+          options={eyeColors}
+          value={eyeColors.some((c) => c.id === look.eyes) ? look.eyes : kit.eyes}
+          onChange={(eyes) => set({ ...look, eyes })}
+        />
+      )}
+      {!tintedEyes && eyes.length > 0 && (
         <Choices
           label="Eyes"
           options={eyes}

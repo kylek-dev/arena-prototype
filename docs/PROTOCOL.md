@@ -57,7 +57,7 @@ yet.
 
 | Message | Fields | Notes |
 | --- | --- | --- |
-| `Hello` | `protocol: u16`, `ticket: bytes (≤ 512)`, `appearance: Option<WireAppearance>` | Must be the first message, within 5 s of connecting. Stays variant 0 with `protocol` first in every version; `peek_hello_protocol` reads it from any version so the server can answer `VersionMismatch`. `appearance` carries bounded ASCII identifiers (`ancestry`, `body`, `skin_tone`, `hair_color`, `eyes`, `build: 0..=100`, `≤ 10` unique `groups`, `≤ 8` unique `variants`; every identifier `1..=32` `[A-Za-z0-9_-]`, never free-form paths) and is locked per seat on first join. |
+| `Hello` | `protocol: u16`, `ticket: bytes (≤ 512)`, `appearance: Option<WireAppearance>` | Must be the first message, within 5 s of connecting. Stays variant 0 with `protocol` first in every version; `peek_hello_protocol` reads it from any version so the server can answer `VersionMismatch`. `appearance` carries bounded ASCII identifiers (`ancestry`, `body`, `skin_tone`, `hair_color`, `facial_hair_color`, `eyes`, `build: 0..=100`, `≤ 24` unique `groups`, `≤ 8` unique `variants`; every identifier `1..=32` `[A-Za-z0-9_-]`, never free-form paths) and is locked per seat on first join. |
 | `Input` | `seq: u32`, `movement: [i16; 2]`, `facing: u16`, `jump: bool`, `action: WireAction`, `view_tick: u64` | `seq` increases by 1 per message; gaps are allowed, repeats and regressions are dropped. Axes must lie in ±1000; the rules reject anything else. `action` is `None`, `Cast { spell, target }` (`Pulse`, `RiftBolt`, `Quell`, `Mend`), or `CancelCast`. `view_tick` is the monotonic server tick of remote fighters rendered on the client (`0` = unspecified / present tick only); the server never trusts coordinates and clamps `view_tick` monotonically to at most `MAX_LAG_COMP_TICKS` (6 ticks = 200 ms) behind the current tick for cast-start geometry validation ([ADR 0049](decisions/0049-bounded-targeting-lag-comp-and-adaptive-interp.md)). |
 | `Ping` | `nonce: u32` | Echoed in `Pong` for RTT measurement. |
 
@@ -110,7 +110,7 @@ connection, which can discard the `Error` before the client reads it.
 
 ## Versioning
 
-`PROTOCOL_VERSION` (currently 7: adds `Welcome.spectator` watch-only handshake for live delayed spectating; [ADR 0050](decisions/0050-spectating-and-anti-ghosting-delay.md)) changes with any
+`PROTOCOL_VERSION` (currently 8: `WireAppearance` gains `facial_hair_color` and allows 24 part groups for the armour slots; [ADR 0053](decisions/0053-finished-character-kits.md)) changes with any
 incompatible layout change; the golden-frame test fails until it is bumped
 deliberately.
 `RULES_VERSION` (currently 6: timed casts charge their resource and health costs

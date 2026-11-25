@@ -22,6 +22,7 @@ fn sample_appearance() -> WireAppearance {
         body: "female".into(),
         skin_tone: "natural".into(),
         hair_color: "auburn".into(),
+        facial_hair_color: "auburn".into(),
         eyes: "brown".into(),
         build: 30,
         groups: vec![
@@ -42,7 +43,7 @@ fn client_samples() -> Vec<ClientMessage> {
         ClientMessage::Hello {
             protocol: PROTOCOL_VERSION,
             ticket: vec![7; 64],
-            appearance: Some(sample_appearance()),
+            appearance: Some(Box::new(sample_appearance())),
         },
         ClientMessage::Hello {
             protocol: 0,
@@ -203,21 +204,22 @@ fn ordinary_traffic_is_small() {
 #[test]
 fn the_wire_layout_is_pinned() {
     // Golden frames: changing them requires a PROTOCOL_VERSION bump.
-    assert_eq!(PROTOCOL_VERSION, 7);
+    assert_eq!(PROTOCOL_VERSION, 8);
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 7,
+            protocol: 8,
             ticket: vec![0xAB, 0xCD],
             appearance: None,
         }
         .encode(),
-        [0, 7, 2, 0xAB, 0xCD, 0]
+        [0, 8, 2, 0xAB, 0xCD, 0]
     );
     let compact = WireAppearance {
         ancestry: "elf".into(),
         body: "male".into(),
         skin_tone: "fair".into(),
         hair_color: "black".into(),
+        facial_hair_color: "grey".into(),
         eyes: "blue".into(),
         build: 50,
         groups: vec![("hair".into(), "Hair_Long".into())],
@@ -225,17 +227,18 @@ fn the_wire_layout_is_pinned() {
     };
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 7,
+            protocol: 8,
             ticket: vec![0xAB, 0xCD],
-            appearance: Some(compact),
+            appearance: Some(Box::new(compact)),
         }
         .encode(),
         [
-            0, 7, 2, 0xAB, 0xCD, 1, // Hello variant 0, protocol 7, ticket, Some
+            0, 8, 2, 0xAB, 0xCD, 1, // Hello variant 0, protocol 8, ticket, Some
             3, b'e', b'l', b'f', // ancestry
             4, b'm', b'a', b'l', b'e', // body
             4, b'f', b'a', b'i', b'r', // skin_tone
             5, b'b', b'l', b'a', b'c', b'k', // hair_color
+            4, b'g', b'r', b'e', b'y', // facial_hair_color
             4, b'b', b'l', b'u', b'e', // eyes
             50,   // build
             1, 4, b'h', b'a', b'i', b'r', 9, b'H', b'a', b'i', b'r', b'_', b'L', b'o', b'n',
@@ -402,6 +405,10 @@ fn malformed_frames_are_rejected_not_trusted() {
             ..sample_appearance()
         },
         WireAppearance {
+            facial_hair_color: "no.dots".into(),
+            ..sample_appearance()
+        },
+        WireAppearance {
             eyes: "has space".into(),
             ..sample_appearance()
         },
@@ -434,7 +441,7 @@ fn malformed_frames_are_rejected_not_trusted() {
         let hello = ClientMessage::Hello {
             protocol: PROTOCOL_VERSION,
             ticket: vec![1, 2],
-            appearance: Some(bad.clone()),
+            appearance: Some(Box::new(bad.clone())),
         };
         assert_eq!(
             ClientMessage::decode(&hello.encode()),
@@ -458,12 +465,12 @@ fn malformed_frames_are_rejected_not_trusted() {
     let huge_hello = ClientMessage::Hello {
         protocol: PROTOCOL_VERSION,
         ticket: vec![0; MAX_TICKET],
-        appearance: Some(WireAppearance {
+        appearance: Some(Box::new(WireAppearance {
             groups: (0..MAX_APPEARANCE_GROUPS)
                 .map(|i| (format!("g{i:0>30}"), "v".repeat(MAX_APPEARANCE_ID)))
                 .collect(),
             ..sample_appearance()
-        }),
+        })),
     };
     assert_eq!(
         ClientMessage::decode(&huge_hello.encode()),
@@ -487,7 +494,7 @@ fn malformed_frames_are_rejected_not_trusted() {
         let hello = ClientMessage::Hello {
             protocol: PROTOCOL_VERSION,
             ticket: vec![1, 2],
-            appearance: Some(bad_pair),
+            appearance: Some(Box::new(bad_pair)),
         };
         assert_eq!(
             ClientMessage::decode(&hello.encode()),
@@ -1420,7 +1427,7 @@ fn fuzz_client_and_server_frames_preserve_all_wire_invariants() {
                     appearance,
                 } => {
                     assert!(ticket.len() <= MAX_TICKET);
-                    assert!(appearance.as_ref().is_none_or(WireAppearance::is_valid));
+                    assert!(appearance.as_deref().is_none_or(WireAppearance::is_valid));
                     assert_eq!(peeked, Some(*protocol));
                 }
                 _ => assert_eq!(peeked, None),

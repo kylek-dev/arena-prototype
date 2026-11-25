@@ -675,7 +675,7 @@ pub fn read_hello(frame: &[u8]) -> Result<(Vec<u8>, Option<WireAppearance>), Err
             protocol,
             ticket,
             appearance,
-        }) if protocol == PROTOCOL_VERSION => Ok((ticket, appearance)),
+        }) if protocol == PROTOCOL_VERSION => Ok((ticket, appearance.map(|look| *look))),
         Ok(ClientMessage::Hello { .. }) => Err(ErrorCode::VersionMismatch),
         Ok(_) => Err(ErrorCode::Malformed),
         Err(_) => match peek_hello_protocol(frame) {

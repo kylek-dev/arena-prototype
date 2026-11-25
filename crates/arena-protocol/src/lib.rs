@@ -27,7 +27,8 @@ use serde::{Deserialize, Serialize};
 /// 5: `FighterScore` and `Snapshot.scoreboard` for server-authoritative end-of-match totals.
 /// 6: `WireAppearance` on `ClientMessage::Hello` and `ServerMessage::Appearances` per-seat relay.
 /// 7: `Welcome.spectator` for watch-only delayed spectator connections.
-pub const PROTOCOL_VERSION: u16 = 7;
+/// 8: `WireAppearance.facial_hair_color`, and up to 24 part groups for the armour slots (ADR 0053).
+pub const PROTOCOL_VERSION: u16 = 8;
 /// Bumped whenever a rules change could alter a replayed outcome.
 /// 2: rounds end in a draw after twenty minutes (`MAX_ROUND_TICKS`).
 /// 3: time-limit draws are distinct from mutual-elimination draws and round limits are explicit.
@@ -50,7 +51,7 @@ pub const MAX_EVENTS: usize = 256;
 /// Maximum byte length of any identifier inside [`WireAppearance`].
 pub const MAX_APPEARANCE_ID: usize = 32;
 /// Maximum part-group choices inside [`WireAppearance`].
-pub const MAX_APPEARANCE_GROUPS: usize = 10;
+pub const MAX_APPEARANCE_GROUPS: usize = 24;
 /// Maximum material-variant choices inside [`WireAppearance`].
 pub const MAX_APPEARANCE_VARIANTS: usize = 8;
 
@@ -64,6 +65,8 @@ pub struct WireAppearance {
     pub body: String,
     pub skin_tone: String,
     pub hair_color: String,
+    /// Beard and stubble colour; clients send the hair colour until one is chosen.
+    pub facial_hair_color: String,
     pub eyes: String,
     /// Race build morph weight in percent (`0..=100`, mapped to `0.0..=1.0`).
     pub build: u8,
@@ -89,6 +92,7 @@ impl WireAppearance {
             || !Self::is_valid_id(&self.body)
             || !Self::is_valid_id(&self.skin_tone)
             || !Self::is_valid_id(&self.hair_color)
+            || !Self::is_valid_id(&self.facial_hair_color)
             || !Self::is_valid_id(&self.eyes)
             || self.build > 100
             || self.groups.len() > MAX_APPEARANCE_GROUPS
@@ -117,8 +121,9 @@ pub enum ClientMessage {
     Hello {
         protocol: u16,
         ticket: Vec<u8>,
-        /// Optional locked character look choice for this seat.
-        appearance: Option<WireAppearance>,
+        /// Optional locked character look choice for this seat. Boxed so the
+        /// per-tick `Input` messages stay small; the wire bytes are the same.
+        appearance: Option<Box<WireAppearance>>,
     },
     Input(InputFrame),
     Ping {
@@ -701,7 +706,7 @@ impl ClientMessage {
             Self::Hello {
                 ticket, appearance, ..
             } if ticket.len() > MAX_TICKET
-                || !appearance.as_ref().is_none_or(WireAppearance::is_valid) =>
+                || !appearance.as_deref().is_none_or(WireAppearance::is_valid) =>
             {
                 Err(DecodeError::OverLimit)
             }

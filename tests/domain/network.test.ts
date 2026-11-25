@@ -231,9 +231,9 @@ describe("network match identity", () => {
 
 describe("protocol corners the runtime speaks itself", () => {
   it("encodes Hello exactly as arena-protocol's golden frame", () => {
-    // arena-protocol: Hello { protocol: 7, ticket: [0xab, 0xcd], appearance: None }
-    expect([...encodeHello("abcd")]).toEqual([0, 7, 2, 0xab, 0xcd, 0]);
-    expect(PROTOCOL_VERSION).toBe(7);
+    // arena-protocol: Hello { protocol: 8, ticket: [0xab, 0xcd], appearance: None }
+    expect([...encodeHello("abcd")]).toEqual([0, 8, 2, 0xab, 0xcd, 0]);
+    expect(PROTOCOL_VERSION).toBe(8);
     // Lengths and versions past 127 use more varint bytes.
     const long = encodeHello("00".repeat(300), 300);
     expect([...long.slice(0, 5)]).toEqual([0, 0xac, 0x02, 0xac, 0x02]);
@@ -247,6 +247,7 @@ describe("protocol corners the runtime speaks itself", () => {
       body: "male",
       skinTone: "fair",
       hairColor: "black",
+      facialHairColor: "grey",
       eyes: "blue",
       build: 0.5,
       groups: { hair: "Hair_Long" },
@@ -255,7 +256,7 @@ describe("protocol corners the runtime speaks itself", () => {
     const ascii = (s: string) => Array.from(s, (ch) => ch.charCodeAt(0));
     expect([...withLook]).toEqual([
       0,
-      7,
+      8,
       2,
       0xab,
       0xcd,
@@ -268,6 +269,8 @@ describe("protocol corners the runtime speaks itself", () => {
       ...ascii("fair"),
       5,
       ...ascii("black"),
+      4,
+      ...ascii("grey"),
       4,
       ...ascii("blue"),
       50,
@@ -291,12 +294,13 @@ describe("protocol corners the runtime speaks itself", () => {
         body: "male",
         skinTone: "fair",
         hairColor: "black",
+        facialHairColor: "black",
         eyes: "blue",
         build: 0,
         groups: {},
         variants: {},
       }),
-    ]).toEqual([0, 7, 2, 0xab, 0xcd, 0]);
+    ]).toEqual([0, 8, 2, 0xab, 0xcd, 0]);
   });
 
   it("reads Error frames with arena-protocol's code order and nothing else", () => {
@@ -348,6 +352,7 @@ describe("network link", () => {
         body: string;
         skinTone: string;
         hairColor: string;
+        facialHairColor: string;
         eyes: string;
         build: number;
         groups: Record<string, string>;
@@ -360,6 +365,7 @@ describe("network link", () => {
         body: "male",
         skinTone: "fair",
         hairColor: "black",
+        facialHairColor: "black",
         eyes: "blue",
         build: 0.5,
         groups: { hair: "Hair_Long" },

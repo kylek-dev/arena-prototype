@@ -11,6 +11,8 @@ export interface KitOption {
   nodes: string[];
   /** Body regions the piece hides (outfit pieces only). */
   covers?: string[];
+  /** Morph target weights the option sets on the kit's `morphNodes` (face presets). */
+  weights?: number[];
 }
 export interface MaterialVariant {
   id: string;
@@ -18,7 +20,7 @@ export interface MaterialVariant {
   texture: string | null;
 }
 export interface KitMaterial {
-  tint?: "skin" | "hair";
+  tint?: "skin" | "hair" | "facialHair" | "eyes";
   variants?: MaterialVariant[];
 }
 export interface Kit {
@@ -33,6 +35,8 @@ export interface Kit {
   groups: Record<string, KitOption[]>;
   materials: Record<string, KitMaterial>;
   morph: string | null;
+  /** Nodes that carry the face presets' morph targets, all in the same target order. */
+  morphNodes?: string[];
   eyes: string;
 }
 
@@ -57,6 +61,8 @@ export function srgb(id: PaletteId): Rgb {
 // palette colour and the customizer can show the swatch itself.
 export const skinAtlas: Rgb = [0.86, 0.62, 0.48];
 export const hairAtlas: Rgb = [0.78, 0.78, 0.76];
+/** Average of the grey iris texture of kits whose eye colour is a tint. */
+export const irisAtlas: Rgb = [0.53, 0.53, 0.52];
 const tone =
   (atlas: Rgb) =>
   (id: string, label: string, color: PaletteId): Swatch => ({
@@ -67,6 +73,7 @@ const tone =
   });
 const skin = tone(skinAtlas);
 const hair = tone(hairAtlas);
+const iris = tone(irisAtlas);
 
 // The skin atlases are a light tan, so "Natural" is the untinted source;
 // lighter tones lift slightly.
@@ -102,20 +109,60 @@ export const hairColors: Swatch[] = [
   hair("emerald", "Emerald", "leaf-4"),
 ];
 
-export const outfitSlots = ["head", "shoulders", "torso", "arms", "legs", "feet"] as const;
-export const featureGroups = ["hair", "brows", "beard", "horns"] as const;
+// Eye colours for kits whose iris is tinted; the ids match the eye texture
+// variants of the other kits, so one saved choice works on every kit.
+export const eyeColors: Swatch[] = [
+  iris("brown", "Brown", "hair-brown"),
+  iris("hazel", "Hazel", "sand-4"),
+  iris("amber", "Amber", "gold-3"),
+  iris("green", "Green", "leaf-4"),
+  iris("blue", "Blue", "sky-4"),
+  iris("grey", "Grey", "stone-5"),
+  iris("violet", "Violet", "arcane-4"),
+];
+
+// Equipment slots a kit may offer. "torso", "arms", "legs" and "feet" are the
+// outfit pieces of the Quaternius kits; the rest are the armour slots of ADR 0053.
+export const outfitSlots = [
+  "head",
+  "shoulders",
+  "back",
+  "chest",
+  "torso",
+  "shirt",
+  "tabard",
+  "arms",
+  "bracers",
+  "gloves",
+  "belt",
+  "legs",
+  "pants",
+  "feet",
+  "boots",
+] as const;
+export const featureGroups = ["face", "hair", "brows", "beard", "horns"] as const;
 export type Group = (typeof outfitSlots)[number] | (typeof featureGroups)[number];
 export const groupLabels: Record<Group, string> = {
+  face: "Face",
   hair: "Hairstyle",
   brows: "Eyebrows",
   beard: "Facial hair",
   horns: "Horns",
   head: "Head",
   shoulders: "Shoulders",
+  back: "Back",
+  chest: "Chest",
   torso: "Torso",
+  shirt: "Shirt",
+  tabard: "Tabard",
   arms: "Arms & hands",
+  bracers: "Bracers",
+  gloves: "Gloves",
+  belt: "Belt",
   legs: "Legs",
+  pants: "Pants",
   feet: "Feet",
+  boots: "Boots",
 };
 
 export interface Appearance {
@@ -125,6 +172,8 @@ export interface Appearance {
   groups: Partial<Record<Group, string>>;
   skinTone: string;
   hairColor: string;
+  /** Beard and stubble colour; follows the hair colour until chosen separately. */
+  facialHairColor: string;
   eyes: string;
   /** Chosen texture variant per kit material slot. */
   variants: Record<string, string>;
@@ -151,6 +200,7 @@ export const defaultAppearance: Appearance = {
   },
   skinTone: "natural",
   hairColor: "auburn",
+  facialHairColor: "auburn",
   eyes: "brown",
   variants: {},
   build: 0,
@@ -192,6 +242,8 @@ export function parseAppearance(value: unknown): Appearance | null {
     groups,
     skinTone: v.skinTone as string,
     hairColor: v.hairColor as string,
+    // Looks saved or sent before facial hair had its own colour use the hair colour.
+    facialHairColor: (text(v.facialHairColor) ? v.facialHairColor : v.hairColor) as string,
     eyes: v.eyes as string,
     variants,
     build: Math.min(1, Math.max(0, v.build)),
@@ -224,14 +276,16 @@ export function chosenVariant(kit: Kit, appearance: Appearance, material: string
   );
 }
 
-const swatch = (list: Swatch[], id: string) =>
-  (list.find((s) => s.id === id) ?? list.find((s) => s.id === "natural"))?.rgb ?? [1, 1, 1];
+const swatch = (list: Swatch[], id: string, fallback = "natural") =>
+  (list.find((s) => s.id === id) ?? list.find((s) => s.id === fallback))?.rgb ?? [1, 1, 1];
 
 export interface RenderSpec {
   kit: { id: string; path: string; sole: number; scale: number };
   parts: [string, boolean][];
   materials: { name: string; tint: Rgb; texture: string | null }[];
   morph: { node: string; weight: number } | null;
+  /** Morph target weights per node (face presets); empty when the kit has none. */
+  morphs: { node: string; weights: number[] }[];
 }
 
 export function renderSpec(kit: Kit, appearance: Appearance): RenderSpec {
@@ -256,7 +310,11 @@ export function renderSpec(kit: Kit, appearance: Appearance): RenderSpec {
         ? swatch(skinTones, appearance.skinTone)
         : material.tint === "hair"
           ? swatch(hairColors, appearance.hairColor)
-          : ([1, 1, 1] as Rgb),
+          : material.tint === "facialHair"
+            ? swatch(hairColors, appearance.facialHairColor)
+            : material.tint === "eyes"
+              ? swatch(eyeColors, appearance.eyes, kit.eyes)
+              : ([1, 1, 1] as Rgb),
     texture: chosenVariant(kit, appearance, name)?.texture ?? null,
   }));
   return {
@@ -264,7 +322,19 @@ export function renderSpec(kit: Kit, appearance: Appearance): RenderSpec {
     parts: [...all].sort().map((node) => [node, shown.has(node)]),
     materials,
     morph: kit.morph ? { node: kit.morph, weight: appearance.build } : null,
+    morphs: faceMorphs(kit, appearance),
   };
+}
+
+/** A kit's tinted iris means its eye colours are the shared swatches, not textures. */
+export const tintsEyes = (kit: Kit) =>
+  Object.values(kit.materials).some((material) => material.tint === "eyes");
+
+function faceMorphs(kit: Kit, appearance: Appearance) {
+  const weights = chosen(kit, appearance, "face")?.weights;
+  if (!kit.morphNodes?.length || !weights?.every((w) => Number.isFinite(w))) return [];
+  const bounded = weights.slice(0, 16).map((w) => Math.min(1, Math.max(0, w)));
+  return kit.morphNodes.map((node) => ({ node, weights: bounded }));
 }
 
 export function parseKits(value: unknown): Kit[] {
@@ -314,11 +384,22 @@ export function randomAppearance(kits: Kit[], random = Math.random): Appearance 
     ancestry: kit.ancestry,
     groups,
     skinTone: pick(skinTones, random).id,
-    hairColor: pick(hairColors.slice(0, 11), random).id,
-    eyes: pick(kit.materials.Eyes?.variants?.map((v) => v.id) ?? [kit.eyes], random),
+    ...naturalHair(random),
+    eyes: pick(
+      tintsEyes(kit)
+        ? eyeColors.map((c) => c.id)
+        : (kit.materials.Eyes?.variants?.map((v) => v.id) ?? [kit.eyes]),
+      random,
+    ),
     variants,
     build: kit.morph ? Math.round(random() * 10) / 10 : 0,
   };
+}
+
+// A natural shade; the beard matches the hair.
+function naturalHair(random: () => number) {
+  const hairColor = pick(hairColors.slice(0, 11), random).id;
+  return { hairColor, facialHairColor: hairColor };
 }
 
 /** Deterministic PRNG (mulberry32) for stable, distinct practice opponent looks. */

@@ -315,6 +315,7 @@ impl Session {
                         "body": look.body,
                         "skinTone": look.skin_tone,
                         "hairColor": look.hair_color,
+                        "facialHairColor": look.facial_hair_color,
                         "eyes": look.eyes,
                         "build": f64::from(look.build) / 100.0,
                         "groups": groups,

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   defaultAppearance,
+  eyeColors,
+  hairColors,
   parseAppearance,
   parseKits,
   parseNetworkAppearances,
@@ -13,7 +15,7 @@ import {
   type Kit,
 } from "../../web/src/domain/appearance";
 
-import { humanKit } from "./kit-fixture";
+import { finishedKit, humanKit } from "./kit-fixture";
 
 const none = { id: "none", label: "None", nodes: [], covers: [] };
 const elf: Kit = {
@@ -99,6 +101,53 @@ describe("character appearance", () => {
     expect(odd.find((m) => m.name === "Eyes")?.texture).toContain("eye-brown");
   });
 
+  it("finished kits tint eyes and facial hair, set face morphs and mask their own regions", () => {
+    const kit = finishedKit();
+    const look: Appearance = {
+      ...defaultAppearance,
+      ancestry: "meshy",
+      body: "male",
+      hairColor: "black",
+      facialHairColor: "ginger",
+      eyes: "green",
+      groups: { face: "lean", beard: "Beard_Full", gloves: "Gladiator", pants: "Gladiator" },
+    };
+    const spec = renderSpec(kit, look);
+    const tint = (name: string) => spec.materials.find((m) => m.name === name)?.tint;
+    expect(tint("Eye_Iris")).toEqual(eyeColors.find((c) => c.id === "green")?.rgb);
+    expect(tint("Brows_Natural")).toEqual(hairColors.find((c) => c.id === "black")?.rgb);
+    expect(tint("FacialHair")).toEqual(hairColors.find((c) => c.id === "ginger")?.rgb);
+    // Every morph node gets the preset's weights, bounded to 0..1.
+    expect(spec.morphs).toEqual([
+      { node: "Body_Head", weights: [0, 1] },
+      { node: "Brows_Natural", weights: [0, 1] },
+    ]);
+    // The first option of a group without "none" is its default (saved Quaternius brow ids do not apply).
+    expect(visible(spec)).toEqual(
+      [
+        "Beard_Full",
+        "Body_Chest",
+        "Body_Feet",
+        "Body_Forearms",
+        "Body_Head",
+        "Brows_Natural",
+        "Gladiator_Gloves",
+        "Gladiator_Pants",
+      ].sort(),
+    );
+    // An unknown eye colour falls back to the kit's own; kits without presets send no morphs.
+    expect(
+      renderSpec(kit, { ...look, eyes: "elf" }).materials.find((m) => m.name === "Eye_Iris")?.tint,
+    ).toEqual(eyeColors.find((c) => c.id === "brown")?.rgb);
+    expect(renderSpec(kit, { ...look, groups: {} }).morphs[0].weights).toEqual([0, 0]);
+    expect(renderSpec(humanKit(), defaultAppearance).morphs).toEqual([]);
+    for (let seed = 0; seed < 12; seed += 1) {
+      const random = randomAppearance([kit], () => ((seed * 37 + 11) % 97) / 97);
+      expect(eyeColors.map((c) => c.id)).toContain(random.eyes);
+      expect(random.facialHairColor).toBe(random.hairColor);
+    }
+  });
+
   it("selects kits by ancestry and body, falling back to the human body", () => {
     const kits = [humanKit(), humanKit("male"), elf];
     expect(selectKit(kits, { ...defaultAppearance, body: "male" })?.id).toBe("human-male");
@@ -110,6 +159,13 @@ describe("character appearance", () => {
     expect(spec.morph).toEqual({ node: "Body_Full", weight: 0.4 });
     // Missing groups (no outfits on races) fall back to "none".
     expect(visible(spec)).toEqual(["Body_Full"]);
+  });
+
+  it("looks saved before facial hair had its own colour use the hair colour", () => {
+    const { facialHairColor: _dropped, ...older } = { ...defaultAppearance, hairColor: "ginger" };
+    expect(parseAppearance(older)?.facialHairColor).toBe("ginger");
+    expect(parseAppearance({ ...older, facialHairColor: "white" })?.facialHairColor).toBe("white");
+    expect(parseAppearance({ ...older, facialHairColor: 7 })?.facialHairColor).toBe("ginger");
   });
 
   it("parses stored looks defensively and keeps randomized looks valid", () => {

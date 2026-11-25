@@ -3,7 +3,7 @@
 //! The browser resolves each fighter's look (local player, practice opponents,
 //! or networked peers) against the kit manifest into a render spec: which kit,
 //! which named part nodes are visible, per-slot material tints/texture variants
-//! and an optional morph weight. This module only applies those specs per actor;
+//! and morph weights (a race build, face presets). This module only applies those specs per actor;
 //! it knows nothing about hairstyles or outfits.
 //! Presentation only: nothing here reaches the simulation.
 use std::collections::HashMap;
@@ -42,7 +42,14 @@ pub struct Spec {
     pub parts: Vec<(String, bool)>,
     pub materials: Vec<MaterialOverride>,
     pub morph: Option<(String, f32)>,
+    /// Morph target weights per named node, in the node's own target order
+    /// (face presets, ADR 0053). Empty for kits without them.
+    pub morphs: Vec<(String, Vec<f32>)>,
 }
+
+/// Most nodes and targets per node a spec may set morph weights on.
+const MAX_MORPH_NODES: usize = 16;
+const MAX_MORPH_TARGETS: usize = 16;
 
 impl Spec {
     /// Parses one browser render spec from a JSON string. Anything malformed is
@@ -105,11 +112,31 @@ impl Spec {
                 finite(m.get("weight")?)?.clamp(0.0, 1.0),
             )),
         };
+        let morphs = match value.get("morphs") {
+            None | Some(serde_json::Value::Null) => Vec::new(),
+            Some(list) => list
+                .as_array()
+                .filter(|list| list.len() <= MAX_MORPH_NODES)?
+                .iter()
+                .map(|m| {
+                    let weights = m.get("weights")?.as_array()?;
+                    if weights.len() > MAX_MORPH_TARGETS {
+                        return None;
+                    }
+                    let weights = weights
+                        .iter()
+                        .map(|w| finite(w).map(|w| w.clamp(0.0, 1.0)))
+                        .collect::<Option<Vec<_>>>()?;
+                    Some((m.get("node")?.as_str()?.to_owned(), weights))
+                })
+                .collect::<Option<Vec<_>>>()?,
+        };
         Some(Self {
             kit,
             parts,
             materials,
             morph,
+            morphs,
         })
     }
 
@@ -404,12 +431,20 @@ pub fn apply(
                     Visibility::Hidden
                 };
             }
-            if let Ok((name, mut weights)) = morphs.get_mut(entity)
-                && let Some((node, weight)) = &spec.morph
-                && name.as_str() == node
-                && let Some(first) = weights.weights_mut().first_mut()
-            {
-                *first = *weight;
+            if let Ok((name, mut weights)) = morphs.get_mut(entity) {
+                if let Some((node, weight)) = &spec.morph
+                    && name.as_str() == node
+                    && let Some(first) = weights.weights_mut().first_mut()
+                {
+                    *first = *weight;
+                }
+                if let Some((_, values)) =
+                    spec.morphs.iter().find(|(node, _)| node == name.as_str())
+                {
+                    for (target, value) in weights.weights_mut().iter_mut().zip(values) {
+                        *target = *value;
+                    }
+                }
             }
             let Ok((material_name, mut handle)) = surfaces.get_mut(entity) else {
                 continue;
@@ -572,6 +607,41 @@ mod tests {
             Spec::parse(&morph).unwrap().morph,
             Some(("Body_Full".into(), 1.0))
         );
+        // Face presets: weights per node, bounded; a malformed list rejects the spec.
+        assert!(Spec::parse(SPEC).unwrap().morphs.is_empty());
+        let faces = |morphs: &str| {
+            Spec::parse(&SPEC.replace(
+                "\"morph\":null",
+                &format!("\"morph\":null,\"morphs\":{morphs}"),
+            ))
+        };
+        assert_eq!(
+            faces(r#"[{"node":"Body_Head","weights":[0,1,7]},{"node":"Brows_Bold","weights":[]}]"#)
+                .unwrap()
+                .morphs,
+            vec![
+                ("Body_Head".to_owned(), vec![0.0, 1.0, 1.0]),
+                ("Brows_Bold".to_owned(), vec![])
+            ]
+        );
+        for bad in [
+            r#"[{"node":"Body_Head"}]"#,
+            r#"[{"node":7,"weights":[0]}]"#,
+            r#"[{"node":"Body_Head","weights":["1"]}]"#,
+            r#"{"node":"Body_Head","weights":[0]}"#,
+        ] {
+            assert_eq!(faces(bad), None, "{bad}");
+        }
+        let many = format!(
+            "[{}]",
+            vec![r#"{"node":"N","weights":[0]}"#; MAX_MORPH_NODES + 1].join(",")
+        );
+        assert_eq!(faces(&many), None);
+        let wide = format!(
+            r#"[{{"node":"N","weights":[{}]}}]"#,
+            vec!["0"; MAX_MORPH_TARGETS + 1].join(",")
+        );
+        assert_eq!(faces(&wide), None);
     }
 
     #[test]

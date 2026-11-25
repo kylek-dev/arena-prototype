@@ -1779,6 +1779,7 @@ fn session_locks_first_appearance_per_seat_and_relays_to_connected_players() {
         body: body.into(),
         skin_tone: "natural".into(),
         hair_color: hair.into(),
+        facial_hair_color: hair.into(),
         eyes: "brown".into(),
         build: 20,
         groups: vec![("hair".into(), "Hair_Buns".into())],

@@ -15,7 +15,7 @@ import {
   readPreview,
 } from "../../web/src/state/appearance";
 import { blocksGameplay, setPanel } from "../../web/src/state/session";
-import { humanKit } from "../domain/kit-fixture";
+import { finishedKit, humanKit } from "../domain/kit-fixture";
 
 beforeEach(() => {
   localStorage.clear();
@@ -150,4 +150,36 @@ it("shows player-facing names and updates the saved look and engine spec", () =>
   expect(appearance.get().groups).toMatchObject({ torso: "Ranger", legs: "Ranger", head: "none" });
   fireEvent.click(screen.getByRole("button", { name: "Reset" }));
   expect(appearance.get()).toEqual(defaultAppearance);
+});
+
+it("finished kits choose a face, an eye colour and a separate facial hair colour", () => {
+  characterKits.set([finishedKit()]);
+  appearance.set({ ...defaultAppearance, ancestry: "meshy", body: "male" });
+  customizerVisible.set(true);
+  render(<Customizer />);
+  fireEvent.click(screen.getByRole("tab", { name: "Head" }));
+  const choose = (group: string, name: string) =>
+    fireEvent.click(
+      within(screen.getByRole("radiogroup", { name: group })).getByRole("radio", { name }),
+    );
+  choose("Face", "Broad");
+  choose("Eye colour", "Green");
+  // The beard follows the hair colour until it has been given its own.
+  choose("Hair colour", "Black");
+  expect(appearance.get()).toMatchObject({
+    hairColor: "black",
+    facialHairColor: "black",
+    eyes: "green",
+    groups: expect.objectContaining({ face: "broad" }),
+  });
+  choose("Facial hair colour", "Ginger");
+  choose("Hair colour", "Blonde");
+  expect(appearance.get()).toMatchObject({ hairColor: "blonde", facialHairColor: "ginger" });
+  const spec = JSON.parse((readAppearance() as [number, string])[1]);
+  expect(spec.morphs).toEqual([
+    { node: "Body_Head", weights: [1, 0] },
+    { node: "Brows_Natural", weights: [1, 0] },
+  ]);
+  // Eye colour is a tint on these kits, not a texture list.
+  expect(screen.queryByRole("radiogroup", { name: "Eyes" })).toBeNull();
 });

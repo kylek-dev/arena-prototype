@@ -1326,6 +1326,7 @@ async fn server_validates_locks_and_relays_player_appearances_across_reconnects(
         body: "female".into(),
         skin_tone: "natural".into(),
         hair_color: "auburn".into(),
+        facial_hair_color: "auburn".into(),
         eyes: "brown".into(),
         build: 0,
         groups: vec![
@@ -1339,6 +1340,7 @@ async fn server_validates_locks_and_relays_player_appearances_across_reconnects(
         body: "male".into(),
         skin_tone: "fair".into(),
         hair_color: "platinum".into(),
+        facial_hair_color: "platinum".into(),
         eyes: "blue".into(),
         build: 50,
         groups: vec![("hair".into(), "Race_Hair".into())],
@@ -1349,6 +1351,7 @@ async fn server_validates_locks_and_relays_player_appearances_across_reconnects(
         body: "male".into(),
         skin_tone: "olive".into(),
         hair_color: "black".into(),
+        facial_hair_color: "black".into(),
         eyes: "amber".into(),
         build: 100,
         groups: Vec::new(),
@@ -1363,7 +1366,7 @@ async fn server_validates_locks_and_relays_player_appearances_across_reconnects(
         .send(&ClientMessage::Hello {
             protocol: PROTOCOL_VERSION,
             ticket: from_hex(&created.tickets[0]).unwrap(),
-            appearance: Some(bad_look),
+            appearance: Some(Box::new(bad_look)),
         })
         .await;
     assert_eq!(bad_client.error().await, ErrorCode::Malformed);
@@ -1373,7 +1376,7 @@ async fn server_validates_locks_and_relays_player_appearances_across_reconnects(
     a.send(&ClientMessage::Hello {
         protocol: PROTOCOL_VERSION,
         ticket: from_hex(&created.tickets[0]).unwrap(),
-        appearance: Some(look_a.clone()),
+        appearance: Some(Box::new(look_a.clone())),
     })
     .await;
     assert!(matches!(a.next().await, Some(ServerMessage::Welcome(_))));
@@ -1388,7 +1391,7 @@ async fn server_validates_locks_and_relays_player_appearances_across_reconnects(
     b.send(&ClientMessage::Hello {
         protocol: PROTOCOL_VERSION,
         ticket: from_hex(&created.tickets[1]).unwrap(),
-        appearance: Some(look_b.clone()),
+        appearance: Some(Box::new(look_b.clone())),
     })
     .await;
     assert!(matches!(b.next().await, Some(ServerMessage::Welcome(_))));
@@ -1415,7 +1418,7 @@ async fn server_validates_locks_and_relays_player_appearances_across_reconnects(
     a2.send(&ClientMessage::Hello {
         protocol: PROTOCOL_VERSION,
         ticket: from_hex(&created.tickets[0]).unwrap(),
-        appearance: Some(swapped),
+        appearance: Some(Box::new(swapped)),
     })
     .await;
     assert!(matches!(a2.next().await, Some(ServerMessage::Welcome(_))));

@@ -140,7 +140,7 @@ def prepare(characters=CHARACTERS, directory=DIRECTORY, enabled=None):
     if kits:
         manifest['kits'] = kits
     (directory / 'character.json').write_text(json.dumps(manifest) + '\n')
-    print('Character asset:', f'{len(kits)} Quaternius kits ({", ".join(k["id"] for k in kits)})'
+    print('Character asset:', f'{len(kits)} customizable kits ({", ".join(k["id"] for k in kits)})'
           if quaternius else f'{chosen[2]} rig and 8 clips' if chosen
           else 'procedural character (no character source installed)' if enabled
           else f'procedural character (rigged models disabled; unset {ENV})')
