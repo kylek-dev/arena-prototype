@@ -1,0 +1,31 @@
+/* Login and account status in Play online (home screen and game menu). */
+.account {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--gray-6);
+  border-radius: var(--radius-3);
+}
+.account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.account-handle {
+  font-family: ui-monospace, monospace;
+}
+.account-privacy {
+  font-size: 12px;
+  color: var(--pal-sky-4);
+}
+.account-confirm {
+  display: grid;
+  gap: 6px;
+}
+.account-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--pal-gold-5);
+}

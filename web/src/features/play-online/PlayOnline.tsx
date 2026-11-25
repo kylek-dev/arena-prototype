@@ -14,6 +14,7 @@ import type { Queue } from "../../runtime/matchmaking";
 import { customizerVisible } from "../../state/appearance";
 import { matchQueue } from "../../state/network";
 import { customLobbyVisible, setPanel } from "../../state/session";
+import { AccountPanel } from "../account/AccountPanel";
 import { createStore, useStore } from "../../state/store";
 import "./play-online.css";
 
@@ -170,6 +171,7 @@ export function PlayOnline({ onQueue }: { onQueue?: () => void }) {
       <Text id="play-online-heading" size="2" weight="medium">
         Play online
       </Text>
+      <AccountPanel />
       {state.connection === "ended" && (
         <div className="play-online-ended" role="alert">
           <Text size="1">{endedText(state.ended)}</Text>

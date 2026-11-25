@@ -9,10 +9,11 @@ before editing code so context compounds on disk instead of decaying in long cha
 Reusable repo invariants, canonical helpers, and CI traps promoted across iterations:
 
 - **Simulation purity:** `arena-sim` must stay pure, fixed-tick, integer-based, and deterministic (no graphics, OS clocks, network I/O, or runtime LLM calls).
+- **Static web pages:** `web/public/` is generated and gitignored (`scripts/build-web.sh`); add tracked pages such as `web/privacy.html` as Vite `rollupOptions.input` entries. `vite.config.ts` is type-checked without Node types, so it cannot import `node:*`.
 - **CI `browser` vs `scripts/check.sh`:** `./scripts/check.sh` checks `typecheck`, `lint`, `format:check`, and `npm test`, while `.github/workflows/ci.yml`'s `browser` job also runs `npm run build`. Run `.agents/skills/iterate-game/scripts/run-critics.sh --auto` (or `--web-build`) whenever `web/` changes.
 - **CI `client-build` trigger:** `.github/workflows/client-build.yml` runs full native + WASM builds only when `crates/**`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain*`, `.cargo/**`, `assets/**`, `scripts/**`, or `.github/workflows/**` change; doc/skill/planning-only PRs skip them cleanly.
 - **Python unit tests in `check.sh`:** `./scripts/check.sh` automatically runs `python3 -m unittest discover -s tests/unit -p 'test_*.py'`, so Python harness/hook tests belong in `tests/unit/test_*.py`.
-- **Closed color palette:** Non-VFX colors must come from `docs/palette.json` and pass `node scripts/palette.mjs --check`.
+- **Closed color palette:** Non-VFX colors must come from `docs/palette.json` and pass `node scripts/palette.mjs --check`. The literal check flags `#` plus 3–8 hex digits anywhere in `web/src`, comments included, so write handles as `Name#number`, not `Name#1234`.
 - **Canonical state hashing:** Always reuse `Arena::hash_state` instead of duplicating state-hash logic in `arena-client`.
 - **Canonical fighter validation & prediction boundaries:** Reuse `Combatant::is_valid(roster_len)` across `Arena::restore` and `ServerMessage::decode`, and strip non-predicted combat state (`active_cast`) inside `Predictor::reconcile` so local movement replay never triggers phantom cast completions, kills, or movement freezes.
 - **Wire & snapshot boundaries:** Validate protocol limits at decode time (for example, `Welcome.round_ticks` in `1..=MAX_ROUND_TICKS`, `Welcome` team/seat/tick-rate bounds, `Snapshot` even `2..=MAX_FIGHTERS` roster and event actor/result bounds), use saturating tick/cooldown math near `u64::MAX`, and validate JS bridge integers with `Number.isSafeInteger` in `adaptSnapshot`.
@@ -640,3 +641,19 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
     Then `docker compose down`.
   - Real WorkOS login, reported by the user on 2026-11-25. They set up a WorkOS staging application, put its client id and API key in `deploy/.env`, and logged in through the local Compose stack at `https://localhost:8443`. Before that, the door's login link got a 302 from WorkOS to the application's hosted AuthKit page. The user approved the slice. A Grafana login (anonymous access is admin, on loopback only) was discussed and deferred.
 
+
+## 2026-11-25 — Account login in Play online
+- **Branch / Commit:** `auto/account-ui`
+- **Base / PR:** `main` (base of the Lane B social/chat stack)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Lane B "Log in and account status in Play online" ([social-identity](issues/social-identity.md), [ADR 0055](../docs/decisions/0055-accounts-oauth-login-in-arena-door.md))
+- **Changes:**
+  - `domain/account.ts` (strict `/api/auth/me` parsing; a guest is never admin or named; `logoutTarget` opens only https, or http from an http page; refusal wording), `runtime/account.ts` (fetch-injected service: refresh, logout, logout everywhere, delete; 404 re-checks login; re-check on tab visible and back/forward restore), `state/account.ts`, started in `runtime/start.ts`.
+  - `features/account/AccountPanel.tsx` at the top of Play online: Log in / Sign up links, handle or "no name yet", Log out, Log out everywhere, Delete account… with in-panel confirmation and the 502 `unavailable` retry text, Privacy notice link.
+  - `web/privacy.html` as a second Vite input (WorkOS holds email and login methods; the game stores the WorkOS id, name, account/login/rename times, friends and blocks; access logs and opt-out browser reports; how to delete). DEPLOYMENT tells operators to add their contact details.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base main` (`smoke=false web_build=true wasm=false`): pass — 482 Rust tests (1 pre-existing ignored), 58 Python, 50 Node, 45 Vitest files / 356 tests, headless pass, `npm run build` pass (emits `dist/privacy.html`).
+  - Server smoke and WASM: not applicable (no crate, script or asset change).
+- **Fresh-Eyes Review:** no Critical. Important: privacy notice omitted access logs, browser reports and the account/rename times (fixed); missing UI-REVIEW entry (added). Minor fixes taken: bare 502 no longer says "nothing was deleted", 404 re-checks login, http logout links only from http pages, panel kept when a follow-up refresh fails, back/forward restore and tab focus re-check, confirmation stays open after a refusal, six more negative tests.
+- **Learnings:** `web/public/` is generated and gitignored (build-web.sh), so static pages go in `web/` as Vite inputs. `#` followed by 3–8 hex digits anywhere in `web/src` (even `Name#1234` in a comment) fails the palette literal test; write `Name#number`. `vite.config.ts` is type-checked without Node types, so it cannot import `node:*`.
+- **Next Recommended Slice:** `Name#number` handles in the HUD and "Choose your name" (stacked on this branch).

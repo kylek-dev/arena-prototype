@@ -10,6 +10,9 @@ export default defineConfig({
     outDir: "../dist",
     emptyOutDir: true,
     rollupOptions: {
+      // The game, and the privacy notice that Play online links to.
+      // Relative to the package root, where npm runs every script.
+      input: { main: "web/index.html", privacy: "web/privacy.html" },
       onwarn(warning, warn) {
         // This application is intentionally client-only. Radix publishes the
         // same entry points for RSC consumers; their directives are irrelevant

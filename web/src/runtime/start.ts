@@ -31,6 +31,8 @@ import { installSpellDragging } from "./spell-drag";
 import { debugEnabled, measureFrames, metrics, recordError, recordState } from "./diagnostics";
 import { browserLink, installJoinLinks, takeJoinFragment } from "./network";
 import { browserQueue, installPartyLinks } from "./matchmaking";
+import { browserAccount } from "./account";
+import { accountService } from "../state/account";
 import { installTelemetry } from "./telemetry";
 import { matchQueue, networkLink, remoteHandles, remoteTags } from "../state/network";
 import { parseHandles, parseTags } from "../domain/handles";
@@ -65,6 +67,10 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     link.join(ticket);
   });
   matchQueue.set(queue);
+  // Who is logged in, if this door offers login (ADR 0055).
+  const { account, stop: stopAccount } = browserAccount();
+  accountService.set(account);
+  void account.refresh();
   const stopPartyLinks = installPartyLinks(queue);
   // A join link wins; otherwise a reload rejoins this tab's match.
   const joining = takeJoinFragment() ?? link.resumable();
@@ -142,6 +148,8 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     stopPartyLinks();
     queue.dispose();
     matchQueue.set(null);
+    stopAccount();
+    accountService.set(null);
     link.dispose();
     networkLink.set(null);
     remoteAppearances.set(null);
