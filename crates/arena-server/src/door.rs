@@ -25,6 +25,7 @@ use std::sync::atomic::AtomicU64;
 
 mod auth;
 mod browser;
+mod friends;
 mod queue;
 pub use auth::Me;
 pub use queue::ToClient as QueueMessage;
@@ -42,7 +43,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::identity::{Identity, IdentityConfig};
-use crate::ingress::{self, Cidr, OpenPerAddress, Origins, RatePerAddress};
+use crate::ingress::{self, Cidr, OpenPerAddress, Origins, RatePerAccount, RatePerAddress};
 use crate::logging::MatchId;
 use crate::metrics::{Histogram, Metrics, write_metric};
 use crate::ticket::{self, TicketKey};
@@ -70,6 +71,9 @@ pub struct DoorConfig {
     pub queue_per_address: u32,
     /// Accounts and login (ADR 0055); `None` keeps the door guest-only.
     pub identity: Option<IdentityConfig>,
+    /// Account routes (login, names, friends) one address may call at once,
+    /// then one per 6 s.
+    pub auth_burst: u32,
 }
 impl DoorConfig {
     pub fn new(key: TicketKey, match_server: String, page: String) -> Self {
@@ -86,6 +90,7 @@ impl DoorConfig {
             ready_timeout: Duration::from_secs(15),
             queue_per_address: 12,
             identity: None,
+            auth_burst: 20,
         }
     }
 }
@@ -149,6 +154,13 @@ struct Door {
     identity: Option<Identity>,
     /// Login routes per address.
     auth_rate: RatePerAddress,
+    /// Friend requests and invites per account (social-identity step 4).
+    friend_requests: RatePerAccount,
+    invites: RatePerAccount,
+    /// Other friend actions, and friends-list reads (each asks the
+    /// matchmaker task for presence), per account.
+    friend_actions: RatePerAccount,
+    friend_reads: RatePerAccount,
     creations: RatePerAddress,
     /// Browser telemetry reports per address.
     reports: RatePerAddress,
@@ -524,7 +536,13 @@ fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
     let (commands, receiver) = mpsc::channel(1024);
     let door = Arc::new(Door {
         identity,
-        auth_rate: RatePerAddress::new(20, Duration::from_secs(6)),
+        auth_rate: RatePerAddress::new(config.auth_burst, Duration::from_secs(6)),
+        // A burst of 10 requests, then one every 6 minutes (10 an hour).
+        friend_requests: RatePerAccount::new(10, Duration::from_secs(6 * 60)),
+        // A burst of 5 invites, then one every 6 seconds.
+        invites: RatePerAccount::new(5, Duration::from_secs(6)),
+        friend_actions: RatePerAccount::new(30, Duration::from_secs(2)),
+        friend_reads: RatePerAccount::new(10, Duration::from_secs(3)),
         creations: RatePerAddress::new(config.creation_burst, config.creation_every),
         // A visit sends a handful (startup, a summary per match, a few errors).
         reports: RatePerAddress::new(30, Duration::from_secs(10)),
@@ -576,6 +594,11 @@ fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
         .route(
             "/api/auth/handle",
             post(auth::choose_handle).layer(DefaultBodyLimit::max(256)),
+        )
+        .route("/api/friends", get(friends::list))
+        .route(
+            "/api/friends/{action}",
+            post(friends::act).layer(DefaultBodyLimit::max(256)),
         )
         .route("/healthz", get(|| async { "ok" }))
         .route("/metrics", get(render_metrics))

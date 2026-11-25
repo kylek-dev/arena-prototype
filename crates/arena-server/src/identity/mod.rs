@@ -6,6 +6,7 @@
 //! The match server never sees this module: it trusts the ticket alone.
 
 pub mod cookie;
+pub mod friends;
 pub mod names;
 pub mod provider;
 pub mod store;
