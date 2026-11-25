@@ -638,5 +638,5 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
     - `psql` listed `accounts`, `blocks`, `friends` and `schema_migrations` (version 1).
 
     Then `docker compose down`.
-  - Not observed: a real WorkOS login. That needs the user's WorkOS staging client id and API key in `deploy/.env`.
+  - Real WorkOS login, reported by the user on 2026-11-25. They set up a WorkOS staging application, put its client id and API key in `deploy/.env`, and logged in through the local Compose stack at `https://localhost:8443`. Before that, the door's login link got a 302 from WorkOS to the application's hosted AuthKit page. The user approved the slice. A Grafana login (anonymous access is admin, on loopback only) was discussed and deferred.
 
