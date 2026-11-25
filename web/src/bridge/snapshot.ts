@@ -491,6 +491,8 @@ declare global {
       sendNetwork?: (frame: Uint8Array) => void;
       onNetwork?: (status: unknown) => void;
       onAppearances?: (looks: unknown) => void;
+      /** Relayed `Name#number` handle per local actor, or `null` outside a match. */
+      onHandles?: (handles: unknown) => void;
       onState: (state: unknown) => void;
     };
     arenaDebug?: { readonly state: Snapshot | null; readonly metrics: unknown };

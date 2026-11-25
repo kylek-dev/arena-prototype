@@ -77,6 +77,7 @@ services:
       ARENA_OAUTH_GITHUB_CLIENT_ID: ${ARENA_OAUTH_GITHUB_CLIENT_ID:-}
       ARENA_OAUTH_GITHUB_CLIENT_SECRET: ${ARENA_OAUTH_GITHUB_CLIENT_SECRET:-}
       ARENA_ADMIN_ACCOUNTS: ${ARENA_ADMIN_ACCOUNTS:-}
+      ARENA_BLOCKED_NAMES: ${ARENA_BLOCKED_NAMES:-}
     volumes:
       - door-data:/var/lib/arena
     restart: unless-stopped

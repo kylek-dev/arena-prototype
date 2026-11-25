@@ -121,7 +121,10 @@ off until you set it up; the game is then guest-only, as before.
    - `ARENA_OAUTH_<PROVIDER>_CLIENT_ID` and `_CLIENT_SECRET` for each
      provider;
    - optionally `ARENA_ADMIN_ACCOUNTS`, a comma-separated list of account
-     ids (an id is shown as `account` at `/api/auth/me` once logged in).
+     ids (an id is shown as `account` at `/api/auth/me` once logged in);
+   - optionally `ARENA_BLOCKED_NAMES`, the path inside the container to a
+     file of extra words handles may not contain (one per line, `#` for
+     comments), added to `crates/arena-server/src/identity/blocked-names.txt`.
 4. Restart the door: `docker compose up -d door`.
 
 The door keeps accounts in `/var/lib/arena/identity.sqlite3` on the

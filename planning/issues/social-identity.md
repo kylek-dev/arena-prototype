@@ -6,8 +6,9 @@ Give players a persistent identity outside the match: accounts, a chosen `Name#1
 OAuth login with Discord, Google or GitHub, handled by `arena-door`; no
 passwords; a minimal SQLite store; guests stay. Step 2 (the identity service, with the
 account id in tickets) is implemented on `auto/identity-service`. The login
-UI is queued as a Lane B follow-up. Guests' temporary handles come with
-step 3, the handles themselves.
+UI is queued as a Lane B follow-up. Step 3 (handles, guests' temporary
+`Guest#NNNN`, the protocol relay) is implemented on `auto/display-names`;
+showing them in the HUD is queued as Lane B.
 
 Acceptance criteria, in shipping order (each step is its own PR):
 

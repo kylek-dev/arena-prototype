@@ -28,7 +28,8 @@ use serde::{Deserialize, Serialize};
 /// 6: `WireAppearance` on `ClientMessage::Hello` and `ServerMessage::Appearances` per-seat relay.
 /// 7: `Welcome.spectator` for watch-only delayed spectator connections.
 /// 8: `WireAppearance.facial_hair_color`, and up to 24 part groups for the armour slots (ADR 0053).
-pub const PROTOCOL_VERSION: u16 = 8;
+/// 9: `ServerMessage::Handles`: each seat's server-set `Name#1234` handle.
+pub const PROTOCOL_VERSION: u16 = 9;
 /// Bumped whenever a rules change could alter a replayed outcome.
 /// 2: rounds end in a draw after twenty minutes (`MAX_ROUND_TICKS`).
 /// 3: time-limit draws are distinct from mutual-elimination draws and round limits are explicit.
@@ -227,6 +228,78 @@ impl InputFrame {
     }
 }
 
+/// Shortest handle name.
+pub const MIN_HANDLE_NAME: usize = 3;
+/// Longest handle name, in ASCII characters.
+pub const MAX_HANDLE_NAME: usize = 16;
+/// Handle numbers run `1..=MAX_HANDLE_NUMBER`, shown with four digits.
+pub const MAX_HANDLE_NUMBER: u16 = 9999;
+
+/// A player's `Name#1234` handle (social-identity step 3): a name the player
+/// chose (ASCII letters and digits, starting with a letter) and a number the
+/// front door assigned so the pair is unique. Fixed size so tickets stay
+/// `Copy`; always set by the server, never by a client.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Handle {
+    /// The name's bytes, then zeros.
+    name: [u8; MAX_HANDLE_NAME],
+    pub number: u16,
+}
+
+impl Handle {
+    /// `None` unless `name` is 3–16 ASCII letters and digits starting with a
+    /// letter, and `number` is `1..=9999`.
+    pub fn new(name: &str, number: u16) -> Option<Self> {
+        let bytes = name.as_bytes();
+        if !(MIN_HANDLE_NAME..=MAX_HANDLE_NAME).contains(&bytes.len()) {
+            return None;
+        }
+        let mut stored = [0; MAX_HANDLE_NAME];
+        stored[..bytes.len()].copy_from_slice(bytes);
+        let handle = Self {
+            name: stored,
+            number,
+        };
+        handle.is_valid().then_some(handle)
+    }
+
+    pub fn name(&self) -> &str {
+        let len = self
+            .name
+            .iter()
+            .position(|b| *b == 0)
+            .unwrap_or(MAX_HANDLE_NAME);
+        std::str::from_utf8(&self.name[..len]).unwrap_or("")
+    }
+
+    /// Whether a decoded handle keeps the rules: a valid name, zero padding
+    /// only after it, and a number in range.
+    pub fn is_valid(&self) -> bool {
+        let len = self
+            .name
+            .iter()
+            .position(|b| *b == 0)
+            .unwrap_or(MAX_HANDLE_NAME);
+        (MIN_HANDLE_NAME..=MAX_HANDLE_NAME).contains(&len)
+            && self.name[0].is_ascii_alphabetic()
+            && self.name[..len].iter().all(u8::is_ascii_alphanumeric)
+            && self.name[len..].iter().all(|b| *b == 0)
+            && (1..=MAX_HANDLE_NUMBER).contains(&self.number)
+    }
+}
+
+impl std::fmt::Display for Handle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}#{:04}", self.name(), self.number)
+    }
+}
+
+impl std::fmt::Debug for Handle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ServerMessage {
     Welcome(Welcome),
@@ -239,6 +312,10 @@ pub enum ServerMessage {
     Error(ErrorCode),
     /// Per-seat locked character looks in server actor order (`2..=MAX_FIGHTERS`, even).
     Appearances(Vec<Option<WireAppearance>>),
+    /// Per-seat `Name#1234` handles from the seats' tickets, in server actor
+    /// order (`2..=MAX_FIGHTERS`, even); `None` for a seat not joined yet or
+    /// joined by a link that names nobody.
+    Handles(Vec<Option<Handle>>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -805,6 +882,15 @@ fn valid_appearances(appearances: &[Option<WireAppearance>]) -> bool {
             .all(|look| look.as_ref().is_none_or(WireAppearance::is_valid))
 }
 
+fn valid_handles(handles: &[Option<Handle>]) -> bool {
+    let count = handles.len();
+    (2..=MAX_FIGHTERS).contains(&count)
+        && count.is_multiple_of(2)
+        && handles
+            .iter()
+            .all(|handle| handle.is_none_or(|h| h.is_valid()))
+}
+
 impl ServerMessage {
     pub fn encode(&self) -> Vec<u8> {
         encode(self)
@@ -817,6 +903,7 @@ impl ServerMessage {
             Self::Appearances(appearances) if !valid_appearances(appearances) => {
                 Err(DecodeError::OverLimit)
             }
+            Self::Handles(handles) if !valid_handles(handles) => Err(DecodeError::OverLimit),
             _ => Ok(message),
         }
     }

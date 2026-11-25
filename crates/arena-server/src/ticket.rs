@@ -8,7 +8,7 @@
 //! without talking to the match server. Time is passed in explicitly so
 //! verification is deterministic in tests.
 
-use arena_protocol::MAX_TICKET;
+use arena_protocol::{Handle, MAX_TICKET};
 use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::MAX_ROUND_TICKS;
 use arena_sim::map::MAX_TEAM;
@@ -106,7 +106,18 @@ pub struct Claims {
     /// for links handed out by the lobby. Signed, not encrypted: only the
     /// holder's own id, never shown to other players.
     pub account: Option<u64>,
+    /// The player's `Name#1234` handle, set by the front door: the account's
+    /// own, or a temporary guest handle. `None` for lobby links.
+    pub handle: Option<Handle>,
 }
+
+/// Who a ticket is for: the logged-in account and the handle to show.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Holder {
+    pub account: Option<u64>,
+    pub handle: Option<Handle>,
+}
+
 impl Claims {
     /// The seat this ticket grants, or `None` for a spectator ticket.
     pub fn seat(&self) -> Option<usize> {
@@ -125,6 +136,7 @@ impl Claims {
         if !(1..=MAX_TEAM).contains(&usize::from(self.team_size))
             || !self.settings.is_none_or(MatchSettings::is_valid)
             || self.account == Some(0)
+            || !self.handle.is_none_or(|handle| handle.is_valid())
         {
             return false;
         }
@@ -210,21 +222,21 @@ fn issue_match_full(
         team_size,
         settings,
         &[],
-        &vec![None; spectators],
+        &vec![Holder::default(); spectators],
         expires,
     )
 }
 
-/// Issues a ticket per seat, carrying `seats[i]`'s account (guests and
-/// missing entries get none), and one spectator ticket per entry of
+/// Issues a ticket per seat, carrying `seats[i]`'s account and handle
+/// (missing entries get none), and one spectator ticket per entry of
 /// `spectators`. `None` when the team size or settings are invalid, or when
 /// spectators are asked for while `settings` forbids them.
 pub fn issue_seats(
     key: &TicketKey,
     team_size: usize,
     settings: Option<MatchSettings>,
-    seats: &[Option<u64>],
-    spectators: &[Option<u64>],
+    seats: &[Holder],
+    spectators: &[Holder],
     expires: u64,
 ) -> Option<NewMatch> {
     if !(1..=MAX_TEAM).contains(&team_size)
@@ -233,8 +245,14 @@ pub fn issue_seats(
     {
         return None;
     }
-    // Account 0 is never issued; treat it as a guest.
-    let account = |slot: Option<&Option<u64>>| slot.copied().flatten().filter(|id| *id != 0);
+    // Account 0 is never issued (treated as a guest); invalid handles drop.
+    let holder = |slot: Option<&Holder>| {
+        let holder = slot.copied().unwrap_or_default();
+        (
+            holder.account.filter(|id| *id != 0),
+            holder.handle.filter(Handle::is_valid),
+        )
+    };
     let match_id = random_u64();
     let tickets = (0..2 * team_size)
         .map(|seat| {
@@ -245,7 +263,8 @@ pub fn issue_seats(
                 team_size: team_size as u8,
                 expires,
                 settings,
-                account: account(seats.get(seat)),
+                account: holder(seats.get(seat)).0,
+                handle: holder(seats.get(seat)).1,
             }))
         })
         .collect();
@@ -259,7 +278,8 @@ pub fn issue_seats(
                 team_size: team_size as u8,
                 expires,
                 settings,
-                account: account(Some(spectator)),
+                account: holder(Some(spectator)).0,
+                handle: holder(Some(spectator)).1,
             }))
         })
         .collect();
@@ -379,6 +399,7 @@ mod tests {
         expires: 1_000,
         settings: None,
         account: None,
+        handle: None,
     };
 
     #[test]
@@ -419,17 +440,22 @@ mod tests {
 
     #[test]
     fn seat_tickets_carry_their_players_accounts() {
+        let with = |account: Option<u64>, handle: Option<Handle>| Holder { account, handle };
+        let rook = Handle::new("Rook", 7);
         let created = issue_seats(
             &key(1),
             1,
             None,
-            &[Some(0xabc), Some(0)],
-            &[Some(0xdef), None],
+            &[with(Some(0xabc), rook), with(Some(0), None)],
+            &[with(Some(0xdef), rook), Holder::default()],
             10,
         )
         .unwrap();
         let claims = |ticket: &String| key(1).verify(&from_hex(ticket).unwrap(), 0).unwrap();
         assert_eq!(claims(&created.tickets[0]).account, Some(0xabc));
+        assert_eq!(claims(&created.tickets[0]).handle, rook);
+        assert_eq!(claims(&created.tickets[1]).handle, None);
+        assert_eq!(claims(&created.spectator_tickets[0]).handle, rook);
         assert_eq!(
             claims(&created.tickets[1]).account,
             None,
@@ -454,6 +480,7 @@ mod tests {
         // Accounts fit the ticket limit with room to spare.
         let longest = key(1).issue(&Claims {
             account: Some(u64::MAX),
+            handle: Handle::new("abcdefghijklmnop", 9999),
             match_id: u64::MAX,
             player: u64::MAX,
             expires: u64::MAX,

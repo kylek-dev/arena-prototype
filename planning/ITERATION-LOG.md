@@ -502,7 +502,7 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 
 ## 2026-11-25 — Identity service and signed account ids
 - **Branch / Commit:** `auto/identity-service`
-- **Base / PR:** `auto/accounts-decision` (stacked on PR #93)
+- **Base / PR:** `auto/accounts-decision` (stacked on PR #93) — PR #94
 - **Lane:** A (machine-verified; the login UI is queued as Lane B)
 - **Task:** [social-identity](issues/social-identity.md) step 2; [ADR 0055](../docs/decisions/0055-accounts-oauth-login-in-arena-door.md)
 - **Changes:**
@@ -521,4 +521,20 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
   Minors fixed: negative tests (no `Origin` on the queue handshake, a login replayed at another provider's callback, delete without `Origin`, the login rate limit, `issue_seats` and account 0); the upgrade note for the ticket format; a Caddy log filter dropping `code` and `state` (validated with `caddy validate` and a live request); SQLite subject conflicts now error instead of looping; a session key equal to the ticket key is refused; every `Cookie` header is read; the account lookup moved after the connection limit. Not done: capping provider response bodies (fixed, trusted endpoints with a 10 s timeout).
 - **Learnings:** A forged-state test can pass for the wrong reason when a later check (here the fake provider's PKCE check) also refuses; make only the check under test able to stop it, then mutation-check. A clean `docker stop` closes SQLite and folds its WAL. Caddy's `format filter` can delete query keys from `request>uri` and still writes JSON.
 - **Next Recommended Slice:** `Name#1234` display names (social-identity step 3).
+
+## 2026-11-25 — `Name#1234` display names
+- **Branch / Commit:** `auto/display-names`
+- **Base / PR:** `auto/identity-service` (stacked on PR #94)
+- **Lane:** A (machine-verified; HUD display and the name picker queued as Lane B)
+- **Task:** [social-identity](issues/social-identity.md) step 3
+- **Changes:**
+  - `arena_protocol::Handle` (fixed 16-byte zero-padded name, 3–16 ASCII letters/digits starting with a letter, number 1–9999, `Name#0042` display) and `ServerMessage::Handles` (variant 5, even 2–6 seats, validated at decode); `PROTOCOL_VERSION = 9` in Rust and web, golden frames and fuzz seeds updated.
+  - Tickets: `Claims.handle`, `ticket::Holder`; door naming policy (`identity/names.rs` + `blocked-names.txt`, digit-swap folding, `ARENA_BLOCKED_NAMES`), store handles (case-insensitive unique index per number, random free number with a lowest-free fallback, one rename per 7 days, free first pick and case changes, migration adding columns to older stores), `POST /api/auth/handle`, `handle`/`rename_at` in `/api/auth/me`.
+  - Queue `Holder`s: account handle or a temporary `Guest#NNNN`; `Command::Rename` and `Revoke` update open searches. Match server locks a seat's handle from its first naming ticket and relays `Handles` to players and spectators. `arena-client` keeps them in local order and publishes `onHandles` → `remoteHandles` (web), with strict parsing; bot ignores them; the web queue protects variant 5 from eviction.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/identity-service` (`smoke=true web_build=true wasm=true`): pass (`./scripts/check.sh`: 457 Rust tests, 1 pre-existing ignored; 58 Python; 50 Node; 43 Vitest files / 337 tests; headless pass; server smoke 496 ticks, 0 overruns, mean 15.0 µs, drained cleanly; `npm run build` 374 modules; WASM clippy pass). `./scripts/build-web.sh`: pass (28 static resources; no browser launched).
+  - Found on the way: the "tampered session" test I wrote in the identity slice was flaky (replacing a final `0` with `0`), now always changes the digit; the palette guard reads `#1234` in comments as a colour, so web comments say `Name#number`.
+- **Fresh-Eyes Review:** No Critical. Important fixed: `arena-client` never cleared relayed handles on a new connection or match, so a rejoin or a lobby-link match could show stale or no handles; they are now cleared on every new generation and Welcome for another match (unconditionally, not only when looks were relayed), with a test. Minors fixed: misplaced doc comment; docs now say the first pick starts the 7-day clock, that `None` also means "not joined yet", and that guest handles repeat; `1` is folded as both `i` and `l`; tests document the substring trade-off (`Badminton`, `Quarterstaff`, `Scunthorpe` are refused); handle endpoint tests for a missing `Origin` (403) and malformed bodies (422). Noted for the admin step: no way yet to clear a stored handle that a later blocklist covers.
+- **Learnings:** The palette guard (`tests/unit/palette.test.mjs`) treats any `#` followed by 3, 4, 6 or 8 hex digits in web sources as a colour, comments included. Clear per-match client state outside "only if non-empty" guards that belong to a sibling field.
+- **Next Recommended Slice:** Friends & friend invites (social-identity step 4).
 

@@ -1,0 +1,30 @@
+# Names a player may not choose (social-identity step 3). One word per line,
+# lowercase; a chosen name is refused when it contains any of them after
+# common digit swaps (0→o, 1→i, 3→e, 4→a, 5→s, 7→t, 8→b) are undone.
+# Operators add their own with ARENA_BLOCKED_NAMES (a file in this format).
+#
+# Reserved: names that could pass for staff, the system or a guest.
+admin
+moderator
+staff
+official
+system
+support
+guest
+arena
+pitborn
+# Common abuse. Kept short on purpose: substrings that appear inside
+# ordinary words would refuse innocent names.
+fuck
+shit
+cunt
+bitch
+whore
+slut
+nigg
+fagg
+retard
+nazi
+hitler
+tranny
+kike

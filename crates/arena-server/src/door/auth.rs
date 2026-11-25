@@ -27,10 +27,11 @@ use crate::identity::cookie::{
     Login, OAUTH_COOKIE, OAUTH_SECONDS, SESSION_COOKIE, SESSION_SECONDS, Session, cookie,
     set_cookie,
 };
-use crate::identity::store::ProviderId;
+use crate::identity::store::{Account, HandleError, ProviderId, RENAME_EVERY};
 use crate::identity::{Identity, cookie_allowed};
 use crate::ingress;
 use crate::metrics::Metrics;
+use arena_protocol::{Handle, MAX_HANDLE_NUMBER};
 
 /// What the page learns about its player.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -40,6 +41,13 @@ pub struct Me {
     pub admin: bool,
     /// Providers this door can log in with.
     pub providers: Vec<String>,
+    /// The account's `Name#1234`, once picked.
+    #[serde(default)]
+    pub handle: Option<String>,
+    /// When the handle may next change to another name (Unix seconds);
+    /// `None` when it may now.
+    #[serde(default)]
+    pub rename_at: Option<u64>,
 }
 
 fn no_store(mut response: Response) -> Response {
@@ -65,7 +73,11 @@ fn redirect(to: &str) -> Response {
 }
 
 /// The logged-in account for a request, when cookies may act for it.
-pub(super) async fn account(door: &Door, headers: &HeaderMap, require_origin: bool) -> Option<u64> {
+pub(super) async fn account(
+    door: &Door,
+    headers: &HeaderMap,
+    require_origin: bool,
+) -> Option<Account> {
     let identity = door.identity.as_ref()?;
     if !cookie_allowed(&door.config.origins, headers, require_origin) {
         return None;
@@ -73,7 +85,13 @@ pub(super) async fn account(door: &Door, headers: &HeaderMap, require_origin: bo
     identity
         .session(headers, unix_now())
         .await
-        .map(|session| session.account)
+        .map(|(_, account)| account)
+}
+
+/// A temporary `Guest#NNNN` handle for a player who has not picked one.
+pub(super) fn guest_handle() -> Handle {
+    let number = (crate::ticket::random_u64() % u64::from(MAX_HANDLE_NUMBER)) as u16 + 1;
+    Handle::new("Guest", number).expect("Guest is a valid name")
 }
 
 /// Whether the per-address limit on login routes refuses this request.
@@ -85,12 +103,21 @@ fn limited(door: &Door, peer: SocketAddr, headers: &HeaderMap) -> bool {
 pub(super) async fn me(State(door): State<Arc<Door>>, headers: HeaderMap) -> Response {
     let account = account(&door, &headers, false).await;
     let identity = door.identity.as_ref();
+    let now = unix_now();
     no_store(
         Json(Me {
-            account: account.map(|id| format!("{id:016x}")),
+            account: account.map(|account| format!("{:016x}", account.id)),
+            handle: account
+                .and_then(|account| account.handle)
+                .map(|h| h.to_string()),
+            rename_at: account
+                .filter(|account| account.handle.is_some())
+                .and_then(|account| account.renamed)
+                .map(|renamed| renamed.saturating_add(RENAME_EVERY))
+                .filter(|at| *at > now),
             admin: account
                 .zip(identity)
-                .is_some_and(|(id, identity)| identity.is_admin(id)),
+                .is_some_and(|(account, identity)| identity.is_admin(account.id)),
             providers: identity
                 .map(|identity| {
                     identity
@@ -258,7 +285,10 @@ pub(super) async fn end(
         return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
     }
     let cleared = set_cookie(SESSION_COOKIE, "", 0);
-    let Some(account) = account(&door, &headers, true).await else {
+    let Some(account) = account(&door, &headers, true)
+        .await
+        .map(|account| account.id)
+    else {
         // Not logged in (or already ended): just make sure the cookie goes.
         return with_cookie(no_store(StatusCode::NO_CONTENT.into_response()), cleared);
     };
@@ -311,4 +341,75 @@ pub(super) async fn delete(
     headers: HeaderMap,
 ) -> Response {
     end(door, peer, headers, Ending::Delete).await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ChooseHandle {
+    name: String,
+}
+
+/// `POST /api/auth/handle` `{"name": "Rook"}`: picks or changes the
+/// account's handle. Answers `{"handle": "Rook#0042"}`, or `{"error": code}`
+/// with 401 (not logged in), 403 (origin), 409 (`name_full`), 422
+/// (`invalid_name`, `blocked_name`) or 429 (`too_soon`, with `rename_at`).
+pub(super) async fn choose_handle(
+    State(door): State<Arc<Door>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Result<Json<ChooseHandle>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    if limited(&door, peer, &headers) {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
+    let Some(identity) = door.identity.as_ref() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if !cookie_allowed(&door.config.origins, &headers, true) {
+        return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
+    }
+    let Some(account) = account(&door, &headers, true).await else {
+        return refusal(StatusCode::UNAUTHORIZED, "not_logged_in", None);
+    };
+    let Ok(Json(ChooseHandle { name })) = body else {
+        return refusal(StatusCode::UNPROCESSABLE_ENTITY, "invalid_name", None);
+    };
+    if let Err(refused) = identity.blocked.check(&name) {
+        return refusal(StatusCode::UNPROCESSABLE_ENTITY, refused.code(), None);
+    }
+    let store = identity.store.clone();
+    let now = unix_now();
+    let chosen = tokio::task::spawn_blocking(move || {
+        store.set_handle(account.id, &name, now, crate::ticket::random_u64)
+    })
+    .await;
+    match chosen {
+        Ok(Ok(Ok(handle))) => {
+            // Open queue connections show the new handle from now on.
+            let _ = door
+                .queue
+                .send(super::queue::Command::Rename {
+                    account: account.id,
+                    handle,
+                })
+                .await;
+            no_store(Json(serde_json::json!({ "handle": handle.to_string() })).into_response())
+        }
+        Ok(Ok(Err(HandleError::TooSoon(at)))) => {
+            refusal(StatusCode::TOO_MANY_REQUESTS, "too_soon", Some(at))
+        }
+        Ok(Ok(Err(HandleError::Full))) => refusal(StatusCode::CONFLICT, "name_full", None),
+        Ok(Ok(Err(HandleError::NoAccount))) => {
+            refusal(StatusCode::UNAUTHORIZED, "not_logged_in", None)
+        }
+        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+fn refusal(status: StatusCode, code: &str, rename_at: Option<u64>) -> Response {
+    let mut body = serde_json::json!({ "error": code });
+    if let Some(at) = rename_at {
+        body["rename_at"] = at.into();
+    }
+    no_store((status, Json(body)).into_response())
 }

@@ -17,6 +17,7 @@ import {
   endsLink,
   isAppearances,
   isExpired,
+  isHandles,
   isWelcome,
   parseJoinFragment,
   parseStatus,
@@ -32,6 +33,7 @@ import {
   enterArena,
   remoteAppearances,
 } from "../state/appearance";
+import { remoteHandles } from "../state/network";
 import { createStore } from "../state/store";
 
 type SocketLike = {
@@ -166,14 +168,18 @@ export function createLink(deps: LinkDeps) {
       if (!(event.data instanceof ArrayBuffer)) return;
       const frame = new Uint8Array(event.data);
       lastError = serverError(frame) ?? lastError;
-      if (isAppearances(frame)) {
-        // Only the newest per-seat appearances relay matters; replace any queued older copy.
-        const existing = queue.findIndex((queued) => isAppearances(queued));
+      // Only the newest per-seat relay of each kind matters; replace any
+      // queued older copy.
+      for (const relay of [isAppearances, isHandles]) {
+        if (!relay(frame)) continue;
+        const existing = queue.findIndex((queued) => relay(queued));
         if (existing >= 0) queue.splice(existing, 1);
       }
       queue.push(frame);
       if (queue.length > MAX_QUEUED) {
-        const oldest = queue.findIndex((queued) => !isWelcome(queued) && !isAppearances(queued));
+        const oldest = queue.findIndex(
+          (queued) => !isWelcome(queued) && !isAppearances(queued) && !isHandles(queued),
+        );
         queue.splice(Math.max(oldest, 0), 1);
       }
     };
@@ -292,6 +298,9 @@ export function browserLink() {
     tab: safe(() => window.sessionStorage),
     device: safe(() => window.localStorage),
     appearance: () => appearance.get(),
-    onReset: () => remoteAppearances.set(null),
+    onReset: () => {
+      remoteAppearances.set(null);
+      remoteHandles.set(null);
+    },
   });
 }

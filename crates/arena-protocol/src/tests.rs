@@ -170,6 +170,8 @@ fn server_samples() -> Vec<ServerMessage> {
         ServerMessage::Error(ErrorCode::ServerShutdown),
         ServerMessage::Appearances(vec![Some(sample_appearance()), None]),
         ServerMessage::Appearances(vec![Some(sample_appearance()); MAX_FIGHTERS]),
+        ServerMessage::Handles(vec![Handle::new("Rook7", 42), None]),
+        ServerMessage::Handles(vec![Handle::new("abcdefghijklmnop", 9999); MAX_FIGHTERS]),
     ]
 }
 
@@ -204,15 +206,15 @@ fn ordinary_traffic_is_small() {
 #[test]
 fn the_wire_layout_is_pinned() {
     // Golden frames: changing them requires a PROTOCOL_VERSION bump.
-    assert_eq!(PROTOCOL_VERSION, 8);
+    assert_eq!(PROTOCOL_VERSION, 9);
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 8,
+            protocol: 9,
             ticket: vec![0xAB, 0xCD],
             appearance: None,
         }
         .encode(),
-        [0, 8, 2, 0xAB, 0xCD, 0]
+        [0, 9, 2, 0xAB, 0xCD, 0]
     );
     let compact = WireAppearance {
         ancestry: "elf".into(),
@@ -227,13 +229,13 @@ fn the_wire_layout_is_pinned() {
     };
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 8,
+            protocol: 9,
             ticket: vec![0xAB, 0xCD],
             appearance: Some(Box::new(compact)),
         }
         .encode(),
         [
-            0, 8, 2, 0xAB, 0xCD, 1, // Hello variant 0, protocol 8, ticket, Some
+            0, 9, 2, 0xAB, 0xCD, 1, // Hello variant 0, protocol 9, ticket, Some
             3, b'e', b'l', b'f', // ancestry
             4, b'm', b'a', b'l', b'e', // body
             4, b'f', b'a', b'i', b'r', // skin_tone
@@ -1518,10 +1520,68 @@ fn fuzz_client_and_server_frames_preserve_all_wire_invariants() {
                         assert!(look.is_valid());
                     }
                 }
+                ServerMessage::Handles(handles) => {
+                    let count = handles.len();
+                    assert!((2..=MAX_FIGHTERS).contains(&count) && count.is_multiple_of(2));
+                    for handle in handles.iter().flatten() {
+                        assert!(handle.is_valid(), "{:?}", handle.name());
+                    }
+                }
             }
             let reencoded = message.encode();
             assert_eq!(ServerMessage::decode(&reencoded), Ok(message.clone()));
             assert!(serde_json::from_str::<serde_json::Value>(&message.to_debug_json()).is_ok());
         }
+    }
+}
+
+#[test]
+fn handles_are_bounded_server_set_names_and_numbers() {
+    let handle = Handle::new("Rook7", 42).unwrap();
+    assert_eq!(handle.to_string(), "Rook7#0042");
+    assert_eq!(handle.name(), "Rook7");
+    for (name, number) in [
+        ("ab", 1),                // too short
+        ("abcdefghijklmnopq", 1), // 17: too long
+        ("7rook", 1),             // starts with a digit
+        ("ro ok", 1),             // space
+        ("rök", 1),               // not ASCII
+        ("rook", 0),              // number 0
+        ("rook", MAX_HANDLE_NUMBER + 1),
+    ] {
+        assert!(Handle::new(name, number).is_none(), "{name:?} #{number}");
+    }
+    assert!(
+        Handle::new("abcdefghijklmnop", MAX_HANDLE_NUMBER).is_some(),
+        "16 and 9999 fit"
+    );
+    // The wire layout: Handles is variant 5, then the seats.
+    let message = ServerMessage::Handles(vec![Some(handle), None]);
+    let mut expected = vec![5, 2, 1];
+    expected.extend_from_slice(b"Rook7");
+    expected.extend_from_slice(&[0; 11]);
+    expected.extend_from_slice(&[42, 0]);
+    assert_eq!(message.encode(), expected);
+    assert_eq!(ServerMessage::decode(&message.encode()), Ok(message));
+}
+
+#[test]
+fn hostile_handles_are_refused_at_decode() {
+    let encoded = |handles: Vec<Option<Handle>>| ServerMessage::Handles(handles).encode();
+    let rook = Handle::new("Rook", 1).unwrap();
+    // Seat counts outside 2..=6 or odd.
+    assert!(ServerMessage::decode(&encoded(vec![Some(rook)])).is_err());
+    assert!(ServerMessage::decode(&encoded(vec![None; 8])).is_err());
+    assert!(ServerMessage::decode(&encoded(vec![None; 3])).is_err());
+    // Bytes that no valid Handle encodes: garbage after the padding starts,
+    // a space in the name, number 0.
+    let mut frame = encoded(vec![Some(rook), None]);
+    frame[3 + 5] = b'x'; // a byte after the zero that ends "Rook"
+    let mut frame2 = encoded(vec![Some(rook), None]);
+    frame2[3 + 1] = b' ';
+    let mut frame3 = encoded(vec![Some(rook), None]);
+    frame3[3 + 16] = 0; // number 1 -> 0
+    for bad in [frame, frame2, frame3] {
+        assert!(ServerMessage::decode(&bad).is_err(), "{bad:?}");
     }
 }

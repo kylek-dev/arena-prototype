@@ -10,6 +10,7 @@ use std::time::Duration;
 use arena_server::door::{self, DoorConfig, Me, QueueMessage};
 use arena_server::identity::IdentityConfig;
 use arena_server::identity::cookie::{SessionKey, pkce_challenge};
+use arena_server::identity::names::Blocklist;
 use arena_server::identity::provider::Provider;
 use arena_server::identity::store::ProviderId;
 use arena_server::ingress::Origins;
@@ -141,6 +142,7 @@ async fn door_with(origins: Origins, provider: SocketAddr) -> (door::DoorRunning
         key: SessionKey::random(),
         providers: vec![discord, github],
         admins: HashSet::new(),
+        blocked: Blocklist::new(""),
     });
     (door::start(config).await.unwrap(), key)
 }
@@ -195,6 +197,36 @@ async fn log_in(addr: SocketAddr, fake: &Fake) -> String {
     let set = back.header("set-cookie").join("\n");
     assert!(set.contains("HttpOnly; Secure; SameSite=Lax"), "{set}");
     back.cookie("__Host-arena_session").unwrap().0
+}
+
+/// `POST /api/auth/handle` with `body` (and our Origin when `origin`); the
+/// status and JSON answer.
+async fn post_handle(
+    addr: SocketAddr,
+    cookie: &str,
+    body: &str,
+    origin: bool,
+) -> (u16, serde_json::Value) {
+    let origin = if origin { ORIGIN } else { "" };
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    let request = format!(
+        "POST /api/auth/handle HTTP/1.1\r\nHost: test\r\nCookie: __Host-arena_session={cookie}\r\n{origin}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await.unwrap();
+    let status = response[9..12].parse().unwrap();
+    let json = response.split_once("\r\n\r\n").unwrap().1;
+    (
+        status,
+        serde_json::from_str(json).unwrap_or(serde_json::Value::Null),
+    )
+}
+
+/// Picks `name` with our Origin.
+async fn choose(addr: SocketAddr, cookie: &str, name: &str) -> (u16, serde_json::Value) {
+    post_handle(addr, cookie, &format!(r#"{{"name":"{name}"}}"#), true).await
 }
 
 async fn me(addr: SocketAddr, cookie: &str) -> Me {
@@ -303,7 +335,9 @@ async fn players_log_in_and_their_account_rides_in_their_ticket() {
         Me {
             account: None,
             admin: false,
-            providers: vec!["discord".into(), "github".into()]
+            providers: vec!["discord".into(), "github".into()],
+            handle: None,
+            rename_at: None,
         }
     );
     assert_eq!(
@@ -375,7 +409,10 @@ async fn players_log_in_and_their_account_rides_in_their_ticket() {
     .await;
     assert_eq!(elsewhere.status, 400);
     // A tampered session is a guest.
-    let tampered = format!("{}0", &session[..session.len() - 1]);
+    // Always a different last digit (replacing a `0` with `0` would not
+    // tamper at all).
+    let last = if session.ends_with('0') { '1' } else { '0' };
+    let tampered = format!("{}{last}", &session[..session.len() - 1]);
     assert_eq!(me(addr, &tampered).await.account, None);
 
     // Acting needs our Origin: without it, nothing happens.
@@ -461,6 +498,88 @@ async fn players_log_in_and_their_account_rides_in_their_ticket() {
         );
     }
     assert!(statuses.contains(&429), "{statuses:?}");
+    door.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn players_pick_handles_that_ride_in_their_tickets() {
+    let fake = Fake::default();
+    let provider = fake_provider(fake.clone()).await;
+    let (door, key) = door_with(
+        Origins::Only(vec!["https://arena.example.com".into()]),
+        provider,
+    )
+    .await;
+    let addr = door.addr;
+    let claims = |ticket: &str| -> Claims { key.verify(&from_hex(ticket).unwrap(), 0).unwrap() };
+    let session = log_in(addr, &fake).await;
+
+    // Before picking, a logged-in player plays under a guest handle, as
+    // guests do.
+    let (before, guest) = tokio::join!(
+        queue_ticket(addr, 1, Some(&session)),
+        queue_ticket(addr, 2, None)
+    );
+    for ticket in [&before, &guest] {
+        let handle = claims(ticket)
+            .handle
+            .expect("everyone from the queue has a handle");
+        assert_eq!(handle.name(), "Guest");
+    }
+
+    // Names follow the rules; the door picks the number.
+    assert_eq!(
+        choose(addr, &session, "ab").await,
+        (422, serde_json::json!({"error": "invalid_name"}))
+    );
+    assert_eq!(
+        choose(addr, &session, "Adm1n").await,
+        (422, serde_json::json!({"error": "blocked_name"}))
+    );
+    let (status, picked) = choose(addr, &session, "Rook").await;
+    assert_eq!(status, 200, "{picked}");
+    let handle = picked["handle"].as_str().unwrap().to_owned();
+    assert!(handle.starts_with("Rook#"), "{handle}");
+    let mine = me(addr, &session).await;
+    assert_eq!(mine.handle.as_deref(), Some(handle.as_str()));
+    assert!(mine.rename_at.is_some(), "a new name waits a week");
+    // A different name within the week is refused; a case change is fine.
+    let (status, refused) = choose(addr, &session, "Bishop").await;
+    assert_eq!((status, refused["error"].as_str()), (429, Some("too_soon")));
+    assert_eq!(refused["rename_at"].as_u64(), mine.rename_at);
+    assert_eq!(choose(addr, &session, "ROOK").await.0, 200);
+
+    // The handle rides in the player's next ticket, and a search already
+    // under way picks up a new one at once.
+    let searching = open_queue(addr, 3, Some(&session), true).await;
+    let (status, recased) = choose(addr, &session, "rook").await;
+    assert_eq!(status, 200);
+    let (ticket, _) = tokio::join!(await_ticket(searching), queue_ticket(addr, 4, None));
+    assert_eq!(
+        claims(&ticket).handle.map(|h| h.to_string()).as_deref(),
+        recased["handle"].as_str()
+    );
+    // Guests cannot pick, nor can requests without our Origin, nor
+    // malformed bodies.
+    let (status, _) = choose(addr, "nobody", "Knight").await;
+    assert_eq!(status, 401);
+    assert_eq!(
+        post_handle(addr, &session, r#"{"name":"Knight"}"#, false)
+            .await
+            .0,
+        403
+    );
+    for body in [
+        r#"{"name":1}"#,
+        r#"{"name":"Knight","admin":true}"#,
+        "not json",
+    ] {
+        assert_eq!(
+            post_handle(addr, &session, body, true).await,
+            (422, serde_json::json!({"error": "invalid_name"})),
+            "{body}"
+        );
+    }
     door.stop().await.unwrap();
 }
 

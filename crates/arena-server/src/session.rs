@@ -14,7 +14,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use arena_protocol::{
-    EncodedSnapshotBody, ErrorCode, FighterScore, FighterState, InputFrame, MAX_FIGHTERS,
+    EncodedSnapshotBody, ErrorCode, FighterScore, FighterState, Handle, InputFrame, MAX_FIGHTERS,
     PROTOCOL_VERSION, RULES_VERSION, ServerMessage, Snapshot, TickEvent, Welcome, WireAction,
     WireAppearance, WireEvent, WireResult,
 };
@@ -113,6 +113,8 @@ struct Seat {
     score: FighterScore,
     /// Character look locked on this seat's first join (`None` until the seat joins).
     appearance: Option<Option<WireAppearance>>,
+    /// `Name#1234` from the first ticket for this seat that names one.
+    handle: Option<Handle>,
 }
 
 /// One seat's input flow since the last report (development diagnostics).
@@ -187,6 +189,53 @@ impl Session {
     pub fn scoreboard(&self) -> Vec<FighterScore> {
         self.seats.iter().map(|seat| seat.score).collect()
     }
+    /// Each seat's handle, in actor order (`None` until a ticket names one).
+    pub fn handles(&self) -> Vec<Option<Handle>> {
+        self.seats.iter().map(|seat| seat.handle).collect()
+    }
+
+    /// After `conn` was welcomed to `seat`: locks the seat's handle from its
+    /// ticket the first time one is named, and returns the `Handles` relay,
+    /// to everyone when it changed, else to `conn` alone. Nothing while no
+    /// seat has a handle.
+    pub fn relay_handles(&mut self, seat: usize, conn: ConnId, handle: Option<Handle>) -> Vec<Out> {
+        let changed = match self.seats.get_mut(seat) {
+            Some(slot) if slot.handle.is_none() && handle.is_some() => {
+                slot.handle = handle;
+                true
+            }
+            _ => false,
+        };
+        let handles = self.handles();
+        if handles.iter().all(Option::is_none) {
+            return Vec::new();
+        }
+        let targets: Vec<ConnId> = if changed {
+            self.connections().collect()
+        } else {
+            vec![conn]
+        };
+        targets
+            .into_iter()
+            .map(|to| Out::Send {
+                conn: to,
+                message: ServerMessage::Handles(handles.clone()),
+            })
+            .collect()
+    }
+
+    /// The `Handles` relay for a newly attached spectator.
+    pub fn handles_for(&self, conn: ConnId) -> Vec<Out> {
+        let handles = self.handles();
+        if handles.iter().all(Option::is_none) {
+            return Vec::new();
+        }
+        vec![Out::Send {
+            conn,
+            message: ServerMessage::Handles(handles),
+        }]
+    }
+
     /// Locked character looks in server actor order (`None` for seats without a look).
     pub fn appearances(&self) -> Vec<Option<WireAppearance>> {
         self.seats
