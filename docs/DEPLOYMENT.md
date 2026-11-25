@@ -99,18 +99,33 @@ network.
 Opt-in dashboards for a playtest machine ([ADR 0054](decisions/0054-observability-logs-metrics-and-local-lgtm.md)):
 
 ```sh
+# In deploy/.env, to export traces as well:
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4318
+#   ARENA_ALERT_WEBHOOK_URL=https://discord.com/api/webhooks/...   (optional)
 docker compose -f deploy/compose.yaml --env-file deploy/.env --profile obs up -d
 ```
 
-This adds one `grafana/otel-lgtm` container (Grafana, Prometheus, Loki,
-Tempo and an OpenTelemetry collector, capped at 1 GB of memory). Its ports
-are bound to `127.0.0.1` only: open Grafana at `http://127.0.0.1:3000` on the
-machine, or from elsewhere through a tunnel such as
-`ssh -L 3000:127.0.0.1:3000 HOST`. Never publish it through Caddy.
+This adds two containers:
 
-Prometheus scrapes `server:8080/metrics` and `door:8090/metrics` every 15 s
-over the private network (`deploy/observability/prometheus.yaml`). Three
-dashboards are provisioned in the **Arena** folder:
+- **`lgtm`** (`grafana/otel-lgtm`): Grafana, Prometheus, Loki, Tempo and an
+  OpenTelemetry collector, capped at 1 GB of memory.
+- **`alloy`** (`grafana/alloy`, capped at 256 MB): ships the game host's
+  telemetry to it (`deploy/observability/alloy.alloy`):
+  - It scrapes `server:8080/metrics` and `door:8090/metrics` every 15 s and
+    remote-writes them to Prometheus.
+  - It reads the `server`, `door` and `caddy` containers' logs through the
+    Docker socket and pushes them to Loki, labelled `service_name` and
+    `level`.
+  - It forwards OTLP traces to Tempo.
+
+The socket is mounted read-only, but access to the Docker API is still
+root-equivalent, so Alloy has no public port.
+
+All ports of both are bound to `127.0.0.1`. Open Grafana at
+`http://127.0.0.1:3000` on the machine, or from elsewhere through a tunnel
+such as `ssh -L 3000:127.0.0.1:3000 HOST`. Never publish it through Caddy.
+
+Three dashboards are provisioned in the **Arena** folder:
 
 | Dashboard | Shows |
 | --- | --- |
@@ -121,9 +136,83 @@ dashboards are provisioned in the **Arena** folder:
 Grafana in this image signs everyone in as an administrator without a
 password. That is acceptable only because its port is on loopback.
 
-Logs and traces are not shipped yet (Phase 2 of
-`planning/issues/observability-telemetry.md`); read logs with
-`docker compose logs`.
+**Logs.** In Grafana's Explore, use Loki:
+`{service_name="server"} | json | match_id="0123456789abcdef"` follows one
+match on the server, and `{service_name=~"server|door"} | json | level="WARN"`
+shows the anomaly warnings. Each kind is reported at most once every 10 s per
+process, with `suppressed_reports` counting what was held back:
+- tick overruns and frames dropped for slow clients;
+- match connections refused for bad tickets, floods or malformed frames;
+- queue connections refused for floods or malformed messages.
+
+**Traces.** Only control-plane steps are traced, never ticks or inputs. When
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set, the services export:
+
+- `http.request`: one per request (except `/metrics`, `/healthz` and
+  `/readyz`), with the method, the route (`/api/queue`; `unmatched` for
+  unknown paths; never the query), and the status.
+- `party.create` and `party.join` (never the invite code).
+- `queue.search`: one per player, from entering a queue to its outcome
+  (`matched` with the `match_id`, or a stop reason). Its `queue.step`
+  children are `ready_check.offer`, `ready_check.accept`,
+  `ready_check.decline`, `queue.requeue` and `ticket.mint`.
+- `lobby.start`: a custom lobby starting its match.
+- `ws.hello`: a match connection's Hello and ticket check, with the
+  `match_id`, role and outcome.
+- `match`: one per match, from its first connection to its end, with the
+  result. Its children are `seat.join`, `seat.disconnect`, `seat.refuse`,
+  `seat.replace`, `spectator.join` and `spectator.refuse`.
+- `server.drain`: the drain after SIGTERM.
+
+JSON log lines written inside one of these spans carry it under `span`, with
+`trace_id` and `span_id`. Alloy stores the `trace_id` as Loki structured
+metadata, which the bundled Loki datasource links to the trace in Tempo.
+With the variable unset, nothing is exported and no exporter thread or
+socket exists. On stop the services flush their last spans for at most
+`OTEL_EXPORTER_OTLP_TIMEOUT` (3 s in `compose.yaml`).
+
+**Alerts.** Grafana evaluates eight provisioned rules every minute
+(`deploy/observability/alerts.yaml`, folder **Arena**):
+
+| Rule | Fires when |
+| --- | --- |
+| Tick overruns | more than 0.1 overruns/s for 5 min |
+| Bad ticket or rate-limited spike | more than 1 such refusal/s for 5 min |
+| Match server not scraped | its `up` below 1, or missing, for 2 min |
+| Front door not scraped | the same for the door |
+| Server draining | the server reports `arena_draining` (info) |
+| Drain approaching grace period | draining for 18 min of the 1215 s grace |
+| High memory | resident memory above 1.5 GB for 10 min |
+| High open file descriptors | more than 20 000 for 10 min |
+
+Notifications go to the `arena-webhook` contact point at
+`ARENA_ALERT_WEBHOOK_URL`, a Discord or Slack incoming webhook or any URL
+that accepts Grafana's webhook JSON. Unset, they go to a discard address.
+
+### Production topology
+
+Telemetry costs nothing in licences at every stage; only where it runs
+changes.
+
+- **Early playtests ($0 extra):** the `obs` profile on the game host as
+  above. Its memory limits (1 GB for `lgtm`, 256 MB for `alloy`) keep it from
+  starving the match loop. Prometheus keeps 7 days
+  (`PROMETHEUS_EXTRA_ARGS` in `compose.yaml`); Loki and Tempo keep the
+  image's defaults, and their data can be cleared by recreating the
+  `lgtm-data` volume.
+- **Public or long playtests (about $5–12 a month):** run `lgtm` on its own
+  small VPS, reached over a private network (WireGuard, Tailscale or the
+  provider's VPC), so dashboard queries cannot compete with the 30 Hz loop
+  and the history survives a game-server crash. On the game host, run only
+  `alloy` and point it there:
+  `ARENA_OBS_OTLP_ENDPOINT=http://OBS:4318`,
+  `ARENA_OBS_REMOTE_WRITE_URL=http://OBS:9090/api/v1/write`,
+  `ARENA_OBS_LOKI_URL=http://OBS:3100/loki/api/v1/push`. Publish those
+  ports only on the private interface of the observability VPS.
+- **Managed (Grafana Cloud, Datadog or another OTLP vendor):** set the same
+  three Alloy variables to the vendor's endpoints and add their credentials
+  as Alloy `basic_auth` or headers. The Rust services keep sending to
+  `http://alloy:4318`, so no code changes.
 
 ### Observability trial
 
@@ -158,6 +247,34 @@ difference is within run-to-run noise, so no regression was seen.
 
 Not observed: a browser looking at the dashboards (they were checked through
 Grafana's HTTP API), or a production host.
+
+Phase 2 run, the same day and setup, with
+`OTEL_EXPORTER_OTLP_ENDPOINT=http://alloy:4318`, the `alloy` service and a
+small HTTP catcher on the host as `ARENA_ALERT_WEBHOOK_URL`. It ended with a
+fresh rebuild and empty volumes. Observed through Grafana's HTTP API:
+
+- **Metrics through Alloy.** `up` was 1 for both jobs (remote write, no
+  scraping by Prometheus), and `tokio_workers` was present.
+  `PROMETHEUS_EXTRA_ARGS` set retention to `1w`.
+- **Logs.** Loki had `service_name` `server` and `door` with lowercase
+  `level` values. Server lines inside traced spans carried `trace_id` as
+  structured metadata. Fetching one of those ids from Tempo returned its
+  `match` trace with two `seat.join` and two `seat.disconnect` children.
+  Grafana's Loki datasource links `trace_id` to Tempo
+  (`matcherType: label`); the link was not clicked in a browser.
+- **Traces.** Tempo held `ws.hello`, `http.request` and `match` traces from
+  `arena-server`, and `queue.search`, `http.request` and `party.create` traces
+  from `arena-door`.
+- **Alerts.** All eight rules loaded and evaluated healthy. With the
+  previous rule set, stopping the server raised a firing critical
+  "Service not scraped" alert for `job="arena-server"`. Grafana posted it to
+  the webhook about 3.5 minutes after the stop. On the final rule set,
+  stopping the door raised "Front door not scraped" (critical), posted
+  3 min 33 s after the stop. An earlier attempt went unseen because the
+  first catcher (busybox `nc`) closed connections before reading them.
+- **Found and fixed.** A queue client closing its socket normally had been
+  answered as `bad_request`. With the new warnings it would have logged a
+  refusal on every tab close, so a Close frame now just ends the connection.
 
 ## Local trial
 

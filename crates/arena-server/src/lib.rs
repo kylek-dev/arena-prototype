@@ -7,6 +7,7 @@
 //! outcome with the shared rules. A match starts when the first ticket for
 //! it arrives (see [`ticket`]); the front door ([`door`]) only signs them.
 
+pub mod anomaly;
 pub mod door;
 pub mod ingress;
 pub mod logging;
@@ -41,6 +42,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
 
+use anomaly::SharedThrottle;
 use ingress::{Cidr, OpenPerAddress, Origins};
 use logging::MatchId;
 use metrics::Metrics;
@@ -241,7 +243,18 @@ impl App {
         let id = claims.match_id;
         Metrics::add(&self.metrics.matches_created, 1);
         Metrics::add(&self.metrics.matches_active, 1);
-        tracing::info!(match_id = %MatchId(id), team_size, "match started by its first connection");
+        // One span per match, from its first connection to its end. It is
+        // never entered while ticking: lifecycle steps are its children.
+        let span = crate::control_span!(
+            parent: None,
+            "match",
+            match_id = %MatchId(id),
+            team_size,
+            result = tracing::field::Empty
+        );
+        span.in_scope(|| {
+            tracing::info!(match_id = %MatchId(id), team_size, "match started by its first connection");
+        });
         let session = Session::new(arena, map_hash, self.config.limits, self.metrics.clone());
         tokio::spawn(run_match(
             self.clone(),
@@ -249,6 +262,7 @@ impl App {
             claims.expires,
             session,
             receiver,
+            span,
         ));
         Ok(sender)
     }
@@ -287,13 +301,15 @@ fn remove_conn(conns: &mut Conns, conn: ConnId) -> Option<mpsc::Sender<Outbound>
     Some(conns.swap_remove(at).1)
 }
 
+/// Applies one command; returns the frames dropped for slow clients.
 fn apply_command(
     app: &App,
     id: u64,
     session: &mut Session,
     conns: &mut Conns,
     command: Option<Command>,
-) {
+    span: &tracing::Span,
+) -> u64 {
     let out = match command {
         Some(Command::Attach {
             seat,
@@ -303,35 +319,38 @@ fn apply_command(
         }) => {
             insert_conn(conns, conn, out);
             let out = session.attach_with_appearance(seat, conn, appearance);
-            log_attach(id, seat, conn, &out);
+            log_attach(span, id, seat, conn, &out);
             out
         }
         Some(Command::AttachSpectator { player, conn, out }) => {
             insert_conn(conns, conn, out);
             let out = session.attach_spectator(player, conn);
-            log_spectator_attach(id, conn, &out);
+            log_spectator_attach(span, id, conn, &out);
             out
         }
         Some(Command::Input { seat, conn, frame }) => {
             session.receive(seat, conn, frame);
-            return;
+            return 0;
         }
         Some(Command::Detach { seat, conn }) => {
             remove_conn(conns, conn);
             if session.holds(seat, conn) {
-                tracing::info!(match_id = %MatchId(id), seat, conn_id = conn, "seat disconnected");
+                crate::control_span!(parent: span, "seat.disconnect", seat, conn_id = conn)
+                    .in_scope(|| {
+                        tracing::info!(match_id = %MatchId(id), seat, conn_id = conn, "seat disconnected");
+                    });
             }
             session.detach(seat, conn);
-            return;
+            return 0;
         }
         Some(Command::DetachSpectator { conn }) => {
             remove_conn(conns, conn);
             session.detach_spectator(conn);
-            return;
+            return 0;
         }
         None => session.shut_down(),
     };
-    deliver(app, id, conns, out);
+    deliver(app, id, conns, out)
 }
 
 async fn run_match(
@@ -340,6 +359,7 @@ async fn run_match(
     expires: u64,
     mut session: Session,
     mut commands: mpsc::Receiver<Command>,
+    span: tracing::Span,
 ) {
     let mut conns: Conns = Vec::with_capacity(arena_protocol::MAX_FIGHTERS);
     // Under overload the clock stretches rather than bursting missed ticks,
@@ -354,21 +374,22 @@ async fn run_match(
     let mut report_from = Instant::now();
     loop {
         let mut ticked: Option<(Instant, bool)> = None;
+        let mut frames_dropped = 0u64;
         tokio::select! {
             biased;
             _ = shutdown.wait_for(|stop| *stop) => {
                 let out = session.shut_down();
-                deliver(&app, id, &mut conns, out);
+                frames_dropped += deliver(&app, id, &mut conns, out);
             }
             _ = interval.tick() => {
                 let was_running = session.phase() == session::Phase::Running;
                 ticked = Some((Instant::now(), was_running));
                 if app.config.debug_json {
                     let out = session.tick();
-                    deliver(&app, id, &mut conns, out);
+                    frames_dropped += deliver(&app, id, &mut conns, out);
                 } else {
                     let mut bytes_out = 0u64;
-                    let mut frames_dropped = 0u64;
+                    let mut dropped = 0u64;
                     session.tick_encoded(|out| match out {
                         EncodedOut::Frame { conn, frame } => {
                             let Some(sender) = get_conn(&conns, conn) else {
@@ -378,7 +399,7 @@ async fn run_match(
                             if let Err(mpsc::error::TrySendError::Full(_)) =
                                 sender.try_send(Outbound::Frame(Bytes::from(frame)))
                             {
-                                frames_dropped += 1;
+                                dropped += 1;
                             }
                         }
                         EncodedOut::SharedFrame { conn, frame } => {
@@ -389,7 +410,7 @@ async fn run_match(
                             if let Err(mpsc::error::TrySendError::Full(_)) =
                                 sender.try_send(Outbound::Frame(Bytes::from_owner(frame)))
                             {
-                                frames_dropped += 1;
+                                dropped += 1;
                             }
                         }
                         EncodedOut::Close { conn, error } => {
@@ -401,13 +422,14 @@ async fn run_match(
                     if bytes_out > 0 {
                         Metrics::add(&app.metrics.bytes_out, bytes_out);
                     }
-                    if frames_dropped > 0 {
-                        Metrics::add(&app.metrics.frames_dropped, frames_dropped);
+                    if dropped > 0 {
+                        Metrics::add(&app.metrics.frames_dropped, dropped);
+                        frames_dropped += dropped;
                     }
                 }
             }
             command = commands.recv() => {
-                apply_command(&app, id, &mut session, &mut conns, command);
+                frames_dropped += apply_command(&app, id, &mut session, &mut conns, command, &span);
                 // Drain a burst of queued inputs without re-entering select!
                 // while keeping a small bound so ticks are never starved.
                 for _ in 0..64 {
@@ -415,11 +437,27 @@ async fn run_match(
                         break;
                     }
                     match commands.try_recv() {
-                        Ok(next) => apply_command(&app, id, &mut session, &mut conns, Some(next)),
+                        Ok(next) => {
+                            frames_dropped +=
+                                apply_command(&app, id, &mut session, &mut conns, Some(next), &span);
+                        }
                         Err(_) => break,
                     }
                 }
             }
+        }
+        if frames_dropped > 0
+            && let Some(suppressed) = DROPS.allow(std::time::Instant::now())
+        {
+            span.in_scope(|| {
+                tracing::warn!(
+                    match_id = %MatchId(id),
+                    frames_dropped,
+                    suppressed_reports = suppressed,
+                    reason = "slow_client",
+                    "dropped frames for a client whose send queue was full"
+                );
+            });
         }
         if let Some((started, was_running)) = ticked {
             let elapsed_us = started.elapsed().as_micros() as u64;
@@ -427,6 +465,20 @@ async fn run_match(
                 app.metrics.record_running_tick(elapsed_us, interval_us);
             } else {
                 app.metrics.record_tick(elapsed_us, interval_us);
+            }
+            if elapsed_us > interval_us
+                && let Some(suppressed) = OVERRUNS.allow(std::time::Instant::now())
+            {
+                span.in_scope(|| {
+                    tracing::warn!(
+                        match_id = %MatchId(id),
+                        tick_microseconds = elapsed_us,
+                        budget_microseconds = interval_us,
+                        suppressed_reports = suppressed,
+                        reason = "tick_overrun",
+                        "a tick took longer than the tick interval"
+                    );
+                });
             }
             if app.config.dev && started >= report_at {
                 let seconds = started.duration_since(report_from).as_secs_f64();
@@ -456,52 +508,67 @@ async fn run_match(
     }
     app.end_match(id, expires);
     Metrics::sub(&app.metrics.matches_active, 1);
+    let _ended = span.enter();
     match session.arena().result() {
         Some(result) => {
+            span.record("result", tracing::field::debug(result));
             tracing::info!(match_id = %MatchId(id), result = ?result, "match ended");
         }
-        None => tracing::info!(
-            match_id = %MatchId(id),
-            reason = "no_result",
-            "match ended without a result (seats never all joined, everyone left, or the server stopped)"
-        ),
+        None => {
+            span.record("result", "none");
+            tracing::info!(
+                match_id = %MatchId(id),
+                reason = "no_result",
+                "match ended without a result (seats never all joined, everyone left, or the server stopped)"
+            );
+        }
     }
 }
 
 /// One line per seat change, so an operator (or a puzzled tester) can see
 /// who joined which seat of which match. Tickets are never logged.
-fn log_attach(id: u64, seat: usize, conn: ConnId, out: &[Out]) {
+fn log_attach(span: &tracing::Span, id: u64, seat: usize, conn: ConnId, out: &[Out]) {
     for out in out {
         match out {
             Out::Send {
                 conn: to,
                 message: ServerMessage::Welcome(_),
             } if *to == conn => {
-                tracing::info!(match_id = %MatchId(id), seat, conn_id = conn, "seat joined");
+                crate::control_span!(parent: span, "seat.join", seat, conn_id = conn).in_scope(|| {
+                    tracing::info!(match_id = %MatchId(id), seat, conn_id = conn, "seat joined");
+                });
             }
             Out::Close {
                 conn: refused,
                 error: Some(code),
             } if *refused == conn => {
-                tracing::info!(
-                    match_id = %MatchId(id),
-                    seat,
-                    conn_id = conn,
-                    error_code = ?code,
-                    "seat refused connection"
+                crate::control_span!(parent: span, "seat.refuse", seat, conn_id = conn).in_scope(
+                    || {
+                        tracing::info!(
+                            match_id = %MatchId(id),
+                            seat,
+                            conn_id = conn,
+                            error_code = ?code,
+                            "seat refused connection"
+                        );
+                    },
                 );
             }
             Out::Close {
                 conn: old,
                 error: Some(ErrorCode::Replaced),
             } => {
-                tracing::info!(
-                    match_id = %MatchId(id),
-                    seat,
-                    conn_id = conn,
-                    replaced_conn_id = *old,
-                    reason = "replaced",
-                    "seat taken over by a new connection"
+                crate::control_span!(parent: span, "seat.replace", seat, conn_id = conn).in_scope(
+                    || {
+                        tracing::info!(
+                            match_id = %MatchId(id),
+                            seat,
+                            conn_id = conn,
+                            replaced_conn_id = *old,
+                            reason = "replaced",
+                            "seat taken over by a new connection"
+                        );
+                    },
                 );
             }
             _ => {}
@@ -509,24 +576,32 @@ fn log_attach(id: u64, seat: usize, conn: ConnId, out: &[Out]) {
     }
 }
 
-fn log_spectator_attach(id: u64, conn: ConnId, out: &[Out]) {
+fn log_spectator_attach(span: &tracing::Span, id: u64, conn: ConnId, out: &[Out]) {
     for out in out {
         match out {
             Out::Send {
                 conn: to,
                 message: ServerMessage::Welcome(_),
             } if *to == conn => {
-                tracing::info!(match_id = %MatchId(id), conn_id = conn, "spectator joined");
+                crate::control_span!(parent: span, "spectator.join", conn_id = conn).in_scope(
+                    || {
+                        tracing::info!(match_id = %MatchId(id), conn_id = conn, "spectator joined");
+                    },
+                );
             }
             Out::Close {
                 conn: refused,
                 error: Some(code),
             } if *refused == conn => {
-                tracing::info!(
-                    match_id = %MatchId(id),
-                    conn_id = conn,
-                    error_code = ?code,
-                    "spectator refused connection"
+                crate::control_span!(parent: span, "spectator.refuse", conn_id = conn).in_scope(
+                    || {
+                        tracing::info!(
+                            match_id = %MatchId(id),
+                            conn_id = conn,
+                            error_code = ?code,
+                            "spectator refused connection"
+                        );
+                    },
                 );
             }
             _ => {}
@@ -534,7 +609,8 @@ fn log_spectator_attach(id: u64, conn: ConnId, out: &[Out]) {
     }
 }
 
-fn deliver(app: &App, id: u64, conns: &mut Conns, out: Vec<Out>) {
+/// Sends a match's output; returns the frames dropped for slow clients.
+fn deliver(app: &App, id: u64, conns: &mut Conns, out: Vec<Out>) -> u64 {
     let mut bytes_out = 0u64;
     let mut frames_dropped = 0u64;
     for out in out {
@@ -575,6 +651,7 @@ fn deliver(app: &App, id: u64, conns: &mut Conns, out: Vec<Out>) {
     if frames_dropped > 0 {
         Metrics::add(&app.metrics.frames_dropped, frames_dropped);
     }
+    frames_dropped
 }
 
 pub fn router(app: Arc<App>) -> Router {
@@ -586,7 +663,43 @@ pub fn router(app: Arc<App>) -> Router {
     if app.config.dev {
         router = router.route("/dev/match", post(dev_match));
     }
-    router.with_state(app)
+    traced(router.with_state(app))
+}
+
+/// Paths scraped or probed every few seconds: no span each time.
+const UNTRACED_PATHS: [&str; 3] = ["/metrics", "/healthz", "/readyz"];
+
+/// One `http.request` span per request (a WebSocket's is its upgrade), with
+/// the method, the route (never the query; `unmatched` for unknown paths, so
+/// probes cannot mint arbitrary values) and the status. Probes and scrapes
+/// get none. Failures are not logged here: callers already count them.
+pub fn traced(router: Router) -> Router {
+    router.layer(
+        tower_http::trace::TraceLayer::new_for_http()
+            .make_span_with(|request: &axum::http::Request<axum::body::Body>| {
+                let path = request
+                    .extensions()
+                    .get::<axum::extract::MatchedPath>()
+                    .map_or("unmatched", axum::extract::MatchedPath::as_str);
+                if UNTRACED_PATHS.contains(&path) {
+                    return tracing::Span::none();
+                }
+                crate::control_span!(
+                    "http.request",
+                    method = %request.method(),
+                    path = %path,
+                    status = tracing::field::Empty
+                )
+            })
+            .on_failure(tower_http::trace::DefaultOnFailure::new().level(tracing::Level::DEBUG))
+            .on_response(
+                |response: &axum::http::Response<axum::body::Body>,
+                 _latency: Duration,
+                 span: &tracing::Span| {
+                    span.record("status", response.status().as_u16());
+                },
+            ),
+    )
 }
 
 async fn ready(State(app): State<Arc<App>>) -> Response {
@@ -607,6 +720,7 @@ async fn render_metrics(State(app): State<Arc<App>>) -> String {
         ),
     );
     metrics::ProcessStats::read().render(&mut text);
+    metrics::render_runtime(&mut text);
     text
 }
 
@@ -736,8 +850,36 @@ impl Drop for OpenSpectator<'_> {
     }
 }
 
+/// Refusals worth an operator's attention, by kind: bad tickets, floods
+/// and garbage. Each is reported at most once per window process-wide.
+static REFUSALS: [SharedThrottle; 3] = [
+    SharedThrottle::new(anomaly::REPORT_EVERY),
+    SharedThrottle::new(anomaly::REPORT_EVERY),
+    SharedThrottle::new(anomaly::REPORT_EVERY),
+];
+/// Tick overruns and dropped frames, process-wide: an overloaded host with
+/// hundreds of matches still writes one line per window.
+static OVERRUNS: SharedThrottle = SharedThrottle::new(anomaly::REPORT_EVERY);
+static DROPS: SharedThrottle = SharedThrottle::new(anomaly::REPORT_EVERY);
+
 async fn reject(socket: &mut WebSocket, app: &App, code: ErrorCode) {
     app.metrics.record_error(code);
+    let kind = match code {
+        ErrorCode::BadTicket => Some(0),
+        ErrorCode::RateLimited => Some(1),
+        ErrorCode::Malformed => Some(2),
+        _ => None,
+    };
+    if let Some(kind) = kind
+        && let Some(suppressed) = REFUSALS[kind].allow(std::time::Instant::now())
+    {
+        tracing::warn!(
+            error_code = ?code,
+            suppressed_reports = suppressed,
+            reason = "refused",
+            "closed a connection for a bad ticket, malformed frames or flooding"
+        );
+    }
     let frame = ServerMessage::Error(code).encode();
     let _ = socket.send(Message::Binary(frame.into())).await;
     let _ = socket.send(Message::Close(None)).await;
@@ -786,27 +928,52 @@ async fn connection(socket: &mut WebSocket, app: Arc<App>) {
         Ok(Some(Err(code))) => return reject(socket, &app, code).await,
         Ok(Some(Ok(frame))) => frame,
     };
-    let (ticket, appearance) = match read_hello(&frame) {
-        Ok(hello) => hello,
-        Err(code) => return reject(socket, &app, code).await,
-    };
-    let claims = match app.config.key.verify(&ticket, unix_now()) {
-        Ok(claims) => claims,
-        Err(_) => return reject(socket, &app, ErrorCode::BadTicket).await,
-    };
-    if app.config.debug_json {
-        tracing::info!(
-            target: "arena_server::wire",
-            match_id = %MatchId(claims.match_id),
-            conn_id = conn,
-            role = ?claims.role,
-            "hello"
+    // The Hello, its ticket check and finding the match: one span per
+    // connection, closed before the connection starts playing.
+    let hello_span = crate::control_span!(
+        "ws.hello",
+        conn_id = conn,
+        match_id = tracing::field::Empty,
+        role = tracing::field::Empty,
+        outcome = tracing::field::Empty
+    );
+    let admitted = hello_span.in_scope(|| -> Result<_, ErrorCode> {
+        let (ticket, appearance) = read_hello(&frame)?;
+        let claims = app
+            .config
+            .key
+            .verify(&ticket, unix_now())
+            .map_err(|_| ErrorCode::BadTicket)?;
+        let span = tracing::Span::current();
+        span.record(
+            "match_id",
+            tracing::field::display(MatchId(claims.match_id)),
         );
-    }
-    let commands = match app.match_for(&claims) {
-        Ok(commands) => commands,
-        Err(code) => return reject(socket, &app, code).await,
+        span.record("role", tracing::field::debug(claims.role));
+        if app.config.debug_json {
+            tracing::info!(
+                target: "arena_server::wire",
+                match_id = %MatchId(claims.match_id),
+                conn_id = conn,
+                role = ?claims.role,
+                "hello"
+            );
+        }
+        let commands = app.match_for(&claims)?;
+        Ok((claims, appearance, commands))
+    });
+    let (claims, appearance, commands) = match admitted {
+        Ok(admitted) => {
+            hello_span.record("outcome", "admitted");
+            admitted
+        }
+        Err(code) => {
+            hello_span.record("outcome", tracing::field::debug(code));
+            drop(hello_span);
+            return reject(socket, &app, code).await;
+        }
     };
+    drop(hello_span);
     let (out_sender, mut outbound) = mpsc::channel(OUTBOUND_QUEUE);
     let _spec_open = if claims.is_spectator() {
         Metrics::add(&app.metrics.spectators_open, 1);

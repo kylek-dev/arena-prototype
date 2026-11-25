@@ -11,6 +11,11 @@ x-public: &public
   # One JSON object per log line, like Caddy's log; RUST_LOG filters.
   ARENA_LOG_FORMAT: json
   RUST_LOG: ${RUST_LOG:-info}
+  # Empty (the default) exports no spans. With `--profile obs`, set it to
+  # http://alloy:4318 in deploy/.env.
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  # Bound the final span flush on stop, within the door's 10 s grace.
+  OTEL_EXPORTER_OTLP_TIMEOUT: ${OTEL_EXPORTER_OTLP_TIMEOUT:-3000}
 
 services:
   server:
@@ -77,12 +82,10 @@ services:
   # Opt-in observability (`--profile obs`): one container with Grafana,
   # Prometheus, Loki, Tempo and an OTLP collector. Every port is bound to
   # loopback: reach Grafana at http://127.0.0.1:3000 on this machine, or over
-  # an SSH tunnel. Prometheus scrapes server:8080/metrics and
-  # door:8090/metrics over the private network; Caddy never routes to them.
+  # an SSH tunnel. Alloy (below) feeds it; Caddy never routes to any of it.
   lgtm:
     image: grafana/otel-lgtm:0.41.1
     profiles: [obs]
-    depends_on: [server, door]
     ports:
       - "127.0.0.1:3000:3000"
       - "127.0.0.1:4317:4317"
@@ -91,15 +94,54 @@ services:
       - ./observability/prometheus.yaml:/otel-lgtm/prometheus.yaml:ro
       - ./observability/dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/custom.yaml:ro
       - ./observability/dashboards:/otel-lgtm/grafana/conf/provisioning/dashboards/custom:ro
+      - ./observability/alerts.yaml:/otel-lgtm/grafana/conf/provisioning/alerting/arena.yaml:ro
       - lgtm-data:/data
     environment:
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /otel-lgtm/grafana/conf/provisioning/dashboards/custom/match-server-health.json
+      # Where alerts are posted. The default goes nowhere (the discard
+      # port); set a Discord, Slack or other webhook URL in deploy/.env.
+      ARENA_ALERT_WEBHOOK_URL: ${ARENA_ALERT_WEBHOOK_URL:-http://127.0.0.1:9/}
+      # A week of metrics is plenty for playtests and bounds the disk.
+      PROMETHEUS_EXTRA_ARGS: --storage.tsdb.retention.time=7d
     # Keep the stack from competing with the 30 Hz match loop for memory.
     mem_limit: 1g
     restart: unless-stopped
     networks:
       arena:
         ipv4_address: 172.30.10.20
+
+  # Ships the game host's telemetry to lgtm: scrapes server and door
+  # /metrics, tails the server, door and Caddy logs through the Docker
+  # socket (read-only, but Docker API access is root-equivalent: keep this
+  # container's UI on loopback), and forwards OTLP traces. Point it at a
+  # remote stack with ARENA_OBS_OTLP_ENDPOINT, ARENA_OBS_REMOTE_WRITE_URL and
+  # ARENA_OBS_LOKI_URL.
+  alloy:
+    image: grafana/alloy:v1.22.0
+    profiles: [obs]
+    depends_on: [lgtm]
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    ports:
+      - "127.0.0.1:12345:12345"
+    volumes:
+      - ./observability/alloy.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    environment:
+      ARENA_OBS_OTLP_ENDPOINT: ${ARENA_OBS_OTLP_ENDPOINT:-}
+      ARENA_OBS_REMOTE_WRITE_URL: ${ARENA_OBS_REMOTE_WRITE_URL:-}
+      ARENA_OBS_LOKI_URL: ${ARENA_OBS_LOKI_URL:-}
+      # Ship only this project's containers (`docker compose -p NAME`).
+      ARENA_OBS_PROJECT: ${COMPOSE_PROJECT_NAME:-arena}
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      arena:
+        ipv4_address: 172.30.10.21
 
 networks:
   arena:
@@ -111,3 +153,4 @@ volumes:
   caddy-data:
   caddy-config:
   lgtm-data:
+  alloy-data:

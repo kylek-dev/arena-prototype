@@ -490,6 +490,8 @@ async fn operations_endpoints_and_development_guards() {
     );
     assert!(metrics.contains("arena_matches_active 1\n"), "{metrics}");
     assert!(metrics.contains("arena_draining 0\n"), "{metrics}");
+    assert!(metrics.contains("\ntokio_workers "), "{metrics}");
+    assert!(metrics.contains("\ntokio_alive_tasks "), "{metrics}");
     assert!(
         metrics.contains("# TYPE arena_tick_duration_microseconds histogram\n"),
         "{metrics}"

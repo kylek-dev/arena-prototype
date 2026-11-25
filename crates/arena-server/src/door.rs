@@ -274,6 +274,7 @@ async fn create(
 async fn render_metrics(State(door): State<Arc<Door>>) -> String {
     let mut text = render_door_metrics(&door.metrics);
     crate::metrics::ProcessStats::read().render(&mut text);
+    crate::metrics::render_runtime(&mut text);
     text
 }
 
@@ -489,6 +490,7 @@ fn build(config: DoorConfig) -> (Router, Arc<Door>) {
         .route("/healthz", get(|| async { "ok" }))
         .route("/metrics", get(render_metrics))
         .with_state(door.clone());
+    let router = crate::traced(router);
     (router, door)
 }
 

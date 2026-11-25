@@ -25,16 +25,29 @@ use arena_server::ticket::TicketKey;
 const USAGE: &str = "usage: arena-door --match-server URL --page URL [--bind ADDR] [--dev] \
 [--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]... [--ticket-minutes N]";
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    arena_server::logging::init();
-    match run().await {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(message) => {
-            tracing::error!(reason = %message, "arena-door failed");
+fn main() -> ExitCode {
+    // Telemetry starts before and stops after the runtime: the OTLP HTTP
+    // exporter blocks, which an async context must not do.
+    let telemetry = arena_server::logging::init("arena-door");
+    let code = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => {
+            let result = runtime.block_on(run());
+            drop(runtime);
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(message) => {
+                    tracing::error!(reason = %message, "arena-door failed");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Err(error) => {
+            tracing::error!(reason = %error, "arena-door could not start its runtime");
             ExitCode::FAILURE
         }
-    }
+    };
+    telemetry.shutdown();
+    code
 }
 
 /// The scheme and authority of a URL: `https://a.example:8443/x` gives

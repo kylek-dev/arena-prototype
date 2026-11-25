@@ -1,6 +1,6 @@
 # ADR 0054: Observability: structured logs, histograms and a local LGTM stack
 
-Date: 2026-11-25. **Status: proposed (Phase 1 implemented; Phases 2 and 3 planned).**
+Date: 2026-11-25. **Status: proposed (Phases 1 and 2 implemented; Phase 3 planned).**
 
 ## Context
 
@@ -58,8 +58,75 @@ Phase 1 of the issue, in `arena-server` (both binaries):
   dashboards under `deploy/observability/dashboards/`. Caddy still never
   routes to `/metrics`.
 
-Phases 2 (OTLP traces, log shipping, alerts) and 3 (browser telemetry,
-profiling) stay as written in the issue and will amend this record.
+### Phase 2: traces, shipping and alerts
+
+- **Opt-in OTLP traces.** `logging::init` builds an OTLP/HTTP span exporter
+  (`opentelemetry-otlp`, blocking HTTP client, batch processor) only when
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is non-blank; otherwise there is no exporter,
+  thread or socket. The binaries start telemetry before the Tokio runtime and
+  flush it after, because the blocking client must not run in an async
+  context. Exported spans are filtered to the services' own targets at
+  `info`, independent of `RUST_LOG`.
+- **Control-plane spans only**, created with `control_span!`:
+  - `http.request` from `tower-http`. It records the matched route (or
+    `unmatched`) but never the query, and skips `/metrics`, `/healthz` and
+    `/readyz`. Its failure events are at debug level, so the 503s from
+    `/readyz` while draining add no error lines.
+  - `queue.search` per player, with `queue.step` children from queue entry to
+    `ticket.mint`. A search ends when the player is matched, stops, leaves or
+    is replaced by a new connection. The queue task asserts in debug builds
+    that no search outlives its connection.
+  - `party.create` and `party.join`. Invite codes are never recorded.
+  - `lobby.start`.
+  - `ws.hello` for the Hello and ticket check.
+  - One `match` span per match, never entered while ticking. Seat and
+    spectator steps are its children.
+  - `server.drain`.
+
+  Nothing is traced per tick or per input.
+- **Log ↔ trace.** `control_span!` records the OpenTelemetry `trace_id` and
+  `span_id` into the span's fields, and JSON lines include the current span,
+  so a log line names its trace. Alloy lifts `trace_id` into Loki structured
+  metadata for Grafana's link to Tempo. The ids are also exported as span
+  attributes, which duplicates the native ids; that is accepted for
+  simplicity.
+- **Throttled anomaly warnings** (`anomaly.rs`). Each kind is reported at most
+  once every 10 s per process, with `suppressed_reports` counting the ones
+  held back:
+  - tick overruns;
+  - frames dropped for slow clients;
+  - `BadTicket`, `RateLimited` and `Malformed` refusals, each throttled
+    separately;
+  - queue refusals for floods or malformed messages.
+
+  Inside a match, they are also span events on the match span.
+- **Shipping.** A Grafana Alloy container in the same profile does three
+  things:
+  - It scrapes both `/metrics` endpoints and remote-writes them, so
+    Prometheus in `lgtm` no longer scrapes.
+  - It reads the `server`, `door` and `caddy` container logs from the Docker
+    socket and pushes them to Loki's own API. That API keeps the
+    `service_name` label; Loki's OTLP intake would replace it with the
+    resource's name.
+  - It forwards OTLP traces.
+
+  Destinations come from three environment variables, so a remote or managed
+  stack needs no code or config change.
+- **Runtime gauges.** `tokio_workers`, `tokio_alive_tasks` and
+  `tokio_global_queue_depth` (stable Tokio metrics). Task poll histograms
+  would need `tokio_unstable` and are left out.
+- **Alerts.** Eight provisioned Grafana rules post to a webhook contact point
+  (`ARENA_ALERT_WEBHOOK_URL`).
+- **Deferred: metric exemplars.** The issue mentions linking metrics to
+  traces through exemplars. Our histograms are rendered as plain Prometheus
+  text with no exemplars. Exemplars on the tick histogram would also need a
+  trace context on the tick path, which the hard boundaries forbid. Logs and
+  traces are linked; metrics and traces are not.
+- **Topology** for early, public and managed setups is documented in
+  `docs/DEPLOYMENT.md`.
+
+Phase 3 (browser telemetry, profiling) stays as written in the issue and will
+amend this record.
 
 ## Consequences
 

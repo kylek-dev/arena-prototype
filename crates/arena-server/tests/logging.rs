@@ -122,6 +122,25 @@ async fn lifecycle_logs_are_structured_and_never_carry_tickets_or_keys() {
     }
     // A second Hello mid-match is wire-logged with its ticket redacted.
     sockets[0].send(hello(&tickets[0])).await.unwrap();
+    // A queue player who says hello and closes normally is no refusal.
+    let (mut leaver, _) = connect_async(format!("ws://{}/api/queue", door.addr))
+        .await
+        .unwrap();
+    leaver
+        .send(Message::text(
+            r#"{"type":"hello","guest":"00000000000000000000000000000007"}"#,
+        ))
+        .await
+        .unwrap();
+    leaver.close(None).await.unwrap();
+    // Garbage instead of a Hello: refused, with one throttled warning.
+    for _ in 0..3 {
+        let (mut garbage, _) = connect_async(format!("ws://{}/play", server.addr))
+            .await
+            .unwrap();
+        garbage.send(Message::text("not a hello")).await.unwrap();
+        let _ = tokio::time::timeout(WAIT, garbage.next()).await;
+    }
     tokio::time::sleep(Duration::from_millis(100)).await;
     drop(sockets);
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -170,6 +189,18 @@ async fn lifecycle_logs_are_structured_and_never_carry_tickets_or_keys() {
                 .as_str()
                 .is_some_and(|p| p.contains("Welcome"))),
         "{logs}"
+    );
+
+    let refusals: Vec<&serde_json::Value> = lines
+        .iter()
+        .filter(|line| line["reason"] == "refused" && line["level"] == "WARN")
+        .collect();
+    assert_eq!(refusals.len(), 1, "three refusals, one report: {logs}");
+    assert_eq!(refusals[0]["error_code"], "Malformed");
+    assert_eq!(refusals[0]["suppressed_reports"], 0);
+    assert!(
+        !logs.contains("closed a queue connection"),
+        "a normal close was logged as a refusal: {logs}"
     );
 
     for ticket in &tickets {
