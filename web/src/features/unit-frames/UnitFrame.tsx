@@ -31,7 +31,7 @@ export function UnitFrame({
       aria-label={`${role} status`}
     >
       <div className="unit-heading">
-        <strong>{unit?.name ?? "—"}</strong>
+        <strong title={unit?.name}>{unit?.name ?? "—"}</strong>
         {unit?.disconnected ? (
           <span className="unit-status">Disconnected</span>
         ) : lockedOut ? (

@@ -2,6 +2,7 @@ import { useRef } from "react";
 import { spellLabel } from "../../domain/casting";
 import { CastBar } from "../cast-bar/CastBar";
 import { visibleNameplates } from "../../domain/units/nameplates";
+import { shortName } from "../../domain/units/selection";
 import { useConfigSelector } from "../../state/config";
 import { draggingSpell, error, interaction, nameplateScene } from "../../state/session";
 import { useStore } from "../../state/store";
@@ -69,7 +70,7 @@ export function Nameplates() {
                 style={{ width: `${(unit.health / unit.maxHealth) * 100}%` }}
               />
               <span className="nameplate-name" aria-hidden="true">
-                {unit.disconnected ? `${unit.name} · Disconnected` : unit.name}
+                {unit.disconnected ? `${shortName(unit)} · Disconnected` : shortName(unit)}
               </span>
               {activeCast && <CastBar variant="nameplate" cast={activeCast} />}
               {lockedOut && (

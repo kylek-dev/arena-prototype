@@ -657,3 +657,19 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fresh-Eyes Review:** no Critical. Important: privacy notice omitted access logs, browser reports and the account/rename times (fixed); missing UI-REVIEW entry (added). Minor fixes taken: bare 502 no longer says "nothing was deleted", 404 re-checks login, http logout links only from http pages, panel kept when a follow-up refresh fails, back/forward restore and tab focus re-check, confirmation stays open after a refusal, six more negative tests.
 - **Learnings:** `web/public/` is generated and gitignored (build-web.sh), so static pages go in `web/` as Vite inputs. `#` followed by 3–8 hex digits anywhere in `web/src` (even `Name#1234` in a comment) fails the palette literal test; write `Name#number`. `vite.config.ts` is type-checked without Node types, so it cannot import `node:*`.
 - **Next Recommended Slice:** `Name#number` handles in the HUD and "Choose your name" (stacked on this branch).
+
+## 2026-11-25 — `Name#number` handles everywhere
+- **Branch / Commit:** `auto/handles-ui`
+- **Base / PR:** `auto/account-ui` (stacked on PR #100)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Lane B "Show `Name#1234` handles everywhere" ([social-identity](issues/social-identity.md) step 3 display)
+- **Changes:**
+  - Web: `withHandles` (`domain/handles.ts`) names network fighters from `remoteHandles` in `runtime/start.ts` `onState`, so frames, tooltip, scoreboard and spectator HUD show the full handle and nameplates `shortName` (via `handleName`); seats without one keep their role name. Unit-frame names ellipsize.
+  - Door: `LobbyMemberView` gains `handle` (filled from the queue's holders at send; a `#[serde(skip)] conn` carries the connection) and `Matchmaker::announce_lobbies_of` re-sends lobby views on `Rename` and `Revoke`; the web parses it and names lobby members (`memberName`, `memberLabel` for repeated guest names).
+  - "Choose your name" / "Change name" in the account panel (`chooseName` posts `/api/auth/handle`; `invalid_name`, `blocked_name`, `name_full`, `too_soon` with the wait; 401/404 refresh).
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/account-ui` (`smoke=true web_build=true wasm=true`): pass — 483 Rust tests (1 pre-existing ignored; account tests ran against `check.sh`'s throwaway PostgreSQL), 58 Python, 50 Node, 45 Vitest files / 366 tests, headless pass, server smoke 496 ticks / 0 overruns / drained cleanly, `npm run build` pass, WASM clippy pass.
+  - `./scripts/build-web.sh`: pass (28 static resources, WASM MIME correct, no browser).
+- **Fresh-Eyes Review:** no Critical. Important: renames and revokes did not reach open lobby views (fixed with re-announce and an end-to-end test); long handles overflowed unit frames (ellipsis + title). Minor taken: `handleName` reuse, role names instead of per-viewer `Player N`, unique lobby button labels, name-form edge cases, `conn` never serialized (unit test), spectator naming test.
+- **Learnings:** the matchmaker knows no names; the door's `holders` do, so name-bearing views are completed at the `Out` send site in `door/queue.rs`, and anything that changes a holder must re-announce views that show it.
+- **Next Recommended Slice:** friends list and invite prompts (stacked on this branch).

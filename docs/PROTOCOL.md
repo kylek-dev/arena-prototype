@@ -199,7 +199,7 @@ the connection with `error`.
 | `ready_check` `{mode, accepted, total, you, remaining_ms}` | A match to accept within 15 s; sent again whenever someone accepts. |
 | `requeued` `{mode}` | Someone else did not accept; back at the front of the queue. |
 | `stopped` `{reason}` | `cancelled`, `member_left`, `declined`, `not_accepted`, `member_declined` or `member_not_accepted`. The connection stays open. |
-| `lobby` `{code, mode, settings, spectator_slots, you, host, can_start, members}` | Current custom lobby roster (`members`: `{id, slot, host, you}`), settings, and readiness. |
+| `lobby` `{code, mode, settings, spectator_slots, you, host, can_start, members}` | Current custom lobby roster (`members`: `{id, slot, host, you, handle}`, where `handle` is the member's `Name#1234` or temporary `Guest#NNNN`, sent again when a member's name changes; older doors omit it), settings, and readiness. |
 | `lobby_left` `{reason}` | `left` or `kicked`. |
 | `invite` `{from, kind, code}` | A friend invites this player: `kind` is `party` or `lobby`; accepting is `join_party` / `join_lobby` with `code`, declining is doing nothing. |
 | `invite_sent` `{to}` | The invite reached `to`. |

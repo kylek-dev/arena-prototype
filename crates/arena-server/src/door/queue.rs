@@ -548,6 +548,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 Some(Command::StartLobby { conn }) => mm.start_lobby(conn),
                 Some(Command::Revoke { account }) => {
                     by_account.remove(&account);
+                    let mut renamed = Vec::new();
                     for (conn, holder) in holders.iter_mut() {
                         if holder.account == Some(account) {
                             // A mute outlives logging out.
@@ -557,17 +558,21 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                                 handle: Some(super::auth::guest_handle()),
                                 admin: false,
                             };
+                            renamed.push(*conn);
                         }
                     }
-                    Vec::new()
+                    // Lobby-mates see the new (guest) name at once.
+                    mm.announce_lobbies_of(renamed)
                 }
                 Some(Command::Rename { account, handle }) => {
-                    for holder in holders.values_mut() {
+                    let mut renamed = Vec::new();
+                    for (conn, holder) in holders.iter_mut() {
                         if holder.account == Some(account) {
                             holder.handle = Some(handle);
+                            renamed.push(*conn);
                         }
                     }
-                    Vec::new()
+                    mm.announce_lobbies_of(renamed)
                 }
                 Some(Command::Invite { conn, from, to, to_handle }) => {
                     if holders.get(&conn).and_then(|h| h.account) == Some(from) {
@@ -737,7 +742,15 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                         searches.matched(conn, match_id);
                     }
                 }
-                Out::Lobby { conn, view } => send(&conns, conn, ToClient::Lobby(view)),
+                Out::Lobby { conn, mut view } => {
+                    for member in &mut view.members {
+                        member.handle = holders
+                            .get(&member.conn)
+                            .and_then(|holder| holder.handle)
+                            .map(|handle| handle.to_string());
+                    }
+                    send(&conns, conn, ToClient::Lobby(view));
+                }
                 Out::LobbyLeft { conn, reason } => send(
                     &conns,
                     conn,

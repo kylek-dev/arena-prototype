@@ -810,6 +810,11 @@ mod queue {
         match spec.next_event().await {
             Some(QueueMessage::Lobby(view)) => {
                 assert_eq!(view.members.len(), 3);
+                // Every member is named, guests with a temporary handle.
+                for member in &view.members {
+                    let handle = member.handle.as_deref().expect("a member handle");
+                    assert!(handle.starts_with("Guest#"), "{handle}");
+                }
                 assert_eq!(
                     view.members[2].slot,
                     arena_server::matchmaker::LobbySlot::Spectator

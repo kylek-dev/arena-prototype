@@ -1,7 +1,16 @@
 import { Button, Text } from "@radix-ui/themes";
 import { useState } from "react";
-import { LOGIN_URL, PRIVACY_URL, SIGN_UP_URL, accountErrorText } from "../../domain/account";
-import { LOADING_ACCOUNT } from "../../runtime/account";
+import {
+  LOGIN_URL,
+  PRIVACY_URL,
+  SIGN_UP_URL,
+  accountErrorText,
+  isName,
+  renameWait,
+  type Me,
+} from "../../domain/account";
+import { handleName } from "../../domain/handles";
+import { LOADING_ACCOUNT, type Account } from "../../runtime/account";
 import { accountService } from "../../state/account";
 import { createStore, useStore } from "../../state/store";
 import "./account.css";
@@ -13,6 +22,73 @@ function PrivacyLink() {
     <a className="account-privacy" href={PRIVACY_URL} target="_blank" rel="noopener">
       Privacy notice
     </a>
+  );
+}
+
+/** "Choose your name": the player picks the word, the door the number. */
+function ChooseName({ account, me, busy }: { account: Account; me: Me; busy: boolean }) {
+  const [open, setOpen] = useState(!me.handle);
+  const [name, setName] = useState("");
+  const wait = renameWait(me.renameAt, Date.now() / 1000);
+  if (!open)
+    return (
+      <div className="account-actions">
+        <Button size="1" variant="surface" color="gray" onClick={() => setOpen(true)}>
+          Change name
+        </Button>
+        {wait && (
+          <Text size="1" color="gray">
+            A different name {wait}.
+          </Text>
+        )}
+      </div>
+    );
+  const valid = isName(name);
+  const save = async () => {
+    if (!valid || busy) return;
+    if (await account.chooseName(name)) {
+      setName("");
+      setOpen(false);
+    }
+  };
+  return (
+    <div className="account-name" role="group" aria-label="Choose your name">
+      <label className="account-name-field">
+        <Text size="1">Choose your name</Text>
+        <input
+          value={name}
+          maxLength={16}
+          placeholder={me.handle ? handleName(me.handle) : "Name"}
+          autoComplete="off"
+          spellCheck={false}
+          onChange={(event) => setName(event.target.value.trim())}
+          onKeyDown={(event) => event.key === "Enter" && void save()}
+        />
+      </label>
+      <Text size="1" color="gray">
+        3–16 letters and digits, starting with a letter. The number after # is picked for you.
+        {wait && ` A different name ${wait}; changing only capital letters works any time.`}
+      </Text>
+      <div className="account-actions">
+        <Button size="1" disabled={!valid || busy} onClick={() => void save()}>
+          Save name
+        </Button>
+        {me.handle && (
+          <Button
+            size="1"
+            variant="soft"
+            color="gray"
+            onClick={() => {
+              setName("");
+              setOpen(false);
+              account.dismiss();
+            }}
+          >
+            Cancel
+          </Button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -61,6 +137,7 @@ export function AccountPanel() {
           "Logged in. You have no name yet, so others see you as a guest."
         )}
       </Text>
+      <ChooseName key={me.handle ?? ""} account={account} me={me} busy={!!busy} />
       {confirming ? (
         <div className="account-confirm" role="alertdialog" aria-label="Delete account">
           <Text size="1">

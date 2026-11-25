@@ -53,6 +53,15 @@
 .unit-heading strong {
   font-size: 14px;
   font-weight: 600;
+  /* Long handles (16 letters and a number) end in an ellipsis; the full
+     name is in the title. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.unit-heading .unit-status {
+  flex-shrink: 0;
 }
 .health-track,
 .resource-track {

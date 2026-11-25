@@ -2,6 +2,7 @@
 // `/api/queue` WebSocket exchanges, the queue's state and how the interface
 // words it. Pure, so it is unit tested without sockets.
 
+import { isHandle } from "./handles";
 import { parseTicket, type MatchTicket } from "./network";
 
 export type QueueMode = "1v1" | "2v2" | "3v3";
@@ -65,7 +66,24 @@ export type LobbyMember = {
   slot: LobbySlot;
   host: boolean;
   you: boolean;
+  /** The member's `Name#number`, set by the door; `null` from older doors. */
+  handle: string | null;
 };
+/** How a lobby member is named: their handle, else by their lobby number. */
+export function memberName(member: Pick<LobbyMember, "id" | "handle">) {
+  return member.handle ?? `Player ${member.id}`;
+}
+/** A member's name for buttons that act on them: as `memberName`, with the
+ * lobby number added when another member shows the same name (guest
+ * handles can repeat). */
+export function memberLabel(
+  member: Pick<LobbyMember, "id" | "handle">,
+  members: readonly Pick<LobbyMember, "id" | "handle">[],
+) {
+  const name = memberName(member);
+  const repeated = members.some((other) => other.id !== member.id && memberName(other) === name);
+  return repeated ? `${name} (Player ${member.id})` : name;
+}
 export type CustomLobby = {
   code: string;
   mode: QueueMode;
@@ -227,10 +245,17 @@ export function parseQueueMessage(text: unknown): QueueMessage | null {
           m.id < 1 ||
           !isLobbySlot(m.slot) ||
           typeof m.host !== "boolean" ||
-          typeof m.you !== "boolean"
+          typeof m.you !== "boolean" ||
+          (m.handle !== undefined && m.handle !== null && !isHandle(m.handle))
         )
           return null;
-        members.push({ id: m.id, slot: m.slot, host: m.host, you: m.you });
+        members.push({
+          id: m.id,
+          slot: m.slot,
+          host: m.host,
+          you: m.you,
+          handle: (m.handle as string | null | undefined) ?? null,
+        });
       }
       return {
         type: "lobby",

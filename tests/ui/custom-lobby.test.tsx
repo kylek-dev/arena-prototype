@@ -209,6 +209,25 @@ it("hosts a custom lobby from the game menu, controls teams/settings/host, and s
   fireEvent.click(within(dialog).getByRole("button", { name: "Remove Player 2" }));
   expect(fake.sent().at(-1)).toEqual({ type: "kick_lobby_member", member: 2 });
 
+  // With handles from the door, members are named by them.
+  fake.say({
+    type: "lobby",
+    code: "K7P2QX",
+    mode: "1v1",
+    settings: { version: 1, map: "colosseum", round_seconds: 300 },
+    spectator_slots: 4,
+    you: 1,
+    host: true,
+    can_start: true,
+    members: [
+      { id: 1, slot: "team_a", host: true, you: true, handle: "Rook#0042" },
+      { id: 2, slot: "team_b", host: false, you: false, handle: "Guest#0007" },
+    ],
+  });
+  expect(within(dialog).getByText("Rook#0042")).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Remove Guest#0007" }));
+  expect(fake.sent().at(-1)).toEqual({ type: "kick_lobby_member", member: 2 });
+
   // Minimize shows the top bar pill; clicking Open lobby brings the dialog back.
   fireEvent.click(within(dialog).getByRole("button", { name: "Minimize" }));
   expect(screen.queryByRole("dialog")).toBeNull();

@@ -16,11 +16,15 @@ const ROOK = {
 
 /** A real account service over a scripted door. */
 function fakeAccount(routes: Record<string, Reply | Reply[]>) {
-  const calls: { url: string; method: string }[] = [];
+  const calls: { url: string; method: string; body?: unknown }[] = [];
   const visited: string[] = [];
   const account = createAccount({
     fetch: async (url, init) => {
-      calls.push({ url, method: init?.method ?? "GET" });
+      calls.push({
+        url,
+        method: init?.method ?? "GET",
+        ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+      });
       const route = routes[url];
       const reply = Array.isArray(route) ? (route.length > 1 ? route.shift() : route[0]) : route;
       if (!reply || reply === "offline") throw new TypeError("offline");
@@ -234,4 +238,84 @@ it("keeps the panel when a refresh after an action fails", async () => {
   render(<AccountPanel />);
   await act(async () => fireEvent.click(screen.getByRole("button", { name: "Log out" })));
   expect(screen.getByRole("alert").textContent).toMatch(/could not reach the server/i);
+});
+
+it("lets a player without a name choose one, and shows the door's number", async () => {
+  const { account, calls } = fakeAccount({
+    "/api/auth/me": [
+      { status: 200, body: { ...ROOK, handle: null } },
+      { status: 200, body: { ...ROOK, handle: "Ash#1000" } },
+    ],
+    "/api/auth/handle": [
+      { status: 422, body: { error: "blocked_name" } },
+      { status: 200, body: { handle: "Ash#1000" } },
+    ],
+  });
+  await account.refresh();
+  render(<AccountPanel />);
+  const field = screen.getByRole("textbox");
+  const save = screen.getByRole("button", { name: "Save name" });
+  fireEvent.change(field, { target: { value: "7up" } });
+  expect((save as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(field, { target: { value: "Badword" } });
+  await act(async () => fireEvent.click(save));
+  expect(calls.at(-1)).toEqual({
+    url: "/api/auth/handle",
+    method: "POST",
+    body: { name: "Badword" },
+  });
+  expect(screen.getByRole("alert").textContent).toMatch(/not allowed/i);
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "Ash" } });
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save name" })));
+  expect(screen.getByText("Ash#1000")).toBeTruthy();
+  expect(screen.queryByRole("textbox")).toBeNull();
+  expect(screen.getByRole("button", { name: "Change name" })).toBeTruthy();
+});
+
+it("explains full names and the rename wait", async () => {
+  const later = Math.floor(Date.now() / 1000) + 3 * 86_400;
+  const { account } = fakeAccount({
+    "/api/auth/me": { status: 200, body: ROOK },
+    "/api/auth/handle": [
+      { status: 409, body: { error: "name_full" } },
+      { status: 429, body: { error: "too_soon", rename_at: later } },
+    ],
+  });
+  await account.refresh();
+  render(<AccountPanel />);
+  fireEvent.click(screen.getByRole("button", { name: "Change name" }));
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "Popular" } });
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save name" })));
+  expect(screen.getByRole("alert").textContent).toMatch(/too many players have that name/i);
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save name" })));
+  expect(screen.getByRole("alert").textContent).toMatch(/changed your name recently/i);
+  expect(screen.getByText(/a different name in 3 days/i)).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("textbox")).toBeNull();
+});
+
+it("handles name answers without a reason, offline, and after logging out elsewhere", async () => {
+  const { account, calls } = fakeAccount({
+    "/api/auth/me": [
+      { status: 200, body: ROOK },
+      { status: 200, body: GUEST },
+    ],
+    "/api/auth/handle": ["offline", { status: 429 }, { status: 401 }],
+  });
+  await account.refresh();
+  render(<AccountPanel />);
+  fireEvent.click(screen.getByRole("button", { name: "Change name" }));
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "Ash" } });
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save name" })));
+  expect(screen.getByRole("alert").textContent).toMatch(/could not reach the server/i);
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save name" })));
+  expect(screen.getByRole("alert").textContent).toMatch(/too many requests/i);
+  // Cancel clears the old refusal.
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("alert")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Change name" }));
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "Ash" } });
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save name" })));
+  expect(calls.filter((call) => call.url === "/api/auth/me")).toHaveLength(2);
+  expect(screen.getByText(/playing as a guest/i)).toBeTruthy();
 });

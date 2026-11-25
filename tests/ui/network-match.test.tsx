@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { adaptSnapshot } from "../../web/src/bridge/snapshot";
+import { withHandles } from "../../web/src/domain/handles";
 import type { MatchTicket } from "../../web/src/domain/network";
 import { Diagnostics } from "../../web/src/features/diagnostics/Diagnostics";
 import { MatchStatus } from "../../web/src/features/match-status/MatchStatus";
@@ -179,6 +180,22 @@ it("names network opponents and marks disconnected players, leaving practice unc
     }),
   ).toThrow("Invalid connection flags");
   expect(adaptSnapshot({ ...snapshot(), maxHealth: 100 }).networked).toBe(false);
+});
+
+it("shows handles in full on unit frames and by name on nameplates", () => {
+  const named = withHandles(networkSnapshot(), ["Rook#0042", "Ash#1000", null, "Guest#0007"]);
+  engine.set(named);
+  nameplateScene.set(named);
+  render(
+    <>
+      <Frames />
+      <Nameplates />
+    </>,
+  );
+  expect(screen.getAllByText("Ash#1000").length).toBeGreaterThan(0);
+  expect(screen.getByText("Ash")).toBeTruthy();
+  expect(screen.getByText("Teammate 1 · Disconnected")).toBeTruthy();
+  expect(screen.getByText("Guest · Disconnected")).toBeTruthy();
 });
 
 it("greys out disconnected unit frames and nameplates with a label", () => {

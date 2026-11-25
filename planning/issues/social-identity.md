@@ -8,9 +8,9 @@ GitHub, so no social account is needed), handled by `arena-door`; no
 passwords or email of our own; a minimal PostgreSQL store in its own
 database; guests stay. Step 2 (the identity service, with the
 account id in tickets) is implemented on `auto/identity-service`. The login
-UI is queued as a Lane B follow-up. Step 3 (handles, guests' temporary
+UI is implemented on `auto/account-ui`, pending human review. Step 3 (handles, guests' temporary
 `Guest#NNNN`, the protocol relay) is implemented on `auto/display-names`;
-showing them in the HUD is queued as Lane B. Step 4 (friends, presence and
+showing them in the HUD (and "Choose your name") is implemented on `auto/handles-ui`, pending human review. Step 4 (friends, presence and
 invites) is implemented on `auto/friends`, with its UI queued as Lane B. Step 5 (admin role from
 configuration, the tag relay, and the first server-gated tools: map storage
 for the editor and clearing a handle) is implemented on `auto/admin-role`,

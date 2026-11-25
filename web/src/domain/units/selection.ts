@@ -1,3 +1,4 @@
+import { handleName } from "../handles";
 import type { ActiveCast } from "../casting";
 
 export type Entity = {
@@ -14,7 +15,14 @@ export type Entity = {
   cast?: ActiveCast | null;
   /** In a network match: the unit's player is not attached (it stands idle). */
   disconnected?: boolean;
+  /** In a network match: the fighter's relayed `Name#number`, which `name`
+   * then shows in full; tight spaces show only the name part. */
+  handle?: string;
 };
+/** A unit's name for tight spaces (nameplates): a handle without its number. */
+export function shortName(unit: Pick<Entity, "name" | "handle">) {
+  return unit.handle ? handleName(unit.handle) : unit.name;
+}
 export function reconcileFocus(focus: string | null, entities: Entity[], reset = false) {
   return !reset && entities.some((e) => e.id === focus) ? focus : null;
 }

@@ -1448,6 +1448,50 @@ async fn whispers_reach_friends_and_admins_mute_while_blocks_silence() {
         })
         .await;
     }
+    // The lobby names its members by their handles.
+    let names = until(&mut bob_socket, |m| match m {
+        QueueMessage::Lobby(view) if view.members.len() == 3 => Some(
+            view.members
+                .into_iter()
+                .map(|member| member.handle)
+                .collect::<Vec<_>>(),
+        ),
+        _ => None,
+    })
+    .await;
+    assert_eq!(
+        names,
+        [
+            Some(bob_h.clone()),
+            Some(carol_h.clone()),
+            Some(alice_h.clone())
+        ]
+    );
+    // A new name (here only its letter case, which is allowed at once)
+    // reaches lobby-mates without waiting for another lobby change.
+    let upper = bob_h.to_uppercase();
+    assert_eq!(
+        choose(addr, &bob, &upper[..upper.find('#').unwrap()])
+            .await
+            .0,
+        200
+    );
+    until(&mut carol_socket, |m| match m {
+        QueueMessage::Lobby(view) => view
+            .members
+            .iter()
+            .any(|member| member.handle.as_deref() == Some(upper.as_str()))
+            .then_some(()),
+        _ => None,
+    })
+    .await;
+    // And back, so the rest of the test whispers to the same handle.
+    assert_eq!(
+        choose(addr, &bob, &bob_h[..bob_h.find('#').unwrap()])
+            .await
+            .0,
+        200
+    );
     say(&mut bob_socket, r#"{"type":"start_lobby"}"#.into()).await;
     for socket in [&mut bob_socket, &mut carol_socket, &mut alice_socket] {
         until(socket, |m| {

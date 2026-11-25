@@ -2,7 +2,15 @@
 // in, and logs out or deletes the account. Login itself is a plain link to
 // the door, which sends the player to WorkOS AuthKit's hosted page and back.
 
-import { errorCode, logoutTarget, parseMe, statusCode, type Me } from "../domain/account";
+import {
+  errorCode,
+  logoutTarget,
+  parseMe,
+  refusalRenameAt,
+  statusCode,
+  type Me,
+} from "../domain/account";
+import { isHandle } from "../domain/handles";
 import { createStore } from "../state/store";
 
 type Answer = Pick<Response, "ok" | "status" | "json">;
@@ -15,7 +23,7 @@ export type AccountDeps = {
   pageProtocol: string;
 };
 
-export type AccountAction = "logout" | "logout_everywhere" | "delete";
+export type AccountAction = "logout" | "logout_everywhere" | "delete" | "handle";
 export type AccountState = {
   /** `unavailable` when the door does not answer (local practice, no door). */
   status: "loading" | "unavailable" | "ready";
@@ -93,9 +101,52 @@ export function createAccount(deps: AccountDeps) {
     update({ busy: null });
     await refresh();
   };
+  /** Picks or changes the account's name; `true` once the door took it. */
+  const chooseName = async (name: string) => {
+    if (state.get().busy) return false;
+    update({ busy: "handle", error: null });
+    let answer: Answer;
+    try {
+      answer = await deps.fetch("/api/auth/handle", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+    } catch {
+      update({ busy: null, error: "offline" });
+      return false;
+    }
+    if (answer.status === 401 || answer.status === 404) {
+      // Logged out elsewhere, or login switched off: show the page as it is.
+      update({ busy: null, error: answer.status === 401 ? "not_logged_in" : null });
+      await refresh();
+      return false;
+    }
+    if (!answer.ok) {
+      const body = await json(answer);
+      const error = errorCode(body) ?? statusCode(answer.status);
+      const me = state.get().me;
+      const renameAt = refusalRenameAt(body);
+      update({
+        busy: null,
+        error,
+        ...(me && renameAt !== null ? { me: { ...me, renameAt } } : {}),
+      });
+      return false;
+    }
+    // Show the door's answer at once, even if the refresh after it fails.
+    const picked = (await json(answer)) as { handle?: unknown } | null;
+    const me = state.get().me;
+    if (me && isHandle(picked?.handle)) update({ me: { ...me, handle: picked.handle } });
+    update({ busy: null });
+    await refresh();
+    return true;
+  };
   return {
     state,
     refresh,
+    chooseName,
     /** Logs this browser out. */
     logout: () => end("logout"),
     /** Ends every session of the account, on every device. */
