@@ -70,6 +70,7 @@ yet.
 | `Pong` | `nonce: u32` | |
 | `Error` | `code` | Sent before the server closes: `VersionMismatch`, `BadTicket`, `MatchFull`, `MatchOver`, `RateLimited`, `Malformed`, `HelloTimeout`, `ServerShutdown`, `Replaced` (a newer connection with the same ticket took the seat). Stays variant 3 (`[3, code]`). |
 | `Appearances` | `Vec<Option<WireAppearance>>` (`2..=6`, even) | Sent on join (when any seat has a locked look) and broadcast whenever a seat locks a new look on first join, in server actor order. Never carries paths; clients validate against their local kit catalog and fall back to defaults. |
+| `Handles` | `Vec<Option<Handle>>` (`2..=6`, even) | Each seat's `Name#1234` from the first ticket for that seat that names one, in server actor order; `None` for a seat not joined yet or joined by a lobby link. Guest handles are not unique: two guests may share one. Sent on join (when any seat has one) to the new connection and spectators, and broadcast when a seat's handle is first locked. A `Handle` is 16 name bytes (3–16 ASCII letters and digits starting with a letter, zero-padded) and a `u16` number `1..=9999`; anything else fails decoding. Clients never name themselves. |
 
 Snapshots go out every tick to start with. Live `PROTOCOL_VERSION = 3` combat
 measurements ([netcode-measurements-2026-11-21.md](research/netcode-measurements-2026-11-21.md))
@@ -110,7 +111,7 @@ connection, which can discard the `Error` before the client reads it.
 
 ## Versioning
 
-`PROTOCOL_VERSION` (currently 8: `WireAppearance` gains `facial_hair_color` and allows 24 part groups for the armour slots; [ADR 0053](decisions/0053-finished-character-kits.md)) changes with any
+`PROTOCOL_VERSION` (currently 9: `ServerMessage::Handles`; 8 gave `WireAppearance` `facial_hair_color` and 24 part groups for the armour slots, [ADR 0053](decisions/0053-finished-character-kits.md)) changes with any
 incompatible layout change; the golden-frame test fails until it is bumped
 deliberately.
 `RULES_VERSION` (currently 6: timed casts charge their resource and health costs
@@ -121,8 +122,10 @@ could alter a replayed outcome. `Welcome.map` identifies the layout.
 ## Join tickets
 
 A ticket is the postcard encoding of
-`{match_id, player, role, team_size, expires, settings, account}` (`account`
-is the logged-in player's account id, or none for guests and lobby links;
+`{match_id, player, role, team_size, expires, settings, account, handle}`
+(`account` is the logged-in player's account id, or none for guests and lobby
+links; `handle` is the `Name#1234` to show: the account's own, or a
+temporary `Guest#NNNN` from the queue, and none for lobby links;
 `role` is `Player { seat }` or `Spectator`, so player and spectator credentials are never interchangeable; `expires` in Unix
 seconds; optional versioned `MatchSettings { version: 1, map, round_seconds, allow_spectators }`
 for private custom matches) followed by a 32-byte HMAC-SHA256 tag over those
@@ -211,6 +214,7 @@ has `ARENA_SESSION_KEY` and at least one provider.
 | `POST /api/auth/logout` | Clears this browser's session cookie. |
 | `POST /api/auth/logout_everywhere` | Ends every session of the account. |
 | `POST /api/auth/delete` | Deletes the account; its sessions end at once. |
+| `POST /api/auth/handle` `{"name"}` | Picks or changes the account's `Name#1234`. Answers `{"handle"}`, or `{"error"}`: `invalid_name` or `blocked_name` (422), `name_full` (409), `too_soon` with `rename_at` (429), `not_logged_in` (401). |
 
 How the cookies behave:
 - Both are `HttpOnly; Secure; SameSite=Lax; Path=/`, signed with
@@ -220,8 +224,21 @@ How the cookies behave:
   row.
 - A `POST`, and the queue WebSocket's handshake, use the session only with
   an allowed `Origin`, and never when the door runs with `--any-origin`.
-- The queue signs the session's account into the player's seat or spectator
-  ticket. Links from `POST /api/matches` carry no account.
+- The queue signs the session's account and handle into the player's seat
+  or spectator ticket. A player without a handle, and every guest, gets a
+  temporary `Guest#NNNN` (not unique). Links from `POST /api/matches` carry
+  neither. A new handle or a revoked account reaches open queue connections
+  at once.
+- **Handles.** The player picks the name: 3–16 ASCII letters and digits,
+  starting with a letter. Names containing a reserved or blocked word (after
+  undoing digit swaps such as `4dm1n`) are refused; operators extend the list
+  with `ARENA_BLOCKED_NAMES`. The door picks a random free number, so
+  `Name#1234` is unique, comparing names without case. The first pick is
+  allowed at any time and starts a 7-day clock; a different name is allowed
+  again when it runs out. Changing only the letter case keeps the number and
+  the clock. Plain substring matching refuses some innocent names (for
+  example `Badminton` contains `admin`); that trade-off is tested.
+  `GET /api/auth/me` also returns `handle` and `rename_at`.
 - Login routes are rate-limited per address. Account ids, codes and tokens
   are never logged.
 

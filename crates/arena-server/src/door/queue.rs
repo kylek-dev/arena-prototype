@@ -57,7 +57,8 @@ use crate::matchmaker::{
     CODE_LENGTH, Closed, Guest, LobbySlot, LobbyView, Matchmaker, Mode, Out, PartyView, QueueConn,
 };
 use crate::metrics::Metrics;
-use crate::ticket::{self, MatchSettings};
+use crate::ticket::{self, Holder, MatchSettings};
+use arena_protocol::Handle;
 
 /// Largest message a queue client may send.
 const MAX_MESSAGE: usize = 512;
@@ -204,9 +205,9 @@ pub(super) enum Command {
         conn: QueueConn,
         guest: Guest,
         address: IpAddr,
-        /// The logged-in account (ADR 0055), signed into this player's
-        /// tickets; `None` for guests.
-        account: Option<u64>,
+        /// The logged-in account (ADR 0055) and the handle to show, signed
+        /// into this player's tickets.
+        holder: Holder,
         out: mpsc::Sender<ToClient>,
     },
     CreateParty {
@@ -278,6 +279,11 @@ pub(super) enum Command {
     /// connections stop signing it into tickets at once (ADR 0055).
     Revoke {
         account: u64,
+    },
+    /// The account picked a new handle: its open connections use it.
+    Rename {
+        account: u64,
+        handle: Handle,
     },
 }
 
@@ -368,7 +374,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
     let mut mm = Matchmaker::new(door.config.ready_timeout, random_below);
     let mut conns: Senders = HashMap::new();
     let mut addresses: HashMap<QueueConn, IpAddr> = HashMap::new();
-    let mut accounts: HashMap<QueueConn, u64> = HashMap::new();
+    let mut holders: HashMap<QueueConn, Holder> = HashMap::new();
     let mut searches = Searches::default();
     let mut tick = tokio::time::interval(TICK_EVERY);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -385,12 +391,10 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
             _ = tick.tick() => mm.tick(now),
             command = commands.recv() => match command {
                 None => break,
-                Some(Command::Hello { conn, guest, address, account, out }) => {
+                Some(Command::Hello { conn, guest, address, holder, out }) => {
                     conns.insert(conn, out);
                     addresses.insert(conn, address);
-                    if let Some(account) = account {
-                        accounts.insert(conn, account);
-                    }
+                    holders.insert(conn, holder);
                     mm.connect(conn, guest, now)
                 }
                 // Never record the invite code: it lets anyone join.
@@ -435,14 +439,29 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 }
                 Some(Command::StartLobby { conn }) => mm.start_lobby(conn),
                 Some(Command::Revoke { account }) => {
-                    accounts.retain(|_, held| *held != account);
+                    for holder in holders.values_mut() {
+                        if holder.account == Some(account) {
+                            *holder = Holder {
+                                account: None,
+                                handle: Some(super::auth::guest_handle()),
+                            };
+                        }
+                    }
+                    Vec::new()
+                }
+                Some(Command::Rename { account, handle }) => {
+                    for holder in holders.values_mut() {
+                        if holder.account == Some(account) {
+                            holder.handle = Some(handle);
+                        }
+                    }
                     Vec::new()
                 }
                 Some(Command::Gone { conn }) => {
                     searches.end(conn, "left");
                     conns.remove(&conn);
                     addresses.remove(&conn);
-                    accounts.remove(&conn);
+                    holders.remove(&conn);
                     mm.disconnect(conn, now)
                 }
             },
@@ -499,10 +518,10 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     );
                     conns.remove(&conn);
                     addresses.remove(&conn);
-                    accounts.remove(&conn);
+                    holders.remove(&conn);
                 }
                 Out::Start { mode, seats } => {
-                    let match_id = start_match(&door, &conns, &accounts, mode, &seats);
+                    let match_id = start_match(&door, &conns, &holders, mode, &seats);
                     for conn in seats {
                         searches.matched(conn, match_id);
                     }
@@ -522,7 +541,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     seats,
                     spectators,
                 } => start_custom_match(
-                    &door, &conns, &addresses, &accounts, now, host, mode, settings, seats,
+                    &door, &conns, &addresses, &holders, now, host, mode, settings, seats,
                     spectators,
                 ),
             }
@@ -620,14 +639,14 @@ fn publish_metrics(door: &Door, mm: &mut Matchmaker, connections: usize) {
 fn start_match(
     door: &Door,
     conns: &Senders,
-    accounts: &HashMap<QueueConn, u64>,
+    holders: &HashMap<QueueConn, Holder>,
     mode: Mode,
     seats: &[QueueConn],
 ) -> u64 {
     let expires = unix_now() + door.config.ticket_ttl.as_secs();
-    let seat_accounts: Vec<Option<u64>> = seats
+    let seat_accounts: Vec<Holder> = seats
         .iter()
-        .map(|conn| accounts.get(conn).copied())
+        .map(|conn| holders.get(conn).copied().unwrap_or_default())
         .collect();
     let created = ticket::issue_seats(
         &door.config.key,
@@ -668,7 +687,7 @@ fn start_custom_match(
     door: &Door,
     conns: &Senders,
     addresses: &HashMap<QueueConn, IpAddr>,
-    accounts: &HashMap<QueueConn, u64>,
+    holders: &HashMap<QueueConn, Holder>,
     now: Instant,
     host: QueueConn,
     mode: Mode,
@@ -695,7 +714,7 @@ fn start_custom_match(
     } else {
         Vec::new()
     };
-    let account_of = |conn: &QueueConn| accounts.get(conn).copied();
+    let account_of = |conn: &QueueConn| holders.get(conn).copied().unwrap_or_default();
     let created = ticket::issue_seats(
         &door.config.key,
         mode.team_size(),
@@ -776,12 +795,21 @@ pub(super) async fn upgrade(
         )
             .into_response();
     };
-    // A logged-in player's account, when the page's origin says it is ours.
+    // A logged-in player's account and handle, when the page's origin says
+    // it is ours; everyone else plays under a temporary guest handle.
     let account = super::auth::account(&door, &headers, true).await;
+    let holder = Holder {
+        account: account.map(|account| account.id),
+        handle: Some(
+            account
+                .and_then(|account| account.handle)
+                .unwrap_or_else(super::auth::guest_handle),
+        ),
+    };
     ws.max_message_size(MAX_MESSAGE)
         .max_frame_size(MAX_MESSAGE)
         .on_upgrade(move |mut socket| async move {
-            connection(&mut socket, door, address, account).await;
+            connection(&mut socket, door, address, holder).await;
             // The address keeps its slot until the socket is really gone.
             crate::linger(socket).await;
             drop(slot);
@@ -871,12 +899,7 @@ fn command(conn: QueueConn, message: FromClient) -> Result<Command, &'static str
     })
 }
 
-async fn connection(
-    socket: &mut WebSocket,
-    door: Arc<Door>,
-    address: IpAddr,
-    account: Option<u64>,
-) {
+async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr, holder: Holder) {
     let conn = door.next_conn.fetch_add(1, Ordering::Relaxed);
     let mut rate = RateWindow::new(MESSAGES_PER_SECOND, Instant::now());
     let mut stop = door.shutdown.subscribe();
@@ -920,7 +943,7 @@ async fn connection(
         conn,
         guest,
         address,
-        account,
+        holder,
         out: sender,
     };
     if door.queue.send(hello).await.is_err() {

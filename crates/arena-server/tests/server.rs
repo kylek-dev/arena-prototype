@@ -275,6 +275,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 expires: 1,
                 settings: None,
                 account: None,
+                handle: None,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -288,6 +289,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 expires: far_future,
                 settings: None,
                 account: None,
+                handle: None,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -301,6 +303,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 expires: far_future,
                 settings: None,
                 account: None,
+                handle: None,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -319,6 +322,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                     allow_spectators: true,
                 }),
                 account: None,
+                handle: None,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -337,6 +341,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                     allow_spectators: true,
                 }),
                 account: None,
+                handle: None,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -355,6 +360,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                     allow_spectators: false,
                 }),
                 account: None,
+                handle: None,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -368,6 +374,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
                 expires: far_future,
                 settings: None,
                 account: None,
+                handle: None,
             }))),
             ErrorCode::BadTicket,
         ),
@@ -1581,5 +1588,84 @@ async fn live_ws_spectators_cannot_act_trail_by_delay_respect_cap_and_receive_no
     spec2.leave().await;
     a.leave().await;
     b.leave().await;
+    running.shut_down(Duration::ZERO).await.unwrap();
+}
+
+/// Reads until a `Handles` relay arrives.
+async fn next_handles(client: &mut Client) -> Vec<Option<arena_protocol::Handle>> {
+    loop {
+        match client.next().await {
+            Some(ServerMessage::Handles(handles)) => return handles,
+            Some(_) => {}
+            None => panic!("closed before a Handles relay"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn seats_show_the_handles_their_tickets_name() {
+    use arena_protocol::Handle;
+    use arena_server::ticket::{Holder, issue_seats, to_hex};
+    let mut config = config(false);
+    config.origins = arena_server::ingress::Origins::Any;
+    let key = config.key.clone();
+    let running = start(config).await.unwrap();
+    let addr = running.addr;
+    let rook = Handle::new("Rook", 42);
+    let ash = Handle::new("Ash", 7);
+    let watcher = Holder {
+        account: None,
+        handle: Handle::new("Watcher", 1),
+    };
+    let created = issue_seats(
+        &key,
+        1,
+        None,
+        &[
+            Holder {
+                account: Some(5),
+                handle: rook,
+            },
+            Holder {
+                account: None,
+                handle: ash,
+            },
+        ],
+        &[watcher],
+        u64::MAX,
+    )
+    .unwrap();
+    let (mut first, _) = Client::join(addr, &created.tickets[0]).await;
+    assert_eq!(next_handles(&mut first).await, [rook, None]);
+    // The second seat's arrival is relayed to everyone already there.
+    let (mut second, _) = Client::join(addr, &created.tickets[1]).await;
+    assert_eq!(next_handles(&mut second).await, [rook, ash]);
+    assert_eq!(next_handles(&mut first).await, [rook, ash]);
+    // Spectators see the seats' handles; their own is never a seat's.
+    let (mut spectator, _) = Client::join(addr, &created.spectator_tickets[0]).await;
+    assert_eq!(next_handles(&mut spectator).await, [rook, ash]);
+    // A reconnect keeps the seat's handle even with a ticket naming nobody
+    // for that seat (the handle is locked by the first one that does).
+    let other = issue_seats(&key, 1, None, &[], &[], u64::MAX).unwrap();
+    let same_match_unnamed = {
+        let mut claims = key
+            .verify(
+                &arena_server::ticket::from_hex(&other.tickets[0]).unwrap(),
+                0,
+            )
+            .unwrap();
+        let original = key
+            .verify(
+                &arena_server::ticket::from_hex(&created.tickets[0]).unwrap(),
+                0,
+            )
+            .unwrap();
+        claims.match_id = original.match_id;
+        claims.team_size = original.team_size;
+        to_hex(&key.issue(&claims))
+    };
+    first.leave().await;
+    let (mut back, _) = Client::join(addr, &same_match_unnamed).await;
+    assert_eq!(next_handles(&mut back).await, [rook, ash]);
     running.shut_down(Duration::ZERO).await.unwrap();
 }

@@ -573,6 +573,10 @@ fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
         .route("/api/auth/logout", post(auth::logout))
         .route("/api/auth/logout_everywhere", post(auth::logout_everywhere))
         .route("/api/auth/delete", post(auth::delete))
+        .route(
+            "/api/auth/handle",
+            post(auth::choose_handle).layer(DefaultBodyLimit::max(256)),
+        )
         .route("/healthz", get(|| async { "ok" }))
         .route("/metrics", get(render_metrics))
         .with_state(door.clone());

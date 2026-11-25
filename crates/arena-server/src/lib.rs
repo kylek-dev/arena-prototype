@@ -102,7 +102,10 @@ enum Command {
     Attach {
         seat: usize,
         conn: ConnId,
-        appearance: Option<WireAppearance>,
+        /// Boxed: looks are large and the other commands are small.
+        appearance: Option<Box<WireAppearance>>,
+        /// From the ticket; the client never names itself.
+        handle: Option<arena_protocol::Handle>,
         out: mpsc::Sender<Outbound>,
     },
     AttachSpectator {
@@ -317,17 +320,24 @@ fn apply_command(
             seat,
             conn,
             appearance,
+            handle,
             out,
         }) => {
             insert_conn(conns, conn, out);
-            let out = session.attach_with_appearance(seat, conn, appearance);
+            let mut out = session.attach_with_appearance(seat, conn, appearance.map(|look| *look));
             log_attach(span, id, seat, conn, &out);
+            if welcomed(&out, conn) {
+                out.extend(session.relay_handles(seat, conn, handle));
+            }
             out
         }
         Some(Command::AttachSpectator { player, conn, out }) => {
             insert_conn(conns, conn, out);
-            let out = session.attach_spectator(player, conn);
+            let mut out = session.attach_spectator(player, conn);
             log_spectator_attach(span, id, conn, &out);
+            if welcomed(&out, conn) {
+                out.extend(session.handles_for(conn));
+            }
             out
         }
         Some(Command::Input { seat, conn, frame }) => {
@@ -525,6 +535,13 @@ async fn run_match(
             );
         }
     }
+}
+
+/// Whether `out` welcomes `conn` (its attach succeeded).
+fn welcomed(out: &[Out], conn: ConnId) -> bool {
+    out.iter().any(|out| {
+        matches!(out, Out::Send { conn: to, message: ServerMessage::Welcome(_) } if *to == conn)
+    })
 }
 
 /// One line per seat change, so an operator (or a puzzled tester) can see
@@ -987,7 +1004,8 @@ async fn connection(socket: &mut WebSocket, app: Arc<App>) {
         ticket::Role::Player { seat } => Command::Attach {
             seat: usize::from(seat),
             conn,
-            appearance,
+            appearance: appearance.map(Box::new),
+            handle: claims.handle,
             out: out_sender,
         },
         ticket::Role::Spectator => Command::AttachSpectator {
@@ -1225,7 +1243,7 @@ mod tests {
         );
         // A future Hello this build cannot even decode still names its version.
         assert_eq!(
-            read_hello(&[0, 9, 0xFF, 0xFF]),
+            read_hello(&[0, (PROTOCOL_VERSION + 1) as u8, 0xFF, 0xFF]),
             Err(ErrorCode::VersionMismatch)
         );
         assert_eq!(

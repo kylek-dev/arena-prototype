@@ -6,6 +6,7 @@
 //! The match server never sees this module: it trusts the ticket alone.
 
 pub mod cookie;
+pub mod names;
 pub mod provider;
 pub mod store;
 
@@ -20,7 +21,7 @@ use axum::http::header::{COOKIE, ORIGIN};
 use crate::ingress::Origins;
 use cookie::{SESSION_COOKIE, Session, SessionKey};
 use provider::Provider;
-use store::{ProviderId, Store};
+use store::{Account, ProviderId, Store};
 
 /// How the door's accounts are set up.
 #[derive(Clone, Debug)]
@@ -31,6 +32,8 @@ pub struct IdentityConfig {
     pub providers: Vec<Provider>,
     /// Accounts granted the admin role by deploy configuration.
     pub admins: HashSet<u64>,
+    /// Words handles may not contain.
+    pub blocked: names::Blocklist,
 }
 
 impl IdentityConfig {
@@ -53,6 +56,7 @@ impl IdentityConfig {
             key,
             providers: Provider::from_env(),
             admins,
+            blocked: names::Blocklist::from_env()?,
         }))
     }
 }
@@ -78,6 +82,7 @@ pub struct Identity {
     pub key: SessionKey,
     pub providers: Vec<Provider>,
     pub admins: HashSet<u64>,
+    pub blocked: names::Blocklist,
     pub client: reqwest::Client,
     /// The game page's origin: callbacks are `{origin}/api/auth/<p>/callback`.
     pub origin: String,
@@ -107,6 +112,7 @@ impl Identity {
             key: config.key,
             providers: config.providers,
             admins: config.admins,
+            blocked: config.blocked,
             client,
             origin,
         })
@@ -127,7 +133,7 @@ impl Identity {
     /// The logged-in account behind a request's session cookie, if the
     /// cookie is signed, unexpired, and its account still exists at the same
     /// session generation.
-    pub async fn session(&self, headers: &HeaderMap, now: u64) -> Option<Session> {
+    pub async fn session(&self, headers: &HeaderMap, now: u64) -> Option<(Session, Account)> {
         // HTTP/2 may split cookies over several headers.
         let value = headers
             .get_all(COOKIE)
@@ -140,7 +146,7 @@ impl Identity {
             .await
             .ok()?
             .ok()??;
-        (account.generation == session.generation).then_some(session)
+        (account.generation == session.generation).then_some((session, account))
     }
 }
 
