@@ -14,7 +14,7 @@ showing them in the HUD (and "Choose your name") is implemented on `auto/handles
 invites) is implemented on `auto/friends`, with its UI on `auto/friends-ui` (pending human review). Step 5 (admin role from
 configuration, the tag relay, and the first server-gated tools: map storage
 for the editor and clearing a handle) is implemented on `auto/admin-role`,
-with its UI queued as Lane B.
+with its UI on `auto/admin-ui` (pending human review).
 
 Acceptance criteria, in shipping order (each step is its own PR):
 

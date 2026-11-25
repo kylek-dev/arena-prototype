@@ -72,3 +72,19 @@ export function withHandles(
     target: { ...snapshot.target, name: named[1].name, handle: named[1].handle },
   };
 }
+
+/** Marks a network match's fighters whose players carry the server's admin
+ * tag (deploy configuration, never a client's claim). Like `withHandles`,
+ * changes nothing outside a network match or for a relay that does not fit. */
+export function withTags(snapshot: Snapshot, tags: readonly SeatTags[] | null): Snapshot {
+  const roster = snapshot.roster;
+  if (!snapshot.networked || !roster || !tags || tags.length !== roster.length) return snapshot;
+  if (!tags.some((tag) => tag.admin)) return snapshot;
+  const tagged = roster.map((unit, actor) => (tags[actor].admin ? { ...unit, admin: true } : unit));
+  return {
+    ...snapshot,
+    roster: tagged,
+    player: { ...snapshot.player, admin: tagged[0].admin },
+    target: { ...snapshot.target, admin: tagged[1].admin },
+  };
+}

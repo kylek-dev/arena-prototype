@@ -3,6 +3,7 @@ import { spellLabel } from "../../domain/casting";
 import { CastBar } from "../cast-bar/CastBar";
 import { visibleNameplates } from "../../domain/units/nameplates";
 import { shortName } from "../../domain/units/selection";
+import { AdminTag } from "../../ui/AdminTag";
 import { useConfigSelector } from "../../state/config";
 import { draggingSpell, error, interaction, nameplateScene } from "../../state/session";
 import { useStore } from "../../state/store";
@@ -45,7 +46,7 @@ export function Nameplates() {
               type="button"
               className={`nameplate ${friendly ? "friendly" : "enemy"}${unit.disconnected ? " disconnected" : ""}`}
               style={{ left: `${x * 100}%`, top: `${y * 100}%` }}
-              aria-label={`${unit.name}${unit.disconnected ? " (disconnected)" : ""} health ${unit.health}/${unit.maxHealth}${activeCast ? `, casting ${spellLabel(activeCast.spell)}` : ""}. ${spectating ? "Follow fighter" : "Target; right-click to focus"}`}
+              aria-label={`${unit.name}${unit.admin ? " (admin)" : ""}${unit.disconnected ? " (disconnected)" : ""} health ${unit.health}/${unit.maxHealth}${activeCast ? `, casting ${spellLabel(activeCast.spell)}` : ""}. ${spectating ? "Follow fighter" : "Target; right-click to focus"}`}
               aria-pressed={pressed}
               onMouseDown={(e) => {
                 press.current = { x: e.clientX, y: e.clientY };
@@ -71,6 +72,7 @@ export function Nameplates() {
               />
               <span className="nameplate-name" aria-hidden="true">
                 {unit.disconnected ? `${shortName(unit)} · Disconnected` : shortName(unit)}
+                {unit.admin && <AdminTag compact />}
               </span>
               {activeCast && <CastBar variant="nameplate" cast={activeCast} />}
               {lockedOut && (

@@ -6,6 +6,7 @@ import {
   parseHandles,
   parseTags,
   withHandles,
+  withTags,
 } from "../../web/src/domain/handles";
 import { buildMatchScoreboard } from "../../web/src/domain/scoreboard";
 import { shortName } from "../../web/src/domain/units/selection";
@@ -133,5 +134,49 @@ describe("naming fighters by handles", () => {
     });
     expect(board?.allies.map((row) => row.name)).toEqual(["Rook#0042", "Teammate 1"]);
     expect(board?.opponents.map((row) => row.name)).toEqual(["Ash#1000", "Guest#0007"]);
+  });
+});
+
+describe("admin tags", () => {
+  const network = () => {
+    const base = teamSnapshot(1);
+    return adaptSnapshot({
+      ...base,
+      maxHealth: 100,
+      roster: base.roster?.map((unit) => ({
+        actor: unit.actor,
+        tag: unit.tag,
+        health: unit.health,
+        connected: true,
+      })),
+    });
+  };
+  it("marks tagged fighters, and nothing in practice or for a mismatched relay", () => {
+    const tagged = withTags(network(), [{ admin: false }, { admin: true }]);
+    expect(tagged.roster?.map((unit) => !!unit.admin)).toEqual([false, true]);
+    expect(tagged.target.admin).toBe(true);
+    expect(tagged.player.admin).toBeFalsy();
+    const practice = teamSnapshot(1);
+    expect(withTags(practice, [{ admin: true }, { admin: true }])).toBe(practice);
+    const live = network();
+    expect(withTags(live, [{ admin: true }])).toBe(live);
+    expect(withTags(live, [{ admin: false }, { admin: false }])).toBe(live);
+    const board = buildMatchScoreboard({
+      tick: 30,
+      tickRate: 30,
+      roundResult: "won",
+      roster: tagged.roster,
+      scoreboard: tagged.roster!.map((unit) => ({
+        actor: unit.actor,
+        tag: unit.tag,
+        damageDone: 0,
+        damageTaken: 0,
+        healingDone: 0,
+        healingReceived: 0,
+        killingBlows: 0,
+      })),
+    });
+    expect(board?.opponents[0].admin).toBe(true);
+    expect(board?.allies[0].admin).toBe(false);
   });
 });

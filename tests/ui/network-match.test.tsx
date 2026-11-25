@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { adaptSnapshot } from "../../web/src/bridge/snapshot";
-import { withHandles } from "../../web/src/domain/handles";
+import { withHandles, withTags } from "../../web/src/domain/handles";
 import type { MatchTicket } from "../../web/src/domain/network";
 import { Diagnostics } from "../../web/src/features/diagnostics/Diagnostics";
 import { MatchStatus } from "../../web/src/features/match-status/MatchStatus";
@@ -196,6 +196,25 @@ it("shows handles in full on unit frames and by name on nameplates", () => {
   expect(screen.getByText("Ash")).toBeTruthy();
   expect(screen.getByText("Teammate 1 · Disconnected")).toBeTruthy();
   expect(screen.getByText("Guest · Disconnected")).toBeTruthy();
+});
+
+it("tags admins beside their names in frames and on nameplates", () => {
+  const named = withTags(withHandles(networkSnapshot(), ["Rook#0042", "Ash#1000", null, null]), [
+    { admin: false },
+    { admin: true },
+    { admin: false },
+    { admin: false },
+  ]);
+  engine.set(named);
+  nameplateScene.set(named);
+  render(
+    <>
+      <Frames />
+      <Nameplates />
+    </>,
+  );
+  expect(screen.getAllByText("Admin").length).toBeGreaterThanOrEqual(2);
+  expect(screen.getByRole("button", { name: /Ash#1000 \(admin\) health/ })).toBeTruthy();
 });
 
 it("greys out disconnected unit frames and nameplates with a label", () => {

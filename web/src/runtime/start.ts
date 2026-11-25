@@ -37,7 +37,7 @@ import { browserFriends } from "./friends";
 import { browserSocial, followAccount } from "./social";
 import { installTelemetry } from "./telemetry";
 import { matchQueue, networkLink, remoteHandles, remoteTags } from "../state/network";
-import { parseHandles, parseTags, withHandles } from "../domain/handles";
+import { parseHandles, parseTags, withHandles, withTags } from "../domain/handles";
 import { clearPostMatchScoreboard, syncPostMatchScoreboard } from "../state/scoreboard";
 export function startRuntime(canvas: HTMLCanvasElement) {
   const pointer = installPointer(canvas, () => router.cancel());
@@ -102,7 +102,10 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     onState(raw) {
       try {
         // Fighters are named by their relayed handles in a network match.
-        const next = withHandles(adaptSnapshot(raw), remoteHandles.get()),
+        const next = withTags(
+            withHandles(adaptSnapshot(raw), remoteHandles.get()),
+            remoteTags.get(),
+          ),
           previous = engine.get();
         recordState(next.frames);
         observeCastResult(next);

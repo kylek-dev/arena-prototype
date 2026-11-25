@@ -60,6 +60,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.unit-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
 .unit-heading .unit-status {
   flex-shrink: 0;
 }

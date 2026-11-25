@@ -689,3 +689,18 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fresh-Eyes Review:** no Critical. Important (all fixed): opening a second tab replaced the first tab's connection (one listening tab via a Web Lock, quiet background ends); dropped listening connections never came back (backoff reconnect, visibility retry, not after `replaced`); failed invite joins were silent (shown at the prompt); `rate_limited`/`unavailable` invite refusals had no words; presence is not pushed (30 s poll, scenario reworded). Minor taken: read spacing and 429 retry, Invite pending state, dismissible "invite sent", prompt placement and roles, PROTOCOL `refused` codes for invites.
 - **Learnings:** the door keeps one queue connection per guest id and every tab shares it, so anything that connects without a player action must elect a single tab and must not show its end as an error.
 - **Next Recommended Slice:** admin tag and server-backed map editor (stacked on this branch).
+
+## 2026-11-25 — Admin tag and server-backed map editor
+- **Branch / Commit:** `auto/admin-ui`
+- **Base / PR:** `auto/friends-ui` (stacked on PR #102)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Lane B "Admin tag and server-backed map editor" ([social-identity](issues/social-identity.md) step 5 UI)
+- **Changes:**
+  - `withTags` (`domain/handles.ts`) marks network fighters from `remoteTags`; `ui/AdminTag.tsx` shows a gold **Admin** badge in unit frames (so the spectator HUD), on nameplates (compact, "(admin)" in the label) and on scoreboard rows (`ScoreboardRow.admin`, compared in `rowsEqual`).
+  - Map editor, admins only (per `/api/auth/me`): **Save … to server** (asks before replacing a server map this one did not come from; lists `invalid_map` problems; worded 401/403/404/413/429), **Open from server…**, **Reload from server**. `mapSource` and `serverSavedText` keep server copies apart from map files, so the local **Save as …json** keeps working and the discard prompts count either save. Shared `parseMapList` and `DiscardPrompt`.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/friends-ui` (`smoke=false web_build=true wasm=false`): pass — 483 Rust tests (1 pre-existing ignored), 58 Python, 50 Node, 47 Vitest files / 386 tests, headless pass, `npm run build` pass.
+  - Server smoke and WASM: not applicable (web only).
+- **Fresh-Eyes Review:** no Critical. Important (fixed): a server-opened map was treated as a map file (Reload and Open map fetched `assets/maps/<id>.json` and failed silently, or loaded a bundled copy); one `mapSavedText` meant both saves, disabling the local save after a server open. Minor taken: empty-problem 422, 413 and origin-403 wording, non-JSON list, replace confirmation, shared parsers, scoreboard `rowsEqual`, merged imports, tests.
+- **Learnings:** the map editor's `mapId` names a file under `assets/maps`; any other source needs its own source marker and saved-text, or reload, open and dirty tracking quietly assume a file.
+- **Next Recommended Slice:** the chat box (stacked on this branch).

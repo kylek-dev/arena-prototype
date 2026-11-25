@@ -25,6 +25,7 @@ function rowsEqual(a: readonly ScoreboardRow[], b: readonly ScoreboardRow[]): bo
       left.actor !== right.actor ||
       left.tag !== right.tag ||
       left.name !== right.name ||
+      left.admin !== right.admin ||
       left.damageDone !== right.damageDone ||
       left.damageTaken !== right.damageTaken ||
       left.healingDone !== right.healingDone ||
