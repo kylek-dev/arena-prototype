@@ -11,6 +11,8 @@
 //! Maps live in a `maps` directory beside the account store (in memory
 //! without one). Matches still play the built-in colosseum.
 //!
+//! - `POST /api/admin/mute` `{"handle": "Name#1234", "minutes": 60}`: stops
+//!   a logged-in player's chat for that long (0 unmutes; at most a week).
 //! - `POST /api/admin/handles/clear` `{"handle": "Name#1234"}`: removes a
 //!   player's handle (for a name that breaks the rules, for example one a
 //!   newer blocked-word list covers); they pick again. 204, or 404
@@ -343,6 +345,65 @@ pub(super) async fn clear_handle(
         Ok(Ok(None)) => refusal(StatusCode::NOT_FOUND, "no_such_player", None),
         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Mute {
+    handle: String,
+    minutes: u32,
+}
+
+/// Longest mute.
+const MAX_MUTE_MINUTES: u32 = 7 * 24 * 60;
+
+pub(super) async fn mute(
+    State(door): State<Arc<Door>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Result<Json<Mute>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    if limited(&door, peer, &headers) {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
+    if let Err(refused) = require_admin(&door, &headers, true).await {
+        return *refused;
+    }
+    let Ok(Json(Mute { handle, minutes })) = body else {
+        return refusal(StatusCode::UNPROCESSABLE_ENTITY, "bad_request", None);
+    };
+    if minutes > MAX_MUTE_MINUTES {
+        return refusal(StatusCode::UNPROCESSABLE_ENTITY, "too_long", None);
+    }
+    let store = door
+        .identity
+        .as_ref()
+        .expect("admins need accounts")
+        .store
+        .clone();
+    let Ok(Ok(found)) = tokio::task::spawn_blocking(move || store.find_handle(&handle)).await
+    else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let Some(account) = found else {
+        return refusal(StatusCode::NOT_FOUND, "no_such_player", None);
+    };
+    let mut muted = door
+        .muted
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let now = tokio::time::Instant::now();
+    muted.retain(|_, until| *until > now);
+    if minutes == 0 {
+        muted.remove(&account);
+    } else {
+        muted.insert(
+            account,
+            now + std::time::Duration::from_secs(u64::from(minutes) * 60),
+        );
+    }
+    tracing::info!(minutes, "admin changed a mute");
+    no_store(StatusCode::NO_CONTENT.into_response())
 }
 
 #[cfg(test)]

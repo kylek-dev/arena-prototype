@@ -25,22 +25,78 @@ impl NameRefusal {
     }
 }
 
-/// The words names may not contain.
-#[derive(Clone, Debug)]
-pub struct Blocklist(Vec<String>);
+/// Words players may not use: reserved ones (names only) and abuse (names
+/// and chat).
+#[derive(Clone, Debug, Default)]
+pub struct Blocklist {
+    reserved: Vec<String>,
+    abuse: Vec<String>,
+}
 
 impl Blocklist {
-    /// The built-in list plus the lines of `extra` (same format).
+    /// The built-in list plus the lines of `extra`, which are abuse words
+    /// unless a `[reserved]` line says otherwise.
     pub fn new(extra: &str) -> Self {
-        let words = [BUILT_IN, extra]
+        let mut list = Self::default();
+        for text in [BUILT_IN, extra] {
+            let mut reserved = false;
+            for line in text.lines().map(str::trim) {
+                match line {
+                    "" => {}
+                    "[reserved]" => reserved = true,
+                    "[abuse]" => reserved = false,
+                    _ if line.starts_with('#') => {}
+                    word => {
+                        let word = fold(word);
+                        if word.is_empty() {
+                            continue;
+                        }
+                        if reserved {
+                            list.reserved.push(word);
+                        } else {
+                            list.abuse.push(word);
+                        }
+                    }
+                }
+            }
+        }
+        list
+    }
+
+    fn readings(text: &str) -> [String; 2] {
+        // `1` stands for `i` or `l`: check both readings.
+        [fold(text), fold(&text.replace('1', "l"))]
+    }
+
+    fn abusive(&self, text: &str) -> bool {
+        Self::readings(text)
             .iter()
-            .flat_map(|text| text.lines())
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(fold)
-            .filter(|word| !word.is_empty())
-            .collect();
-        Self(words)
+            .any(|folded| self.abuse.iter().any(|word| folded.contains(word.as_str())))
+    }
+
+    /// Chat text with every word containing an abuse word replaced by
+    /// asterisks of the same length.
+    pub fn mask(&self, text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut word = String::new();
+        let flush = |word: &mut String, out: &mut String| {
+            if self.abusive(word) {
+                out.extend(std::iter::repeat_n('*', word.chars().count()));
+            } else {
+                out.push_str(word);
+            }
+            word.clear();
+        };
+        for c in text.chars() {
+            if c.is_whitespace() {
+                flush(&mut word, &mut out);
+                out.push(c);
+            } else {
+                word.push(c);
+            }
+        }
+        flush(&mut word, &mut out);
+        out
     }
 
     /// The built-in list, plus the file named by `ARENA_BLOCKED_NAMES`.
@@ -60,12 +116,12 @@ impl Blocklist {
         {
             return Err(NameRefusal::Invalid);
         }
-        // `1` stands for `i` or `l`: check both readings.
-        let readings = [fold(name), fold(&name.replace('1', "l"))];
-        if readings
-            .iter()
-            .any(|folded| self.0.iter().any(|word| folded.contains(word.as_str())))
-        {
+        let reserved = Self::readings(name).iter().any(|folded| {
+            self.reserved
+                .iter()
+                .any(|word| folded.contains(word.as_str()))
+        });
+        if reserved || self.abusive(name) {
             return Err(NameRefusal::Blocked);
         }
         Ok(())
@@ -138,6 +194,20 @@ mod tests {
                 "{innocent}"
             );
         }
+    }
+
+    #[test]
+    fn chat_masks_abuse_but_not_reserved_words() {
+        let list = Blocklist::new("");
+        assert_eq!(list.mask("gg admin, nice arena"), "gg admin, nice arena");
+        assert_eq!(list.mask("you SH1T  player"), "you ****  player");
+        assert_eq!(list.mask("fuck"), "****");
+        assert_eq!(list.mask(""), "");
+        // Operator words count as abuse in chat too.
+        assert_eq!(
+            Blocklist::new("magistrate\n").mask("the magistrate"),
+            "the **********"
+        );
     }
 
     #[test]

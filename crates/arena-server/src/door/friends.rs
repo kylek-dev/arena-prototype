@@ -131,6 +131,12 @@ pub(super) async fn act(
     }
     // Neither a block nor its end tells the other player anything.
     let tell_other = !matches!(action.as_str(), "block" | "unblock");
+    // A block also stops their chat reaching this player's open tabs.
+    let blocking = match action.as_str() {
+        "block" => Some(true),
+        "unblock" => Some(false),
+        _ => None,
+    };
     let store = identity.store.clone();
     let now = unix_now();
     type Done = (Option<u64>, Result<Option<Relation>, FriendError>);
@@ -164,6 +170,16 @@ pub(super) async fn act(
     };
     match result {
         Ok(relation) => {
+            if let (Some(blocked), Some(other)) = (blocking, other) {
+                let _ = door
+                    .queue
+                    .send(Command::SetBlock {
+                        account: me.id,
+                        other,
+                        blocked,
+                    })
+                    .await;
+            }
             // Both pages refresh their lists (a block tells only the blocker).
             let mut tell = vec![me.id];
             if let Some(other) = other.filter(|_| tell_other) {

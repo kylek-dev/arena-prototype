@@ -561,7 +561,7 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 
 ## 2026-11-25 — Admin role and tag
 - **Branch / Commit:** `auto/admin-role`
-- **Base / PR:** `auto/friends` (stacked on PR #96)
+- **Base / PR:** `auto/friends` (stacked on PR #96) — PR #97
 - **Lane:** A (machine-verified; the tag display and the editor's server save queued as Lane B)
 - **Task:** [social-identity](issues/social-identity.md) step 5
 - **Changes:**
@@ -579,4 +579,18 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
   Not done: reading PUT bodies only after the admin check (other routes allow similar sizes), and an audit trail of which admin acted (needs a store table; noted for when there are several admins).
 - **Learnings:** `#[serde(default)]` is no help for postcard tickets; new claims change the format, which ships with the door and server together. Box a `Response` error once a handler returns `Result<_, Response>` (Clippy `result_large_err`).
 - **Next Recommended Slice:** Chat server (the last Lane A item).
+
+## 2026-11-25 — Chat server
+- **Branch / Commit:** `auto/chat-server`
+- **Base / PR:** `auto/admin-role` (stacked on PR #97)
+- **Lane:** A (machine-verified; chat box, system messages and slash commands queued as Lane B)
+- **Task:** [chat](issues/chat.md), server side — the last Lane A backlog item
+- **Changes:**
+  - Chat over the queue WebSocket: client `chat {channel, text}`, `whisper {to, text}`, `ignore`/`unignore {handle}`; door `chat {channel, from, to?, admin, text}` with the sender and tag set by the door.
+  - Routing in the matchmaker task (`door/queue.rs` `Chat`, `ChatState`): `public` (logged-in posters); `match` and `team` from the tickets the door issued (team falls back to the custom lobby, then the party); `spectator` for spectators only, who may post or whisper nowhere else; whispers to friends (checked like invites, re-checked against the connection's account). Anti-ghosting invariant: a player in a live match hears only `match` and `team` from players of that match, so second tabs, second accounts and lobby-mates cannot feed them.
+  - Rules (`door/chat.rs`): cleaning and a 200-character cap, a per-connection budget (5, then one a second), abuse words masked (the word list now separates `[reserved]` names from `[abuse]`), per-connection ignore (200), account blocks loaded at hello and updated live, admin mutes (`POST /api/admin/mute`). `system` and sender fields cannot be posted.
+  - Review fixes: spectator whispers and second-tab/lobby ghosting closed by the invariant; ignores and mutes keyed on account or guest id (mutes survive logout); chat keeps 8 outbox slots free for tickets; per-account public budget; 4 KiB queue frames so 200 characters fit in any script; invisible, bidi and line-separator characters stripped and combining marks capped; blocks read after hello (no lost block); seats indexed per match.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/admin-role` (`smoke=true web_build=false wasm=true`): pass (`./scripts/check.sh`: 480 Rust tests, 1 pre-existing ignored; 58 Python; 50 Node; 43 Vitest files / 338 tests; headless pass; server smoke 496 ticks, 0 overruns, mean 15.3 µs, drained cleanly; WASM clippy pass).
+  - `tests/chat.rs` (guests): door-set sender, masking, oversized/empty/`system`/guest-`public` refusals, 200 CJK and emoji characters, spoofed sender closes the connection, flood limit, ignore/unignore and unknown-handle refusals, party and lobby team chat, match/team/spectator isolation, a mid-match lobby joiner never reaching players, 2v2 team chat. `tests/identity.rs`: whispers, stranger and guest refusals, admin mute and unmute, a block silencing chat live, a spectating friend's whisper refused, a second tab's public chat and whispers never reaching live players. Spectator confinement, spectator whispers, the public filter and the lobby filter each mutation-checked.
 

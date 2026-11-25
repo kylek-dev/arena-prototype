@@ -175,6 +175,9 @@ the connection with `error`.
 | `{"type":"leave_party"}` | Back on one's own; the next member leads. |
 | `{"type":"queue","mode":"1v1"\|"2v2"\|"3v3"}` | Leader only. 1v1 takes one player; 2v2 and 3v3 take players alone or parties up to the team size ([ADR 0047](decisions/0047-accepting-matches-and-queue-status.md)). |
 | `{"type":"cancel"}` | Any member stops the party's search. |
+| `{"type":"chat","channel":"public"\|"match"\|"team"\|"spectator","text"}` | Chat (see [Chat](#chat)). Refused `rate_limited`, `too_long`, `empty`, `no_such_channel`, `log_in` (guests in `public`), `muted`, `no_name`, `not_in_match`, `not_spectating` or `spectators_only`. |
+| `{"type":"whisper","to":"Name#1234","text"}` | Chat to a friend. Refused like `chat`, or `not_logged_in`, `no_such_friend`, `offline`, `in_match` (they are playing). |
+| `{"type":"ignore"\|"unignore","handle":"Name#1234"}` | Stop or resume hearing whoever is connected as that handle, on this connection (up to 200; refused `no_such_player`, `too_many`). The ignore follows the account or guest, not the name. |
 | `{"type":"invite","handle":"Name#1234"}` | Logged-in players: invite a friend to this player's custom lobby, else party (a player on their own gets a party first). Refused `not_logged_in`, `no_such_friend` (no such handle and not a friend look alike), `offline`, `rate_limited` (5 at once, then one per 6 s per account), or as joining would be. |
 | `{"type":"accept"}` | Accepts the match on offer. |
 | `{"type":"decline"}` | Declines it: the check ends for everyone, and this player's party leaves the queue. |
@@ -200,6 +203,7 @@ the connection with `error`.
 | `lobby_left` `{reason}` | `left` or `kicked`. |
 | `invite` `{from, kind, code}` | A friend invites this player: `kind` is `party` or `lobby`; accepting is `join_party` / `join_lobby` with `code`, declining is doing nothing. |
 | `invite_sent` `{to}` | The invite reached `to`. |
+| `chat` `{channel, from, to?, admin, text}` | A chat message. `from` and `admin` are the door's (the sender's handle and admin tag); `to` is set on the sender's own copy of a whisper. `channel` is `public`, `match`, `team`, `spectator` or `whisper`. |
 | `friends_changed` `{}` | Requests or friendships changed; fetch `GET /api/friends`. |
 | `refused` `{code}` | `not_leader`, `party_too_big`, `party_full`, `party_busy`, `no_such_party`, `in_lobby`, `no_such_lobby`, `lobby_full`, `not_host`, `slot_full`, `lobby_not_full`, `lobby_too_big`, `no_such_member`, `invalid_settings`, `spectators_disabled`, `spectators_occupied` or `rate_limited`; nothing changed. |
 | `match` `{mode, match_id, seat, spectator?, server, ticket, expires}` | This player's seat ticket (or watch-only spectator ticket when `spectator: true`). The connection stays open. |
@@ -261,6 +265,7 @@ handle.
 | `GET /api/admin/maps` | `{maps: [{id, name}]}`: maps saved by admins. |
 | `GET /api/admin/maps/<id>.json` | The map file. |
 | `PUT /api/admin/maps/<id>.json` | Validates the body with `arena_map` (as the editor and build do) and stores it: `{id, name}`, or 422 `{error: "invalid_map", problems}` / `invalid_id`. At most 256 KiB; ids are lowercase letters, digits and dashes. |
+| `POST /api/admin/mute` `{"handle", "minutes"}` | Stops a logged-in player's chat for up to a week (`0` unmutes); 204, or 404 `no_such_player`. Mutes last until the door restarts. |
 | `POST /api/admin/handles/clear` `{"handle"}` | Removes a player's handle (204, or 404 `no_such_player`); they pick again with no wait. |
 
 Everyone else gets 401 `not_logged_in` or 403 `not_admin`. Writes need an
@@ -299,6 +304,49 @@ account deletes its friendships, requests and blocks. "Log out everywhere"
 also stops that account's open connections from inviting or being shown as
 it. A plain logout affects only the browser it came from: other open tabs
 keep receiving invites until they close.
+
+## Chat
+
+Chat travels over the queue WebSocket, so the game page needs nothing
+else (planning/issues/chat.md, `door/chat.rs`). The client sends only text
+and a channel; the door names the sender (`from`, `admin`) and picks who
+hears it:
+
+| Channel | Who hears it |
+| --- | --- |
+| `public` | Everyone connected to the door who is not playing a live match. Logged-in players only. |
+| `match` | The players of the sender's match. |
+| `team` | The sender's team in that match; outside one, their custom lobby or else their party, except members now playing a match. |
+| `spectator` | The spectators of the sender's match. Players never hear it, and a spectator can post (or whisper) nowhere else. |
+| `whisper` | One friend, on every open tab of theirs not playing a live match (logged-in players only). |
+
+One rule keeps spectators from feeding players hidden information
+(ghosting), even from a second tab or account: **a player in a live match
+hears only `match` and `team`, and only players of that match post there.**
+
+A player is "in a match" for 21 minutes after the door issued their ticket
+from the queue or a custom lobby, unless they search again; players who
+joined by a lobby link have no `match`, `team` or `spectator` channel.
+
+Rules:
+- Text is cleaned (control characters and line separators become spaces,
+  zero-width and bidi-override characters are dropped, combining marks stop
+  at three per character, the ends are trimmed) and holds 1–200
+  characters. Queue messages may be 4 KiB, so 200 characters fit in any
+  script.
+- Words containing a blocked abuse word (the `[abuse]` list in
+  `identity/blocked-names.txt` and `ARENA_BLOCKED_NAMES`) are masked with
+  asterisks.
+- Each connection may post 5 messages at once, then one a second; `public`
+  also counts per account across its tabs. Chat leaves 8 slots of each
+  player's outbox free, so a busy channel never pushes out a ticket or
+  ready check.
+- Unknown fields close the connection, so a client cannot claim a sender,
+  tag or channel such as `system`, which is reserved for the server and the
+  page.
+- A player stops hearing someone they ignore (per connection, by account or
+  guest id) or blocked (per account). An admin can mute an account; the
+  mute holds on tabs that log out.
 
 ## Browser telemetry
 

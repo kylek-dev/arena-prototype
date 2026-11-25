@@ -254,6 +254,17 @@ impl Store {
         })
     }
 
+    /// The accounts `me` blocked.
+    pub fn blocked_by(&self, me: u64) -> rusqlite::Result<Vec<u64>> {
+        let connection = self.connection();
+        let mut statement = connection.prepare("SELECT blocked FROM blocks WHERE blocker = ?1")?;
+        statement
+            .query_map(params![me as i64], |row| {
+                row.get::<_, i64>(0).map(|id| id as u64)
+            })?
+            .collect()
+    }
+
     /// Whether `a` and `b` are friends (and neither blocked the other).
     pub fn are_friends(&self, a: u64, b: u64) -> rusqlite::Result<bool> {
         let (low, high) = pair(a, b);
