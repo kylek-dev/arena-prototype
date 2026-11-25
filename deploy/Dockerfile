@@ -9,7 +9,12 @@ COPY . .
 RUN cargo build --release --locked -p arena-server --features profiling --bin arena-server --bin arena-door
 
 FROM debian:trixie-slim
-RUN useradd --system --uid 10001 --no-create-home arena
+# CA certificates for HTTPS to OAuth providers (ADR 0055).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN useradd --system --uid 10001 --no-create-home arena \
+    && mkdir -p /var/lib/arena && chown arena:arena /var/lib/arena
 COPY --from=build /src/target/release/arena-server /src/target/release/arena-door /usr/local/bin/
 USER arena
 EXPOSE 8080 8090

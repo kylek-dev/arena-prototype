@@ -23,8 +23,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
+mod auth;
 mod browser;
 mod queue;
+pub use auth::Me;
 pub use queue::ToClient as QueueMessage;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -39,6 +41,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
+use crate::identity::{Identity, IdentityConfig};
 use crate::ingress::{self, Cidr, OpenPerAddress, Origins, RatePerAddress};
 use crate::logging::MatchId;
 use crate::metrics::{Histogram, Metrics, write_metric};
@@ -65,6 +68,8 @@ pub struct DoorConfig {
     pub ready_timeout: Duration,
     /// Open queue connections one client address may hold.
     pub queue_per_address: u32,
+    /// Accounts and login (ADR 0055); `None` keeps the door guest-only.
+    pub identity: Option<IdentityConfig>,
 }
 impl DoorConfig {
     pub fn new(key: TicketKey, match_server: String, page: String) -> Self {
@@ -80,6 +85,7 @@ impl DoorConfig {
             creation_every: Duration::from_secs(30),
             ready_timeout: Duration::from_secs(15),
             queue_per_address: 12,
+            identity: None,
         }
     }
 }
@@ -132,10 +138,17 @@ struct DoorMetrics {
     browser_rejected: AtomicU64,
     /// Browser reports refused for their origin, then for the rate limit.
     browser_refused: [AtomicU64; 2],
+    /// Completed logins, failed ones, and deleted accounts.
+    logins: AtomicU64,
+    login_failures: AtomicU64,
+    deletions: AtomicU64,
 }
 
 struct Door {
     config: DoorConfig,
+    identity: Option<Identity>,
+    /// Login routes per address.
+    auth_rate: RatePerAddress,
     creations: RatePerAddress,
     /// Browser telemetry reports per address.
     reports: RatePerAddress,
@@ -356,6 +369,21 @@ fn render_door_metrics(metrics: &DoorMetrics) -> String {
             &metrics.tickets,
         ),
         (
+            "door_logins_total",
+            "Completed account logins.",
+            &metrics.logins,
+        ),
+        (
+            "door_login_failures_total",
+            "Logins refused or failed (state, provider or store).",
+            &metrics.login_failures,
+        ),
+        (
+            "door_account_deletions_total",
+            "Accounts deleted by their players.",
+            &metrics.deletions,
+        ),
+        (
             "door_ready_checks_started_total",
             "Ready checks offered when a queue could fill a match.",
             &metrics.checks_started,
@@ -486,9 +514,17 @@ fn page(content_type: &'static str, body: impl Into<axum::body::Body>) -> Respon
 
 /// The door's routes, with its matchmaker task started. Must be called
 /// inside the Tokio runtime.
-fn build(config: DoorConfig) -> (Router, Arc<Door>) {
+fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
+    let identity = config
+        .identity
+        .clone()
+        .map(|identity| Identity::start(identity, &config.page))
+        .transpose()
+        .map_err(io::Error::other)?;
     let (commands, receiver) = mpsc::channel(1024);
     let door = Arc::new(Door {
+        identity,
+        auth_rate: RatePerAddress::new(20, Duration::from_secs(6)),
         creations: RatePerAddress::new(config.creation_burst, config.creation_every),
         // A visit sends a handful (startup, a summary per match, a few errors).
         reports: RatePerAddress::new(30, Duration::from_secs(10)),
@@ -531,11 +567,17 @@ fn build(config: DoorConfig) -> (Router, Arc<Door>) {
                 async move { page("text/css; charset=utf-8", palette) }
             }),
         )
+        .route("/api/auth/me", get(auth::me))
+        .route("/api/auth/{provider}/login", get(auth::login))
+        .route("/api/auth/{provider}/callback", get(auth::callback))
+        .route("/api/auth/logout", post(auth::logout))
+        .route("/api/auth/logout_everywhere", post(auth::logout_everywhere))
+        .route("/api/auth/delete", post(auth::delete))
         .route("/healthz", get(|| async { "ok" }))
         .route("/metrics", get(render_metrics))
         .with_state(door.clone());
     let router = crate::traced(router);
-    (router, door)
+    Ok((router, door))
 }
 
 /// A started front door.
@@ -554,7 +596,7 @@ impl DoorRunning {
 pub async fn start(config: DoorConfig) -> io::Result<DoorRunning> {
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     let addr = listener.local_addr()?;
-    let (router, door) = build(config);
+    let (router, door) = build(config)?;
     let stop = door.shutdown.clone();
     let mut stopped = stop.subscribe();
     let service = router.into_make_service_with_connect_info::<SocketAddr>();

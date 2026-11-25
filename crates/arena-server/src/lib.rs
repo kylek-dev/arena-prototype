@@ -9,6 +9,7 @@
 
 pub mod anomaly;
 pub mod door;
+pub mod identity;
 pub mod ingress;
 pub mod logging;
 pub mod matchmaker;

@@ -4,7 +4,10 @@ Give players a persistent identity outside the match: accounts, a chosen `Name#1
 [research note](../../docs/research/accounts-2026-11-25.md) and the proposed
 [ADR 0055](../../docs/decisions/0055-accounts-oauth-login-in-arena-door.md):
 OAuth login with Discord, Google or GitHub, handled by `arena-door`; no
-passwords; a minimal SQLite store; guests stay.
+passwords; a minimal SQLite store; guests stay. Step 2 (the identity service, with the
+account id in tickets) is implemented on `auto/identity-service`. The login
+UI is queued as a Lane B follow-up. Guests' temporary handles come with
+step 3, the handles themselves.
 
 Acceptance criteria, in shipping order (each step is its own PR):
 

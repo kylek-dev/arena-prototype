@@ -62,7 +62,23 @@ services:
       - https://${ARENA_HOST}/
       - --trusted-proxy
       - 172.30.10.2
-    environment: *public
+      # Accounts (ADR 0055) live here; used only with ARENA_SESSION_KEY.
+      - --identity-db
+      - /var/lib/arena/identity.sqlite3
+    environment:
+      <<: *public
+      # Accounts are off (guests only) until ARENA_SESSION_KEY is set: hex,
+      # at least 32 bytes, different from ARENA_TICKET_KEY.
+      ARENA_SESSION_KEY: ${ARENA_SESSION_KEY:-}
+      ARENA_OAUTH_DISCORD_CLIENT_ID: ${ARENA_OAUTH_DISCORD_CLIENT_ID:-}
+      ARENA_OAUTH_DISCORD_CLIENT_SECRET: ${ARENA_OAUTH_DISCORD_CLIENT_SECRET:-}
+      ARENA_OAUTH_GOOGLE_CLIENT_ID: ${ARENA_OAUTH_GOOGLE_CLIENT_ID:-}
+      ARENA_OAUTH_GOOGLE_CLIENT_SECRET: ${ARENA_OAUTH_GOOGLE_CLIENT_SECRET:-}
+      ARENA_OAUTH_GITHUB_CLIENT_ID: ${ARENA_OAUTH_GITHUB_CLIENT_ID:-}
+      ARENA_OAUTH_GITHUB_CLIENT_SECRET: ${ARENA_OAUTH_GITHUB_CLIENT_SECRET:-}
+      ARENA_ADMIN_ACCOUNTS: ${ARENA_ADMIN_ACCOUNTS:-}
+    volumes:
+      - door-data:/var/lib/arena
     restart: unless-stopped
     networks:
       arena:
@@ -157,6 +173,7 @@ networks:
         - subnet: 172.30.10.0/24
 
 volumes:
+  door-data:
   caddy-data:
   caddy-config:
   lgtm-data:

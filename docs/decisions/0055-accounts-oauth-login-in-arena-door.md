@@ -1,6 +1,6 @@
 # ADR 0055: Accounts log in with OAuth providers through `arena-door`
 
-Date: 2026-11-25. **Status: proposed.**
+Date: 2026-11-25. **Status: proposed (step 2, the identity service, implemented).**
 
 ## Context
 
@@ -124,5 +124,13 @@ privacy and how much runs next to the match loop.
   provider configured the game stays guest-only, as today.
 - **Tests need no real accounts.** They use a local fake provider, so CI
   works offline.
-- Steps 2–5 of the issue build on this. The ticket claim format and the
-  protocol change land with steps 2 and 3, with their own version bumps.
+- Steps 2–5 of the issue build on this.
+  - Step 2 adds an `account` claim to tickets. Tickets carry no version, and
+    the door and match server ship in one image, so tickets issued before
+    the upgrade simply stop verifying.
+  - Step 3 changes the match protocol and bumps its version.
+- **Login callbacks put a one-time code and state in the URL.** Caddy's
+  access log drops both (`deploy/Caddyfile`).
+- **Revocation reaches open queue connections.** Deleting an account or
+  logging out everywhere tells the matchmaker to stop signing that account
+  into tickets for connections that are already open.

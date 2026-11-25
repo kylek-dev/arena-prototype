@@ -121,7 +121,9 @@ could alter a replayed outcome. `Welcome.map` identifies the layout.
 ## Join tickets
 
 A ticket is the postcard encoding of
-`{match_id, player, role, team_size, expires, settings}` (`role` is `Player { seat }` or `Spectator`, so player and spectator credentials are never interchangeable; `expires` in Unix
+`{match_id, player, role, team_size, expires, settings, account}` (`account`
+is the logged-in player's account id, or none for guests and lobby links;
+`role` is `Player { seat }` or `Spectator`, so player and spectator credentials are never interchangeable; `expires` in Unix
 seconds; optional versioned `MatchSettings { version: 1, map, round_seconds, allow_spectators }`
 for private custom matches) followed by a 32-byte HMAC-SHA256 tag over those
 bytes, under a key shared by whatever issues tickets and the match servers
@@ -140,7 +142,7 @@ start nothing. A match that has ended stays ended while its tickets are valid
 (`MatchOver`), as long as the process runs. A draining server answers the
 first ticket of a new match with `ServerShutdown`.
 
-There are no accounts. The front door (`arena-door`, `POST /api/matches`
+Accounts are optional (see [Accounts](#accounts)). The front door (`arena-door`, `POST /api/matches`
 and the `/lobby/` page) issues one join link per seat, with the ticket in
 the URL fragment. With `--dev`, `POST /dev/match?team_size=1|2|3&spectators=0..N` on the
 match server returns the match id, one hex ticket per seat, and optional watch-only `spectator_tickets`. It refuses
@@ -193,6 +195,35 @@ the connection with `error`.
 | `refused` `{code}` | `not_leader`, `party_too_big`, `party_full`, `party_busy`, `no_such_party`, `in_lobby`, `no_such_lobby`, `lobby_full`, `not_host`, `slot_full`, `lobby_not_full`, `lobby_too_big`, `no_such_member`, `invalid_settings`, `spectators_disabled`, `spectators_occupied` or `rate_limited`; nothing changed. |
 | `match` `{mode, match_id, seat, spectator?, server, ticket, expires}` | This player's seat ticket (or watch-only spectator ticket when `spectator: true`). The connection stays open. |
 | `error` `{code, message}` | Then the door closes: `bad_request`, `rate_limited`, `replaced` or `shutdown`. |
+
+## Accounts
+
+Login is optional and handled by the front door
+([ADR 0055](decisions/0055-accounts-oauth-login-in-arena-door.md),
+`crates/arena-server/src/identity/`, `door/auth.rs`). It is on when the door
+has `ARENA_SESSION_KEY` and at least one provider.
+
+| Request | Answer |
+| --- | --- |
+| `GET /api/auth/me` | `{account, admin, providers}`: the account id in hex or `null`, whether deploy configuration makes it an admin, and the providers on offer. |
+| `GET /api/auth/<discord\|google\|github>/login` | 303 to the provider, with state and an S256 PKCE challenge. Sets `__Host-arena_oauth` (signed state and verifier, 10 minutes). |
+| `GET /api/auth/<provider>/callback?code&state` | Checks the state against that cookie, trades the code (with the verifier) for the provider's permanent id, and sets `__Host-arena_session`. Always a 303 to the game page; 400 when anything is off. |
+| `POST /api/auth/logout` | Clears this browser's session cookie. |
+| `POST /api/auth/logout_everywhere` | Ends every session of the account. |
+| `POST /api/auth/delete` | Deletes the account; its sessions end at once. |
+
+How the cookies behave:
+- Both are `HttpOnly; Secure; SameSite=Lax; Path=/`, signed with
+  `ARENA_SESSION_KEY`, and the session lasts 30 days.
+- A session counts only if its account still exists at the same generation.
+  Logging out everywhere and deleting raise the generation or remove the
+  row.
+- A `POST`, and the queue WebSocket's handshake, use the session only with
+  an allowed `Origin`, and never when the door runs with `--any-origin`.
+- The queue signs the session's account into the player's seat or spectator
+  ticket. Links from `POST /api/matches` carry no account.
+- Login routes are rate-limited per address. Account ids, codes and tokens
+  are never logged.
 
 ## Browser telemetry
 

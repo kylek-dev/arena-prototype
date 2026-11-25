@@ -29,8 +29,15 @@
 		file_server
 	}
 
+	# JSON access log, without the OAuth callback's one-time code and state
+	# (ADR 0055); join tickets travel in fragments, which never reach here.
 	log {
 		output stdout
-		format json
+		format filter {
+			request>uri query {
+				delete code
+				delete state
+			}
+		}
 	}
 }

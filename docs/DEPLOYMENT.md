@@ -55,7 +55,9 @@ Changing the key invalidates every link already handed out.
 - **During a restart.** Players whose match had not started get
   `ServerShutdown` and retry by themselves until the new server is up.
   Players of matches that were cut off see the match as over.
-- **The door.** The door is stateless. Restart it at any time.
+- **The door.** The door keeps queues, parties and lobbies in memory, and
+  accounts in its `door-data` volume. A restart drops searches and lobbies;
+  players reconnect and queue again. Accounts and login sessions survive.
 - **Caddy.** A configuration reload keeps match WebSockets open for up to
   21 minutes. A restart of Caddy drops them, and players reconnect
   automatically.
@@ -94,6 +96,52 @@ network.
 - Players can add `?debug=1` before the `#` in their link to see ping,
   corrections, queue and server tick rate in the diagnostics overlay.
   Record those numbers in the playtest notes (issue `remote-playtests`).
+
+## Accounts
+
+Upgrading to the release that added accounts changes the ticket format.
+Tickets and links issued before the upgrade stop working, as they do when
+`ARENA_TICKET_KEY` changes. Upgrade between playtests.
+
+Players can log in with Discord, Google or GitHub
+([ADR 0055](decisions/0055-accounts-oauth-login-in-arena-door.md)). Login is
+off until you set it up; the game is then guest-only, as before.
+
+1. **Publish a privacy notice** before offering login. Say that the game
+   stores the provider's user id, the chosen name and login times, and
+   nothing else, and say how to delete an account.
+2. **Register an OAuth app** with each provider you want, using the callback
+   `https://ARENA_HOST/api/auth/<provider>/callback` (`discord`, `google`
+   or `github`). The game asks for Discord `identify`, Google `openid` and no
+   GitHub scope. A Google app in Testing mode lists at most 100 test users,
+   so publish its audience before a public playtest.
+3. **In `deploy/.env`**, set:
+   - `ARENA_SESSION_KEY=$(openssl rand -hex 32)`, which must differ from the
+     ticket key;
+   - `ARENA_OAUTH_<PROVIDER>_CLIENT_ID` and `_CLIENT_SECRET` for each
+     provider;
+   - optionally `ARENA_ADMIN_ACCOUNTS`, a comma-separated list of account
+     ids (an id is shown as `account` at `/api/auth/me` once logged in).
+4. Restart the door: `docker compose up -d door`.
+
+The door keeps accounts in `/var/lib/arena/identity.sqlite3` on the
+`door-data` volume. To back it up, stop the door and copy every
+`identity.sqlite3*` file. A clean stop folds SQLite's write-ahead log into
+the main file; this was checked on 2026-11-25, when only `identity.sqlite3`
+was left after a stop. If the door was killed instead, the `-wal` file
+holds the newest rows, so copy it too, and restore all the files together.
+
+```sh
+docker compose stop door
+docker run --rm -v arena_door-data:/data -v "$PWD/backup-$(date +%F)":/backup \
+  debian:trixie-slim sh -c 'cp /data/identity.sqlite3* /backup/'
+docker compose start door
+```
+
+A player deletes their account with `POST /api/auth/delete`. Their sessions
+end at once, and any queue connection still open stops putting the account
+into tickets. Tickets already issued stay valid until they expire (2 hours
+by default), and backups keep the row until you discard them.
 
 ## Observability
 
