@@ -16,13 +16,10 @@ const optionNames: Record<string, string> = {
   Peasant: "Peasant",
 };
 const raceHair: Record<string, string> = { elf: "Elven locks", orc: "Warrior mane" };
-// "meshy" is the finished human kit of ADR 0053 while it is reviewed beside the
-// Quaternius human; it takes over "human" once approved.
 export const ancestryNames: Record<string, string> = {
   human: "Human",
   elf: "Elf",
   orc: "Orc",
-  meshy: "Human (new)",
 };
 export const bodyNames: Record<string, string> = { female: "Female", male: "Male" };
 

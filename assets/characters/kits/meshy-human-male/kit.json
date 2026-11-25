@@ -1,6 +1,6 @@
 {
  "id": "meshy-human-male",
- "ancestry": "meshy",
+ "ancestry": "human",
  "body": "male",
  "path": "characters/kits/meshy-human-male.glb",
  "sole": 0.0,
@@ -91,6 +91,62 @@
     "label": "None",
     "nodes": []
    }
+  ],
+  "hair": [
+   {
+    "id": "none",
+    "label": "None",
+    "nodes": []
+   },
+   {
+    "id": "Hair_SweptBack",
+    "label": "Swept back",
+    "nodes": [
+     "Hair_SweptBack"
+    ]
+   },
+   {
+    "id": "Hair_CloseCrop",
+    "label": "Close crop",
+    "nodes": [
+     "Hair_CloseCrop"
+    ]
+   },
+   {
+    "id": "Hair_TiedBack",
+    "label": "Tied back",
+    "nodes": [
+     "Hair_TiedBack"
+    ]
+   }
+  ],
+  "beard": [
+   {
+    "id": "none",
+    "label": "None",
+    "nodes": []
+   },
+   {
+    "id": "Beard_Full",
+    "label": "Full beard",
+    "nodes": [
+     "Beard_Full"
+    ]
+   },
+   {
+    "id": "Beard_Handlebar",
+    "label": "Handlebar",
+    "nodes": [
+     "Beard_Handlebar"
+    ]
+   },
+   {
+    "id": "Beard_Stubble",
+    "label": "Stubble",
+    "nodes": [
+     "Beard_Stubble"
+    ]
+   }
   ]
  },
  "materials": {
@@ -111,6 +167,24 @@
   },
   "Brows_Fine": {
    "tint": "hair"
+  },
+  "Hair_SweptBack": {
+   "tint": "hair"
+  },
+  "Hair_CloseCrop": {
+   "tint": "hair"
+  },
+  "Hair_TiedBack": {
+   "tint": "hair"
+  },
+  "Beard_Full": {
+   "tint": "facialHair"
+  },
+  "Beard_Handlebar": {
+   "tint": "facialHair"
+  },
+  "Beard_Stubble": {
+   "tint": "facialHair"
   }
  },
  "morph": null,
@@ -118,7 +192,13 @@
   "Body_Head",
   "Brows_Natural",
   "Brows_Bold",
-  "Brows_Fine"
+  "Brows_Fine",
+  "Hair_SweptBack",
+  "Hair_CloseCrop",
+  "Hair_TiedBack",
+  "Beard_Full",
+  "Beard_Handlebar",
+  "Beard_Stubble"
  ],
  "eyes": "brown",
  "sockets": {
@@ -265,6 +345,12 @@
   "Brows_Natural": 408,
   "Brows_Bold": 408,
   "Brows_Fine": 408,
+  "Hair_SweptBack": 7595,
+  "Hair_CloseCrop": 7579,
+  "Hair_TiedBack": 7596,
+  "Beard_Full": 6933,
+  "Beard_Handlebar": 4753,
+  "Beard_Stubble": 1682,
   "Eyes": 560
  }
 }

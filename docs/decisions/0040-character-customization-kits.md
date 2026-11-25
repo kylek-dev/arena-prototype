@@ -1,6 +1,8 @@
 # ADR 0040: Character customization from Quaternius kits
 
-Date: 2026-11-14. **Status: accepted for local integration**, at the user's
+Date: 2026-11-14. **Status: accepted for local integration; not shipped since
+2026-11-25**, when [ADR 0053](0053-finished-character-kits.md) made its finished
+kits the only ones the game offers (the build code here stays). Built at the user's
 request for "a character customization screen where I can view my character up
 close and I can select different customization options available in the packs
 … all the options available, gender, hair, eyes, etc". Human browser review is

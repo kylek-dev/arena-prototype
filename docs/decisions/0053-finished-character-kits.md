@@ -3,7 +3,11 @@
 Date: 2026-11-24. **Status: accepted for the human male.** Implemented
 locally and reviewed by the user in the browser on 2026-11-24. Requested by the
 user: a base male "more generic with blank customizable pieces", ready for
-generated equipment. Hair and facial hair are not built yet.
+generated equipment. Hair and facial hair were added the same day: three
+hairstyles, two beards and stubble (see "Hair and beards"). On 2026-11-25 the
+user accepted the kit with its hair and asked for it to be **the only
+character the game offers** until more kits are built the same way (see
+"Only finished kits ship").
 
 ## Context
 
@@ -49,8 +53,8 @@ kit keeps the generated shape and paint and replaces everything else.
   | Skin | `Body_*` regions | `Skin`, `Skin_Head` | skin tone tint |
   | Eyes | `Eyes` | `Eye_White`, `Eye_Iris` (grey) | eye colour tint |
   | Eyebrows | `Brows_*` (alpha-blended) | `Brows_*` (grey) | shape; hair colour tint |
-  | Hair | `Hair_*` | `Hair` (grey) | style; hair colour tint |
-  | Facial hair | `Beard_*` | `FacialHair` (grey) | style; its own colour tint |
+  | Hair | `Hair_*` | `Hair_*`, one per style (grey) | style; hair colour tint |
+  | Facial hair | `Beard_*` (stubble alpha-blended) | `Beard_*`, one per style (grey) | style; its own colour tint |
   | Face | morph targets on `Body_Head` | | preset |
   | Underclothes | `Trunks` | `Trunks` | hidden by pants |
 
@@ -101,6 +105,26 @@ kit keeps the generated shape and paint and replaces everything else.
   aligned to the model's axes in the rest pose. Grip sockets have +Y along the
   gripped shaft towards the thumb side and +Z the way the knuckles point. The
   shield socket has +Z out of the forearm and +Y towards the elbow.
+- **Hair and beards.** Each style is generated in Meshy as a bust: an image
+  edit adds the style to front, side and back renders of the kit's own bald
+  head, and multi-image to 3D turns it into a model. The bust is fitted to
+  the kit head on skin that is skin on both, and the piece is cut out of it:
+  by how far it stands clear of the kit head (the swept-back cut), or, for
+  pieces too thin to tell from the generated skin that way (a fade, a
+  moustache), by where the generator painted hair. The user approved the
+  paint-guided cut on 2026-11-24; it runs at build time only and the result
+  is still its own mesh and material. The piece's edge is sunk 1.2 mm under
+  the skin, it is reduced to the 8k budget with new UVs, its paint is made
+  grey for tinting, and its normal map is baked from the dense cut. Hair is
+  carved 6 mm clear of the kit's ears, which are not where the generated
+  ears were. Every vertex takes the face targets of the nearest head vertex.
+  Within 8 mm of the head's skin it also takes that skin's weights, blending
+  to rigid on `Head` 20 mm out: the nape and jaw partly follow the neck, and
+  on rigid hair the skin slid out from under the close crop in motion. Only
+  the head's skin counts; following the neck too bent the ponytail into the
+  back. Stubble is a layer of the face's own quads 0.7 mm above the skin,
+  shaped like the full beard's footprint. Groups `hair` and `beard` each have
+  a `none` option, which a look naming another kit's option falls back to.
 - **Manifest.** A kit entry may add `morphNodes` (nodes carrying the face
   targets), a `face` group whose options carry `weights`, the tint kinds
   `eyes` and `facialHair`, and informational `sockets` and `slots`. A group
@@ -117,11 +141,17 @@ kit keeps the generated shape and paint and replaces everything else.
 ## Consequences
 
 - Skin, eye, hair and facial hair colours are plain per-material tints. No
-  texture is analysed at build or run time, and no eye texture variants ship
-  for finished kits.
-- The human male kit is 7.0 MB. Its body is 23,156 triangles, inside the 25k
-  body budget of ART-PRODUCTION.md; with trunks, eyes and one brow set it
-  draws 25,796. The dense hands and feet of the scaffold account for 10,920.
+  texture is analysed at run time, and no eye texture variants ship for
+  finished kits. At build time the only texture read for a decision is a
+  generated hair or beard bust's paint, to place the piece's edge.
+- The human male kit is 13.9 MB; the hair and beard pieces add 6.9 MB, 4.8 MB
+  of it their textures.
+  Its body is 23,156 triangles, inside the 25k body budget of
+  ART-PRODUCTION.md; with trunks, eyes and one brow set it draws 25,796. The
+  dense hands and feet of the scaffold account for 10,920. The hairstyles are
+  7,579 to 7,596 triangles, the beards 6,933 (full) and 4,753 (handlebar) and
+  the stubble 1,682, so the heaviest look (tied back and full beard) draws
+  40,325 before gear.
 - Meshy's image editor refused the "remove the top" concept edit as a content
   policy matter, so the bare torso is derived from the model's own paint
   rather than regenerated.
@@ -129,13 +159,30 @@ kit keeps the generated shape and paint and replaces everything else.
   exported. Its paint exists.
 - The client does not yet attach anything to the sockets. Weapons still ride
   the back carrier.
-- Hairstyles and beards are not built yet. They need generated pieces.
+- Hair and beards have no joints of their own; away from the skin they are
+  rigid on the head. The tied-back ponytail clears the back in all ten clips;
+  longer hair would need its own joints.
 - The offline tooling is in `scripts/finished_kit/` (see its README). It
   needs Blender, scientific Python packages and the art workspace outside
   Git, which holds the raw Meshy files and every intermediate file. It is
   written for this one body.
-- Until approved, the kit is listed as its own ancestry (`meshy`, shown as
-  "Human (new)") beside the Quaternius human male.
+- While it was reviewed, the kit was listed as its own ancestry (`meshy`,
+  shown as "Human (new)") beside the Quaternius kits. It is now the `human`
+  ancestry and the only kit shipped; a look saved with `meshy` still resolves
+  to it.
+
+## Only finished kits ship (2026-11-25)
+
+At the user's request the game offers only finished kits until more are built
+like this one. `character_kits.SHIPPED` is empty, so the Quaternius kits of
+[ADR 0040](0040-character-customization-kits.md) are no longer built into the
+game, and the finished kits ship even where the Quaternius sources are not
+installed. Their build code and tracked sources stay; passing `kits=KITS` to
+`character_kits.prepare` builds them again. The default look is the human male
+with swept-back hair and natural brows. A look that names a body, ancestry or
+option the shipped kits lack falls back as before: to the human of that body,
+then to the first kit, and to the option `none` or the group's first option.
+The customizer offers one body type, no ancestry choice and no outfits.
 
 ## Evidence
 
@@ -160,3 +207,16 @@ kit keeps the generated shape and paint and replaces everything else.
   both hands through the run, and of the Idle and Attack fists.
 - The user reviewed the rebuilt kit in the browser on 2026-11-24 and accepted
   it ("All that is good"). No automated browser check was run.
+- Hair and beards, 2026-11-24: the user approved the swept-back hairstyle in
+  the browser. Their review of the other pieces found skin showing through
+  the close crop in motion, an unpainted ponytail, the tied back through the
+  ears, and a choppy handlebar beard reaching into the nose. Fixed by the
+  skin-following weights, disc-only UV charts and the ear carve; checked
+  offline in renders of the shipped GLB and clip frames of the close crop,
+  tied back and full beard. The beard change (smoother paint edges and a nose
+  exclusion) looked worse to the user on 2026-11-25 and was reverted: the
+  beards are cut as first reviewed. The user then accepted the fixes except
+  the ponytail, which now bent into the back because it followed the neck
+  skin; hair follows only the head's skin since, and clip frames show the
+  ponytail clear of the back and the close crop's nape covered again. Browser
+  review of that last fix is pending.

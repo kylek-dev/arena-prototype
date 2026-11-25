@@ -341,6 +341,8 @@ export function Stage() {
       className="customizer-stage"
       onPointerDown={(e: PointerEvent) => {
         if ((e.target as Element).closest("button")) return;
+        // No text selection or native drag-and-drop: either makes the browser cancel the pointer mid-turn.
+        e.preventDefault();
         e.currentTarget.setPointerCapture?.(e.pointerId);
         drag.current = { x: e.clientX, yaw: preview.get().yaw };
       }}
@@ -357,6 +359,10 @@ export function Stage() {
       onPointerCancel={() => {
         drag.current = null;
       }}
+      onLostPointerCapture={() => {
+        drag.current = null;
+      }}
+      onDragStart={(e) => e.preventDefault()}
       onWheel={(e) => {
         const current = preview.get();
         preview.set({

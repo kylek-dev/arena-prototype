@@ -57,7 +57,7 @@ export function humanKit(body = "female"): Kit {
 export function finishedKit(): Kit {
   return {
     id: "meshy-human-male",
-    ancestry: "meshy",
+    ancestry: "human",
     body: "male",
     path: "characters/kits/meshy-human-male.glb",
     sole: 0,
@@ -74,6 +74,7 @@ export function finishedKit(): Kit {
         { id: "Brows_Natural", label: "Natural", nodes: ["Brows_Natural"] },
         { id: "Brows_None", label: "None", nodes: [] },
       ],
+      hair: [none, { id: "Hair_SweptBack", label: "Swept back", nodes: ["Hair_SweptBack"] }],
       beard: [none, { id: "Beard_Full", label: "Full", nodes: ["Beard_Full"] }],
       gloves: [
         none,
@@ -94,10 +95,11 @@ export function finishedKit(): Kit {
       Skin_Head: { tint: "skin" },
       Eye_Iris: { tint: "eyes" },
       Brows_Natural: { tint: "hair" },
-      FacialHair: { tint: "facialHair" },
+      Hair_SweptBack: { tint: "hair" },
+      Beard_Full: { tint: "facialHair" },
     },
     morph: null,
-    morphNodes: ["Body_Head", "Brows_Natural"],
+    morphNodes: ["Body_Head", "Brows_Natural", "Hair_SweptBack"],
     eyes: "brown",
   };
 }

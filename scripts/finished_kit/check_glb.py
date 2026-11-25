@@ -1,5 +1,7 @@
 """Open the shipped kit GLB in Blender: structural checks and face/brow/preset renders.
-blender -b --factory-startup -P check_glb.py -- KIT.glb OUT_PREFIX"""
+blender -b --factory-startup -P check_glb.py -- KIT.glb OUT_PREFIX [--no-shadow] [--skin r,g,b] [--hair r,g,b] [--beard r,g,b] [--hair-only]
+--skin, --hair and --beard take a swatch's tint (sRGB, the palette colour divided by the atlas) and apply it the way the game does.
+--hair-only renders just the hairstyle and beard views (each Hair_* and Beard_* node in turn, plus a face preset)."""
 import bpy, sys, numpy as np
 from mathutils import Vector
 a = sys.argv[sys.argv.index('--') + 1:]; glb, prefix = a[0], a[1]
@@ -20,9 +22,13 @@ def tint(prefix_, rgb):
             mx = m.node_tree.nodes.new('ShaderNodeMix'); mx.data_type = 'RGBA'; mx.blend_type = 'MULTIPLY'; mx.inputs['Factor'].default_value = 1; mx.inputs['B'].default_value = (*rgb, 1)
             m.node_tree.links.new(src, mx.inputs['A']); m.node_tree.links.new(mx.outputs['Result'], b.inputs['Base Color'])
 tint('Brows_', (0.05, 0.035, 0.03)); tint('Eye_Iris', (0.20, 0.10, 0.05))
+lin = lambda t: tuple(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in t)
 if '--skin' in a:                                      # a skin tone the way the game applies it: sRGB tint, multiplied in linear light
-    t = [float(x) for x in a[a.index('--skin') + 1].split(',')]; lin = tuple(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in t)
-    tint('Skin', lin)
+    tint('Skin', lin([float(x) for x in a[a.index('--skin') + 1].split(',')]))
+if '--hair' in a:                                      # a hair colour the same way, on the hairstyles
+    tint('Hair_', lin([float(x) for x in a[a.index('--hair') + 1].split(',')]))
+if '--beard' in a:                                     # and a facial hair colour on the beards
+    tint('Beard_', lin([float(x) for x in a[a.index('--beard') + 1].split(',')]))
 sun_shadow = '--no-shadow' not in a
 sc.render.engine = 'BLENDER_EEVEE'
 sun = bpy.data.objects.new('key', bpy.data.lights.new('key', 'SUN')); sun.data.energy = 3.0; sun.data.angle = 0.3; sun.rotation_euler = (0.9, 0.15, 0.6); sun.data.use_shadow = sun_shadow; sc.collection.objects.link(sun)
@@ -34,6 +40,22 @@ def shot(name, c, d, scale, res=(900, 900)):
     d_ = Vector(d).normalized(); cam.location = Vector(c) + d_ * 5; cam.rotation_euler = (-d_).to_track_quat('-Z', 'Y').to_euler(); cam.data.ortho_scale = scale
     sc.render.resolution_x, sc.render.resolution_y = res; sc.render.filepath = f'{prefix}_{name}.png'; bpy.ops.render.render(write_still=True)
 brows = [n for n in meshes if n.startswith('Brows_')]; keys = meshes['Body_Head'].data.shape_keys.key_blocks
+hair = [n for n in meshes if n.startswith(('Hair_', 'Beard_'))]
+def face(preset):
+    for o in [meshes['Body_Head']] + [meshes[n] for n in brows + hair]:
+        for k in o.data.shape_keys.key_blocks[1:]: k.value = 1.0 if k.name == preset else 0.0
+if '--hair-only' in a:
+    for n in brows: meshes[n].hide_render = n != 'Brows_Natural'
+    for h in hair:
+        for n in hair: meshes[n].hide_render = n != h
+        for preset in (None, 'Rugged'):
+            face(preset); tag = f'{h}_{preset or "Chiseled"}'
+            shot(tag + '_front', (0, 0, 1.69), (0, -1, 0.05), 0.34); shot(tag + '_34', (0, 0, 1.69), (0.8, -1, 0.15), 0.34)
+            if preset: continue
+            shot(tag + '_side', (0, 0, 1.69), (1, 0, 0), 0.34); shot(tag + '_back', (0, 0, 1.69), (0, 1, 0.1), 0.34)
+            shot(tag + '_top', (0, 0, 1.72), (0.2, -0.4, 1), 0.34); shot(tag + '_under', (0, 0.02, 1.66), (0.5, 1, -0.6), 0.26)
+    sys.exit(0)
+for n in hair: meshes[n].hide_render = True
 combos = [('Brows_Natural', None), ('Brows_Bold', 'Broad'), ('Brows_Fine', 'Lean'), ('Brows_Natural', 'Rugged')]
 for b, face in combos:
     for n in brows: meshes[n].hide_render = n != b

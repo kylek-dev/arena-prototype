@@ -2,6 +2,7 @@
 manifest entry.   python build_kit.py [OUT_DIR]   ->  OUT_DIR/meshy-human-male.glb, OUT_DIR/kit.json"""
 import sys, os, json, collections
 import numpy as np
+from scipy.spatial import cKDTree
 from glbwriter import GLB, C_WG, to_gltf, quat, quat_to_mat
 from kitlib import *
 from mh import MH
@@ -111,6 +112,48 @@ for shape in BROWS:
     mat = glb.material('Brows_' + shape, tx(f'brows_{shape.lower()}.png', f'Brows_{shape}_BaseColor'), alpha='BLEND')
     meshes.append(('Brows_' + shape, [glb.primitive(bP, N[all_ids], bUV, bj[all_ids], bw[all_ids], bT, mat, targets=[d[all_ids] for d in FACE_D])]))
     tri_count['Brows_' + shape] = len(bT)
+
+# ---------------------------------------------------------------- hair and beards: generated pieces, rigid to the head
+# Each is cut from a generated bust and reduced to a game mesh by hair_fit.py, hair_cut.py, hair_low.py and
+# hair_tex.py (work/<stem>.npz, tex/<stem>.png, tex/<stem>_n.png). They follow the face presets: each vertex
+# takes the targets of the nearest head vertex. Near the head's skin a vertex also takes that skin's weights, so
+# the nape and the jaw, which partly follow the neck, do not slide out from under the hair when the head turns;
+# from SKIN_NEAR to SKIN_FAR out it blends to rigid on Head. Only the head's skin counts: hair hanging by the
+# neck (a ponytail) stays rigid on Head, or it would bend with the neck into the back.
+HAIR = [('SweptBack', 'Swept back', 'hair_swept'), ('CloseCrop', 'Close crop', 'hair_crop'),   # (node suffix, label, file stem)
+        ('TiedBack', 'Tied back', 'hair_tied')]
+BEARDS = [('Full', 'Full beard', 'beard_full'), ('Handlebar', 'Handlebar', 'beard_goatee')]
+head_v = np.unique(Q[region == RN.index('Head')]); head_tree = cKDTree(V[head_v])
+skin_v = head_v; skin_tree = head_tree
+SKIN_NEAR, SKIN_FAR = 0.008, 0.020
+def follow_skin(P):
+    dist, k = skin_tree.query(P); near = skin_v[k]; t = np.clip((SKIN_FAR - dist) / (SKIN_FAR - SKIN_NEAR), 0, 1)
+    Wd = np.zeros((len(P), len(names))); np.add.at(Wd, (np.arange(len(P))[:, None].repeat(4, 1), bj[near].astype(int)), bw[near])
+    Wd = Wd * t[:, None]; Wd[:, J['Head']] += 1 - t
+    i4 = np.argsort(-Wd, axis=1)[:, :4]; w4 = np.take_along_axis(Wd, i4, 1); w4[w4 < 1e-4] = 0; w4 /= w4.sum(1, keepdims=True); i4[w4 == 0] = 0
+    return i4.astype(np.uint16), w4.astype(np.float32)
+def generated_piece(node, stem, tint_material):
+    d = np.load(KIT + f'work/{stem}.npz'); PV, PF, PUV = d['V'], d['F'], d['UV']                # UVs per corner, rows down
+    fnn = np.cross(PV[PF[:, 1]] - PV[PF[:, 0]], PV[PF[:, 2]] - PV[PF[:, 0]]); Np = np.zeros_like(PV)
+    for k in range(3): np.add.at(Np, PF[:, k], fnn)
+    Np /= np.maximum(np.linalg.norm(Np, axis=1, keepdims=True), 1e-20)                     # smooth across UV seams
+    cv = PF.reshape(-1); cu = PUV.reshape(-1, 2)
+    key = np.concatenate([cv[:, None], np.round(cu * 1e5).astype(np.int64)], 1)
+    _, first, inv = np.unique(key, axis=0, return_index=True, return_inverse=True); sv = cv[first]
+    near = head_v[head_tree.query(PV[sv])[1]]
+    mat = glb.material(tint_material, tx(f'{stem}.png', f'{tint_material}_BaseColor'), tx(f'{stem}_n.png', f'{tint_material}_Normal'))
+    meshes.append((node, [glb.primitive(PV[sv], Np[sv], cu[first], *follow_skin(PV[sv]), inv.reshape(-1, 3), mat, targets=[dd[near] for dd in FACE_D])]))
+    tri_count[node] = len(PF)
+for style, _, stem in HAIR: generated_piece('Hair_' + style, stem, 'Hair_' + style)
+for style, _, stem in BEARDS: generated_piece('Beard_' + style, stem, 'Beard_' + style)
+# stubble: the face's own quads 0.7 mm above the skin, alpha-blended, shaped like the full beard (stubble.py)
+st = np.load(KIT + 'work/stubble.npz'); s_ids = st['ids']; s_loc = -np.ones(len(V), int); s_loc[s_ids] = np.arange(len(s_ids))
+sq = s_loc[st['quads']]; sT = np.concatenate([sq[:, [0, 1, 2]], sq[:, [0, 2, 3]]])
+m_stubble = glb.material('Beard_Stubble', tx('stubble.png', 'Beard_Stubble_BaseColor'), alpha='BLEND')
+meshes.append(('Beard_Stubble', [glb.primitive(V[s_ids] + N[s_ids] * 0.0007, N[s_ids], st['uv'], bj[s_ids], bw[s_ids], sT, m_stubble,
+                                               targets=[dd[s_ids] for dd in FACE_D])]))
+tri_count['Beard_Stubble'] = len(sT)
+BEARDS.append(('Stubble', 'Stubble', None))
 
 # ---------------------------------------------------------------- eyes (rigid to the head): eye white, iris, catchlights
 def tri_mesh(P, faces, facing=np.array([0, -1.0, 0])):
@@ -244,9 +287,9 @@ for an in og['animations']:
 
 print('clips without finger animation, given the Idle hands:', ', '.join(filled) or 'none')
 glb_path = os.path.join(out_dir, KIT_ID + '.glb'); size = glb.write(glb_path)
-visible = sum(v for k, v in tri_count.items() if not k.startswith('Brows_')) + tri_count['Brows_' + BROWS[0]]
+visible = sum(v for k, v in tri_count.items() if not k.startswith(('Brows_', 'Hair_', 'Beard_'))) + tri_count['Brows_' + BROWS[0]]   # bald, one brow set
 manifest = collections.OrderedDict(
-    id=KIT_ID, ancestry='meshy', body='male', path=f'characters/kits/{KIT_ID}.glb', sole=0.0, top=round(float(V[:, 2].max()), 4),
+    id=KIT_ID, ancestry='human', body='male', path=f'characters/kits/{KIT_ID}.glb', sole=0.0, top=round(float(V[:, 2].max()), 4),
     license='LicenseRef-Meshy-Pro-private',
     regions=[n for n, _ in meshes if n.startswith('Body_') or n == 'Trunks'],
     groups=collections.OrderedDict([
@@ -254,10 +297,14 @@ manifest = collections.OrderedDict(
         ('face', [dict(id='chiseled', label='Chiseled', nodes=[], weights=[0.0] * len(FACE_NAMES))] +
                  [dict(id=n.lower(), label=n, nodes=[], weights=[1.0 if j == i else 0.0 for j in range(len(FACE_NAMES))]) for i, n in enumerate(FACE_NAMES)]),
         ('brows', [dict(id='Brows_' + b, label=b, nodes=['Brows_' + b]) for b in BROWS] + [dict(id='Brows_None', label='None', nodes=[])]),
+        # a look that names no option of this kit (such as another kit's hairstyle) falls back to "none"
+        ('hair', [dict(id='none', label='None', nodes=[])] + [dict(id='Hair_' + h, label=lab, nodes=['Hair_' + h]) for h, lab, _ in HAIR]),
+        ('beard', [dict(id='none', label='None', nodes=[])] + [dict(id='Beard_' + b, label=lab, nodes=['Beard_' + b]) for b, lab, _ in BEARDS]),
     ]),
     materials=collections.OrderedDict([('Skin', dict(tint='skin')), ('Skin_Head', dict(tint='skin')), ('Eye_Iris', dict(tint='eyes'))] +
-                                      [('Brows_' + b, dict(tint='hair')) for b in BROWS]),
-    morph=None, morphNodes=['Body_Head'] + ['Brows_' + b for b in BROWS], eyes='brown', sockets=socket_info,
+                                      [('Brows_' + b, dict(tint='hair')) for b in BROWS] + [('Hair_' + h, dict(tint='hair')) for h, _, _ in HAIR] +
+                                      [('Beard_' + b, dict(tint='facialHair')) for b, _, _ in BEARDS]),
+    morph=None, morphNodes=['Body_Head'] + ['Brows_' + b for b in BROWS] + ['Hair_' + h for h, _, _ in HAIR] + ['Beard_' + b for b, _, _ in BEARDS], eyes='brown', sockets=socket_info,
     slots=dict(armor=['head', 'shoulders', 'back', 'chest', 'shirt', 'tabard', 'bracers', 'gloves', 'belt', 'pants', 'boots'], weapons=['mainHand', 'offHand', 'twoHand', 'ranged']),
     triangles=tri_count)
 json.dump(manifest, open(os.path.join(out_dir, 'kit.json'), 'w'), indent=1)

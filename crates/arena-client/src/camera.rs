@@ -227,6 +227,25 @@ pub(super) fn zoom(distance: f32, delta: f32) -> f32 {
     }
 }
 
+/// How fast the shown boom follows the requested one (per second): a wheel notch
+/// glides over about a quarter of a second instead of jumping in one frame.
+const ZOOM_EASE: f32 = 12.0;
+
+/// The boom length to show this frame, easing towards the requested one.
+/// Entering or leaving first person snaps, so the eye never travels through
+/// the head.
+pub(super) fn ease_zoom(shown: f32, requested: f32, dt: f32) -> f32 {
+    if first_person(requested) || first_person(shown) || !shown.is_finite() {
+        return requested;
+    }
+    let next = shown + (requested - shown) * (1.0 - (-ZOOM_EASE * dt.max(0.0)).exp());
+    if (next - requested).abs() < 1e-3 {
+        requested
+    } else {
+        next
+    }
+}
+
 pub(super) fn first_person(distance: f32) -> bool {
     distance < NEAREST_BOOM
 }
@@ -504,6 +523,21 @@ mod tests {
         }
         assert!(hides_player(Vec3::Y, Vec3::Y + Vec3::Z * 0.4));
         assert!(!hides_player(Vec3::Y, Vec3::Y + Vec3::Z * 3.0));
+    }
+
+    #[test]
+    fn zoom_eases_between_booms_and_snaps_into_and_out_of_first_person() {
+        let step = ease_zoom(13.0, 16.0, 1.0 / 60.0);
+        assert!(step > 13.0 && step < 14.0, "{step}");
+        let mut shown = 13.0;
+        for _ in 0..60 {
+            shown = ease_zoom(shown, 16.0, 1.0 / 60.0);
+        }
+        assert_eq!(shown, 16.0);
+        assert_eq!(ease_zoom(13.0, 13.0, 0.0), 13.0);
+        assert_eq!(ease_zoom(4.0, 0.0, 1.0 / 60.0), 0.0);
+        assert_eq!(ease_zoom(0.0, NEAREST_BOOM, 1.0 / 60.0), NEAREST_BOOM);
+        assert_eq!(ease_zoom(f32::NAN, 6.0, 1.0 / 60.0), 6.0);
     }
 
     #[test]

@@ -1,5 +1,11 @@
 # Handoff: hair and facial hair for the finished human male
 
+**Done on 2026-11-25.** Three hairstyles, two beards and stubble are built,
+reviewed and accepted by the user in the browser; the finished human male is
+now the only kit the game ships. See ADR 0053 ("Hair and beards", "Only
+finished kits ship") and `scripts/finished_kit/README.md`. The rest of this
+note is kept as written.
+
 Written 2026-11-24 for the agent that continues this work. It assumes no
 memory of the earlier sessions. Read
 [ADR 0053](../docs/decisions/0053-finished-character-kits.md),

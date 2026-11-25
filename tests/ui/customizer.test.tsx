@@ -44,7 +44,7 @@ it("the start screen offers entering directly, without forcing customization", (
   beforeMatch.set(true);
   both();
   const start = screen.getByRole("complementary", { name: "Ready" });
-  expect(within(start).getByText("Human · Female · Ranger outfit")).toBeTruthy();
+  expect(within(start).getByText("Human · Male · Ranger outfit")).toBeTruthy();
   expect(screen.queryByRole("complementary", { name: "Appearance" })).toBeNull();
   // The character is framed and play waits while the screen is up.
   expect(readPreview()[0]).toBe(1);
@@ -154,7 +154,7 @@ it("shows player-facing names and updates the saved look and engine spec", () =>
 
 it("finished kits choose a face, an eye colour and a separate facial hair colour", () => {
   characterKits.set([finishedKit()]);
-  appearance.set({ ...defaultAppearance, ancestry: "meshy", body: "male" });
+  appearance.set({ ...defaultAppearance, ancestry: "human", body: "male" });
   customizerVisible.set(true);
   render(<Customizer />);
   fireEvent.click(screen.getByRole("tab", { name: "Head" }));
@@ -179,7 +179,23 @@ it("finished kits choose a face, an eye colour and a separate facial hair colour
   expect(spec.morphs).toEqual([
     { node: "Body_Head", weights: [1, 0] },
     { node: "Brows_Natural", weights: [1, 0] },
+    { node: "Hair_SweptBack", weights: [1, 0] },
   ]);
   // Eye colour is a tint on these kits, not a texture list.
   expect(screen.queryByRole("radiogroup", { name: "Eyes" })).toBeNull();
+});
+
+it("dragging the preview turns the character without selecting text", () => {
+  beforeMatch.set(true);
+  both();
+  const stage = screen.getByText(/Drag to turn/).parentElement as HTMLElement;
+  // fireEvent returns false when the handler prevented the default (text selection, native drag).
+  expect(fireEvent.pointerDown(stage, { clientX: 100, pointerId: 1 })).toBe(false);
+  fireEvent.pointerMove(stage, { clientX: 150, pointerId: 1 });
+  expect(preview.get().yaw).toBeCloseTo(0.5);
+  fireEvent.pointerUp(stage, { pointerId: 1 });
+  fireEvent.pointerMove(stage, { clientX: 300, pointerId: 1 });
+  expect(preview.get().yaw).toBeCloseTo(0.5);
+  // The view buttons keep their normal clicks.
+  expect(fireEvent.pointerDown(screen.getByRole("button", { name: "Face" }))).toBe(true);
 });

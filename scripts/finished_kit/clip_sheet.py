@@ -1,8 +1,12 @@
 """Deformation review: import the kit GLB (what the game loads) and render frames of every clip.
-blender -b --factory-startup -P clip_sheet.py -- KIT.glb OUT_DIR [frames_per_clip] [view: front|side|34|back]"""
+blender -b --factory-startup -P clip_sheet.py -- KIT.glb OUT_DIR [frames_per_clip] [view: front|side|34|back] [--show NODE,NODE]
+Hairstyles and beards are hidden except those named with --show."""
 import bpy, sys, os
 from mathutils import Vector
-a = sys.argv[sys.argv.index('--') + 1:]; glb, out = a[0], a[1]; nf = int(a[2]) if len(a) > 2 else 5; views = a[3:] or ['34']
+a = sys.argv[sys.argv.index('--') + 1:]
+show = a[a.index('--show') + 1].split(',') if '--show' in a else []
+if '--show' in a: del a[a.index('--show'):a.index('--show') + 2]
+glb, out = a[0], a[1]; nf = int(a[2]) if len(a) > 2 else 5; views = a[3:] or ['34']
 os.makedirs(out, exist_ok=True)
 bpy.ops.wm.read_factory_settings(use_empty=True)
 bpy.ops.import_scene.gltf(filepath=glb)
@@ -10,6 +14,7 @@ sc = bpy.context.scene; arm = next(o for o in sc.objects if o.type == 'ARMATURE'
 arm.hide_render = True
 for o in sc.objects:                                   # this flat preview cannot show the alpha-blended brow layers
     if o.type == 'MESH' and o.name.startswith(('Brows_', 'Icosphere')): o.hide_render = True
+    if o.type == 'MESH' and o.name.startswith(('Hair_', 'Beard_')): o.hide_render = o.name not in show
 print('imported: bones', len(arm.data.bones), 'meshes', [o.name for o in sc.objects if o.type == 'MESH'], 'actions', [x.name for x in bpy.data.actions])
 sc.render.engine = 'BLENDER_WORKBENCH'; sh = sc.display.shading; sh.light = 'STUDIO'; sh.color_type = 'TEXTURE'; sh.show_object_outline = False; sh.show_shadows = False; sh.show_specular_highlight = False
 sc.view_settings.view_transform = 'Standard'; sc.world = bpy.data.worlds.new('w'); sc.world.color = (0.30, 0.31, 0.33)

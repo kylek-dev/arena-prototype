@@ -119,7 +119,10 @@ struct Net {
 struct Orbit {
     yaw: f32,
     pitch: f32,
+    /// Requested boom length (zoom input changes it in steps).
     distance: f32,
+    /// Boom length actually shown, easing towards `distance`.
+    shown: f32,
     eye: Option<Vec3>,
 }
 impl Default for Orbit {
@@ -128,6 +131,7 @@ impl Default for Orbit {
             yaw: 0.0,
             pitch: 0.65,
             distance: 13.0,
+            shown: 13.0,
             eye: None,
         }
     }
@@ -1276,23 +1280,28 @@ fn present(
             } else {
                 0
             };
-            let focus = positions[follow_actor] + Vec3::Y * camera::focus_height(orbit.distance);
             // Behind the loading overlay the camera sweeps around the player so
             // every direction is drawn (and its GPU work done) before play. The
             // eye snaps there and back rather than easing into the first view.
             let sweep = startup.sweep();
+            orbit.shown = if sweep.is_some() {
+                orbit.distance
+            } else {
+                camera::ease_zoom(orbit.shown, orbit.distance, time.delta_secs())
+            };
+            let focus = positions[follow_actor] + Vec3::Y * camera::focus_height(orbit.shown);
             let direction = Quat::from_rotation_y(orbit.yaw + sweep.unwrap_or(0.0))
                 * Vec3::new(0.0, orbit.pitch.sin(), orbit.pitch.cos());
             // First person sits at the eyes and looks along the boom; there is no
             // boom to collide, and a near-zero offset would give a noisy view.
-            let first_person = sweep.is_none() && camera::first_person(orbit.distance);
+            let first_person = sweep.is_none() && camera::first_person(orbit.shown);
             let eye = if first_person {
                 focus
             } else {
                 camera::resolve_eye(
                     focus,
                     direction,
-                    orbit.distance,
+                    orbit.shown,
                     orbit.eye.filter(|_| sweep.is_none()),
                     time.delta_secs(),
                     &cached_obstacles,

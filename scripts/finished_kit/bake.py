@@ -22,19 +22,6 @@ mw[mirror[fit['lid_strip'].ravel()]] = 1
 T = np.concatenate([Q[:, [0, 1, 2]], Q[:, [0, 2, 3]]]); TUV = np.concatenate([UVq[:, [0, 1, 2]], UVq[:, [0, 2, 3]]])
 tuv = TUV.copy(); tuv[..., 1] = 1 - tuv[..., 1]                                         # image rows run down
 
-def raster(tuv, R):
-    tid = np.full((R, R), -1, np.int32); bary = np.zeros((R, R, 3), np.float32); P2 = tuv * R
-    for t in range(len(P2)):
-        x, y = P2[t, :, 0], P2[t, :, 1]
-        x0, x1 = max(int(np.floor(x.min())), 0), min(int(np.ceil(x.max())), R - 1); y0, y1 = max(int(np.floor(y.min())), 0), min(int(np.ceil(y.max())), R - 1)
-        if x0 > x1 or y0 > y1: continue
-        d = (y[1] - y[2]) * (x[0] - x[2]) + (x[2] - x[1]) * (y[0] - y[2])
-        if abs(d) < 1e-12: continue
-        gx, gy = np.meshgrid(np.arange(x0, x1 + 1) + 0.5, np.arange(y0, y1 + 1) + 0.5)
-        l0 = ((y[1] - y[2]) * (gx - x[2]) + (x[2] - x[1]) * (gy - y[2])) / d; l1 = ((y[2] - y[0]) * (gx - x[2]) + (x[0] - x[2]) * (gy - y[2])) / d; l2 = 1 - l0 - l1
-        ins = (l0 >= -1e-4) & (l1 >= -1e-4) & (l2 >= -1e-4)
-        tid[y0:y1 + 1, x0:x1 + 1][ins] = t; bary[y0:y1 + 1, x0:x1 + 1][ins] = np.stack([l0, l1, l2], -1)[ins]
-    return tid, bary
 tid, bary = raster(tuv, R); m = tid >= 0
 print('texels covered: %.1f%%' % (m.mean() * 100))
 P = np.einsum('nk,nkj->nj', bary[m], V[T[tid[m]]])

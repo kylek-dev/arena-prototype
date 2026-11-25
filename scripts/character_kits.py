@@ -31,7 +31,8 @@ OUTFIT_TEXTURES = ROOT / 'outfits/Textures'
 RACES = ROOT / 'races/Exports/GLB (Godot-Unreal)'
 RACE_TEXTURES = ROOT / 'races/Textures'
 DIRECTORY = 'characters/kits'
-# character.json model id: the player is assembled from a kit at runtime.
+# character.json model id: the player is assembled from a kit at runtime. The name is historical: it now
+# means any customizable kits (arena-client's KITS_MODEL).
 IDENTIFIER = 'quaternius-kits'
 # One scale for every kit, so bodies keep their authored relative heights.
 # It matches the previous dressed-female normalization (1.9 m boot-to-buns).
@@ -157,6 +158,9 @@ def race(name, body):
 KITS = (human('female'), human('male'),
         race('elf', 'female'), race('elf', 'male'),
         race('orc', 'female'), race('orc', 'male'))
+# The kits the game ships. Since 2026-11-25 only finished kits (ADR 0053, prebuilt under assets/) are offered;
+# the Quaternius kits above stay buildable: pass kits=KITS to prepare().
+SHIPPED = ()
 
 # Eye colours: recoloured from the CC0 brown iris, plus the races' own eyes.
 IRIS = BASE / 'T_Eye_Brown.png'
@@ -618,7 +622,7 @@ def prebuilt(out, source=PREBUILT):
     return entries
 
 
-def prepare(directory, texture_processor=kit_png, iris_processor=iris_png, kits=KITS,
+def prepare(directory, texture_processor=kit_png, iris_processor=iris_png, kits=SHIPPED,
             library_path=q.LIBRARY, strafe_path=q.STRAFE_LIBRARY, prebuilt_path=PREBUILT):
     """Write every installed kit and its variant textures; return the manifest."""
     out = directory / DIRECTORY
@@ -626,6 +630,8 @@ def prepare(directory, texture_processor=kit_png, iris_processor=iris_png, kits=
     textures.mkdir(parents=True, exist_ok=True)
     for stale in list(out.glob('*.glb')) + list(textures.glob('*.png')):
         stale.unlink()
+    if not any(available(k) for k in kits):                 # finished kits only: no Quaternius sources needed
+        return prebuilt(out, prebuilt_path)
     cache = {}
 
     def processed(data, kind):

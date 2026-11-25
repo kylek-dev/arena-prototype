@@ -110,15 +110,16 @@ export const hairColors: Swatch[] = [
 ];
 
 // Eye colours for kits whose iris is tinted; the ids match the eye texture
-// variants of the other kits, so one saved choice works on every kit.
+// variants of the other kits, so one saved choice works on every kit. Dark,
+// dull steps of each ramp: brighter swatches made the eyes glow in game.
 export const eyeColors: Swatch[] = [
-  iris("brown", "Brown", "hair-brown"),
-  iris("hazel", "Hazel", "sand-4"),
-  iris("amber", "Amber", "gold-3"),
-  iris("green", "Green", "leaf-4"),
-  iris("blue", "Blue", "sky-4"),
-  iris("grey", "Grey", "stone-5"),
-  iris("violet", "Violet", "arcane-4"),
+  iris("brown", "Brown", "hair-dark-brown"),
+  iris("hazel", "Hazel", "sand-3"),
+  iris("amber", "Amber", "gold-2"),
+  iris("green", "Green", "leaf-2"),
+  iris("blue", "Blue", "stone-1"),
+  iris("grey", "Grey", "stone-3"),
+  iris("violet", "Violet", "arcane-2"),
 ];
 
 // Equipment slots a kit may offer. "torso", "arms", "legs" and "feet" are the
@@ -181,14 +182,15 @@ export interface Appearance {
   build: number;
 }
 
-// Matches the previous default player: Ranger outfit without the hood, buns.
+// The finished human male (ADR 0053) with its swept-back hair. The outfit ids
+// are the Quaternius kits'; a kit without them shows none.
 export const defaultAppearance: Appearance = {
   version: 1,
-  body: "female",
+  body: "male",
   ancestry: "human",
   groups: {
-    hair: "Hair_Buns",
-    brows: "Eyebrows_Female",
+    hair: "Hair_SweptBack",
+    brows: "Brows_Natural",
     beard: "none",
     horns: "none",
     head: "none",
