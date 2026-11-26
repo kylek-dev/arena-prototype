@@ -111,6 +111,9 @@ export type Party = {
   code: string | null;
   members: number;
   leader: boolean;
+  /** The other members' handles, leader first (`null` when unnamed); empty
+   * from older doors. Shown as teammates. */
+  mates: (string | null)[];
 };
 
 /** A friend's invite: accepting joins their party or custom lobby by code. */
@@ -188,9 +191,16 @@ export function parseQueueMessage(text: unknown): QueueMessage | null {
       if ((v.code !== null && code === null) || !count(v.members)) return null;
       if (v.members < 1 || v.members > MAX_PARTY || typeof v.leader !== "boolean") return null;
       if (v.queue !== null && !isQueueMode(v.queue)) return null;
+      const mates = v.mates ?? [];
+      if (
+        !Array.isArray(mates) ||
+        mates.length >= MAX_PARTY ||
+        !mates.every((mate) => mate === null || isHandle(mate))
+      )
+        return null;
       return {
         type: "party",
-        party: { code, members: v.members, leader: v.leader },
+        party: { code, members: v.members, leader: v.leader, mates: mates as (string | null)[] },
         queue: v.queue as QueueMode | null,
       };
     }

@@ -186,7 +186,7 @@ it("forms and joins parties, and tells the player what the door refused", () => 
   fake.open();
   expect(fake.sent().at(-1)).toEqual({ type: "create_party" });
   fake.say({ type: "party", code: "K7P2QX", members: 1, leader: true, queue: null });
-  expect(queue.state.get().party).toEqual({ code: "K7P2QX", members: 1, leader: true });
+  expect(queue.state.get().party).toEqual({ code: "K7P2QX", members: 1, leader: true, mates: [] });
   expect(queue.joinParty(" m9q3rt ")).toBe(true);
   expect(fake.sent().at(-1)).toEqual({ type: "join_party", code: "M9Q3RT" });
   expect(fake.sockets).toHaveLength(1);

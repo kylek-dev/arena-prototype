@@ -513,18 +513,27 @@ mod queue {
         friend
             .say(&format!(r#"{{"type":"join_party","code":"{code}"}}"#))
             .await;
-        assert!(matches!(
-            friend.party().await,
-            QueueMessage::Party {
-                members: 2,
-                leader: false,
-                ..
-            }
-        ));
-        assert!(matches!(
-            leader.party().await,
-            QueueMessage::Party { members: 2, .. }
-        ));
+        // Each member is told the others' handles (guests' temporary ones
+        // here), leader first, so the page can show them as teammates.
+        let QueueMessage::Party {
+            members: 2,
+            leader: false,
+            mates,
+            ..
+        } = friend.party().await
+        else {
+            panic!("expected the friend's party view");
+        };
+        assert_eq!(mates.len(), 1);
+        assert!(mates[0].as_deref().is_some_and(|h| h.starts_with("Guest#")));
+        let QueueMessage::Party {
+            members: 2, mates, ..
+        } = leader.party().await
+        else {
+            panic!("expected the leader's party view");
+        };
+        assert_eq!(mates.len(), 1);
+        assert!(mates[0].as_deref().is_some_and(|h| h.starts_with("Guest#")));
         // Only the leader queues the party; a solo queue cannot take it.
         friend.queue("2v2").await;
         assert_eq!(

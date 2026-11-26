@@ -14,6 +14,7 @@ import { NO_FRIENDS, type Friends as FriendsService } from "../../runtime/friend
 import type { Queue } from "../../runtime/matchmaking";
 import { accountService, friendsService } from "../../state/account";
 import { matchQueue } from "../../state/network";
+import { requestChat } from "../../state/chat";
 import { createStore, useStore } from "../../state/store";
 import "./friends.css";
 
@@ -240,10 +241,8 @@ function friendActions(
       ? [
           {
             label: "Whisper",
-            run: () => {
-              queue.whisperTo(friend.handle);
-              queue.showChat("whisper");
-            },
+            // Starts a whisper in the chat field: `/w Name#0000 `.
+            run: () => requestChat(`/w ${friend.handle} `),
           },
         ]
       : []),

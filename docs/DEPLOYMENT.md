@@ -14,8 +14,9 @@ This setup is **proposed**. It ran locally behind a self-signed certificate
 | `arena-server` | Hosts matches over WebSockets | `wss://HOST/play` |
 
 The match server and door share `ARENA_TICKET_KEY`. Only Caddy is published.
-The match server's `/metrics`, `/readyz` and `/healthz` stay on the private
-network.
+The match server's `/metrics`, `/readyz`, `/healthz` and `/matches/{id}`
+(which the door asks, through `arena-door --match-status http://server:8080`,
+whether a match has ended) stay on the private network.
 
 ## Requirements
 
@@ -76,6 +77,7 @@ Changing the key invalidates every link already handed out.
 | Allowed page origins (`/play`) | required without `--dev` | `arena-server --allow-origin` |
 | Allowed page origins (`/api/matches`) | the `--page` origin | `arena-door --allow-origin` |
 | Join link lifetime | 2 hours | `arena-door --ticket-minutes` |
+| How soon players leave the in-match state | about 10 s after the match ends (asked every 5 s); 21 minutes without `--match-status` | `arena-door --match-status` |
 | Trusted proxy (for client addresses) | none | `--trusted-proxy CIDR` on both |
 
 `--trusted-proxy` must name only the proxy. Every client can write
