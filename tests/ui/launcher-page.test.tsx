@@ -76,21 +76,25 @@ afterEach(() => {
 const page = () => screen.getByRole("region", { name: "Launcher" });
 const account = () => within(screen.getByRole("group", { name: "Account" }));
 
-it("covers the arena until Enter, which starts a practice round", () => {
+it("covers the arena until Enter, which starts a practice round and asks for the hub", () => {
   const reset = vi.spyOn(commands, "dispatch").mockImplementation(() => {});
   engine.set(snapshot());
   render(<App />);
   expect(page()).toBeTruthy();
   // Enter is one key away.
-  expect(document.activeElement?.textContent).toBe("Enter the arena");
+  expect(document.activeElement?.textContent).toBe("Enter the game");
   // Nothing of the game shows meanwhile, and play waits.
   expect(screen.queryByRole("navigation", { name: "Windows" })).toBeNull();
   expect(blocksGameplay()).toBe(true);
   expect(screen.getByRole("link", { name: "Privacy notice" }).getAttribute("href")).toBe(
     "privacy.html",
   );
-  fireEvent.click(screen.getByRole("button", { name: "Enter the arena" }));
+  fireEvent.click(screen.getByRole("button", { name: "Enter the game" }));
   expect(beforeMatch.get()).toBe(false);
+  // Into the hub (ADR 0056), with the saved look.
+  expect(fake.queue.hub.get().status).toBe("joining");
+  fake.open();
+  expect(fake.sent().at(-1)?.type).toBe("hub_join");
   expect(blocksGameplay()).toBe(false);
   expect(reset).toHaveBeenCalledWith("reset");
   expect(screen.queryByRole("region", { name: "Launcher" })).toBeNull();

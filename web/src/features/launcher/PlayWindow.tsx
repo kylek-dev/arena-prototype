@@ -18,9 +18,12 @@ import { createStore, useStore } from "../../state/store";
 import { playTab, playWindowVisible, type PlayTab } from "../../state/windows";
 import { DockWindow } from "../../ui/DockWindow";
 import { Hint } from "../../ui/Tooltip";
+import { OUT_OF_HUB } from "../../domain/hub";
+import { enterHub, leaveHub } from "../../runtime/hub";
 
 const NO_LINK = createStore<LinkState>({ phase: "idle", attempt: 0, ended: null, status: null });
 const NO_QUEUE = createStore(IDLE_QUEUE);
+const NO_HUB = createStore(OUT_OF_HUB);
 
 const TABS: readonly { id: PlayTab; label: string; hint: string }[] = [
   { id: "practice", label: "Practice", hint: "Practice against stationary opponents." },
@@ -40,8 +43,35 @@ const REFUSALS = new Set([
 
 function Practice() {
   const size = useStore(engine, (s) => s?.teamSize ?? 1);
+  const queue = useStore(matchQueue, (q) => q);
+  const hub = useStore(queue?.hub ?? NO_HUB, (h) => h.status);
+  if (hub !== "out")
+    return (
+      <div className="play-tab stack">
+        <p className="play-status">
+          {hub === "in" ? "You are in the hub." : "Entering the hub."} Practice takes you to the
+          arena against stationary opponents.
+        </p>
+        <Hint text="Leave the hub and start a practice round in the arena.">
+          <Button
+            variant="soft"
+            onClick={() => {
+              leaveHub();
+              dispatch("reset");
+            }}
+          >
+            Practice in the arena
+          </Button>
+        </Hint>
+      </div>
+    );
   return (
     <div className="play-tab stack">
+      {queue && (
+        <Hint text="Return to the hub, where the other players are.">
+          <Button onClick={() => enterHub()}>Return to the hub</Button>
+        </Hint>
+      )}
       <label className="play-field">
         <span>Practice mode</span>
         <select

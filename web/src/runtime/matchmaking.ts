@@ -40,6 +40,18 @@ import {
   type ChatTab,
 } from "../domain/chat";
 import { createStore } from "../state/store";
+import type { Appearance } from "../domain/appearance";
+import {
+  HUB_MOVES_PER_SECOND,
+  HUB_REFUSALS,
+  OUT_OF_HUB,
+  applyHubMessage,
+  clampIntent,
+  hubRequests,
+  parseHubMessage,
+  wireAppearance,
+  type HubState,
+} from "../domain/hub";
 
 type TextSocket = {
   readyState: number;
@@ -90,7 +102,7 @@ export function createQueue(deps: QueueDeps) {
   const chat = createStore<ChatState>(EMPTY_CHAT);
   const updateChat = (patch: Partial<ChatState>) => chat.set({ ...chat.get(), ...patch });
   /** What the last request was, to tell whose refusal arrives next. */
-  let lastAsked: "chat" | "other" = "other";
+  let lastAsked: "chat" | "hub" | "other" = "other";
   /** An ignore waiting on the door (it answers only refusals). */
   let ignoring: string | null = null;
   let pendingIgnore: string | null = null;
@@ -111,6 +123,38 @@ export function createQueue(deps: QueueDeps) {
    * of it yet: its end is not news to the player (no "lost" bar). */
   let background = false;
   const update = (patch: Partial<QueueState>) => state.set({ ...state.get(), ...patch });
+  // The hub (ADR 0056), in a store of its own: it changes 10 times a second.
+  const hub = createStore<HubState>(OUT_OF_HUB);
+  let moveSeq = 0;
+  let lastMoveAt = Number.NEGATIVE_INFINITY;
+  let sentMove = "";
+  let pendingMove: { x: number; z: number; facing: number } | null = null;
+  let moveTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Sends the newest intent when the page's move budget allows, or later.
+   * Moves go straight onto the open socket: they are never refused in a
+   * way the page answers, so they leave the refusal bookkeeping (whose
+   * request a refusal answers) alone. */
+  const flushMove = () => {
+    if (!pendingMove || hub.get().status !== "in") return;
+    const now = deps.now();
+    const wait = 1000 / HUB_MOVES_PER_SECOND - (now - lastMoveAt);
+    if (wait > 0) {
+      moveTimer ??= setTimeout(() => {
+        moveTimer = null;
+        flushMove();
+      }, wait);
+      return;
+    }
+    const { x, z, facing } = pendingMove;
+    pendingMove = null;
+    const key = `${x},${z},${facing}`;
+    if (key === sentMove) return;
+    if (socket?.readyState !== OPEN || state.get().connection !== "online") return;
+    sentMove = key;
+    lastMoveAt = now;
+    moveSeq += 1;
+    socket.send(hubRequests.move(moveSeq, x, z, facing));
+  };
   const drop = () => {
     if (!socket) return;
     socket.onopen = socket.onclose = socket.onerror = socket.onmessage = null;
@@ -124,9 +168,11 @@ export function createQueue(deps: QueueDeps) {
     // whoever reopens it (`runtime/social.ts`).
     state.set({ ...IDLE_QUEUE, connection: background ? "offline" : "ended", ended: reason });
     background = false;
+    // The door forgets a closed connection's hub place.
+    if (hub.get().status !== "out") hub.set({ ...OUT_OF_HUB, notice: "lost" });
   };
   /** Sends `request`, connecting first when needed. */
-  const request = (message: string | null, kind: "chat" | "other" = "other") => {
+  const request = (message: string | null, kind: "chat" | "hub" | "other" = "other") => {
     if (message) {
       lastAsked = kind;
       // The door answers an ignore before any later request of the same
@@ -173,6 +219,16 @@ export function createQueue(deps: QueueDeps) {
     };
   };
   const receive = (data: unknown) => {
+    // Hub messages (the door writes the type first) skip the queue's parser.
+    if (typeof data === "string" && data.startsWith('{"type":"hub')) {
+      const hubMessage = parseHubMessage(data);
+      if (hubMessage) {
+        hub.set(applyHubMessage(hub.get(), hubMessage));
+        if (hubMessage.type === "hub") sentMove = "";
+        flushMove();
+        return;
+      }
+    }
     const message = parseQueueMessage(data);
     if (!message) return;
     const current = state.get();
@@ -222,6 +278,18 @@ export function createQueue(deps: QueueDeps) {
         update({ phase: "idle", since: null, readyCheck: null, notice: message.reason });
         break;
       case "refused":
+        // Answers to a hub join; a stray `not_in_hub` (a move just after
+        // leaving) is no news.
+        // Answers to the hub join: its own codes, and any refusal while it
+        // was the last request (a missing name, the rate limit).
+        if (
+          hub.get().status === "joining" &&
+          (HUB_REFUSALS.has(message.code) || lastAsked === "hub")
+        ) {
+          hub.set({ ...OUT_OF_HUB, notice: message.code });
+          break;
+        }
+        if (message.code === "not_in_hub" && lastAsked !== "chat") break;
         if (IGNORE_REFUSALS.has(message.code) && replaying > 0 && !ignoring) {
           replaying -= 1;
           break;
@@ -286,6 +354,35 @@ export function createQueue(deps: QueueDeps) {
   const api = {
     state,
     guest,
+    /** The hub as the door last described it (ADR 0056). */
+    hub,
+    /** Enters the hub with this look, beside a friend or party member when
+     * named; `false` when the look cannot be sent. */
+    joinHub(look: Appearance, friend?: string) {
+      const wire = wireAppearance(look);
+      if (!wire) return false;
+      if (hub.get().status !== "out") return true;
+      hub.set({ ...OUT_OF_HUB, status: "joining" });
+      // Entering the game asks for the hub on the way: a door that cannot
+      // be reached (local practice without one) is no news.
+      const quiet = !socket;
+      request(hubRequests.join(wire, friend), "hub");
+      if (quiet) background = true;
+      return true;
+    },
+    leaveHub() {
+      if (hub.get().status === "out") return;
+      hub.set(OUT_OF_HUB);
+      pendingMove = null;
+      sentMove = "";
+      request(hubRequests.leave());
+    },
+    /** The current movement intent: sent when it changes, at most 10 a
+     * second, the newest one winning. */
+    moveHub(x: number, z: number, facing: number) {
+      pendingMove = clampIntent(x, z, facing);
+      flushMove();
+    },
     /** The clock search times are measured on. */
     now: deps.now,
     /** Searches for `mode` (party leader, or on one's own). */
@@ -451,6 +548,8 @@ export function createQueue(deps: QueueDeps) {
       else update({ notice: null });
     },
     dispose() {
+      if (moveTimer) clearTimeout(moveTimer);
+      moveTimer = null;
       drop();
     },
   };

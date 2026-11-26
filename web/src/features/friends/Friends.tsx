@@ -28,10 +28,10 @@ export const PRESENCE_POLL_MS = 30_000;
 /** The example a player types against. */
 const HANDLE_EXAMPLE = "Name#0000";
 
-type Action = { label: string; run: () => void; danger?: boolean; confirm?: string };
+export type Action = { label: string; run: () => void; danger?: boolean; confirm?: string };
 
 /** The ⋮ menu of a row: its actions, asking once more before a dangerous one. */
-function RowMenu({ handle, actions }: { handle: string; actions: Action[] }) {
+export function RowMenu({ handle, actions }: { handle: string; actions: Action[] }) {
   const [open, setOpen] = useState(false);
   const [asking, setAsking] = useState<Action | null>(null);
   /** Where the menu shows: fixed, under the button, so the scrolling window
@@ -145,7 +145,7 @@ function RowMenu({ handle, actions }: { handle: string; actions: Action[] }) {
   );
 }
 
-function Row({
+export function Row({
   handle,
   status,
   presence,

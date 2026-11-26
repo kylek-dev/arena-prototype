@@ -1,0 +1,18 @@
+/* The H window: the hub's players around you (ADR 0056). */
+.hub {
+  display: grid;
+  gap: 8px;
+}
+.hub-status,
+.hub-note {
+  margin: 0;
+  font-size: 13px;
+}
+.hub-note {
+  color: var(--gray-11);
+}
+.hub-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

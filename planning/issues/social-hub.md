@@ -23,3 +23,4 @@ Open questions for the user:
 
 Status (2026-11-26): [ADR 0056](../../docs/decisions/0056-social-hub.md) proposed, answering the open questions provisionally (40 players per instance, no combat, a graybox plaza). Slices: `auto/hub-rules` (ADR and the pure `arena_sim::hub` rules), then the door's hub service over the queue WebSocket with a bot load test, then the browser (entering from the launcher page, returning after matches, hub chat, the player menu) and the rendered plaza.
 
+Progress (2026-11-26): `auto/hub-rules` (ADR, rules), `auto/hub-door` (door service, tests, load test) and `auto/hub-web` (the page: entering from the launcher page, returning after matches, the H window with the player menu, hub chat, practice switch). The rendered plaza with everyone's look and nameplate is the last slice.

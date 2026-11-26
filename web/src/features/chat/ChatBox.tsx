@@ -31,10 +31,12 @@ import { LOADING_ACCOUNT } from "../../runtime/account";
 import { pageCommandContext, runSlash } from "../../runtime/chat-commands";
 import { parseSlash, unescapeSlash } from "../../domain/commands";
 import { AdminTag } from "../../ui/AdminTag";
+import { OUT_OF_HUB } from "../../domain/hub";
 import { Placed } from "../../ui/Placed";
 import "./chat.css";
 
 const NO_ACCOUNT = createStore(LOADING_ACCOUNT);
+const NO_HUB = createStore(OUT_OF_HUB);
 const NO_FRIENDS_LIST = createStore(NO_FRIENDS);
 /** A resize in progress: the size, and where the top-left corner stays. */
 type ChatDraft = { size: ChatSize; left: number; top: number; scale: number };
@@ -252,7 +254,9 @@ function Box({
   const account = useStore(accountService, (a) => a);
   const me = useStore(account?.state ?? NO_ACCOUNT, (s) => s.me?.handle ?? null);
   const friends = useStore(friendsService, (f) => f);
-  const tabs = chatTabs(spectating, chat.conversations);
+  // Stand-in queues (tests, older callers) may have no hub.
+  const inHub = useStore(queue.hub ?? NO_HUB, (h) => h.status === "in");
+  const tabs = chatTabs(spectating, chat.conversations, inHub);
   const active: ChatTab = tabs.includes(chat.active) ? chat.active : "all";
   const [draft, setDraft] = useState("");
   const [menu, setMenu] = useState<number | null>(null);
@@ -314,7 +318,7 @@ function Box({
   const whisperingTo = typed?.to ?? (partner && !parseSlash(draft) ? partner : null);
   const body = typed ? typed.text : draft;
   const { text, tooLong } = chatText(body);
-  const channel = defaultChannel({ seated, spectating });
+  const channel = defaultChannel({ seated, spectating, inHub });
   /** The channel plain text goes to: All's default, or the tab's own. */
   const target =
     active === "all"

@@ -1,0 +1,246 @@
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, beforeEach, expect, it } from "vitest";
+import { HubWindow } from "../../web/src/features/hub/HubWindow";
+import { PlayWindow } from "../../web/src/features/launcher/PlayWindow";
+import { createAccount } from "../../web/src/runtime/account";
+import { createFriends } from "../../web/src/runtime/friends";
+import { returnToHub } from "../../web/src/runtime/hub";
+import { accountService, friendsService } from "../../web/src/state/account";
+import { beforeMatch } from "../../web/src/state/appearance";
+import { matchQueue } from "../../web/src/state/network";
+import { playTab } from "../../web/src/state/windows";
+import { chatTabs, defaultChannel } from "../../web/src/domain/chat";
+import { TooltipProvider } from "../../web/src/ui/Tooltip";
+import { fakeQueue } from "./fake-queue";
+
+const LOOK = {
+  ancestry: "human",
+  body: "male",
+  skin_tone: "s1",
+  hair_color: "h1",
+  facial_hair_color: "h1",
+  eyes: "e1",
+  build: 0,
+  groups: [],
+  variants: [],
+};
+const ROOK = { account: "00112233445566ff", admin: false, login: true, handle: "Rook#0042" };
+
+let now = 1000;
+let fake: ReturnType<typeof fakeQueue>;
+beforeEach(() => {
+  now = 1000;
+  fake = fakeQueue(() => now);
+  matchQueue.set(fake.queue);
+});
+afterEach(() => {
+  cleanup();
+  matchQueue.set(null);
+  accountService.set(null);
+  friendsService.set(null);
+  beforeMatch.set(false);
+});
+
+/** Joins the hub with two others in view: a friend and a stranger. */
+function inHub() {
+  act(() => {
+    fake.queue.joinHub({
+      version: 1,
+      body: "male",
+      ancestry: "human",
+      groups: {},
+      skinTone: "s1",
+      hairColor: "h1",
+      facialHairColor: "h1",
+      eyes: "e1",
+      variants: {},
+      build: 0,
+    });
+  });
+  fake.open();
+  fake.say({ type: "hub", instance: 2, you: 1, x: 0, z: 24000 });
+  fake.say({
+    type: "hub_state",
+    tick: 1,
+    ack: 0,
+    x: 0,
+    z: 24000,
+    players: [
+      [2, 0, 30000, 0],
+      [3, 3000, 24000, 0],
+    ],
+    enter: [
+      { id: 2, handle: "Ash#1000", admin: false, appearance: LOOK },
+      { id: 3, handle: "Zed#0001", admin: true, appearance: LOOK },
+    ],
+  });
+}
+
+async function logIn() {
+  const fetch = async (url: string) => ({
+    ok: true,
+    status: 200,
+    json: async () =>
+      url === "/api/auth/me"
+        ? ROOK
+        : {
+            friends: [{ handle: "Ash#1000", relation: "friend", presence: "online" }],
+            blocked: [],
+          },
+  });
+  const account = createAccount({ fetch, navigate: () => {}, pageProtocol: "https:" });
+  await account.refresh();
+  accountService.set(account);
+  const friends = createFriends({ fetch, now: () => 0, later: () => () => {} });
+  friendsService.set(friends);
+  await friends.refresh();
+}
+
+const menuOf = (handle: string) => {
+  fireEvent.click(screen.getByRole("button", { name: `Actions for ${handle}` }));
+  return within(screen.getByRole("menu", { name: `Actions for ${handle}` }));
+};
+
+it("joins with the saved look, sends intents at most ten a second, and leaves", () => {
+  inHub();
+  const sent = fake.sent();
+  expect(sent[1]).toMatchObject({ type: "hub_join", appearance: { body: "male", build: 0 } });
+  expect(fake.queue.hub.get()).toMatchObject({ status: "in", instance: 2, you: 1 });
+  fake.queue.moveHub(1000, 0, 16384);
+  // Within the same 100 ms the newest intent waits, then goes out once.
+  fake.queue.moveHub(0, 1000, 0);
+  fake.queue.moveHub(0, -1000, 0);
+  const moves = () => fake.sent().filter((m) => m.type === "hub_move");
+  expect(moves()).toEqual([{ type: "hub_move", seq: 1, x: 1000, z: 0, facing: 16384 }]);
+  // Moves never take over the refusal bookkeeping: a chat refusal arriving
+  // after a move is still the chat box's.
+  fake.queue.say("hub", "hello");
+  fake.say({ type: "refused", code: "not_in_hub" });
+  expect(fake.queue.chat.get().error).toBe("not_in_hub");
+  now += 100;
+  fake.say({ type: "hub_state", tick: 2, ack: 1, x: 720, z: 24000, players: [] });
+  expect(moves().at(-1)).toEqual({ type: "hub_move", seq: 2, x: 0, z: -1000, facing: 0 });
+  // An unchanged intent is not sent again.
+  now += 100;
+  fake.queue.moveHub(0, -1000, 0);
+  expect(moves()).toHaveLength(2);
+  fake.queue.leaveHub();
+  expect(fake.sent().at(-1)).toEqual({ type: "hub_leave" });
+  expect(fake.queue.hub.get().status).toBe("out");
+});
+
+it("lists the players nearby with what each can be offered", async () => {
+  await logIn();
+  inHub();
+  await act(async () => {
+    render(<HubWindow />, { wrapper: TooltipProvider });
+  });
+  expect(screen.getByRole("status").textContent).toBe("Hub 2. 2 players are nearby.");
+  const rows = within(screen.getByRole("list", { name: "Players nearby" })).getAllByRole(
+    "listitem",
+  );
+  // Nearest first.
+  expect(rows.map((row) => row.querySelector(".friend-handle")?.textContent)).toEqual([
+    "Zed#0001",
+    "Ash#1000",
+  ]);
+  expect(rows[0].textContent).toContain("3 m away");
+  expect(rows[0].textContent).toContain("Admin");
+  const friend = menuOf("Ash#1000")
+    .getAllByRole("menuitem")
+    .map((item) => item.textContent);
+  expect(friend).toEqual(["Whisper", "Invite to group", "Block"]);
+  fireEvent.click(screen.getByRole("menuitem", { name: "Invite to group" }));
+  expect(fake.sent().at(-1)).toEqual({ type: "invite", handle: "Ash#1000" });
+  const stranger = menuOf("Zed#0001")
+    .getAllByRole("menuitem")
+    .map((item) => item.textContent);
+  expect(stranger).toEqual(["Add friend", "Block"]);
+  fireEvent.click(screen.getByRole("button", { name: "Leave the hub" }));
+  expect(fake.sent().at(-1)).toEqual({ type: "hub_leave" });
+  expect(screen.getByRole("status").textContent).toBe("You are not in the hub.");
+  fireEvent.click(screen.getByRole("button", { name: "Enter the hub" }));
+  expect(fake.sent().at(-1)?.type).toBe("hub_join");
+  fake.say({ type: "refused", code: "hub_full" });
+  expect(screen.getByRole("status").textContent).toBe("That hub is full. Try again in a moment.");
+});
+
+it("offers guests no player actions and says why", () => {
+  inHub();
+  render(<HubWindow />, { wrapper: TooltipProvider });
+  expect(screen.queryByRole("button", { name: /Actions for/ })).toBeNull();
+  expect(screen.getByText(/Log in on the launcher page/)).toBeTruthy();
+});
+
+it("chats in the hub, returns there after a match, and practises away from it", () => {
+  expect(chatTabs(false, [], true)).toEqual(["all", "hub", "public", "team"]);
+  expect(defaultChannel({ seated: false, spectating: false, inHub: true })).toBe("hub");
+  expect(defaultChannel({ seated: true, spectating: false, inHub: true })).toBe("team");
+  // After a match: back into the hub, not the launcher page.
+  fake.queue.connect();
+  fake.open();
+  act(() => returnToHub());
+  expect(beforeMatch.get()).toBe(false);
+  expect(fake.sent().at(-1)?.type).toBe("hub_join");
+  // Without a door, the launcher page.
+  matchQueue.set(null);
+  act(() => returnToHub());
+  expect(beforeMatch.get()).toBe(true);
+  matchQueue.set(fake.queue);
+  beforeMatch.set(false);
+  fake.say({ type: "hub", instance: 1, you: 4, x: 0, z: 24000 });
+  playTab.set("practice");
+  render(<PlayWindow />, { wrapper: TooltipProvider });
+  fireEvent.click(screen.getByRole("button", { name: "Practice in the arena" }));
+  expect(fake.sent().at(-1)).toEqual({ type: "hub_leave" });
+  expect(screen.getByRole("button", { name: "Return to the hub" })).toBeTruthy();
+});
+
+it("ends a join that is refused for any reason, and resets when the connection drops", () => {
+  const look = {
+    version: 1 as const,
+    body: "male",
+    ancestry: "human",
+    groups: {},
+    skinTone: "s1",
+    hairColor: "h1",
+    facialHairColor: "h1",
+    eyes: "e1",
+    variants: {},
+    build: 0,
+  };
+  // No door yet: asking is quiet, and the connection's end is no news.
+  act(() => {
+    fake.queue.joinHub(look);
+  });
+  act(() => fake.latest().onclose?.());
+  expect(fake.queue.state.get().connection).toBe("offline");
+  expect(fake.queue.hub.get()).toMatchObject({ status: "out", notice: "lost" });
+  // A logged-in player without a name is refused `no_name`.
+  act(() => {
+    fake.queue.joinHub(look);
+  });
+  fake.open();
+  fake.say({ type: "refused", code: "no_name" });
+  expect(fake.queue.hub.get()).toMatchObject({ status: "out", notice: "no_name" });
+  expect(fake.queue.chat.get().error).toBeNull();
+  // In the hub, a lost connection leaves it.
+  act(() => {
+    fake.queue.joinHub(look);
+  });
+  fake.say({ type: "hub", instance: 1, you: 2, x: 0, z: 24000 });
+  act(() => fake.latest().onclose?.());
+  expect(fake.queue.hub.get().status).toBe("out");
+});
+
+it("offers no way into the hub during a match", async () => {
+  const { networkLink } = await import("../../web/src/state/network");
+  const { createStore } = await import("../../web/src/state/store");
+  networkLink.set({
+    state: createStore({ phase: "open", attempt: 0, ended: null, status: null }),
+  } as never);
+  render(<HubWindow />, { wrapper: TooltipProvider });
+  expect(screen.getByRole("status").textContent).toBe("You return to the hub when the match ends.");
+  expect(screen.queryByRole("button", { name: "Enter the hub" })).toBeNull();
+  networkLink.set(null);
+});

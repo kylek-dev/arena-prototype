@@ -13,6 +13,7 @@ import { AccountPanel } from "../account/AccountPanel";
 import { Friends } from "../friends/Friends";
 import { arenaReady } from "../loading/Loading";
 import { PartyStatus } from "./PartyStatus";
+import { enterHub } from "../../runtime/hub";
 import "../account/account.css";
 import "./launcher-page.css";
 
@@ -85,8 +86,16 @@ export function LauncherPage() {
         {!loggedIn && <PartyStatus />}
         <Separator size="4" />
         <div className="launcher-page-enter">
-          <Button ref={enter} size="3" onClick={() => enterArena(() => dispatch("reset"))}>
-            Enter the arena
+          <Button
+            ref={enter}
+            size="3"
+            onClick={() => {
+              enterArena(() => dispatch("reset"));
+              // Into the hub when this server has one (ADR 0056).
+              enterHub();
+            }}
+          >
+            Enter the game
           </Button>
           <Text size="1" color="gray" role="status">
             {failure
