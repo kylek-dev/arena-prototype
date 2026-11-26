@@ -14,12 +14,14 @@ import {
   prematch,
   scoreboardVisible,
   customLobbyVisible,
+  setPanel,
 } from "../state/session";
 import { isEngineReady } from "../domain/abilities/catalog";
 import { escapeStopsCast } from "../domain/bindings/escape";
 import { dispatch, input, isCasting, stopCasting, stopRecentlyRequested } from "./commands";
 import { installFocusPolicy, isTextEntry } from "./focus";
 import { chatShown, requestChat } from "../state/chat";
+import { closeLauncherWindows } from "../state/windows";
 // Precedence: conflict > capture > quick bind > text entry > Escape stops a cast >
 // modal/typing > layout > gameplay (see domain/bindings/escape.ts).
 export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void) {
@@ -156,6 +158,27 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
     ) {
       e.preventDefault();
       customLobbyVisible.set(false);
+      return;
+    }
+    // An open menu inside a window takes its own Escape.
+    if (e.code === "Escape" && document.activeElement?.closest('[data-escape-owner="true"]'))
+      return;
+    // Escape closes the dock's windows (Spells, Friends, Play) first.
+    if (e.code === "Escape" && mode.panel === "spellbook" && !isTextEntry(document.activeElement)) {
+      e.preventDefault();
+      setPanel(null);
+      return;
+    }
+    if (
+      e.code === "Escape" &&
+      !mode.panel &&
+      !customizing.get() &&
+      !prematch.get() &&
+      !scoreboardVisible.get() &&
+      !isTextEntry(document.activeElement) &&
+      closeLauncherWindows()
+    ) {
+      e.preventDefault();
       return;
     }
     if (customizing.get() && e.code === "Escape" && !mode.panel) {

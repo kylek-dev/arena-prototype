@@ -7,11 +7,11 @@ import { CHAT_COMMANDS, runSlash, type CommandContext } from "../../web/src/runt
 import { installInput } from "../../web/src/runtime/input-router";
 import { installSystemEvents } from "../../web/src/runtime/system-events";
 import { createFriends } from "../../web/src/runtime/friends";
-import { lightingVisible } from "../../web/src/state/lighting";
 import { mapEditorVisible } from "../../web/src/state/map-editor";
 import { characterKits, customizerVisible } from "../../web/src/state/appearance";
 import { persistence, preferences } from "../../web/src/state/config";
 import { matchQueue } from "../../web/src/state/network";
+import { friendsWindowVisible, playWindowVisible } from "../../web/src/state/windows";
 import {
   customLobbyVisible,
   engine,
@@ -54,7 +54,6 @@ beforeEach(() => {
   interaction.set({ panel: null, quick: false, layout: false, hovered: null, capture: null });
   customizerVisible.set(false);
   customLobbyVisible.set(false);
-  lightingVisible.set(false);
   mapEditorVisible.set(false);
 });
 afterEach(() => {
@@ -82,24 +81,24 @@ it("opens every panel by command", () => {
   expect(interaction.get().quick).toBe(true);
   opened("/customize");
   expect(customizerVisible.get()).toBe(true);
-  opened("/lighting");
-  expect(lightingVisible.get()).toBe(true);
   opened("/mapeditor");
   expect(mapEditorVisible.get()).toBe(true);
   opened("/queue");
-  expect(interaction.get().panel).toBe("menu");
+  expect(playWindowVisible.get()).toBe(true);
+  opened("/friends");
+  expect(friendsWindowVisible.get()).toBe(true);
   // Panels that need something to show say so instead.
   runSlash("/lobby", ctx());
   runSlash("/scoreboard", ctx());
   expect(said).toEqual([
-    "You are not in a custom lobby. Host or join one in Play online (/queue).",
-    "No finished match to show yet.",
+    "You are not in a custom lobby. Host or join one from the Play window (/host).",
+    "No completed match is available.",
   ]);
   expect(scoreboardVisible.get()).toBe(false);
   runSlash("/customize", ctx({ inMatch: true }));
-  expect(said.at(-1)).toBe("Customizing is available outside a match.");
+  expect(said.at(-1)).toBe("Customizing is unavailable during a match.");
   runSlash("/spellbook", ctx({ spectating: true }));
-  expect(said.at(-1)).toBe("Spectators have no spellbook.");
+  expect(said.at(-1)).toBe("The spellbook is unavailable while spectating.");
 });
 
 it("prints help from the registry and refuses unknown or admin-only commands", () => {
@@ -110,7 +109,7 @@ it("prints help from the registry and refuses unknown or admin-only commands", (
   );
   said = [];
   runSlash("/help w", ctx());
-  expect(said).toEqual(["/whisper <Name#number> <text> (also /w) — Whisper to a friend."]);
+  expect(said).toEqual(["/whisper <Name#0000> <message> (also /w) — Whisper to a friend."]);
   said = [];
   runSlash("/dance", ctx());
   runSlash("/mute Rook#0042", ctx());
@@ -128,13 +127,13 @@ it("queues, whispers, replies and ignores", () => {
   runSlash("/queue 2v2", ctx());
   expect(fake.sent().at(-1)).toEqual({ type: "queue", mode: "2v2" });
   runSlash("/queue 4v4", ctx());
-  expect(said.at(-1)).toMatch(/1v1, 2v2 or 3v3/);
+  expect(said.at(-1)).toMatch(/Specify a queue: \/queue 1v1, \/queue 2v2 or \/queue 3v3\./);
   runSlash("/w Ash#1000 hello there", ctx());
   expect(fake.sent().at(-1)).toEqual({ type: "whisper", to: "Ash#1000", text: "hello there" });
   runSlash("/r again", ctx());
   expect(fake.sent().at(-1)).toEqual({ type: "whisper", to: "Ash#1000", text: "again" });
   runSlash("/w Ash", ctx());
-  expect(said.at(-1)).toMatch(/Whisper with/);
+  expect(said.at(-1)).toMatch(/Usage: \/w Name#0000/);
   runSlash("/ignore Ash#1000", ctx());
   expect(fake.sent().at(-1)).toEqual({ type: "ignore", handle: "Ash#1000" });
   runSlash("/unignore Ash#1000", ctx());
@@ -148,7 +147,7 @@ it("sends admin commands to the door, which has the last word", async () => {
     url: "/api/admin/mute",
     body: { handle: "Rook#0042", minutes: 30 },
   });
-  expect(said.at(-1)).toBe("Muted Rook#0042 for 30 min.");
+  expect(said.at(-1)).toBe("Rook#0042 is muted for 30 minutes.");
   runSlash("/unmute Rook#0042", ctx({ admin: true }));
   await act(async () => {});
   expect(posts.at(-1)?.body).toEqual({ handle: "Rook#0042", minutes: 0 });
@@ -156,13 +155,13 @@ it("sends admin commands to the door, which has the last word", async () => {
   runSlash("/clearname Rook#0042", ctx({ admin: true }));
   await act(async () => {});
   expect(posts.at(-1)).toEqual({ url: "/api/admin/handles/clear", body: { handle: "Rook#0042" } });
-  expect(said.at(-1)).toBe("The server refused: that command is for admins.");
+  expect(said.at(-1)).toBe("This command is available to administrators only.");
   runSlash("/mute Rook#0042 forever", ctx({ admin: true }));
-  expect(said.at(-1)).toMatch(/1–10080 minutes/);
+  expect(said.at(-1)).toMatch(/1 to 10080 minutes/);
   status = 404;
   runSlash("/mute Rook#0042", ctx({ admin: true }));
   await act(async () => {});
-  expect(said.at(-1)).toBe("This server has no admin tools (accounts are off).");
+  expect(said.at(-1)).toBe("This server does not offer administrator tools.");
 });
 
 it("applies the queue buttons' checks, and keeps the lobby out of a live match", () => {
@@ -174,7 +173,7 @@ it("applies the queue buttons' checks, and keeps the lobby out of a live match",
   expect(fake.sent().some((m) => m.type === "queue")).toBe(false);
   fake.say({ type: "party", code: "M9Q3RT", members: 2, leader: true, queue: null });
   runSlash("/queue 1v1", ctx());
-  expect(said.at(-1)).toBe("1v1 is for one player.");
+  expect(said.at(-1)).toBe("The 1v1 queue does not accept parties.");
   runSlash("/queue 2v2", ctx());
   expect(fake.sent().at(-1)).toEqual({ type: "queue", mode: "2v2" });
   fake.say({ type: "queued", mode: "2v2", waiting: 2, waited_ms: 0, expected_ms: null });
@@ -194,7 +193,7 @@ it("applies the queue buttons' checks, and keeps the lobby out of a live match",
   customizerVisible.set(true);
   runSlash("/lobby", ctx({ inMatch: true }));
   expect(customLobbyVisible.get()).toBe(false);
-  expect(said.at(-1)).toBe("The custom lobby is available outside a match.");
+  expect(said.at(-1)).toBe("The custom lobby is unavailable during a match.");
   runSlash("/lobby", ctx());
   expect(customLobbyVisible.get()).toBe(true);
   expect(customizerVisible.get()).toBe(false);
@@ -204,7 +203,7 @@ it("treats a bare slash as nothing to send", () => {
   expect(runSlash("/", ctx())).toBe(true);
   expect(said).toEqual([]);
   expect(runSlash("/ help", ctx())).toBe(true);
-  expect(said).toEqual(["Type the command right after the slash, e.g. /help."]);
+  expect(said).toEqual(["Type the command directly after the slash, for example /help."]);
 });
 
 it("says nothing about the lobby when only the connection dropped", () => {
@@ -310,8 +309,8 @@ describe("in the chat box", () => {
     expect(document.activeElement).toBe(field);
     expect(field.value).toBe("/");
     await user.keyboard("help{Enter}");
-    expect(screen.getByRole("log", { name: "Public" }).textContent).toContain("Commands");
-    await user.click(screen.getByRole("tab", { name: "Team" }));
+    expect(screen.getByRole("log", { name: "All" }).textContent).toContain("Commands");
+    await user.click(screen.getByRole("tab", { name: /^Team/ }));
     expect(screen.getByRole("log", { name: "Team" }).textContent).toContain("Commands");
     expect(fake.sent().some((m) => m.type === "chat")).toBe(false);
     await user.click(field.ownerDocument.querySelector(".chat-input") as HTMLElement);

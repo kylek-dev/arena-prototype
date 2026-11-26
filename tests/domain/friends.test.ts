@@ -51,11 +51,11 @@ it("reads typed handles and words answers", () => {
   expect(normalizeHandle("  Rook#0042 ")).toBe("Rook#0042");
   expect(normalizeHandle("Rook")).toBeNull();
   expect(normalizeHandle("Rook#42")).toBeNull();
-  expect(friendErrorText("pick_a_name_first")).toMatch(/choose your name/i);
+  expect(friendErrorText("pick_a_name_first")).toMatch(/choose a player name/i);
   expect(friendErrorText("weird")).toBe(friendErrorText("failed"));
   expect(friendDoneText("request", "Rook#0042", "outgoing")).toMatch(/request sent/i);
   expect(friendDoneText("request", "Rook#0042", "friend")).toMatch(/now friends/i);
-  expect(friendDoneText("block", "Rook#0042")).toMatch(/cannot ask or invite/i);
+  expect(friendDoneText("block", "Rook#0042")).toMatch(/can no longer send you requests/i);
 });
 
 it("parses invites, sent invites and friend pushes from the queue", () => {

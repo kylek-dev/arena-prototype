@@ -52,7 +52,7 @@ describe("queue messages", () => {
       parseQueueMessage('{"type":"party","code":"K7P2QX","members":2,"leader":true,"queue":"3v3"}'),
     ).toEqual({
       type: "party",
-      party: { code: "K7P2QX", members: 2, leader: true },
+      party: { code: "K7P2QX", members: 2, leader: true, mates: [] },
       queue: "3v3",
     });
     expect(parseQueueMessage(JSON.stringify(QUEUED))).toEqual({
@@ -179,11 +179,13 @@ describe("queue wording", () => {
 
   it("explains why a queue is closed to a party, and what happened", () => {
     const party = (members: number, leader: boolean) =>
-      at({ party: { code: "K7P2QX", members, leader } });
+      at({ party: { code: "K7P2QX", members, leader, mates: [] } });
     expect(queueBlocked(IDLE_QUEUE, "1v1")).toBeNull();
     expect(queueBlocked(party(2, true), "2v2")).toBeNull();
-    expect(queueBlocked(party(2, true), "1v1")).toBe("1v1 is for one player.");
-    expect(queueBlocked(party(3, true), "2v2")).toBe("Parties of up to 2 only.");
+    expect(queueBlocked(party(2, true), "1v1")).toBe("The 1v1 queue does not accept parties.");
+    expect(queueBlocked(party(3, true), "2v2")).toBe(
+      "This queue accepts parties of up to 2 players.",
+    );
     expect(queueBlocked(party(2, false), "3v3")).toContain("leader");
     expect(noticeText("not_accepted")).toContain("in time");
     expect(noticeText("member_declined")).toContain("party member declined");
@@ -332,4 +334,16 @@ describe("custom lobbies", () => {
     ).toBe("Both teams are full. Ready to start.");
     expect(queueBlocked({ ...IDLE_QUEUE, lobby }, "1v1")).toContain("custom lobby");
   });
+});
+
+it("parses party mates' handles strictly", () => {
+  const party = { type: "party", code: "K7P2QX", members: 3, leader: true, queue: null };
+  expect(parseQueueMessage(JSON.stringify({ ...party, mates: ["Ash#1000", null] }))).toMatchObject({
+    party: { mates: ["Ash#1000", null] },
+  });
+  for (const mates of [["<b>"], ["Ash#1000", "Bea#0002", "Cyd#0003"], "Ash#1000", [7]])
+    expect(
+      parseQueueMessage(JSON.stringify({ ...party, mates })),
+      JSON.stringify(mates),
+    ).toBeNull();
 });

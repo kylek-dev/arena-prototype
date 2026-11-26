@@ -65,15 +65,6 @@
   }
 }
 
-.match-ready-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-  display: grid;
-  place-items: center;
-  padding: 16px;
-  background: color-mix(in srgb, var(--pal-night-1) 55%, transparent);
-}
 .match-ready {
   width: min(420px, 100%);
   display: grid;
@@ -148,4 +139,10 @@
   .match-ready-fill {
     transition: none;
   }
+}
+/* In the center panel (outside a match): a card in the stack. */
+.queue-bar.centered {
+  position: static;
+  transform: none;
+  min-width: min(380px, calc(100vw - 32px));
 }

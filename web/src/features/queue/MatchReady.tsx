@@ -31,54 +31,52 @@ function Window({ queue }: { queue: Queue }) {
   const state = useStore(queue.state, (s) => s);
   const now = useClock(state.phase === "ready", queue.now, 250);
   const ready = readyStatus(state, now);
-  useTitleAlert(ready && !ready.you ? `(${ready.seconds}) Match ready!` : null);
+  useTitleAlert(ready && !ready.you ? `(${ready.seconds}) Match found` : null);
   if (!ready) return null;
   return (
-    <div className="match-ready-backdrop">
-      <section
-        className="match-ready"
-        role="alertdialog"
-        aria-labelledby="match-ready-title"
-        aria-describedby="match-ready-detail"
-        data-keyboard-owner="true"
+    <section
+      className="match-ready"
+      role="alertdialog"
+      aria-labelledby="match-ready-title"
+      aria-describedby="match-ready-detail"
+      data-keyboard-owner="true"
+    >
+      <h2 id="match-ready-title">{ready.title}</h2>
+      <div
+        className="match-ready-countdown"
+        role="timer"
+        aria-label={`${ready.seconds} seconds left`}
       >
-        <h2 id="match-ready-title">{ready.title}</h2>
-        <div
-          className="match-ready-countdown"
-          role="timer"
-          aria-label={`${ready.seconds} seconds left`}
-        >
-          <span className="match-ready-seconds">{ready.seconds}</span>
-          <div className="match-ready-track" aria-hidden="true">
-            <div className="match-ready-fill" style={{ width: `${ready.fraction * 100}%` }} />
-          </div>
+        <span className="match-ready-seconds">{ready.seconds}</span>
+        <div className="match-ready-track" aria-hidden="true">
+          <div className="match-ready-fill" style={{ width: `${ready.fraction * 100}%` }} />
         </div>
-        <div className="match-ready-players" aria-hidden="true">
-          {Array.from({ length: ready.total }, (_, index) => (
-            <span
-              // Positions only: who accepted is not shown, just how many.
-              key={index}
-              className={`match-ready-player ${index < ready.accepted ? "accepted" : ""}`}
-            />
-          ))}
+      </div>
+      <div className="match-ready-players" aria-hidden="true">
+        {Array.from({ length: ready.total }, (_, index) => (
+          <span
+            // Positions only: who accepted is not shown, just how many.
+            key={index}
+            className={`match-ready-player ${index < ready.accepted ? "accepted" : ""}`}
+          />
+        ))}
+      </div>
+      <p id="match-ready-detail" className="match-ready-detail">
+        {ready.you
+          ? `You have accepted. Waiting for ${ready.total - ready.accepted} more ${ready.total - ready.accepted === 1 ? "player" : "players"} (${ready.progress}).`
+          : `${ready.progress}. Accept within ${ready.seconds} seconds to keep your place in the queue.`}
+      </p>
+      {ready.you ? null : (
+        <div className="match-ready-actions">
+          <Button size="3" autoFocus onClick={() => queue.accept()}>
+            Accept
+          </Button>
+          <Button size="3" variant="soft" color="gray" onClick={() => queue.decline()}>
+            Decline
+          </Button>
         </div>
-        <p id="match-ready-detail" className="match-ready-detail">
-          {ready.you
-            ? `Accepted · waiting for ${ready.total - ready.accepted} more (${ready.progress})`
-            : `${ready.progress}. Accept within ${ready.seconds} s or you leave the queue.`}
-        </p>
-        {ready.you ? null : (
-          <div className="match-ready-actions">
-            <Button size="3" autoFocus onClick={() => queue.accept()}>
-              Accept
-            </Button>
-            <Button size="3" variant="soft" color="gray" onClick={() => queue.decline()}>
-              Decline
-            </Button>
-          </div>
-        )}
-      </section>
-    </div>
+      )}
+    </section>
   );
 }
 
