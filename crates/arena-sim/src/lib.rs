@@ -200,6 +200,7 @@ pub mod classes;
 pub mod combat_state;
 pub mod effects;
 pub mod formulas;
+pub mod hub;
 pub mod map;
 pub mod specs;
 pub mod spells;

@@ -20,3 +20,6 @@ Depends on: [launcher-page](launcher-page.md) (entry point), [social-identity](s
 Open questions for the user:
 - Instance size (dozens or hundreds), and whether combat is allowed in the hub (duels, sparring dummies).
 - The hub's look and size, and what lives there (vendors, training dummies, a queue board).
+
+Status (2026-11-26): [ADR 0056](../../docs/decisions/0056-social-hub.md) proposed, answering the open questions provisionally (40 players per instance, no combat, a graybox plaza). Slices: `auto/hub-rules` (ADR and the pure `arena_sim::hub` rules), then the door's hub service over the queue WebSocket with a bot load test, then the browser (entering from the launcher page, returning after matches, hub chat, the player menu) and the rendered plaza.
+
