@@ -396,6 +396,15 @@ export function parseCustomFragment(hash: string) {
 export function guestId(bytes: Uint8Array) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
+/** The door's `Guest#NNNN` name for a guest id (`guest_handle_for` in
+ * `crates/arena-server/src/door/auth.rs`): the same on every connection from
+ * this browser, so the launcher page can show it before connecting. `null`
+ * for anything but a guest id. */
+export function guestHandle(id: string): string | null {
+  if (!isGuestId(id)) return null;
+  const number = (BigInt(`0x${id}`) % 9999n) + 1n;
+  return `Guest#${number.toString().padStart(4, "0")}`;
+}
 export function isGuestId(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{32}$/.test(value);
 }

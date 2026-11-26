@@ -594,16 +594,16 @@ async fn players_pick_handles_that_ride_in_their_tickets() {
     let session = log_in(addr, &fake).await;
 
     // Before picking, a logged-in player plays under a guest handle, as
-    // guests do.
+    // guests do: the guest name of the browser's guest id.
     let (before, guest) = tokio::join!(
         queue_ticket(addr, 1, Some(&session)),
         queue_ticket(addr, 2, None)
     );
-    for ticket in [&before, &guest] {
+    for (ticket, name) in [(&before, "Guest#0002"), (&guest, "Guest#0003")] {
         let handle = claims(ticket)
             .handle
             .expect("everyone from the queue has a handle");
-        assert_eq!(handle.name(), "Guest");
+        assert_eq!(handle.to_string(), name);
     }
 
     // Names follow the rules; the door picks the number.
@@ -1227,7 +1227,20 @@ async fn admins_come_from_configuration_and_alone_may_store_maps() {
     assert_eq!(clear(bob.clone(), bob_h.clone(), true).await, 403);
     assert_eq!(clear(alice.clone(), bob_h.clone(), false).await, 403);
     assert_eq!(clear(alice.clone(), "Nobody#0001".into(), true).await, 404);
+    // Bob is in a lobby: its members see his browser's guest name at once.
+    let mut bob_queue = connect_queue(addr, 7, &bob).await;
+    say(
+        &mut bob_queue,
+        r#"{"type":"create_lobby","mode":"1v1"}"#.into(),
+    )
+    .await;
+    let lobby_handle = |m: QueueMessage| match m {
+        QueueMessage::Lobby(view) => view.members[0].handle.clone(),
+        _ => None,
+    };
+    assert_eq!(until(&mut bob_queue, lobby_handle).await, bob_h);
     assert_eq!(clear(alice.clone(), bob_h.clone(), true).await, 204);
+    assert_eq!(until(&mut bob_queue, lobby_handle).await, "Guest#0008");
     let bob_now = me(addr, &bob).await;
     assert_eq!((bob_now.handle, bob_now.rename_at), (None, None));
     assert_eq!(

@@ -875,3 +875,11 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/admin-map-editor`: see PR.
 - **Fresh-Eyes Review:** no Critical or Important. Minor (fixed): a stale comment on refused invitations, scenario 16 now says to invite from the home screen, a `PlayOnline` test pins the home list's Invite to group.
 
+## 2026-11-26 — Stable guest names (launcher page, Lane A slice)
+- **Branch / Commit:** `auto/guest-names`
+- **Base / PR:** `auto/friends-no-invite` (stacked on PR #116)
+- **Lane:** A
+- **Task:** [launcher-page](issues/launcher-page.md): "Play as a guest, with the guest's temporary `Guest#` name shown". The door drew a random `Guest#NNNN` per queue connection, so the page could not know it, and it changed on every reconnect.
+- **Changes:** `door::auth::guest_handle_for(guest)` (`guest % 9999 + 1`) applied at hello for a holder without a handle (guests, and accounts without a name) and on logout revocation; the browser computes the same name with `guestHandle(id)` (`domain/matchmaking.ts`). Golden vectors shared by a Rust unit test and a Vitest test; the chat and identity tests now expect exact guest names. An admin clearing a name (`Command::Rename { handle: None }`) gives each open connection its browser's guest name too. Groundwork only: the launcher page slice shows the name (the `launcher-page` item stays open).
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/friends-no-invite`: see PR.
+- **Fresh-Eyes Review:** no Critical. Important (by design, next slice): `guestHandle` has no UI caller yet. Minor (fixed): the admin clear-name path drew a random guest name; PROTOCOL.md notes the cross-session linkability.

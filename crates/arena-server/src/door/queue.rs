@@ -336,10 +336,12 @@ pub(super) enum Command {
     Revoke {
         account: u64,
     },
-    /// The account picked a new handle: its open connections use it.
+    /// The account picked a new handle (`Some`), or an admin cleared it
+    /// (`None`, each connection then shows its browser's guest name): its
+    /// open connections use it.
     Rename {
         account: u64,
-        handle: Handle,
+        handle: Option<Handle>,
     },
     /// Deliver an invite from `conn` to the friend `to` (already checked).
     Invite {
@@ -525,7 +527,9 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
             }
             command = commands.recv() => match command {
                 None => break,
-                Some(Command::Hello { conn, guest, address, holder, out }) => {
+                Some(Command::Hello { conn, guest, address, mut holder, out }) => {
+                    // Without a chosen name, the browser's own guest name.
+                    holder.handle.get_or_insert_with(|| super::auth::guest_handle_for(guest));
                     conns.insert(conn, out);
                     addresses.insert(conn, address);
                     chat.guests.insert(conn, guest);
@@ -593,7 +597,10 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                             chat.formerly.insert(*conn, account);
                             *holder = Holder {
                                 account: None,
-                                handle: Some(super::auth::guest_handle()),
+                                handle: Some(chat.guests.get(conn).map_or_else(
+                                    super::auth::guest_handle,
+                                    |guest| super::auth::guest_handle_for(*guest),
+                                )),
                                 admin: false,
                             };
                             renamed.push(*conn);
@@ -608,7 +615,12 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     let mut renamed = Vec::new();
                     for (conn, holder) in holders.iter_mut() {
                         if holder.account == Some(account) {
-                            holder.handle = Some(handle);
+                            holder.handle = Some(handle.unwrap_or_else(|| {
+                                chat.guests.get(conn).map_or_else(
+                                    super::auth::guest_handle,
+                                    |guest| super::auth::guest_handle_for(*guest),
+                                )
+                            }));
                             renamed.push(*conn);
                         }
                     }
@@ -1674,15 +1686,12 @@ pub(super) async fn upgrade(
             .into_response();
     };
     // A logged-in player's account and handle, when the page's origin says
-    // it is ours; everyone else plays under a temporary guest handle.
+    // it is ours; everyone else plays under the guest handle of the guest id
+    // their hello names (`guest_handle_for`).
     let account = super::auth::account(&door, &headers, true).await;
     let holder = Holder {
         account: account.map(|account| account.id),
-        handle: Some(
-            account
-                .and_then(|account| account.handle)
-                .unwrap_or_else(super::auth::guest_handle),
-        ),
+        handle: account.and_then(|account| account.handle),
         // From deploy configuration, as of this connection.
         admin: account
             .zip(door.identity.as_ref())

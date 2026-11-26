@@ -239,7 +239,13 @@ How the cookies behave:
   an allowed `Origin`, and never when the door runs with `--any-origin`.
 - The queue signs the session's account and handle into the player's seat
   or spectator ticket. A player without a handle, and every guest, gets a
-  temporary `Guest#NNNN` (not unique). Links from `POST /api/matches` carry
+  temporary `Guest#NNNN` (not unique): `NNNN` is the hello's guest id
+  modulo 9999, plus one, so a browser keeps its guest name across
+  connections (and after an admin clears its account's name) and its
+  launcher page shows it before connecting (`guestHandle` in
+  `web/src/domain/matchmaking.ts`). Guest names carry no rights. Because
+  the name lasts as long as the browser's guest id, others can loosely link
+  one guest's sessions; it reveals about 13 of the id's 128 bits. Links from `POST /api/matches` carry
   neither. A new handle or a revoked account reaches open queue connections
   at once.
 - **Handles.** The player picks the name: 3–16 ASCII letters and digits,
