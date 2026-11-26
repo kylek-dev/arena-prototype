@@ -1,3 +1,4 @@
+import userEvent from "@testing-library/user-event";
 import { WindowDock } from "../../web/src/features/launcher/WindowDock";
 import { installInput } from "../../web/src/runtime/input-router";
 import { friendsWindowVisible } from "../../web/src/state/windows";
@@ -529,4 +530,41 @@ it("opens the ⋮ menu under its button, or above it near the bottom of the scre
   list = screen.getByRole("menu", { name: "Actions for Ash#1000" });
   expect(list.style.top).toBe("");
   expect(list.style.bottom).toBe("44px");
+});
+
+it("keeps the ⋮ menu open under real clicks while the game owns the keyboard", async () => {
+  const user = userEvent.setup();
+  const { account, calls } = fakeDoor({
+    "/api/auth/me": { status: 200, body: ROOK },
+    "/api/friends": { status: 200, body: LIST },
+    "/api/friends/remove": { status: 204 },
+  });
+  await account.refresh();
+  const fake = fakeQueue();
+  matchQueue.set(fake.queue);
+  document.body.innerHTML = '<canvas id="arena" tabindex="0"></canvas>';
+  const canvas = document.getElementById("arena") as HTMLCanvasElement;
+  const router = installInput(canvas, () => {});
+  canvas.focus();
+  try {
+    friendsWindowVisible.set(true);
+    await act(async () => {
+      render(
+        <TooltipProvider>
+          <WindowDock />
+        </TooltipProvider>,
+      );
+    });
+    await user.click(screen.getByRole("button", { name: "Actions for Ash#1000" }));
+    // Let the focus policy run (it restores the game's focus in a microtask).
+    await act(async () => {});
+    const menu = screen.getByRole("menu", { name: "Actions for Ash#1000" });
+    await user.click(within(menu).getByRole("menuitem", { name: "Remove friend" }));
+    await act(async () => {});
+    await user.click(screen.getByRole("menuitem", { name: "Confirm removal" }));
+    expect(calls.some((c) => c.url === "/api/friends/remove")).toBe(true);
+  } finally {
+    router.dispose();
+    friendsWindowVisible.set(false);
+  }
 });
