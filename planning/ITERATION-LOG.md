@@ -939,3 +939,9 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Root cause:** the door applied the newest intent every tick while the page merged intents to 10 a second and the client predicted on its own clock, so the two started, stopped and turned on different ticks; the client only corrected past 3 m or when standing, so the drift showed as snaps (at every stop, and on curves).
 - **Fix:** moves are numbered steps. The client sends one per hub tick while walking or turning; the door queues them (8 at most) and applies each once in order, acknowledging the last; the client starts each state from the door's place, replays the moves after the acknowledged one (exactly the door's arithmetic) and fades any small difference over about 150 ms. The page passes moves through unchanged; `arena-bot --hub` sends one per tick. ADR 0056 and PROTOCOL amended.
 
+## 2026-11-26 — Client failed to start after a rebuild (playtest)
+- **Branch / Commit:** `auto/hub-render` (PR #122)
+- **Symptom:** "WebAssembly.instantiate(): Import #8 … `__wbg_arena_hub_intent_…`: function import requires a callable" on Enter the game.
+- **Root cause:** not the code: `dist/pkg/arena_client.js` and `arena_client_bg.wasm` on disk matched, but Caddy's `file_server` sent no `Cache-Control`, so the browser reused the previous build's JS glue (heuristic freshness) with the new WASM, whose import names changed with the hub intent's new signature.
+- **Fix:** `deploy/Caddyfile` sends `Cache-Control: no-cache` for the static files (revalidation; 304 when unchanged), verified on the running stack with `curl` (header present, `If-None-Match` → 304). `docs/DEPLOYMENT.md` notes it.
+
