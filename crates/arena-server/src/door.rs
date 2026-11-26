@@ -56,6 +56,13 @@ pub struct DoorConfig {
     /// The `ws://` or `wss://` URL of the match server's `/play` endpoint,
     /// as players reach it.
     pub match_server: String,
+    /// The match server's base URL on the private network (for example
+    /// `http://server:8080`). When set, the door asks it which matches have
+    /// ended and clears their players' in-match state at once, instead of
+    /// waiting out the 21-minute window.
+    pub match_status: Option<String>,
+    /// How often the door asks about the matches it seated.
+    pub match_check_every: Duration,
     /// The game page join links open, as players reach it.
     pub page: String,
     /// Pages whose browsers may create matches.
@@ -86,6 +93,8 @@ impl DoorConfig {
             bind: SocketAddr::from(([127, 0, 0, 1], 8090)),
             key,
             match_server,
+            match_status: None,
+            match_check_every: Duration::from_secs(5),
             page,
             origins: Origins::Any,
             trusted_proxies: Vec::new(),
@@ -178,6 +187,8 @@ struct Door {
     reports: RatePerAddress,
     metrics: DoorMetrics,
     queue: mpsc::Sender<queue::Command>,
+    /// Asks the match server which seated matches ended (`match_status`).
+    match_status: Option<reqwest::Client>,
     queue_open: Arc<OpenPerAddress>,
     next_conn: AtomicU64,
     shutdown: watch::Sender<bool>,
@@ -548,7 +559,23 @@ async fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
         None => None,
     };
     let (commands, receiver) = mpsc::channel(1024);
+    let match_status = match &config.match_status {
+        Some(_) => {
+            // Plain HTTP on the private network; the TLS provider is only
+            // needed for the client to build.
+            let _ = rustls::crypto::ring::default_provider().install_default();
+            Some(
+                reqwest::Client::builder()
+                    .timeout(Duration::from_secs(2))
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .map_err(io::Error::other)?,
+            )
+        }
+        None => None,
+    };
     let door = Arc::new(Door {
+        match_status,
         identity,
         auth_rate: RatePerAddress::new(config.auth_burst, Duration::from_secs(6)),
         // A burst of 10 requests, then one every 6 minutes (10 an hour).

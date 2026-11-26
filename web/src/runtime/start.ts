@@ -35,9 +35,10 @@ import { browserAccount } from "./account";
 import { accountService, friendsService } from "../state/account";
 import { browserFriends } from "./friends";
 import { browserSocial, followAccount } from "./social";
+import { installSystemEvents } from "./system-events";
 import { installTelemetry } from "./telemetry";
 import { matchQueue, networkLink, remoteHandles, remoteTags } from "../state/network";
-import { parseHandles, parseTags, withHandles } from "../domain/handles";
+import { parseHandles, parseTags, withHandles, withTags } from "../domain/handles";
 import { clearPostMatchScoreboard, syncPostMatchScoreboard } from "../state/scoreboard";
 export function startRuntime(canvas: HTMLCanvasElement) {
   const pointer = installPointer(canvas, () => router.cancel());
@@ -66,6 +67,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     customLobbyVisible.set(false);
     interaction.set({ panel: null, quick: false, layout: false, hovered: null, capture: null });
     if (beforeMatch.get() || customizerVisible.get()) enterArena(() => {});
+    queue.system("Joining the match.");
     link.join(ticket);
   });
   matchQueue.set(queue);
@@ -75,6 +77,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
   const friends = browserFriends();
   friendsService.set(friends);
   const stopSocial = followAccount(account, queue, friends, browserSocial());
+  const stopSystem = installSystemEvents(queue, friends, engine, link.state);
   void account.refresh();
   const stopPartyLinks = installPartyLinks(queue);
   // A join link wins; otherwise a reload rejoins this tab's match.
@@ -102,7 +105,10 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     onState(raw) {
       try {
         // Fighters are named by their relayed handles in a network match.
-        const next = withHandles(adaptSnapshot(raw), remoteHandles.get()),
+        const next = withTags(
+            withHandles(adaptSnapshot(raw), remoteHandles.get()),
+            remoteTags.get(),
+          ),
           previous = engine.get();
         recordState(next.frames);
         observeCastResult(next);
@@ -154,6 +160,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     stopPartyLinks();
     queue.dispose();
     matchQueue.set(null);
+    stopSystem();
     stopSocial();
     stopAccount();
     accountService.set(null);

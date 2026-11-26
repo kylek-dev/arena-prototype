@@ -7,15 +7,37 @@ import { GameMenu } from "../../web/src/features/menu/GameMenu";
 import {
   loadMap,
   mapEditorVisible,
+  serverMaps,
   onMapStatus,
   readMap,
   resetMapEditor,
 } from "../../web/src/state/map-editor";
 import { interaction, setPanel } from "../../web/src/state/session";
+import { createAccount } from "../../web/src/runtime/account";
+import { accountService } from "../../web/src/state/account";
 
 type Call = { url: string; init?: RequestInit };
 let calls: Call[] = [];
 let writable = true;
+let serverRefuses = false;
+
+/** Logs in as the door would report; `admin` only from deploy configuration. */
+async function logIn(admin: boolean) {
+  const account = createAccount({
+    fetch: async () =>
+      Response.json({
+        account: "00112233445566ff",
+        admin,
+        login: true,
+        handle: "Rook#0042",
+        rename_at: null,
+      }),
+    navigate: () => {},
+    pageProtocol: "https:",
+  });
+  await account.refresh();
+  accountService.set(account);
+}
 
 beforeEach(() => {
   resetMapEditor();
@@ -40,6 +62,18 @@ beforeEach(() => {
             { id: "colosseum", name: "Colosseum" },
           ],
         });
+      if (url.endsWith("/api/admin/maps"))
+        return Response.json({ maps: [{ id: "spring-cup", name: "Spring Cup" }] });
+      if (url.endsWith("/api/admin/maps/spring-cup.json") && !init?.method)
+        return new Response(JSON.stringify({ ...JSON.parse(colosseumText), name: "Spring Cup" }));
+      const server = url.match(/\/api\/admin\/maps\/([a-z0-9-]+)\.json$/);
+      if (server && init?.method === "PUT")
+        return serverRefuses
+          ? Response.json(
+              { error: "invalid_map", problems: ["Room 2 has no opening."] },
+              { status: 422 },
+            )
+          : Response.json({ id: server[1], name: "Colosseum" });
       const save = url.match(/__map-editor\/maps\/([a-z0-9-]+)\.json$/);
       if (save) return Response.json({ saved: `assets/maps/${save[1]}.json` });
       return new Response("", { status: 404 });
@@ -49,6 +83,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  accountService.set(null);
+  serverRefuses = false;
 });
 
 const sentMap = () => {
@@ -375,4 +411,86 @@ it("gives every prop a fixed-size click target, however small the model", async 
   expect(Number(hit.getAttribute("r"))).toBeCloseTo(9 / 4);
   fireEvent.pointerDown(hit, { button: 0, pointerId: 1, clientX: 0, clientY: 0 });
   expect(screen.getByRole("region", { name: "Selected prop" }).textContent).toContain("Coin");
+});
+
+it("offers server maps to admins only, opens them and shows the server's problems", async () => {
+  await logIn(false);
+  await openEditor();
+  expect(screen.queryByRole("button", { name: /to server/ })).toBeNull();
+  expect(calls.some((c) => c.url.includes("/api/admin/"))).toBe(false);
+
+  cleanup();
+  resetMapEditor();
+  await logIn(true);
+  await openEditor();
+  await act(async () => {});
+  const open = screen.getByRole("combobox", { name: "Open from server" });
+  expect(within(open).getByRole("option", { name: "Spring Cup (spring-cup)" })).toBeTruthy();
+  await act(async () => fireEvent.change(open, { target: { value: "spring-cup" } }));
+  expect(screen.getByText("Opened spring-cup from the server.")).toBeTruthy();
+  expect(sentMap().map.name).toBe("Spring Cup");
+
+  verdict();
+  serverRefuses = true;
+  const save = screen.getByRole("button", { name: "Save spring-cup to server" });
+  await act(async () => fireEvent.click(save));
+  const put = calls.filter((c) => c.init?.method === "PUT").at(-1)!;
+  expect(put.url).toMatch(/\/api\/admin\/maps\/spring-cup\.json$/);
+  expect(screen.getByRole("list", { name: "Server map problems" }).textContent).toBe(
+    "Room 2 has no opening.",
+  );
+  expect(screen.getByRole("alert").textContent).toMatch(/server found 1 problem/);
+  serverRefuses = false;
+  await act(async () => fireEvent.click(save));
+  expect(screen.queryByRole("list", { name: "Server map problems" })).toBeNull();
+  expect(screen.getByText("Saved spring-cup on the server.")).toBeTruthy();
+  // A server map is not a map file: the local save stays available, and
+  // reloading goes back to the server.
+  expect(screen.getByRole("button", { name: "Save as spring-cup.json" })).toHaveProperty(
+    "disabled",
+    false,
+  );
+  const before = calls.filter((c) => c.url.endsWith("/api/admin/maps/spring-cup.json")).length;
+  await act(async () =>
+    fireEvent.click(screen.getByRole("button", { name: "Reload from server" })),
+  );
+  expect(calls.filter((c) => c.url.endsWith("/api/admin/maps/spring-cup.json")).length).toBe(
+    before + 1,
+  );
+  expect(
+    within(screen.getByRole("combobox", { name: "Open map" })).getByRole("option", {
+      name: "Spring Cup (spring-cup, server)",
+    }),
+  ).toBeTruthy();
+});
+
+it("asks before replacing a server map, and words refusals without problems", async () => {
+  await logIn(true);
+  await openEditor();
+  await act(async () => {});
+  verdict();
+  // The server already has spring-cup; this map is a local file.
+  act(() => {
+    serverMaps.set([{ id: "colosseum", name: "Colosseum" }]);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save colosseum to server" }));
+  expect(calls.some((c) => c.init?.method === "PUT" && c.url.includes("/api/admin/"))).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Keep it" }));
+  fireEvent.click(screen.getByRole("button", { name: "Save colosseum to server" }));
+  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Replace it" })));
+  expect(screen.getByText("Saved colosseum on the server.")).toBeTruthy();
+
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: URL | string, init?: RequestInit) => {
+      calls.push({ url: String(input), init });
+      return String(input).includes("/api/admin/maps/") && init?.method === "PUT"
+        ? new Response("origin not allowed", { status: 403 })
+        : Response.json({ error: "invalid_map" }, { status: 422 });
+    }),
+  );
+  await act(async () =>
+    fireEvent.click(screen.getByRole("button", { name: "Save colosseum to server" })),
+  );
+  expect(screen.getByRole("alert").textContent).toMatch(/not allowed to use server maps/);
 });

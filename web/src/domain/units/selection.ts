@@ -18,6 +18,8 @@ export type Entity = {
   /** In a network match: the fighter's relayed `Name#number`, which `name`
    * then shows in full; tight spaces show only the name part. */
   handle?: string;
+  /** In a network match: the server's admin tag for this fighter's player. */
+  admin?: boolean;
 };
 /** A unit's name for tight spaces (nameplates): a handle without its number. */
 export function shortName(unit: Pick<Entity, "name" | "handle">) {

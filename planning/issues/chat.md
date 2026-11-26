@@ -3,13 +3,16 @@ Let players talk to each other and run commands from a chat box.
 **Status (2026-11-25):** the server side is implemented on
 `auto/chat-server` (`docs/PROTOCOL.md` "Chat"): channels, whispers, server-set
 senders, limits, filter, ignore, blocks and admin mutes. Still to do:
-- the chat box (Lane B);
-- system messages and slash commands (Lane B; `system` is already reserved,
-  so clients cannot post to it).
-- a seat lasts the 21-minute in-match window even when the match ends
-  sooner, so right after a short match `team` still means the old match
-  team and a finished spectator is still confined; clearing seats needs the
-  match server to tell the door a match ended.
+- the chat box (Lane B): implemented on `auto/chat-box`, pending human review;
+- system messages and slash commands (Lane B): implemented on
+  `auto/chat-commands`, pending human review (`system` stays reserved, so
+  clients cannot post to it; the page writes its own system lines). The
+  admin-only commands are `/mute`, `/unmute` and `/clearname`, checked by the
+  door's admin routes; `/mapeditor` is open to everyone, as the menu's Map
+  editor is, while its server storage stays admin-only (to confirm in review).
+- ~~a seat lasts the 21-minute in-match window even when the match ends
+  sooner~~ — fixed on `auto/match-ended`: the door asks the match server
+  (`GET /matches/{id}`) and clears a match's seats once it has ended.
 
 Acceptance criteria:
 

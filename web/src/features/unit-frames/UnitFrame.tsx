@@ -1,3 +1,4 @@
+import { AdminTag } from "../../ui/AdminTag";
 import { resourcePercent, spellLabel } from "../../domain/casting";
 import { CastBar } from "../cast-bar/CastBar";
 import type { Entity } from "../../domain/units/selection";
@@ -31,7 +32,10 @@ export function UnitFrame({
       aria-label={`${role} status`}
     >
       <div className="unit-heading">
-        <strong title={unit?.name}>{unit?.name ?? "—"}</strong>
+        <span className="unit-name">
+          <strong title={unit?.name}>{unit?.name ?? "—"}</strong>
+          {unit?.admin && <AdminTag />}
+        </span>
         {unit?.disconnected ? (
           <span className="unit-status">Disconnected</span>
         ) : lockedOut ? (

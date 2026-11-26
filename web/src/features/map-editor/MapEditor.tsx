@@ -38,13 +38,128 @@ import {
   redoMap,
   replaceMap,
   saveMap,
+  saveServerMap,
+  serverMaps,
+  serverProblems,
+  listServerMaps,
+  openServerMap,
+  mapSource,
+  serverSavedText,
   undoMap,
 } from "../../state/map-editor";
-import { useStore } from "../../state/store";
+import { accountService } from "../../state/account";
+import { LOADING_ACCOUNT } from "../../runtime/account";
+import { createStore, useStore } from "../../state/store";
 import { MovableWindow } from "../../ui/MovableWindow";
 import { MapInspector, PropOptions } from "./MapInspector";
 import { MapPlan } from "./MapPlan";
 import "./map-editor.css";
+
+const NO_ACCOUNT = createStore(LOADING_ACCOUNT);
+/** Whether the door says this player is an admin (it checks every request). */
+function useAdmin() {
+  const account = useStore(accountService, (a) => a);
+  return useStore(account?.state ?? NO_ACCOUNT, (s) => !!s.me?.admin);
+}
+
+/** Asks before an open replaces unsaved changes. */
+function DiscardPrompt({
+  label,
+  onOpen,
+  onKeep,
+}: {
+  label: string;
+  onOpen: () => void;
+  onKeep: () => void;
+}) {
+  return (
+    <span role="alert" className="map-notice error">
+      Discard unsaved changes?{" "}
+      <Button size="1" className="action-button" color="red" variant="soft" onClick={onOpen}>
+        {label}
+      </Button>{" "}
+      <Button size="1" className="action-button" variant="surface" color="gray" onClick={onKeep}>
+        Keep editing
+      </Button>
+    </span>
+  );
+}
+
+/** Admins only: open a map saved on the server, or save this one there
+ * (asking before replacing a server map this one did not come from). */
+function ServerMaps({ dirty, valid, id }: { dirty: boolean; valid: boolean; id: string }) {
+  const maps = useStore(serverMaps, (m) => m);
+  const source = useStore(mapSource, (s) => s);
+  const [pending, setPending] = useState<string | null>(null);
+  const [replacing, setReplacing] = useState(false);
+  const open = (next: string) => {
+    setPending(null);
+    void openServerMap(next);
+  };
+  const taken = source !== "server" && !!maps?.some((m) => m.id === id);
+  return (
+    <>
+      {replacing ? (
+        <span role="alert" className="map-notice error">
+          The server already has a map called {id}.{" "}
+          <Button
+            size="1"
+            className="action-button"
+            color="red"
+            variant="soft"
+            onClick={() => {
+              setReplacing(false);
+              void saveServerMap();
+            }}
+          >
+            Replace it
+          </Button>{" "}
+          <Button
+            size="1"
+            className="action-button"
+            variant="surface"
+            color="gray"
+            onClick={() => setReplacing(false)}
+          >
+            Keep it
+          </Button>
+        </span>
+      ) : (
+        <Button
+          size="1"
+          disabled={!valid}
+          title={!valid ? "Fix the listed problems before saving." : undefined}
+          onClick={() => (taken ? setReplacing(true) : void saveServerMap())}
+        >
+          Save {id} to server
+        </Button>
+      )}
+      <select
+        aria-label="Open from server"
+        value=""
+        disabled={!maps?.length}
+        onChange={(e) => {
+          const next = e.target.value;
+          if (next) dirty ? setPending(next) : open(next);
+        }}
+      >
+        <option value="">{maps?.length ? "Open from server…" : "No server maps"}</option>
+        {maps?.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.name} ({m.id})
+          </option>
+        ))}
+      </select>
+      {pending && (
+        <DiscardPrompt
+          label={`Open ${pending} from server`}
+          onOpen={() => open(pending)}
+          onKeep={() => setPending(null)}
+        />
+      )}
+    </>
+  );
+}
 
 const typing = (target: EventTarget) =>
   target instanceof HTMLElement && !!target.closest("input, select, textarea");
@@ -71,7 +186,10 @@ function Status({ map }: { map: ArenaMap }) {
   const status = useStore(mapStatus, (s) => s);
   const saved = useStore(mapSavedText, (s) => s);
   const notice = useStore(mapNotice, (s) => s);
-  const dirty = saved !== serializeMap(map);
+  const problems = useStore(serverProblems, (p) => p);
+  const serverSaved = useStore(serverSavedText, (s) => s);
+  const text = serializeMap(map);
+  const dirty = saved !== text && serverSaved !== text;
   const current = status?.revision === currentRevision();
   return (
     <div className="map-status stack">
@@ -87,6 +205,13 @@ function Status({ map }: { map: ArenaMap }) {
         <ul className="map-errors" aria-label="Map problems">
           {status.errors.map((error) => (
             <li key={error}>{error}</li>
+          ))}
+        </ul>
+      )}
+      {problems && problems.length > 0 && (
+        <ul className="map-errors" aria-label="Server map problems">
+          {problems.map((problem) => (
+            <li key={problem}>{problem}</li>
           ))}
         </ul>
       )}
@@ -195,18 +320,31 @@ function NewMapForm({ dirty, close }: { dirty: boolean; close: () => void }) {
 function OpenMap({ dirty }: { dirty: boolean }) {
   const maps = useStore(mapList, (m) => m);
   const id = useStore(mapId, (i) => i);
+  const source = useStore(mapSource, (s) => s);
+  const name = useStore(mapHistory, (h) => h?.present.name ?? id);
   const [pending, setPending] = useState<string | null>(null);
   const open = (next: string) => {
     setPending(null);
     void loadMap(next);
   };
+  // A map opened from the server is shown as such; picking a file loads it.
+  const fromServer = `server:${id}`;
   return (
     <>
       <select
         aria-label="Open map"
-        value={id}
-        onChange={(e) => (dirty ? setPending(e.target.value) : open(e.target.value))}
+        value={source === "server" ? fromServer : id}
+        onChange={(e) => {
+          const next = e.target.value;
+          if (next === fromServer) return;
+          dirty ? setPending(next) : open(next);
+        }}
       >
+        {source === "server" && (
+          <option value={fromServer}>
+            {name} ({id}, server)
+          </option>
+        )}
         {maps.map((m) => (
           <option key={m.id} value={m.id}>
             {m.name} ({m.id})
@@ -214,27 +352,11 @@ function OpenMap({ dirty }: { dirty: boolean }) {
         ))}
       </select>
       {pending && (
-        <span role="alert" className="map-notice error">
-          Discard unsaved changes?{" "}
-          <Button
-            size="1"
-            className="action-button"
-            color="red"
-            variant="soft"
-            onClick={() => open(pending)}
-          >
-            Open {pending}
-          </Button>{" "}
-          <Button
-            size="1"
-            className="action-button"
-            variant="surface"
-            color="gray"
-            onClick={() => setPending(null)}
-          >
-            Keep editing
-          </Button>
-        </span>
+        <DiscardPrompt
+          label={`Open ${pending}`}
+          onOpen={() => open(pending)}
+          onKeep={() => setPending(null)}
+        />
       )}
     </>
   );
@@ -284,26 +406,36 @@ export function MapEditor() {
   const load = useStore(mapLoad, (l) => l);
   const writable = useStore(mapWritable, (w) => w);
   const saved = useStore(mapSavedText, (s) => s);
+  const serverSaved = useStore(serverSavedText, (s) => s);
+  const source = useStore(mapSource, (s) => s);
   const file = useRef<HTMLInputElement>(null);
   const map = history?.present;
-  const dirty = !!map && saved !== serializeMap(map);
+  const text = map ? serializeMap(map) : null;
+  /** Differs from the map file (the local save button). */
+  const dirty = !!map && saved !== text;
+  /** Differs from both the file and the server copy: worth a warning. */
+  const unsaved = dirty && serverSaved !== text;
   const status = useStore(mapStatus, (s) => s);
   const valid = status?.revision === currentRevision() && status.errors.length === 0;
   const id = useStore(mapId, (i) => i);
   const [creating, setCreating] = useState(false);
+  const admin = useAdmin();
 
   useEffect(() => {
     if (!visible) return;
     void loadPropCatalog();
     void listMaps();
   }, [visible]);
+  useEffect(() => {
+    if (visible && admin) void listServerMaps();
+  }, [visible, admin]);
 
   useEffect(() => {
-    if (!dirty) return;
+    if (!unsaved) return;
     const warn = (e: BeforeUnloadEvent) => e.preventDefault();
     addEventListener("beforeunload", warn);
     return () => removeEventListener("beforeunload", warn);
-  }, [dirty]);
+  }, [unsaved]);
 
   if (!visible) return null;
   const close = () => mapEditorVisible.set(false);
@@ -373,7 +505,7 @@ export function MapEditor() {
         ) : (
           <>
             <div className="map-toolbar" role="toolbar" aria-label="Map files">
-              <OpenMap dirty={dirty} />
+              <OpenMap dirty={unsaved} />
               <Button size="1" variant="surface" onClick={() => setCreating(!creating)}>
                 New map…
               </Button>
@@ -442,15 +574,22 @@ export function MapEditor() {
                   Save as {id}.json
                 </Button>
               )}
+              {admin && <ServerMaps dirty={unsaved} valid={valid} id={id} />}
               <Button size="1" variant="surface" color="gray" onClick={() => download(map, id)}>
                 Download
               </Button>
               <Button size="1" variant="surface" color="gray" onClick={() => file.current?.click()}>
                 Import…
               </Button>
-              <Button size="1" variant="surface" color="gray" onClick={() => loadMap()}>
-                Reload file
-              </Button>
+              {source === "server" ? (
+                <Button size="1" variant="surface" color="gray" onClick={() => openServerMap(id)}>
+                  Reload from server
+                </Button>
+              ) : (
+                <Button size="1" variant="surface" color="gray" onClick={() => loadMap()}>
+                  Reload file
+                </Button>
+              )}
               <input
                 ref={file}
                 type="file"

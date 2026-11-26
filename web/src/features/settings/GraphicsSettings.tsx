@@ -2,8 +2,6 @@ import { defaultGraphics, type GraphicsPreferences } from "../../domain/graphics
 import { graphics, graphicsSaveError, updateGraphics } from "../../state/graphics";
 import { useStore } from "../../state/store";
 import { Button } from "@radix-ui/themes";
-import { lightingVisible } from "../../state/lighting";
-import { setPanel } from "../../state/session";
 
 export function GraphicsSettings() {
   const preferences = useStore(graphics, (v) => v);
@@ -55,14 +53,6 @@ export function GraphicsSettings() {
         sparks remain active with bloom off.
       </p>
       {error && <p role="status">{error}</p>}
-      <Button
-        onClick={() => {
-          setPanel(null);
-          lightingVisible.set(true);
-        }}
-      >
-        Open lighting tweaks (temporary)
-      </Button>
     </div>
   );
 }
