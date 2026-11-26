@@ -6,6 +6,8 @@ import { TooltipProvider } from "../../web/src/ui/Tooltip";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { Friends } from "../../web/src/features/friends/Friends";
+import { FriendsWindow } from "../../web/src/features/launcher/FriendsWindow";
+import { PlayOnline } from "../../web/src/features/play-online/PlayOnline";
 import { InvitePrompt } from "../../web/src/features/friends/InvitePrompt";
 import { createAccount } from "../../web/src/runtime/account";
 import { createFriends } from "../../web/src/runtime/friends";
@@ -142,6 +144,43 @@ it("lists requests, friends with presence, sent requests and blocks as rows", as
   expect(menuOf("Zed#0001").queryByRole("menuitem", { name: "Invite to group" })).toBeNull();
   expect(menuOf("Dot#0004").getByRole("menuitem", { name: "Withdraw request" })).toBeTruthy();
   expect(menuOf("Eve#0005").getByRole("menuitem", { name: "Unblock" })).toBeTruthy();
+});
+
+it("offers no party invitations in the in-game Friends window", async () => {
+  // Decided 2026-11-26: parties form outside the game; the ⋮ menu in game
+  // keeps Whisper, Remove friend and Block.
+  const { account } = fakeDoor({
+    "/api/auth/me": { status: 200, body: ROOK },
+    "/api/friends": { status: 200, body: LIST },
+  });
+  await account.refresh();
+  const fake = fakeQueue();
+  matchQueue.set(fake.queue);
+  await act(async () => {
+    render(<FriendsWindow />, { wrapper: TooltipProvider });
+  });
+  const menu = menuOf("Ash#1000");
+  expect(menu.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+    "Whisper",
+    "Remove friend",
+    "Block",
+  ]);
+  expect(screen.queryByRole("menuitem", { name: "Invite to group" })).toBeNull();
+  expect(fake.sent().some((m) => m.type === "invite")).toBe(false);
+});
+
+it("keeps party invitations in the home screen's friends list", async () => {
+  const { account } = fakeDoor({
+    "/api/auth/me": { status: 200, body: ROOK },
+    "/api/friends": { status: 200, body: LIST },
+  });
+  await account.refresh();
+  const fake = fakeQueue();
+  matchQueue.set(fake.queue);
+  await act(async () => {
+    render(<PlayOnline />, { wrapper: TooltipProvider });
+  });
+  expect(menuOf("Ash#1000").getByRole("menuitem", { name: "Invite to group" })).toBeTruthy();
 });
 
 it("adds through a prompt, accepts, removes and blocks after confirming, and words refusals", async () => {
@@ -455,12 +494,14 @@ it("closes only an open ⋮ menu on Escape, and answers a refused invitation", a
     });
     menuOf("Ash#1000");
     // The first item has focus; Escape closes the menu, not the window.
-    expect(document.activeElement?.textContent).toBe("Invite to group");
+    // (No Invite to group in game: decided 2026-11-26.)
+    expect(document.activeElement?.textContent).toBe("Whisper");
     fireEvent.keyDown(document.activeElement!, { key: "Escape", code: "Escape" });
     expect(screen.queryByRole("menu")).toBeNull();
     expect(friendsWindowVisible.get()).toBe(true);
     expect(document.activeElement?.getAttribute("aria-label")).toBe("Actions for Ash#1000");
-    fireEvent.click(menuOf("Ash#1000").getByRole("menuitem", { name: "Invite to group" }));
+    // An invitation sent before entering the game is still answered here.
+    fake.queue.invite("Ash#1000");
     fake.say({ type: "refused", code: "offline" });
     expect(screen.getByRole("alert").textContent).toMatch(/^This friend is offline\./);
   } finally {

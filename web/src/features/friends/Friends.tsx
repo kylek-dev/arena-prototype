@@ -230,11 +230,12 @@ function friendActions(
   friends: FriendsService,
   queue: Queue | null,
   inviting: boolean,
+  invites: boolean,
 ): Action[] {
   const act = (action: Parameters<FriendsService["act"]>[0]) => () =>
     void friends.act(action, friend.handle);
   return [
-    ...(queue && invitable(friend) && !inviting
+    ...(invites && queue && invitable(friend) && !inviting
       ? [{ label: "Invite to group", run: () => queue.invite(friend.handle) }]
       : []),
     ...(queue && friend.presence !== "offline"
@@ -254,8 +255,10 @@ function friendActions(
 /** The friends list (home screen and the F window; social-identity step 4):
  * requests to answer, friends with presence, requests sent and blocked
  * players, each with its actions in a ⋮ menu, and Add at the bottom.
- * Logged-in players only. */
-export function Friends() {
+ * Logged-in players only. `invites` offers Invite to group; the in-game
+ * window leaves it out, since parties form outside the game (decided
+ * 2026-11-26). */
+export function Friends({ invites = true }: { invites?: boolean }) {
   const account = useStore(accountService, (a) => a);
   const me = useStore(account?.state ?? NO_ACCOUNT, (s) => s.me);
   const friends = useStore(friendsService, (f) => f);
@@ -281,7 +284,8 @@ export function Friends() {
     );
   const busy = !!state.busy;
   const groups = state.list ? groupFriends(state.list) : null;
-  // A refused invitation is answered here, where it was sent from.
+  // A refused invitation is answered in either list (sent only from the
+  // home screen's; the in-game window may show its answer after entering).
   const inviteRefused =
     queueState.notice && INVITE_REFUSALS.has(queueState.notice)
       ? noticeText(queueState.notice)
@@ -350,7 +354,7 @@ export function Friends() {
             >
               <RowMenu
                 handle={friend.handle}
-                actions={friendActions(friend, friends, queue, !!queueState.inviting)}
+                actions={friendActions(friend, friends, queue, !!queueState.inviting, invites)}
               />
             </Row>
           ))}

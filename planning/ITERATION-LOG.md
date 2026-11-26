@@ -865,3 +865,13 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Changes:** `mapeditor` is an admin command (listed under **Admin commands**); `features/map-editor/access.ts` (`useAdmin`, `useMapEditorAllowed`) gates the menu button and the editor, which closes when access is lost; `mapEditorAllowed` in `state/map-editor.ts` also allows the local authoring server (`__map-editor/status` writable, `npm run dev`/`serve` only) so maps can be authored without a door, while the command stays admin-only everywhere.
 - **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/plan-launcher-hub`: see PR.
 - **Fresh-Eyes Review:** no Critical. Important (fixed): docs still presented the editor as open to everyone (README, BROWSER scenarios 19/20, the new scenario's test host). Minor (fixed): the editor stayed "visible" behind the render guard after logout; added guest/unprobed and real-logout tests and a test that `/mapeditor` stays unknown on the dev server.
+
+## 2026-11-26 — No party invitations in the in-game Friends window (playtest decision)
+- **Branch / Commit:** `auto/friends-no-invite`
+- **Base / PR:** `auto/admin-map-editor` (stacked on PR #115)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox: remove the friend Invite action from the in-game Friends window; the ⋮ menu keeps Whisper, Remove and Block.
+- **Changes:** `Friends({ invites })` (default on); `FriendsWindow` passes `invites={false}`; tests for the in-game menu items and the dock's Escape/refusal test now starting on Whisper.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/admin-map-editor`: see PR.
+- **Fresh-Eyes Review:** no Critical or Important. Minor (fixed): a stale comment on refused invitations, scenario 16 now says to invite from the home screen, a `PlayOnline` test pins the home list's Invite to group.
+
