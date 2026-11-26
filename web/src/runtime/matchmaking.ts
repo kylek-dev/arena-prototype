@@ -346,12 +346,12 @@ export function createQueue(deps: QueueDeps) {
      * which replays the moves the door has not applied yet). Moves go
      * straight onto the open socket: they are never refused in a way the
      * page answers, so they leave the refusal bookkeeping alone. */
-    moveHub(seq: number, x: number, z: number, facing: number) {
+    moveHub(seq: number, x: number, z: number, facing: number, jump = false) {
       if (!Number.isInteger(seq) || seq < 1 || seq > 2 ** 32 - 1) return;
       if (hub.get().status !== "in") return;
       if (socket?.readyState !== OPEN || state.get().connection !== "online") return;
       const intent = clampIntent(x, z, facing);
-      socket.send(hubRequests.move(seq, intent.x, intent.z, intent.facing));
+      socket.send(hubRequests.move(seq, intent.x, intent.z, intent.facing, jump === true));
     },
     /** The clock search times are measured on. */
     now: deps.now,

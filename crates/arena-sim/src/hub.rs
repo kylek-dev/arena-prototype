@@ -7,7 +7,7 @@
 //! a doorway); the plaza's edge and its columns are solid.
 
 use crate::TICKS_PER_SECOND;
-use crate::arena::{AXIS_LIMIT, Axes, BODY_RADIUS, MOVE_PER_TICK, Position};
+use crate::arena::{AXIS_LIMIT, Axes, BODY_RADIUS, GRAVITY, JUMP_SPEED, MOVE_PER_TICK, Position};
 
 /// Hub ticks per second: movement is integrated and sent this often.
 pub const HUB_TICKS_PER_SECOND: u64 = 10;
@@ -110,6 +110,8 @@ const _: () = {
 pub struct Intent {
     pub movement: Axes,
     pub facing: u16,
+    /// Jump this tick (only from the ground, as in the arena).
+    pub jump: bool,
 }
 
 impl Intent {
@@ -137,6 +139,80 @@ pub fn step(position: Position, intent: Intent) -> Position {
         z: start.z + i32::from(z) * HUB_MOVE_PER_TICK / length,
     };
     settle(moved)
+}
+
+/// Arena ticks per hub tick: the vertical motion runs the arena's own
+/// per-tick jump arithmetic this many times, so a hub jump is an arena jump.
+const ARENA_TICKS_PER_HUB_TICK: u32 = (TICKS_PER_SECOND / HUB_TICKS_PER_SECOND) as u32;
+
+/// A hub player's body: where they stand, how high they are, and the
+/// ground displacement they carry through a jump (no steering in the air,
+/// as in the arena).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Body {
+    pub at: Position,
+    /// Millimetres above the plaza.
+    pub height: i32,
+    /// Millimetres per arena tick, upwards.
+    pub vertical: i32,
+    /// Displacement per hub tick kept from the take-off.
+    pub momentum: Position,
+}
+
+/// No displacement.
+const STILL: Position = Position { x: 0, z: 0 };
+
+impl Body {
+    pub fn standing(at: Position) -> Self {
+        Self {
+            at: settle(at),
+            height: 0,
+            vertical: 0,
+            momentum: STILL,
+        }
+    }
+
+    pub fn airborne(self) -> bool {
+        self.height > 0 || self.vertical > 0
+    }
+}
+
+/// One hub tick of a body, in the arena's order: momentum carries an
+/// airborne body; on the ground the intent walks it (and the step becomes
+/// its momentum); a jump leaves the ground; then the vertical motion runs
+/// the arena's arithmetic for each arena tick in the hub tick. An invalid
+/// intent neither walks nor jumps.
+pub fn step_body(body: Body, intent: Intent) -> Body {
+    let mut next = body;
+    if body.airborne() {
+        next.at = settle(Position {
+            x: body.at.x.saturating_add(body.momentum.x),
+            z: body.at.z.saturating_add(body.momentum.z),
+        });
+    } else {
+        next.momentum = STILL;
+        if intent.is_valid() {
+            next.at = step(body.at, intent);
+            next.momentum = Position {
+                x: next.at.x - body.at.x,
+                z: next.at.z - body.at.z,
+            };
+            if intent.jump {
+                next.vertical = JUMP_SPEED;
+            }
+        }
+    }
+    for _ in 0..ARENA_TICKS_PER_HUB_TICK {
+        if next.airborne() {
+            next.height = (next.height + next.vertical).max(0);
+            next.vertical -= GRAVITY;
+            if next.height == 0 {
+                next.vertical = 0;
+                next.momentum = STILL;
+            }
+        }
+    }
+    next
 }
 
 /// The nearest walkable place to `position`: inside the plaza's edge and
@@ -198,6 +274,7 @@ mod tests {
         Intent {
             movement: Axes { x, z },
             facing: 0,
+            jump: false,
         }
     }
 
@@ -317,6 +394,63 @@ mod tests {
         let distinct: std::collections::HashSet<_> = points.iter().map(|p| (p.x, p.z)).collect();
         assert_eq!(distinct.len(), MAX_HUB_PLAYERS);
         assert_eq!(spawn_point(0), spawn_point(MAX_HUB_PLAYERS as u32));
+    }
+
+    #[test]
+    fn jumps_as_in_the_arena_and_keeps_its_momentum() {
+        let start = Body::standing(spawn_point(0));
+        // A standing jump rises, peaks and lands where it took off.
+        let mut body = step_body(
+            start,
+            Intent {
+                jump: true,
+                ..Intent::default()
+            },
+        );
+        assert!(body.airborne() && body.height > 0);
+        let mut apex = 0;
+        let mut ticks = 1;
+        while body.airborne() {
+            apex = apex.max(body.height);
+            // Jumping again in the air does nothing.
+            body = step_body(
+                body,
+                Intent {
+                    jump: true,
+                    ..Intent::default()
+                },
+            );
+            ticks += 1;
+            assert!(ticks < 20, "lands");
+        }
+        assert_eq!((body.at, body.height, body.vertical), (start.at, 0, 0));
+        // The arena's arc: about 0.73 s and 1.32 m (220 + 200 + … + 20 mm).
+        assert_eq!(ticks, 8);
+        assert_eq!(apex, 1_320);
+        // A running jump carries its take-off step and ignores steering.
+        let east = Intent {
+            movement: Axes {
+                x: AXIS_LIMIT,
+                z: 0,
+            },
+            facing: 0,
+            jump: true,
+        };
+        let west = Intent {
+            movement: Axes {
+                x: -AXIS_LIMIT,
+                z: 0,
+            },
+            ..Intent::default()
+        };
+        let mut body = step_body(start, east);
+        assert_eq!(body.momentum.x, HUB_MOVE_PER_TICK);
+        while body.airborne() {
+            let before = body.at.x;
+            body = step_body(body, west);
+            assert!(body.at.x > before, "still flying east");
+        }
+        assert_eq!(body.momentum, STILL);
     }
 
     #[test]

@@ -1111,7 +1111,7 @@ mod queue {
             .await;
         loop {
             let state = a.hub_state().await;
-            let (id, x, _, facing) = state.players[0];
+            let (id, x, _, facing, _) = state.players[0];
             if x > start.1 {
                 assert_eq!((id, facing), (b_id, 16384));
                 break;

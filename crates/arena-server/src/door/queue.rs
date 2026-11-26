@@ -160,12 +160,14 @@ enum FromClient {
         #[serde(default)]
         friend: Option<String>,
     },
-    /// The current movement intent in the hub and its sequence number.
+    /// One hub tick of walking (and jumping) and its sequence number.
     HubMove {
         seq: u32,
         x: i16,
         z: i16,
         facing: u16,
+        #[serde(default)]
+        jump: bool,
     },
     HubLeave {},
 }
@@ -2023,12 +2025,19 @@ fn command(conn: QueueConn, message: FromClient) -> Result<Command, &'static str
         },
         // Needs the store to find a friend; checked by the connection first.
         FromClient::HubJoin { .. } => return Err("Join the hub through the connection."),
-        FromClient::HubMove { seq, x, z, facing } => Command::HubMove {
+        FromClient::HubMove {
+            seq,
+            x,
+            z,
+            facing,
+            jump,
+        } => Command::HubMove {
             conn,
             seq,
             intent: Intent {
                 movement: Axes { x, z },
                 facing,
+                jump,
             },
         },
         FromClient::HubLeave {} => Command::HubLeave { conn },

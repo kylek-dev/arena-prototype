@@ -1860,7 +1860,7 @@ mod platform {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen(
-        inline_js = "export function arena_character() { const id = globalThis.arenaShell.characterModel; return typeof id === 'string' ? id : undefined; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(tag) { globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); } export function arena_map() { return globalThis.arenaShell.readMap?.() ?? []; } export function arena_map_status(json) { globalThis.arenaShell.onMapStatus?.(JSON.parse(json)); } export function arena_appearance() { return globalThis.arenaShell.readAppearance?.() ?? []; } export function arena_preview() { return globalThis.arenaShell.readPreview?.() ?? []; } export function arena_network() { return globalThis.arenaShell.readNetwork?.() ?? []; } export function arena_network_send(frame) { globalThis.arenaShell.sendNetwork?.(frame.slice()); } export function arena_network_status(json) { globalThis.arenaShell.onNetwork?.(JSON.parse(json)); } export function arena_network_appearances(json) { globalThis.arenaShell.onAppearances?.(JSON.parse(json)); } export function arena_network_handles(json) { globalThis.arenaShell.onHandles?.(JSON.parse(json)); } export function arena_network_tags(json) { globalThis.arenaShell.onTags?.(JSON.parse(json)); } export function arena_hub() { return globalThis.arenaShell.readHub?.() ?? []; } export function arena_hub_intent(seq, x, z, facing) { globalThis.arenaShell.onHubIntent?.(seq, x, z, facing); } export function arena_hub_screen(json) { globalThis.arenaShell.onHubScreen?.(json); }"
+        inline_js = "export function arena_character() { const id = globalThis.arenaShell.characterModel; return typeof id === 'string' ? id : undefined; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(tag) { globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); } export function arena_map() { return globalThis.arenaShell.readMap?.() ?? []; } export function arena_map_status(json) { globalThis.arenaShell.onMapStatus?.(JSON.parse(json)); } export function arena_appearance() { return globalThis.arenaShell.readAppearance?.() ?? []; } export function arena_preview() { return globalThis.arenaShell.readPreview?.() ?? []; } export function arena_network() { return globalThis.arenaShell.readNetwork?.() ?? []; } export function arena_network_send(frame) { globalThis.arenaShell.sendNetwork?.(frame.slice()); } export function arena_network_status(json) { globalThis.arenaShell.onNetwork?.(JSON.parse(json)); } export function arena_network_appearances(json) { globalThis.arenaShell.onAppearances?.(JSON.parse(json)); } export function arena_network_handles(json) { globalThis.arenaShell.onHandles?.(JSON.parse(json)); } export function arena_network_tags(json) { globalThis.arenaShell.onTags?.(JSON.parse(json)); } export function arena_hub() { return globalThis.arenaShell.readHub?.() ?? []; } export function arena_hub_intent(seq, x, z, facing, jump) { globalThis.arenaShell.onHubIntent?.(seq, x, z, facing, jump); } export function arena_hub_screen(json) { globalThis.arenaShell.onHubScreen?.(json); }"
     )]
     extern "C" {
         fn arena_character() -> Option<String>;
@@ -1882,7 +1882,7 @@ mod platform {
         fn arena_network_handles(json: &str);
         fn arena_network_tags(json: &str);
         fn arena_hub() -> js_sys::Array;
-        fn arena_hub_intent(seq: u32, x: i16, z: i16, facing: u16);
+        fn arena_hub_intent(seq: u32, x: i16, z: i16, facing: u16, jump: bool);
         fn arena_hub_screen(json: &str);
     }
     /// The page's hub (ADR 0056) as `[revision, json]`; older shells send none.
@@ -1891,8 +1891,8 @@ mod platform {
         let revision = values.get(0).as_f64().filter(|r| r.is_finite())?;
         Some((revision, values.get(1).as_string()?))
     }
-    pub fn hub_intent(seq: u32, x: i16, z: i16, facing: u16) {
-        arena_hub_intent(seq, x, z, facing);
+    pub fn hub_intent(seq: u32, x: i16, z: i16, facing: u16, jump: bool) {
+        arena_hub_intent(seq, x, z, facing, jump);
     }
     pub fn hub_screen(json: &str) {
         arena_hub_screen(json);
@@ -3132,7 +3132,7 @@ mod tests {
         platform::HUB_INTENTS.lock().unwrap().clear();
         *platform::HUB.lock().unwrap() = Some((
             1.0,
-            r#"{"x":-5250,"z":24000,"tick":1,"ack":0,"players":[{"id":7,"x":0,"z":30000,"facing":0,"admin":false,"spec":null}]}"#.into(),
+            r#"{"x":-5250,"z":24000,"y":0,"vy":0,"mx":0,"mz":0,"tick":1,"ack":0,"players":[{"id":7,"x":0,"z":30000,"facing":0,"height":0,"admin":false,"spec":null}]}"#.into(),
         ));
         app.update();
         app.update();
@@ -3168,7 +3168,7 @@ mod tests {
         app.update();
         assert_eq!(
             platform::HUB_INTENTS.lock().unwrap().first().copied(),
-            Some((1, 1000, 0, 0))
+            Some((1, 1000, 0, 0, false))
         );
         assert_eq!(app.world().resource::<Practice>().movement, Vec2::ZERO);
         assert!(app.world().resource::<hub::Hub>().active());
@@ -3289,14 +3289,15 @@ mod platform {
     pub static STATUS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
     /// Tests stand in for the page's hub through these.
     pub static HUB: std::sync::Mutex<Option<(f64, String)>> = std::sync::Mutex::new(None);
-    pub static HUB_INTENTS: std::sync::Mutex<Vec<(u32, i16, i16, u16)>> =
-        std::sync::Mutex::new(Vec::new());
+    /// One hub move: sequence number, axes, facing and jump.
+    pub type HubMove = (u32, i16, i16, u16, bool);
+    pub static HUB_INTENTS: std::sync::Mutex<Vec<HubMove>> = std::sync::Mutex::new(Vec::new());
     pub static HUB_SCREEN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
     pub fn read_hub() -> Option<(f64, String)> {
         HUB.lock().unwrap().clone()
     }
-    pub fn hub_intent(seq: u32, x: i16, z: i16, facing: u16) {
-        HUB_INTENTS.lock().unwrap().push((seq, x, z, facing));
+    pub fn hub_intent(seq: u32, x: i16, z: i16, facing: u16, jump: bool) {
+        HUB_INTENTS.lock().unwrap().push((seq, x, z, facing, jump));
     }
     pub fn hub_screen(json: &str) {
         *HUB_SCREEN.lock().unwrap() = Some(json.to_owned());

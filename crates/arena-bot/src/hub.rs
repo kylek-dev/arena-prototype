@@ -86,7 +86,7 @@ enum FromDoor {
         instance: u32,
     },
     HubState {
-        players: Vec<(u32, i32, i32, u16)>,
+        players: Vec<(u32, i32, i32, u16, i32)>,
     },
     Refused {
         code: String,

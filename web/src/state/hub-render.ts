@@ -39,6 +39,7 @@ export function readHub(): unknown[] {
         ? JSON.stringify({
             x: hub.x,
             z: hub.z,
+            ...hub.body,
             tick: hub.tick,
             // The last move the door applied: the renderer replays the rest.
             ack: hub.ack,
@@ -47,6 +48,7 @@ export function readHub(): unknown[] {
               x: player.x,
               z: player.z,
               facing: player.facing,
+              height: player.height,
               admin: player.admin,
               spec: specFor(player.appearance),
             })),
@@ -58,9 +60,9 @@ export function readHub(): unknown[] {
   return [revision, cache.json];
 }
 
-/** One numbered hub tick of the renderer's walk. */
-export function onHubIntent(seq: number, x: number, z: number, facing: number) {
-  matchQueue.get()?.moveHub(seq, x, z, facing);
+/** One numbered hub tick of the renderer's walk (and jump). */
+export function onHubIntent(seq: number, x: number, z: number, facing: number, jump?: boolean) {
+  matchQueue.get()?.moveHub(seq, x, z, facing, jump === true);
 }
 
 export type HubAnchor = { id: number; x: number; y: number };

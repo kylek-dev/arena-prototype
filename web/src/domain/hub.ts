@@ -108,11 +108,17 @@ export type HubPlayer = {
   handle: string;
   admin: boolean;
   appearance: WireAppearanceJson;
-  /** Place in millimetres and facing (a binary angle, 65536 per turn). */
+  /** Place in millimetres, facing (a binary angle, 65536 per turn) and
+   * height above the plaza in millimetres (jumping). */
   x: number;
   z: number;
   facing: number;
+  height: number;
 };
+
+/** This player's body as the door last sent it: with `x`, `z`, enough for
+ * the renderer to replay its moves after `ack` exactly. */
+export type HubBody = { y: number; vy: number; mx: number; mz: number };
 
 export type HubState = {
   /** Not in the hub, asked to join, or in an instance. */
@@ -123,6 +129,7 @@ export type HubState = {
   /** This player's place, as the door last sent it (millimetres). */
   x: number;
   z: number;
+  body: HubBody;
   /** The last intent the door applied, and its hub tick. */
   ack: number;
   tick: number;
@@ -138,6 +145,7 @@ export const OUT_OF_HUB: HubState = {
   you: null,
   x: 0,
   z: 0,
+  body: { y: 0, vy: 0, mx: 0, mz: 0 },
   ack: 0,
   tick: 0,
   players: new Map(),
@@ -153,7 +161,8 @@ export type HubMessage =
       ack: number;
       x: number;
       z: number;
-      players: [number, number, number, number][];
+      body: HubBody;
+      players: [number, number, number, number, number][];
       enter: Entered[];
       exit: number[];
     }
@@ -190,6 +199,10 @@ export function parseHubMessage(raw: unknown): HubMessage | null {
         !int(v.ack, 0, U32) ||
         !int(v.x, -COORD, COORD) ||
         !int(v.z, -COORD, COORD) ||
+        !int(v.y, 0, COORD) ||
+        !int(v.vy, -COORD, COORD) ||
+        !int(v.mx, -COORD, COORD) ||
+        !int(v.mz, -COORD, COORD) ||
         !Array.isArray(v.players) ||
         v.players.length >= MAX_HUB_PLAYERS
       )
@@ -199,11 +212,12 @@ export function parseHubMessage(raw: unknown): HubMessage | null {
         !players.every(
           (p) =>
             Array.isArray(p) &&
-            p.length === 4 &&
+            p.length === 5 &&
             int(p[0], 1, U32) &&
             int(p[1], -COORD, COORD) &&
             int(p[2], -COORD, COORD) &&
-            int(p[3], 0, 65535),
+            int(p[3], 0, 65535) &&
+            int(p[4], 0, COORD),
         )
       )
         return null;
@@ -231,7 +245,8 @@ export function parseHubMessage(raw: unknown): HubMessage | null {
         ack: v.ack,
         x: v.x,
         z: v.z,
-        players: players as [number, number, number, number][],
+        body: { y: v.y, vy: v.vy, mx: v.mx, mz: v.mz },
+        players: players as [number, number, number, number, number][],
         enter,
         exit: exit as number[],
       };
@@ -265,7 +280,7 @@ export function applyHubMessage(state: HubState, message: HubMessage): HubState 
       for (const id of message.exit) known.delete(id);
       const entered = new Map(message.enter.map((entry) => [entry.id, entry]));
       const players = new Map<number, HubPlayer>();
-      for (const [id, x, z, facing] of message.players) {
+      for (const [id, x, z, facing, height] of message.players) {
         const who = entered.get(id) ?? known.get(id);
         // A player whose name and look never arrived waits for them.
         if (who)
@@ -277,6 +292,7 @@ export function applyHubMessage(state: HubState, message: HubMessage): HubState 
             x,
             z,
             facing,
+            height,
           });
       }
       return {
@@ -285,6 +301,7 @@ export function applyHubMessage(state: HubState, message: HubMessage): HubState 
         ack: message.ack,
         x: message.x,
         z: message.z,
+        body: message.body,
         players,
       };
     }
@@ -296,8 +313,12 @@ export const hubRequests = {
     JSON.stringify(
       friend ? { type: "hub_join", appearance, friend } : { type: "hub_join", appearance },
     ),
-  move: (seq: number, x: number, z: number, facing: number) =>
-    JSON.stringify({ type: "hub_move", seq, x, z, facing }),
+  move: (seq: number, x: number, z: number, facing: number, jump = false) =>
+    JSON.stringify(
+      jump
+        ? { type: "hub_move", seq, x, z, facing, jump }
+        : { type: "hub_move", seq, x, z, facing },
+    ),
   leave: () => JSON.stringify({ type: "hub_leave" }),
 };
 

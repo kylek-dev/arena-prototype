@@ -952,3 +952,8 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fix:** the window's class is `hub-panel`; hub chat lines get their own colour (`--pal-leaf-5`); `tests/unit/hud-css.test.mjs` fails on any stylesheet styling a bare channel class (checked to catch the old rule and allow `.chat-line.hub`).
 - **Checks Observed:** typecheck, Biome lint and format, palette check, `npm test` (56 Node, 58 Vitest files / 473 tests), `npm run build`.
 
+## 2026-11-26 — Jumping in the hub (playtest)
+- **Branch / Commit:** `auto/hub-render` (PR #122; rules, door, page and client)
+- **Task:** the user could not jump in the hub: the first hub rules only walked, and the client dropped the jump key there.
+- **Changes:** `arena_sim::hub::{Body, step_body}` (the arena's jump: ground only, `JUMP_SPEED`/`GRAVITY` run three times per hub tick, take-off step kept as momentum, no air steering; tested: 8 hub ticks, apex 1.32 m as in the arena); the door keeps a body per player, `hub_move` gains `jump`, `hub_state` gains this player's `y`, `vy`, `mx`, `mz` and each player's height; the page parses and forwards them; the client predicts and replays bodies (sending a move every airborne tick), draws heights, and plays the jump animations for the local player and others. ADR 0056 and PROTOCOL amended.
+

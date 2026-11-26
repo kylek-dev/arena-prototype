@@ -498,7 +498,7 @@ declare global {
       /** The hub for the renderer (ADR 0056): `[revision, json]`. */
       readHub?: () => unknown[];
       /** One numbered hub tick of the local player's walk, from the renderer. */
-      onHubIntent?: (seq: number, x: number, z: number, facing: number) => void;
+      onHubIntent?: (seq: number, x: number, z: number, facing: number, jump?: boolean) => void;
       /** `[[id, x, y], ...]`: where each hub player's name goes on screen. */
       onHubScreen?: (json: string) => void;
       onState: (state: unknown) => void;

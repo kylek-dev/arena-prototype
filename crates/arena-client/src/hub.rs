@@ -9,7 +9,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use arena_sim::arena::{AXIS_LIMIT, Axes, Position};
-use arena_sim::hub::{self as rules, HUB_TICKS_PER_SECOND, Intent, MAX_HUB_PLAYERS};
+use arena_sim::hub::{self as rules, Body, HUB_TICKS_PER_SECOND, Intent, MAX_HUB_PLAYERS};
 use bevy::prelude::*;
 
 /// Kit instances for hub players use actors from here up, one per slot, so
@@ -31,6 +31,8 @@ pub struct Seen {
     pub x: i32,
     pub z: i32,
     pub facing: u16,
+    /// Millimetres above the plaza (jumping).
+    pub height: i32,
     pub admin: bool,
     /// The render spec for their look (as the arena's roster specs), or
     /// `None` when the page could not build one (a kit not installed).
@@ -42,6 +44,12 @@ pub struct Seen {
 pub struct View {
     pub x: i32,
     pub z: i32,
+    /// This player's height, upward speed and jump momentum: with `x`, `z`
+    /// the door's whole body for it.
+    pub y: i32,
+    pub vy: i32,
+    pub mx: i32,
+    pub mz: i32,
     pub tick: u64,
     /// The last of this player's moves the door applied.
     pub ack: u32,
@@ -70,6 +78,7 @@ pub fn parse_view(json: &str) -> Option<View> {
                 .get("facing")?
                 .as_u64()
                 .and_then(|n| u16::try_from(n).ok())?,
+            height: int(p.get("height")?)?.max(0),
             admin: p.get("admin")?.as_bool()?,
             spec: p.get("spec").filter(|spec| spec.is_object()).cloned(),
         });
@@ -77,6 +86,10 @@ pub fn parse_view(json: &str) -> Option<View> {
     Some(View {
         x: int(object.get("x")?)?,
         z: int(object.get("z")?)?,
+        y: int(object.get("y")?)?.max(0),
+        vy: int(object.get("vy")?)?,
+        mx: int(object.get("mx")?)?,
+        mz: int(object.get("mz")?)?,
         tick: object.get("tick")?.as_u64()?,
         ack: object
             .get("ack")?
@@ -96,6 +109,11 @@ pub fn world(at: Position) -> Vec3 {
     Vec3::new(at.x as f32 / 1000.0, 0.0, at.z as f32 / 1000.0)
 }
 
+/// A body in world metres, its height included.
+pub fn body_world(body: Body) -> Vec3 {
+    world(body.at) + Vec3::Y * body.height as f32 / 1000.0
+}
+
 /// The local player's walk, predicted with the door's rules: one numbered
 /// move per hub tick (sent to the door, which applies each once, in order),
 /// drawn between the last two steps. Each door state is reconciled by
@@ -104,9 +122,12 @@ pub fn world(at: Position) -> Vec3 {
 /// screen fades out instead of jumping.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Walk {
-    pub previous: Position,
-    pub current: Position,
+    pub previous: Body,
+    pub current: Body,
+    /// The ground intent (walking and facing); a jump press waits in `jump`
+    /// for the next step.
     pub intent: Intent,
+    pub jump: bool,
     /// Seconds into the current hub tick.
     pub elapsed: f32,
     /// The last move's number, and the moves the door has not applied.
@@ -120,10 +141,12 @@ pub struct Walk {
 
 impl Walk {
     pub fn at(start: Position) -> Self {
+        let body = Body::standing(start);
         Self {
-            previous: start,
-            current: start,
+            previous: body,
+            current: body,
             intent: Intent::default(),
+            jump: false,
             elapsed: 0.0,
             seq: 0,
             pending: VecDeque::new(),
@@ -133,7 +156,8 @@ impl Walk {
     }
 
     /// Advances by `dt` seconds of the current intent; returns the moves to
-    /// send (one per step that walks or turns).
+    /// send: one per step that walks, turns, jumps or is in the air (so the
+    /// door's replay of a jump matches tick for tick).
     pub fn advance(&mut self, dt: f32) -> Vec<(u32, Intent)> {
         let dt = dt.clamp(0.0, 1.0);
         self.error *= (-BLEND_PER_SECOND * dt).exp();
@@ -141,17 +165,22 @@ impl Walk {
         let mut moves = Vec::new();
         while self.elapsed >= STEP {
             self.elapsed -= STEP;
+            let intent = Intent {
+                jump: std::mem::take(&mut self.jump),
+                ..self.intent
+            };
+            let flying = self.current.airborne();
             self.previous = self.current;
-            self.current = rules::step(self.current, self.intent);
-            let walking = self.intent.movement != Axes::default();
-            if walking || self.intent != self.sent {
+            self.current = rules::step_body(self.current, intent);
+            let walking = intent.movement != Axes::default();
+            if walking || flying || intent.jump || intent != self.sent {
                 self.seq = self.seq.wrapping_add(1).max(1);
-                self.sent = self.intent;
-                self.pending.push_back((self.seq, self.intent));
+                self.sent = intent;
+                self.pending.push_back((self.seq, intent));
                 if self.pending.len() > MAX_PENDING {
                     self.pending.pop_front();
                 }
-                moves.push((self.seq, self.intent));
+                moves.push((self.seq, intent));
             }
         }
         moves
@@ -159,12 +188,12 @@ impl Walk {
 
     /// Where to draw the player now.
     pub fn shown(&self) -> Vec3 {
-        world(self.previous).lerp(world(self.current), self.elapsed / STEP) + self.error
+        body_world(self.previous).lerp(body_world(self.current), self.elapsed / STEP) + self.error
     }
 
-    /// The door's place for this player after its move `ack`: replays the
+    /// The door's body for this player after its move `ack`: replays the
     /// moves after it from there.
-    pub fn reconcile(&mut self, door: Position, ack: u32) {
+    pub fn reconcile(&mut self, door: Body, ack: u32) {
         let before = self.shown();
         while self.pending.front().is_some_and(|(seq, _)| *seq <= ack) {
             self.pending.pop_front();
@@ -173,7 +202,7 @@ impl Walk {
         let mut last = door;
         for (_, intent) in &self.pending {
             last = at;
-            at = rules::step(at, *intent);
+            at = rules::step_body(at, *intent);
         }
         // Mid-step, the drawn position blends from the step before.
         self.previous = if self.pending.is_empty() { at } else { last };
@@ -197,6 +226,7 @@ pub fn intent(movement: Vec2, heading: u16) -> Intent {
             z: axis(movement.y),
         },
         facing: heading,
+        jump: false,
     }
 }
 
@@ -239,6 +269,27 @@ impl Hub {
     pub fn active(&self) -> bool {
         self.walk.is_some()
     }
+
+    /// Height (mm) and upward speed (mm per arena tick) to animate a hub
+    /// avatar's jump with: the local walk's own, or estimated for others
+    /// from their last two places.
+    pub fn airborne(&self, slot: Option<usize>) -> (i32, i32) {
+        match slot {
+            None => self
+                .walk
+                .as_ref()
+                .map_or((0, 0), |walk| (walk.current.height, walk.current.vertical)),
+            Some(slot) => self
+                .remotes
+                .values()
+                .find(|remote| remote.slot == slot)
+                .map_or((0, 0), |remote| {
+                    let height = (remote.to.y * 1000.0) as i32;
+                    let rising = ((remote.to.y - remote.from.y) * 1000.0) as i32;
+                    (height, rising / 3)
+                }),
+        }
+    }
 }
 
 /// Graybox colours for the plaza: the arena's stone, a darker trim.
@@ -276,9 +327,17 @@ pub(crate) fn read(
         }
         return;
     };
-    let door = Position {
-        x: view.x,
-        z: view.z,
+    let door = Body {
+        at: Position {
+            x: view.x,
+            z: view.z,
+        },
+        height: view.y,
+        vertical: view.vy,
+        momentum: Position {
+            x: view.mx,
+            z: view.mz,
+        },
     };
     if !hub.active() {
         // Entering: the arena's venue gives way to the plaza.
@@ -286,7 +345,7 @@ pub(crate) fn read(
             *visibility = Visibility::Hidden;
         }
         spawn_plaza(&mut commands, &mut meshes, &mut materials);
-        hub.walk = Some(Walk::at(rules::settle(door)));
+        hub.walk = Some(Walk::at(door.at));
         if let Some(orbit) = orbit.as_mut() {
             orbit.eye = None;
         }
@@ -318,7 +377,7 @@ pub(crate) fn read(
         let to = world(Position {
             x: seen.x,
             z: seen.z,
-        });
+        }) + Vec3::Y * seen.height as f32 / 1000.0;
         let facing = yaw(seen.facing);
         if let Some(remote) = hub.remotes.get_mut(&seen.id) {
             remote.from = shown.get(&seen.id).copied().unwrap_or(remote.to);
@@ -440,6 +499,8 @@ pub(crate) fn steer(mut hub: ResMut<Hub>, mut practice: ResMut<crate::Practice>)
         return;
     };
     walk.intent = intent(practice.movement, crate::binary_angle(practice.facing));
+    // A jump press waits for the walk's next step.
+    walk.jump |= practice.jump;
     practice.movement = Vec2::ZERO;
     practice.cast = None;
     practice.jump = false;
@@ -466,7 +527,13 @@ pub(crate) fn advance(
     if let Some(walk) = hub.walk.as_mut() {
         // Each step that walks or turns goes to the door, numbered.
         for (seq, step) in walk.advance(dt) {
-            crate::platform::hub_intent(seq, step.movement.x, step.movement.z, step.facing);
+            crate::platform::hub_intent(
+                seq,
+                step.movement.x,
+                step.movement.z,
+                step.facing,
+                step.jump,
+            );
         }
     }
     for remote in hub.remotes.values_mut() {
@@ -603,7 +670,7 @@ mod tests {
     fn reads_the_pages_hub_strictly() {
         assert_eq!(parse_view("null"), None);
         let view = parse_view(
-            r#"{"x":-5250,"z":24000,"tick":7,"ack":3,"players":[{"id":3,"x":10,"z":-20,"facing":16384,"admin":true,"spec":{"kit":{}}},{"id":4,"x":0,"z":0,"facing":0,"admin":false,"spec":null}]}"#,
+            r#"{"x":-5250,"z":24000,"y":0,"vy":0,"mx":0,"mz":0,"tick":7,"ack":3,"players":[{"id":3,"x":10,"z":-20,"facing":16384,"height":400,"admin":true,"spec":{"kit":{}}},{"id":4,"x":0,"z":0,"facing":0,"height":0,"admin":false,"spec":null}]}"#,
         )
         .unwrap();
         assert_eq!((view.x, view.z, view.tick, view.ack), (-5250, 24000, 7, 3));
@@ -612,18 +679,18 @@ mod tests {
         for bad in [
             r#"{"x":0,"z":0,"tick":1,"ack":0}"#,
             r#"{"x":0,"z":0,"tick":1,"players":[]}"#,
-            r#"{"x":0.5,"z":0,"tick":1,"ack":0,"players":[]}"#,
-            r#"{"x":0,"z":0,"tick":1,"ack":0,"players":[{"id":3,"x":0,"z":0,"facing":70000,"admin":false}]}"#,
-            r#"{"x":0,"z":0,"tick":1,"ack":0,"players":[{"id":-1,"x":0,"z":0,"facing":0,"admin":false}]}"#,
+            r#"{"x":0.5,"z":0,"y":0,"vy":0,"mx":0,"mz":0,"tick":1,"ack":0,"players":[]}"#,
+            r#"{"x":0,"z":0,"y":0,"vy":0,"mx":0,"mz":0,"tick":1,"ack":0,"players":[{"id":3,"x":0,"z":0,"facing":70000,"admin":false}]}"#,
+            r#"{"x":0,"z":0,"y":0,"vy":0,"mx":0,"mz":0,"tick":1,"ack":0,"players":[{"id":-1,"x":0,"z":0,"facing":0,"admin":false}]}"#,
             "[1,2]",
         ] {
             assert_eq!(parse_view(bad), None, "{bad}");
         }
         let crowd: Vec<String> = (1..=MAX_HUB_PLAYERS)
-            .map(|id| format!(r#"{{"id":{id},"x":0,"z":0,"facing":0,"admin":false}}"#))
+            .map(|id| format!(r#"{{"id":{id},"x":0,"z":0,"facing":0,"height":0,"admin":false}}"#))
             .collect();
         let crowd = format!(
-            r#"{{"x":0,"z":0,"tick":1,"ack":0,"players":[{}]}}"#,
+            r#"{{"x":0,"z":0,"y":0,"vy":0,"mx":0,"mz":0,"tick":1,"ack":0,"players":[{}]}}"#,
             crowd.join(",")
         );
         assert_eq!(parse_view(&crowd), None, "never more than 39 others");
@@ -643,15 +710,15 @@ mod tests {
             sent.iter().map(|(seq, _)| *seq).collect::<Vec<_>>(),
             [1, 2, 3]
         );
-        let mut door = start;
+        let mut door = Body::standing(start);
         for _ in 0..3 {
-            door = rules::step(door, walk.intent);
+            door = rules::step_body(door, walk.intent);
         }
         assert_eq!(walk.current, door);
         // The door has applied the first move only: replaying the other two
         // lands exactly where the prediction stood, so nothing moves.
         let shown = walk.shown();
-        walk.reconcile(rules::step(start, walk.intent), 1);
+        walk.reconcile(rules::step_body(Body::standing(start), walk.intent), 1);
         assert_eq!(walk.current, door);
         assert!(walk.shown().abs_diff_eq(shown, 1e-4));
         // Stopping sends one standing move, then nothing.
@@ -664,10 +731,10 @@ mod tests {
         // A small disagreement fades out instead of jumping.
         let before = walk.shown();
         walk.reconcile(
-            Position {
-                x: door.x - 500,
-                z: door.z,
-            },
+            Body::standing(Position {
+                x: door.at.x - 500,
+                z: door.at.z,
+            }),
             u32::MAX,
         );
         assert!(walk.shown().abs_diff_eq(before, 1e-4), "drawn where it was");
@@ -675,7 +742,7 @@ mod tests {
             walk.advance(1.0 / 60.0);
         }
         assert!(
-            walk.shown().abs_diff_eq(world(walk.current), 0.01),
+            walk.shown().abs_diff_eq(body_world(walk.current), 0.01),
             "faded out"
         );
         // A large one is a jump.
@@ -683,8 +750,19 @@ mod tests {
             x: start.x,
             z: start.z - 10_000,
         };
-        walk.reconcile(far, u32::MAX);
+        walk.reconcile(Body::standing(far), u32::MAX);
         assert!(walk.shown().abs_diff_eq(world(far), 1e-4));
+        // A jump rises, is sent every airborne tick, and lands.
+        walk.intent = intent(Vec2::ZERO, 9000);
+        walk.jump = true;
+        let first = walk.advance(STEP);
+        assert!(first[0].1.jump && walk.current.height > 0);
+        let mut airborne_moves = 0;
+        while walk.current.airborne() {
+            airborne_moves += walk.advance(STEP).len();
+        }
+        assert_eq!(airborne_moves, 7, "one per airborne tick");
+        assert!(walk.advance(STEP).is_empty(), "landed and standing");
         // A frame hitch never runs away: at most a second of steps.
         walk.intent = intent(Vec2::new(0.0, -1.0), 0);
         assert_eq!(walk.advance(60.0).len(), 10);
@@ -696,7 +774,8 @@ mod tests {
             intent(Vec2::new(0.6, -2.0), 123),
             Intent {
                 movement: Axes { x: 600, z: -1000 },
-                facing: 123
+                facing: 123,
+                jump: false,
             }
         );
         assert!(intent(Vec2::new(1.0, 1.0), 0).is_valid());

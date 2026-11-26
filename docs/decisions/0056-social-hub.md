@@ -59,6 +59,10 @@ lives in the front door's queue task, reached over the queue WebSocket.
   nothing to send.
 - **No combat.** Nothing in the hub damages, casts or collides with other
   players (bodies pass through each other, so nobody can block a doorway).
+- **Jumping** (added 2026-11-26 after a playtest) is the arena's jump: from
+  the ground only, the same take-off speed and gravity (the arena's three
+  30 Hz steps per hub tick), the take-off step carried through the air
+  without steering. The door owns it; others see each player's height.
   Duels and training dummies are later work.
 - **Prediction.** The client sends one numbered move per hub tick while
   walking or turning; the door applies each once, in order (a player with

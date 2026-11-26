@@ -63,9 +63,13 @@ function inHub() {
     ack: 0,
     x: 0,
     z: 24000,
+    y: 0,
+    vy: 0,
+    mx: 0,
+    mz: 0,
     players: [
-      [2, 0, 30000, 0],
-      [3, 3000, 24000, 0],
+      [2, 0, 30000, 0, 0],
+      [3, 3000, 24000, 0, 0],
     ],
     enter: [
       { id: 2, handle: "Ash#1000", admin: false, appearance: LOOK },
@@ -266,7 +270,18 @@ it("hands the renderer the hub, and only a new revision when it changed", async 
   expect(fake.sent().at(-1)).toEqual({ type: "hub_move", seq: 1, x: 1000, z: 0, facing: 0 });
   // The renderer replays the moves after the door's last applied one.
   expect(JSON.parse(readHub()[1] as string).ack).toBe(0);
-  fake.say({ type: "hub_state", tick: 2, ack: 1, x: 720, z: 24000, players: [] });
+  fake.say({
+    type: "hub_state",
+    tick: 2,
+    ack: 1,
+    x: 720,
+    z: 24000,
+    y: 0,
+    vy: 0,
+    mx: 0,
+    mz: 0,
+    players: [],
+  });
   expect(JSON.parse(readHub()[1] as string).ack).toBe(1);
   // Names on screen: malformed entries are dropped, an unchanged list is quiet.
   onHubScreen('[[2,0.5,0.25],[3,2,0.5],["x",0,0]]');
