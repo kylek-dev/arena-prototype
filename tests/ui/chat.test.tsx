@@ -6,6 +6,8 @@ import { initial } from "../../web/src/domain/preferences/schema";
 import { installInput } from "../../web/src/runtime/input-router";
 import { persistence, preferences, updateConfig } from "../../web/src/state/config";
 import { matchQueue } from "../../web/src/state/network";
+import { friendsService } from "../../web/src/state/account";
+import { createFriends } from "../../web/src/runtime/friends";
 import { engine, error, focus, interaction, selectedLayout } from "../../web/src/state/session";
 import { fakeQueue } from "./fake-queue";
 import { snapshot } from "./fixtures";
@@ -67,9 +69,13 @@ it("opens with Enter, keeps keys from combat while typing, and sends with Enter"
 it("marks unread tabs, switches channels and shows refusals in words", async () => {
   const user = userEvent.setup();
   render(<App />);
+  // All is shown first, with everything in it.
+  expect(screen.getByRole("tab", { name: /^All/, selected: true })).toBeTruthy();
+  await user.click(screen.getByRole("tab", { name: /^Public/ }));
   chatMessage({ channel: "team", text: "push left", admin: true });
-  const team = screen.getByRole("tab", { name: /Team/ });
+  const team = screen.getByRole("tab", { name: /^Team/ });
   expect(within(team).getByLabelText("1 unread")).toBeTruthy();
+  expect(within(screen.getByRole("tab", { name: /^All/ })).getByLabelText("1 unread")).toBeTruthy();
   await user.click(team);
   expect(within(team).queryByLabelText("1 unread")).toBeNull();
   const log = screen.getByRole("log", { name: "Team" });
@@ -99,30 +105,50 @@ it("refuses over-long messages before sending", async () => {
   const before = fake.sent().length;
   await user.keyboard("{Enter}");
   expect(fake.sent()).toHaveLength(before);
-  expect(screen.getByText(/Too long: 200 characters at most/)).toBeTruthy();
+  expect(screen.getByText("Messages hold up to 200 characters.")).toBeTruthy();
 });
 
-it("whispers from a name, answers the last whisperer and ignores players", async () => {
+it("whispers with /w in a purple field, opens a tab per partner and ignores players", async () => {
   const user = userEvent.setup();
   render(<App />);
   chatMessage({ text: "hello all" });
+  // Whisper from a name: the field starts `/w Rook#0042 ` and turns purple.
   await user.click(screen.getByRole("button", { name: "[Public] Rook#0042: options" }));
   await user.click(screen.getByRole("menuitem", { name: "Whisper" }));
-  expect(screen.getByRole("tab", { name: "Whispers", selected: true })).toBeTruthy();
-  expect((screen.getByRole("textbox", { name: "Whisper to" }) as HTMLInputElement).value).toBe(
-    "Rook#0042",
-  );
-  await user.click(screen.getByRole("textbox", { name: "Message to Whispers" }));
+  const field = screen.getByRole("textbox", { name: "Whisper to Rook#0042" }) as HTMLInputElement;
+  expect(document.activeElement).toBe(field);
+  expect(field.value).toBe("/w Rook#0042 ");
+  expect(field.classList.contains("whispering")).toBe(true);
+  expect(screen.getByText("Whispering to Rook#0042")).toBeTruthy();
   await user.keyboard("psst{Enter}");
   expect(fake.sent().at(-1)).toEqual({ type: "whisper", to: "Rook#0042", text: "psst" });
-  chatMessage({ channel: "whisper", to: "Rook#0042", from: "Mee#0001", text: "psst" });
-  expect(screen.getByRole("log", { name: "Whispers" }).textContent).toContain("To Rook#0042");
+  // Typing it by hand turns purple only once the handle and a space are in.
+  await user.keyboard("{Enter}/w Rook#004");
+  expect(screen.getByRole("textbox", { name: /Message to/ }).classList.contains("whispering")).toBe(
+    false,
+  );
+  await user.keyboard("2 ");
+  expect(screen.getByRole("textbox", { name: "Whisper to Rook#0042" })).toBeTruthy();
+  // A typed `/w` wins over the tab; clear it before switching.
+  await user.keyboard("{Control>}a{/Control}{Backspace}{Escape}");
+  // Replies open the partner's tab (and show in All too).
+  chatMessage({ channel: "whisper", from: "Ash#1000", text: "you there?" });
+  const tab = screen.getByRole("tab", { name: /^Ash/ });
+  expect(screen.getByRole("log", { name: "All" }).textContent).toContain("you there?");
+  await user.click(tab);
+  expect(screen.getByRole("log", { name: "Ash#1000" }).textContent).toContain("you there?");
+  // In a conversation tab, plain text whispers to that player.
+  await user.click(screen.getByRole("textbox", { name: "Whisper to Ash#1000" }));
+  await user.keyboard("yes{Enter}");
+  expect(fake.sent().at(-1)).toEqual({ type: "whisper", to: "Ash#1000", text: "yes" });
+  await user.click(screen.getByRole("button", { name: "Close the conversation with Ash#1000" }));
+  expect(screen.queryByRole("tab", { name: /^Ash/ })).toBeNull();
+  expect(screen.getByRole("tab", { name: /^All/, selected: true })).toBeTruthy();
 
-  await user.click(screen.getByRole("tab", { name: "Public" }));
   await user.click(screen.getByRole("button", { name: "[Public] Rook#0042: options" }));
   await user.click(screen.getByRole("menuitem", { name: "Ignore" }));
   expect(fake.sent().at(-1)).toEqual({ type: "ignore", handle: "Rook#0042" });
-  expect(screen.getByRole("log", { name: "Public" }).textContent).not.toContain("hello all");
+  expect(screen.getByRole("log", { name: "All" }).textContent).not.toContain("hello all");
   // A new connection hears the ignore again.
   act(() => fake.latest().onclose?.());
   fake.queue.connect();
@@ -148,9 +174,9 @@ it("gives spectators their own tab first", () => {
   engine.set({ ...snapshot(), spectating: true });
   render(<App />);
   expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+    "All",
     "Spectators",
     "Public",
-    "Whispers",
   ]);
   expect(screen.getByRole("textbox", { name: "Message to Spectators" })).toBeTruthy();
 });
@@ -214,16 +240,14 @@ it("replays the newest ignores on a new connection, quietly", () => {
   expect(fake.queue.chat.get().ignored).toHaveLength(7);
 });
 
-it("starts a seated player on Team and hints a missing whisper target", async () => {
+it("sends from All to the team when seated in a match", async () => {
   const user = userEvent.setup();
   engine.set({ ...snapshot(), networked: true });
   render(<App />);
-  expect(screen.getByRole("tab", { name: "Team", selected: true })).toBeTruthy();
-  await user.click(screen.getByRole("tab", { name: "Whispers" }));
-  await user.click(screen.getByRole("textbox", { name: "Message to Whispers" }));
-  await user.keyboard("hello{Enter}");
-  expect(fake.sent().some((m) => m.type === "whisper")).toBe(false);
-  expect(screen.getByText(/Pick who to whisper/)).toBeTruthy();
+  expect(screen.getByRole("tab", { name: /^All/, selected: true })).toBeTruthy();
+  await user.click(screen.getByRole("textbox", { name: "Message to Team" }));
+  await user.keyboard("focus mage{Enter}");
+  expect(fake.sent().at(-1)).toEqual({ type: "chat", channel: "team", text: "focus mage" });
 });
 
 it("resizes by its grip down to a minimum, keeping its top-left corner, and by keys", async () => {
@@ -409,5 +433,79 @@ it("follows the launcher when it moves", async () => {
     expect(box.style.width).toBe(`${700 - 8 - 154}px`);
   } finally {
     Element.prototype.getBoundingClientRect = original;
+  }
+});
+
+it("keeps // lines in a conversation private, and Whisper keeps a draft", async () => {
+  const user = userEvent.setup();
+  render(<App />);
+  chatMessage({ channel: "whisper", from: "Ash#1000", text: "hi" });
+  await user.click(screen.getByRole("tab", { name: /^Ash/ }));
+  await user.click(screen.getByRole("textbox", { name: "Whisper to Ash#1000" }));
+  await user.keyboard("//shrug{Enter}");
+  expect(fake.sent().at(-1)).toEqual({ type: "whisper", to: "Ash#1000", text: "/shrug" });
+  // A real command still runs from the conversation tab.
+  await user.click(screen.getByRole("textbox", { name: "Whisper to Ash#1000" }));
+  await user.keyboard("/help{Enter}");
+  expect(fake.sent().at(-1)).toEqual({ type: "whisper", to: "Ash#1000", text: "/shrug" });
+  // Whisper from a name puts `/w Name#0000 ` in front of a message already typed.
+  await user.click(screen.getByRole("tab", { name: /^All/ }));
+  await user.click(screen.getByRole("textbox", { name: /Message to/ }));
+  await user.keyboard("half typed{Escape}");
+  await user.click(screen.getAllByRole("button", { name: "Ash#1000 whispers: options" })[0]);
+  await user.click(screen.getByRole("menuitem", { name: "Whisper" }));
+  expect(
+    (screen.getByRole("textbox", { name: "Whisper to Ash#1000" }) as HTMLInputElement).value,
+  ).toBe("/w Ash#1000 half typed");
+});
+
+it("suggests friends and conversation partners while typing /w, and Tab completes", async () => {
+  const user = userEvent.setup();
+  friendsService.set(
+    createFriends({
+      fetch: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          friends: [
+            { handle: "Ashe#0002", relation: "friend", presence: "offline" },
+            { handle: "Ash#1000", relation: "friend", presence: "online" },
+            { handle: "Cyd#0003", relation: "incoming" },
+          ],
+          blocked: [],
+        }),
+      }),
+      now: () => 0,
+      later: () => () => {},
+    }),
+  );
+  await friendsService.get()!.refresh();
+  try {
+    render(<App />);
+    chatMessage({ channel: "whisper", from: "Asher#0004", text: "hi" });
+    await user.keyboard("{Enter}/w as");
+    const list = screen.getByRole("listbox", { name: "Whisper suggestions" });
+    // Friends who are on first; requests are not suggested.
+    expect(
+      within(list)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["Ash#1000", "Ashe#0002", "Asher#0004"]);
+    expect(within(list).getByRole("option", { selected: true }).textContent).toBe("Ash#1000");
+    await user.keyboard("{ArrowDown}{Tab}");
+    const field = screen.getByRole("textbox", { name: "Whisper to Ashe#0002" }) as HTMLInputElement;
+    expect(field.value).toBe("/w Ashe#0002 ");
+    expect(document.activeElement).toBe(field);
+    expect(screen.queryByRole("listbox")).toBeNull();
+    await user.keyboard("hello{Enter}");
+    expect(fake.sent().at(-1)).toEqual({ type: "whisper", to: "Ashe#0002", text: "hello" });
+    // A click on a suggestion completes too.
+    await user.keyboard("{Enter}/w ash#");
+    await user.click(screen.getByRole("option", { name: "Ash#1000" }));
+    expect(
+      (screen.getByRole("textbox", { name: "Whisper to Ash#1000" }) as HTMLInputElement).value,
+    ).toBe("/w Ash#1000 ");
+  } finally {
+    friendsService.set(null);
   }
 });

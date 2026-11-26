@@ -9,6 +9,7 @@ before editing code so context compounds on disk instead of decaying in long cha
 Reusable repo invariants, canonical helpers, and CI traps promoted across iterations:
 
 - **Simulation purity:** `arena-sim` must stay pure, fixed-tick, integer-based, and deterministic (no graphics, OS clocks, network I/O, or runtime LLM calls).
+- **Focus-policy tests:** widgets that close on blur inside windows that do not own the keyboard must be tested with `installInput` and `userEvent` (real focus); `fireEvent` never moves focus, so the focus policy handing keys back to the game goes unseen.
 - **Radix trigger stacking:** `Tooltip.Trigger asChild` overrides its child's `data-state`; put tooltips inside tab/toggle triggers, never around them, or the active style disappears (tests on `aria-selected` still pass, so assert `data-state` too).
 - **No transforms on overlay containers:** a `transform` on an ancestor becomes the containing block of `position: fixed` descendants (menus, popovers), which then open off screen; center overlays with flexbox, and pin it with a stylesheet test since jsdom has no layout.
 - **Static web pages:** `web/public/` is generated and gitignored (`scripts/build-web.sh`); add tracked pages such as `web/privacy.html` as Vite `rollupOptions.input` entries. `vite.config.ts` is type-checked without Node types, so it cannot import `node:*`.
@@ -824,3 +825,29 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/party-frames`: pass — 484 Rust (1 pre-existing ignored), 58 Python, 55 Node, 55 Vitest files / 445 tests, headless pass, `npm run build` pass.
 - **Fresh-Eyes Review:** no Critical. Important (fixed): resize measured the launcher before it moved; detaching reverted the width; small screens covered the action bar; bars at any height limited the width; old profiles could attach to a moved launcher. Minor taken: height-only resize keeps the fill, render order, migrated chat position, comments.
 - **Learnings:** frames are placed by fractions of their free travel, so "beside another frame" can only be measured in the DOM; watch the other frame's size and style (MutationObserver on `style`) to follow it.
+
+## 2026-11-25 — Chat: All tab, conversations and /w (playtest)
+- **Branch / Commit:** `auto/chat-all`
+- **Base / PR:** `auto/hud-defaults` (stacked on PR #111)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox: `/w Name#number` with a purple whisper field instead of a To box; Whisper buttons enter that mode; All as the default tab; a tab per whisper partner instead of one Whispers tab
+- **Changes:** `ChatTab` (`all`, channels, `w:<handle>`); `whisperDraft`; `defaultChannel` for All (Team seated, Spectators watching, else Public); conversation tabs (six at most, never evicting the one shown, case-insensitive, closable) with unread counts shared with All; the chat box's To field removed, the field turns purple ("Whispering to …") for a typed `/w Name#number ` or in a conversation tab (where `//text` stays a whisper and real commands still run); Whisper in Friends and on chat names pre-fills `/w Name#number ` ahead of any draft; ignoring closes the conversation.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/hud-defaults`: pass — 484 Rust (1 pre-existing ignored), 58 Python, 55 Node, 55 Vitest files / 448 tests, headless pass, `npm run build` pass.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): `//` lines in a conversation tab went to the open channel; the conversation cap could close the tab being typed in. Minor taken: All's unread follows the other tabs (including evicted conversations), field label, draft kept on Whisper, ignore ends the conversation, docs and `/r` text. Open: spectators see whisper tabs the door refuses to answer from, and close buttons sit inside the tablist.
+
+## 2026-11-25 — Friends menu regression and whisper autocomplete (playtest)
+- **Branches:** fix on `auto/center-panel` (PR #109), merged forward into `auto/party-frames`, `auto/hud-defaults`, `auto/chat-all`; autocomplete on `auto/chat-all` (PR #112)
+- **Lane:** B (pending human review)
+- **Root cause (menu):** PR #109 made the dock windows stop owning the keyboard; the focus policy then returned focus to the game after the ⋮ click, and the menu closed on blur. Unit tests used synthetic clicks without the input router, so focus never moved. Fixed by `data-keyboard-owner` on the menu, with a test that clicks with real focus and the router installed (verified failing without the fix).
+- **Changes (autocomplete):** `whisperQuery` and `whisperSuggestions`; a listbox above the chat field (friends online first, then conversation partners); Tab/Enter complete to `/w Name#number `, arrows choose, click completes.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/hud-defaults`: pass — 484 Rust (1 pre-existing ignored), 58 Python, 55 Node, 55 Vitest files / 451 tests, headless pass, `npm run build` pass. The fix's own run on `auto/center-panel` also passed (440 Vitest).
+- **Learnings:** any change to keyboard ownership must be tested with the input router installed and real focus (`userEvent`), not `fireEvent`, or focus-driven closes go unseen.
+
+## 2026-11-26 — Players leave the in-match state when the match ends (playtest)
+- **Branch / Commit:** `auto/match-ended`
+- **Base / PR:** `auto/chat-all` (stacked on PR #112)
+- **Lane:** A
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox: a friend still showed "In a match" after a finished 1v1, and whispers to them were refused (`in_match`). Root cause: the door never heard when a match ended and kept seats for a fixed 21 minutes.
+- **Changes:** the match server answers `GET /matches/{id}` (`live`, `ended`, 404 unknown, 400 bad id; private network only, untraced); a match closed by a server stop is not reported `ended`, and ends stay known at least 10 minutes. The door (`--match-status`, set in `deploy/compose.yaml` and `scripts/dev-door.sh`) asks every 5 s about matches with a fresh seat (16 at a time), clears an ended match's seats and presence, forgets seats past the 21-minute window, and warns at most once a minute when the server does not answer. Unknown and live matches keep their seats (anti-ghosting fail-safe).
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/chat-all`: see PR. New tests: door end-to-end against a fake match server (unknown and live keep seats, ended clears; fails with clearing disabled), server endpoint, registry and seat unit tests.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): a forced server stop reported live matches `ended`, which could unseat players whose match then restarted on the next process; `scripts/dev-door.sh` lacked the flag. Minor (fixed): stale ids polled forever, unbounded concurrency, silent failures, ends lost with short tickets, tracing spam, doc drift, test gaps, signed hex ids.

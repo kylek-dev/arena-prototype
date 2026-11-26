@@ -326,6 +326,11 @@ pub(super) enum Command {
     Gone {
         conn: QueueConn,
     },
+    /// The match server reports these matches ended: their players and
+    /// spectators are no longer in a match (presence, whispers, chat).
+    MatchesEnded {
+        ids: Vec<u64>,
+    },
     /// The account was deleted or logged out everywhere: its open queue
     /// connections stop signing it into tickets at once (ADR 0055).
     Revoke {
@@ -487,6 +492,9 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
     let mut tick = tokio::time::interval(TICK_EVERY);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut status_at = Instant::now() + STATUS_EVERY;
+    let mut check = tokio::time::interval(door.config.match_check_every);
+    check.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut checking: Option<tokio::task::JoinHandle<()>> = None;
     let mut stop = door.shutdown.subscribe();
     loop {
         let now = Instant::now();
@@ -497,6 +505,24 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
         let out = tokio::select! {
             _ = stop.wait_for(|stop| *stop) => break,
             _ = tick.tick() => mm.tick(now),
+            _ = check.tick(), if door.match_status.is_some() => {
+                // Past the in-match window a seat counts for nothing: forget
+                // it rather than ask about its match forever.
+                for id in chat.stale_matches(now) {
+                    for conn in chat.end_match(id) {
+                        matched_at.remove(&conn);
+                    }
+                }
+                if checking.as_ref().is_none_or(|task| task.is_finished())
+                    && !chat.members.is_empty()
+                {
+                    checking = Some(tokio::spawn(check_matches(
+                        door.clone(),
+                        chat.members.keys().copied().collect(),
+                    )));
+                }
+                Vec::new()
+            }
             command = commands.recv() => match command {
                 None => break,
                 Some(Command::Hello { conn, guest, address, holder, out }) => {
@@ -550,6 +576,14 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     mm.set_lobby_settings(conn, settings)
                 }
                 Some(Command::StartLobby { conn }) => mm.start_lobby(conn),
+                Some(Command::MatchesEnded { ids }) => {
+                    for id in ids {
+                        for conn in chat.end_match(id) {
+                            matched_at.remove(&conn);
+                        }
+                    }
+                    Vec::new()
+                }
                 Some(Command::Revoke { account }) => {
                     by_account.remove(&account);
                     let mut renamed = Vec::new();
@@ -911,8 +945,8 @@ pub(super) enum Presence {
     Online,
     Searching,
     InLobby,
-    /// Got a match ticket within [`IN_MATCH`] (shown unless searching right
-    /// now; the door never hears when a match ends).
+    /// Got a match ticket within [`IN_MATCH`] and the match server has not
+    /// reported the match ended (shown unless searching right now).
     InMatch,
 }
 
@@ -928,8 +962,9 @@ impl Presence {
     }
 }
 
-/// How long after a match ticket a player counts as in a match: a round
-/// (20 min) and a little. The door never hears when a match ends.
+/// How long after a match ticket a player counts as in a match at most: a
+/// round (20 min) and a little. Sooner when the match server reports the
+/// match ended (`--match-status`); this is the fallback without an answer.
 const IN_MATCH: Duration = Duration::from_secs(21 * 60);
 
 /// Drops `conn` from the account index.
@@ -946,6 +981,69 @@ fn unindex(
         if conns.is_empty() {
             by_account.remove(&account);
         }
+    }
+}
+
+/// Asks the match server about each seated match and reports those that
+/// ended. Unknown matches (no one has joined yet, or a restarted server)
+/// stay seated until the in-match window runs out.
+async fn check_matches(door: Arc<Door>, ids: Vec<u64>) {
+    let (Some(client), Some(base)) = (&door.match_status, &door.config.match_status) else {
+        return;
+    };
+    let base = base.trim_end_matches('/');
+    // At most this many questions in flight at once.
+    let gate = Arc::new(tokio::sync::Semaphore::new(16));
+    let mut asks = tokio::task::JoinSet::new();
+    for id in ids {
+        let (client, gate) = (client.clone(), gate.clone());
+        let url = format!("{base}/matches/{id:016x}");
+        asks.spawn(async move {
+            let _permit = gate.acquire_owned().await.ok();
+            let reply = client.get(url).send().await.map_err(|_| ())?;
+            match reply.status() {
+                // Not joined yet, or a restarted server: stays seated.
+                reqwest::StatusCode::NOT_FOUND => return Ok(None),
+                status if !status.is_success() => return Err(()),
+                _ => {}
+            }
+            let status: crate::MatchStatus = reply.json().await.map_err(|_| ())?;
+            Ok((status.state == crate::MatchState::Ended).then_some(id))
+        });
+    }
+    let (mut ended, mut failed) = (Vec::new(), 0);
+    while let Some(answer) = asks.join_next().await {
+        match answer {
+            Ok(Ok(id)) => ended.extend(id),
+            _ => failed += 1,
+        }
+    }
+    if failed > 0 {
+        warn_unanswered(failed);
+    }
+    if !ended.is_empty() {
+        let _ = door.queue.send(Command::MatchesEnded { ids: ended }).await;
+    }
+}
+
+/// Unanswered match checks leave players in the 21-minute window: say so,
+/// at most once a minute.
+fn warn_unanswered(failed: usize) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let last = LAST.load(Ordering::Relaxed);
+    if now >= last + 60
+        && LAST
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        tracing::warn!(
+            failed,
+            "the match server did not answer match checks; check --match-status"
+        );
     }
 }
 
@@ -1021,6 +1119,30 @@ impl ChatState {
         self.unseat(conn);
         self.members.entry(seat.match_id).or_default().push(conn);
         self.seats.insert(conn, seat);
+    }
+
+    /// Matches whose seats are all past the in-match window.
+    fn stale_matches(&self, now: Instant) -> Vec<u64> {
+        self.members
+            .iter()
+            .filter(|(_, conns)| {
+                conns.iter().all(|conn| {
+                    self.seats
+                        .get(conn)
+                        .is_none_or(|seat| now.saturating_duration_since(seat.at) >= IN_MATCH)
+                })
+            })
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// Unseats everyone still seated in `match_id`, returning them.
+    fn end_match(&mut self, match_id: u64) -> Vec<QueueConn> {
+        let conns = self.members.remove(&match_id).unwrap_or_default();
+        for conn in &conns {
+            self.seats.remove(conn);
+        }
+        conns
     }
 
     fn unseat(&mut self, conn: QueueConn) {
@@ -1929,6 +2051,45 @@ async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr, ho
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ending_a_match_unseats_only_its_players() {
+        let mut chat = ChatState::default();
+        let seat = |match_id, team| ChatSeat {
+            match_id,
+            team,
+            at: Instant::now(),
+        };
+        chat.seat(1, seat(10, Some(0)));
+        chat.seat(2, seat(10, None));
+        chat.seat(3, seat(11, Some(1)));
+        let mut ended = chat.end_match(10);
+        ended.sort_unstable();
+        assert_eq!(ended, vec![1, 2]);
+        assert!(!chat.seats.contains_key(&1) && !chat.seats.contains_key(&2));
+        assert!(chat.seats.contains_key(&3));
+        assert!(!chat.members.contains_key(&10));
+        assert!(chat.end_match(10).is_empty());
+    }
+
+    #[test]
+    fn a_reseated_player_keeps_the_new_seat_when_the_old_match_ends() {
+        let mut chat = ChatState::default();
+        let start = Instant::now();
+        let seat = |match_id, at| ChatSeat {
+            match_id,
+            team: Some(0),
+            at,
+        };
+        chat.seat(1, seat(10, start));
+        chat.seat(2, seat(10, start));
+        chat.seat(1, seat(11, start));
+        assert_eq!(chat.end_match(10), vec![2]);
+        assert_eq!(chat.seats.get(&1).map(|seat| seat.match_id), Some(11));
+        // Seats past the in-match window are stale; fresh ones are not.
+        assert!(chat.stale_matches(start + IN_MATCH / 2).is_empty());
+        assert_eq!(chat.stale_matches(start + IN_MATCH), vec![11]);
+    }
 
     #[test]
     fn guest_ids_are_exactly_32_hex_digits() {
