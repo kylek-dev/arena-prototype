@@ -374,15 +374,20 @@ rules in `arena_sim::hub`) also rides on the queue WebSocket:
 | Direction | Message | Meaning |
 | --- | --- | --- |
 | client → door | `hub_join {appearance, friend?}` | Enter an instance with this look (a `WireAppearance` as JSON, checked as in the match protocol), beside a friend or party-mate (`Name#number`) when given. |
-| client → door | `hub_move {seq, x, z, facing}` | The current intent: `x`, `z` in −1000..1000 (normalized as arena movement), `facing` a binary angle. |
+| client → door | `hub_move {seq, x, z, facing}` | One hub tick of walking: `x`, `z` in −1000..1000 (normalized as arena movement), `facing` a binary angle, `seq` increasing. Sent once per tick while walking or turning. |
 | client → door | `hub_leave {}` | Leave the hub. |
 | door → client | `hub {instance, you, x, z}` | Joined: the instance number, this player's hub id and place (millimetres). |
-| door → client | `hub_state {tick, ack, x, z, players, enter?, exit?}` | Every hub tick (10 a second): the last `seq` applied, this player's place, `[id, x, z, facing]` per player in view (40 m), `enter` (`{id, handle, admin, appearance}` for players new in view or renamed) and `exit` (ids gone from view). |
+| door → client | `hub_state {tick, ack, x, z, players, enter?, exit?}` | Every hub tick (10 a second): the last move applied (`ack`), this player's place, `[id, x, z, facing]` per player in view (40 m), `enter` (`{id, handle, admin, appearance}` for players new in view or renamed) and `exit` (ids gone from view). |
 | door → client | `hub_left {reason}` | Out of the hub: `left`, or `match` when a seat or spectator ticket was issued. |
 
 Rules:
-- The door integrates intents; clients never send positions. Bodies pass
-  through each other; the plaza edge, fountain and columns are solid.
+- The door integrates moves; clients never send positions. It applies the
+  waiting moves one per hub tick, each once and in order (at most 8 wait;
+  older ones are dropped, as are repeated or older `seq`), and a player
+  without one stands. Clients predict with the same rules and, on each
+  state, start from the door's place and replay their moves after `ack`.
+  Bodies pass through each other; the plaza edge, fountain and columns are
+  solid.
 - An instance holds 40 players. Joining picks a followed friend's instance
   (refused `not_in_hub`, `hub_full`, or `not_friends` for anyone who is not
   an accepted friend or party-mate), else a party-mate's, else the

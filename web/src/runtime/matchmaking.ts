@@ -42,7 +42,6 @@ import {
 import { createStore } from "../state/store";
 import type { Appearance } from "../domain/appearance";
 import {
-  HUB_MOVES_PER_SECOND,
   HUB_REFUSALS,
   OUT_OF_HUB,
   applyHubMessage,
@@ -125,36 +124,6 @@ export function createQueue(deps: QueueDeps) {
   const update = (patch: Partial<QueueState>) => state.set({ ...state.get(), ...patch });
   // The hub (ADR 0056), in a store of its own: it changes 10 times a second.
   const hub = createStore<HubState>(OUT_OF_HUB);
-  let moveSeq = 0;
-  let lastMoveAt = Number.NEGATIVE_INFINITY;
-  let sentMove = "";
-  let pendingMove: { x: number; z: number; facing: number } | null = null;
-  let moveTimer: ReturnType<typeof setTimeout> | null = null;
-  /** Sends the newest intent when the page's move budget allows, or later.
-   * Moves go straight onto the open socket: they are never refused in a
-   * way the page answers, so they leave the refusal bookkeeping (whose
-   * request a refusal answers) alone. */
-  const flushMove = () => {
-    if (!pendingMove || hub.get().status !== "in") return;
-    const now = deps.now();
-    const wait = 1000 / HUB_MOVES_PER_SECOND - (now - lastMoveAt);
-    if (wait > 0) {
-      moveTimer ??= setTimeout(() => {
-        moveTimer = null;
-        flushMove();
-      }, wait);
-      return;
-    }
-    const { x, z, facing } = pendingMove;
-    pendingMove = null;
-    const key = `${x},${z},${facing}`;
-    if (key === sentMove) return;
-    if (socket?.readyState !== OPEN || state.get().connection !== "online") return;
-    sentMove = key;
-    lastMoveAt = now;
-    moveSeq += 1;
-    socket.send(hubRequests.move(moveSeq, x, z, facing));
-  };
   const drop = () => {
     if (!socket) return;
     socket.onopen = socket.onclose = socket.onerror = socket.onmessage = null;
@@ -224,8 +193,6 @@ export function createQueue(deps: QueueDeps) {
       const hubMessage = parseHubMessage(data);
       if (hubMessage) {
         hub.set(applyHubMessage(hub.get(), hubMessage));
-        if (hubMessage.type === "hub") sentMove = "";
-        flushMove();
         return;
       }
     }
@@ -373,17 +340,18 @@ export function createQueue(deps: QueueDeps) {
     leaveHub() {
       if (hub.get().status === "out") return;
       hub.set(OUT_OF_HUB);
-      pendingMove = null;
-      sentMove = "";
       request(hubRequests.leave());
     },
-    /** The sequence number of the last intent sent (0 before any). */
-    lastMoveSeq: () => moveSeq,
-    /** The current movement intent: sent when it changes, at most 10 a
-     * second, the newest one winning. */
-    moveHub(x: number, z: number, facing: number) {
-      pendingMove = clampIntent(x, z, facing);
-      flushMove();
+    /** One hub tick of the renderer's walk (numbered by the renderer,
+     * which replays the moves the door has not applied yet). Moves go
+     * straight onto the open socket: they are never refused in a way the
+     * page answers, so they leave the refusal bookkeeping alone. */
+    moveHub(seq: number, x: number, z: number, facing: number) {
+      if (!Number.isInteger(seq) || seq < 1 || seq > 2 ** 32 - 1) return;
+      if (hub.get().status !== "in") return;
+      if (socket?.readyState !== OPEN || state.get().connection !== "online") return;
+      const intent = clampIntent(x, z, facing);
+      socket.send(hubRequests.move(seq, intent.x, intent.z, intent.facing));
     },
     /** The clock search times are measured on. */
     now: deps.now,
@@ -550,8 +518,6 @@ export function createQueue(deps: QueueDeps) {
       else update({ notice: null });
     },
     dispose() {
-      if (moveTimer) clearTimeout(moveTimer);
-      moveTimer = null;
       drop();
     },
   };

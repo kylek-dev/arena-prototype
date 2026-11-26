@@ -26,11 +26,9 @@ const LOOK = {
 };
 const ROOK = { account: "00112233445566ff", admin: false, login: true, handle: "Rook#0042" };
 
-let now = 1000;
 let fake: ReturnType<typeof fakeQueue>;
 beforeEach(() => {
-  now = 1000;
-  fake = fakeQueue(() => now);
+  fake = fakeQueue();
   matchQueue.set(fake.queue);
 });
 afterEach(() => {
@@ -101,32 +99,35 @@ const menuOf = (handle: string) => {
   return within(screen.getByRole("menu", { name: `Actions for ${handle}` }));
 };
 
-it("joins with the saved look, sends intents at most ten a second, and leaves", () => {
+it("joins with the saved look, passes the renderer's numbered moves on, and leaves", () => {
   inHub();
   const sent = fake.sent();
   expect(sent[1]).toMatchObject({ type: "hub_join", appearance: { body: "male", build: 0 } });
   expect(fake.queue.hub.get()).toMatchObject({ status: "in", instance: 2, you: 1 });
-  fake.queue.moveHub(1000, 0, 16384);
-  // Within the same 100 ms the newest intent waits, then goes out once.
-  fake.queue.moveHub(0, 1000, 0);
-  fake.queue.moveHub(0, -1000, 0);
+  // One move per hub tick, numbered by the renderer, clamped, sent at once.
+  fake.queue.moveHub(1, 1000, 0, 16384);
+  fake.queue.moveHub(2, 1500, 0, 16384);
   const moves = () => fake.sent().filter((m) => m.type === "hub_move");
-  expect(moves()).toEqual([{ type: "hub_move", seq: 1, x: 1000, z: 0, facing: 16384 }]);
+  expect(moves()).toEqual([
+    { type: "hub_move", seq: 1, x: 1000, z: 0, facing: 16384 },
+    { type: "hub_move", seq: 2, x: 1000, z: 0, facing: 16384 },
+  ]);
+  // Malformed numbers are not sent.
+  fake.queue.moveHub(0, 0, 0, 0);
+  fake.queue.moveHub(1.5, 0, 0, 0);
+  expect(moves()).toHaveLength(2);
   // Moves never take over the refusal bookkeeping: a chat refusal arriving
   // after a move is still the chat box's.
   fake.queue.say("hub", "hello");
+  fake.queue.moveHub(3, 0, 0, 0);
   fake.say({ type: "refused", code: "not_in_hub" });
   expect(fake.queue.chat.get().error).toBe("not_in_hub");
-  now += 100;
-  fake.say({ type: "hub_state", tick: 2, ack: 1, x: 720, z: 24000, players: [] });
-  expect(moves().at(-1)).toEqual({ type: "hub_move", seq: 2, x: 0, z: -1000, facing: 0 });
-  // An unchanged intent is not sent again.
-  now += 100;
-  fake.queue.moveHub(0, -1000, 0);
-  expect(moves()).toHaveLength(2);
   fake.queue.leaveHub();
   expect(fake.sent().at(-1)).toEqual({ type: "hub_leave" });
   expect(fake.queue.hub.get().status).toBe("out");
+  // Outside the hub, moves go nowhere.
+  fake.queue.moveHub(4, 1000, 0, 0);
+  expect(moves()).toHaveLength(3);
 });
 
 it("lists the players nearby with what each can be offered", async () => {
@@ -261,12 +262,12 @@ it("hands the renderer the hub, and only a new revision when it changed", async 
   expect(view.players[0].spec).toBeNull();
   expect(readHub()[0]).toBe(revision);
   // The renderer's intent goes to the door through the queue.
-  onHubIntent(1000, 0, 0);
+  onHubIntent(1, 1000, 0, 0);
   expect(fake.sent().at(-1)).toEqual({ type: "hub_move", seq: 1, x: 1000, z: 0, facing: 0 });
-  // Until the door applies it, its place for this player lags: not settled.
-  expect(JSON.parse(readHub()[1] as string).settled).toBe(false);
+  // The renderer replays the moves after the door's last applied one.
+  expect(JSON.parse(readHub()[1] as string).ack).toBe(0);
   fake.say({ type: "hub_state", tick: 2, ack: 1, x: 720, z: 24000, players: [] });
-  expect(JSON.parse(readHub()[1] as string).settled).toBe(true);
+  expect(JSON.parse(readHub()[1] as string).ack).toBe(1);
   // Names on screen: malformed entries are dropped, an unchanged list is quiet.
   onHubScreen('[[2,0.5,0.25],[3,2,0.5],["x",0,0]]');
   expect(hubScreen.get()).toEqual([{ id: 2, x: 0.5, y: 0.25 }]);

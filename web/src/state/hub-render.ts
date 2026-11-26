@@ -9,7 +9,7 @@ import { matchQueue } from "./network";
 import { createStore } from "./store";
 
 let revision = 0;
-let cache: { hub: HubState | null; kits: unknown; seq: number; json: string } | null = null;
+let cache: { hub: HubState | null; kits: unknown; json: string } | null = null;
 /** Render specs by look, so a crowd costs one spec per look; reset when the
  * installed kits change. */
 let specs = new WeakMap<WireAppearanceJson, unknown>();
@@ -31,20 +31,17 @@ function specFor(wire: WireAppearanceJson) {
 /** `[revision, json]`: the hub, or `null` outside it; the revision changes
  * only when the hub or the installed kits do. */
 export function readHub(): unknown[] {
-  const queue = matchQueue.get();
-  const hub = queue?.hub.get() ?? null;
+  const hub = matchQueue.get()?.hub.get() ?? null;
   const kits = characterKits.get();
-  const seq = queue?.lastMoveSeq() ?? 0;
-  if (!cache || cache.hub !== hub || cache.kits !== kits || cache.seq !== seq) {
+  if (!cache || cache.hub !== hub || cache.kits !== kits) {
     const json =
       hub?.status === "in"
         ? JSON.stringify({
             x: hub.x,
             z: hub.z,
             tick: hub.tick,
-            // The door has applied every intent sent: its place for this
-            // player is not behind them.
-            settled: hub.ack >= seq,
+            // The last move the door applied: the renderer replays the rest.
+            ack: hub.ack,
             players: [...hub.players.values()].map((player) => ({
               id: player.id,
               x: player.x,
@@ -56,14 +53,14 @@ export function readHub(): unknown[] {
           })
         : "null";
     if (json !== cache?.json) revision += 1;
-    cache = { hub, kits, seq, json };
+    cache = { hub, kits, json };
   }
   return [revision, cache.json];
 }
 
-/** The renderer's intent for the local player. */
-export function onHubIntent(x: number, z: number, facing: number) {
-  matchQueue.get()?.moveHub(x, z, facing);
+/** One numbered hub tick of the renderer's walk. */
+export function onHubIntent(seq: number, x: number, z: number, facing: number) {
+  matchQueue.get()?.moveHub(seq, x, z, facing);
 }
 
 export type HubAnchor = { id: number; x: number; y: number };

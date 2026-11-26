@@ -5,7 +5,7 @@
 //! connection's outbox took it. The movement rules are `arena_sim::hub`,
 //! which the browser predicts with.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 
 use arena_protocol::{Handle, WireAppearance};
@@ -14,6 +14,10 @@ use arena_sim::hub::{self, Intent, MAX_HUB_PLAYERS};
 use serde::{Deserialize, Serialize};
 
 use crate::matchmaker::QueueConn;
+
+/// Moves that may wait for their tick: about a second's worth, room for a
+/// clump of network jitter.
+pub const MAX_MOVES: usize = 8;
 
 /// Why a player is no longer in the hub, as `hub_left` says it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,7 +77,7 @@ pub struct Joined {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
     pub tick: u64,
-    /// The sequence number of the last intent applied.
+    /// The sequence number of the last move applied.
     pub ack: u32,
     pub x: i32,
     pub z: i32,
@@ -94,8 +98,11 @@ struct Player {
     who: Who,
     appearance: Arc<WireAppearance>,
     at: Position,
+    /// The last move applied (its facing is shown while standing).
     intent: Intent,
     ack: u32,
+    /// Moves waiting, one applied per hub tick in order.
+    moves: VecDeque<(u32, Intent)>,
     /// Those this player's client knows are in view, by connection, with
     /// the hub id and version it knows them by (kept after they leave, to
     /// send their `exit`).
@@ -233,6 +240,7 @@ impl Hubs {
                 at,
                 intent: Intent::default(),
                 ack: 0,
+                moves: VecDeque::new(),
                 sees: HashMap::new(),
                 version: 0,
             },
@@ -268,7 +276,10 @@ impl Hubs {
         self.leave(conn);
     }
 
-    /// Records `conn`'s intent, applied from the next tick on.
+    /// Queues one move of `conn`'s: each is one hub tick of walking,
+    /// applied once, in order, so the client's prediction replays exactly
+    /// what the door did. An old or repeated sequence number is ignored;
+    /// past [`MAX_MOVES`] waiting, the oldest is dropped.
     pub fn intent(
         &mut self,
         conn: QueueConn,
@@ -279,8 +290,14 @@ impl Hubs {
             return Err("bad_request");
         }
         let player = self.players.get_mut(&conn).ok_or("not_in_hub")?;
-        player.intent = intent;
-        player.ack = seq;
+        let newest = player.moves.back().map_or(player.ack, |(last, _)| *last);
+        if seq <= newest {
+            return Ok(());
+        }
+        player.moves.push_back((seq, intent));
+        if player.moves.len() > MAX_MOVES {
+            player.moves.pop_front();
+        }
         Ok(())
     }
 
@@ -305,8 +322,13 @@ impl Hubs {
         mut deliver: impl FnMut(QueueConn, State) -> bool,
     ) {
         self.tick += 1;
+        // One waiting move per player per tick; without one, they stand.
         for player in self.players.values_mut() {
-            player.at = hub::step(player.at, player.intent);
+            if let Some((seq, intent)) = player.moves.pop_front() {
+                player.at = hub::step(player.at, intent);
+                player.intent = intent;
+                player.ack = seq;
+            }
         }
         let mut accepted: Vec<(QueueConn, View)> = Vec::new();
         for members in self.instances.values() {
@@ -654,6 +676,33 @@ mod tests {
         let states = tick(&mut hubs, &[]);
         assert_eq!(states[&1].enter[0].handle, "Ash#1000");
         assert!(tick(&mut hubs, &[])[&1].enter.is_empty());
+    }
+
+    #[test]
+    fn moves_apply_once_each_in_order_then_the_player_stands() {
+        let mut hubs = Hubs::default();
+        let a = join(&mut hubs, 1);
+        let east = Intent {
+            movement: Axes {
+                x: AXIS_LIMIT,
+                z: 0,
+            },
+            facing: 16384,
+        };
+        for seq in 1..=3 {
+            hubs.intent(1, seq, east).unwrap();
+        }
+        // A repeat or an older number is ignored.
+        hubs.intent(1, 2, east).unwrap();
+        for (tick, x) in [(1, 720), (2, 1440), (3, 2160), (4, 2160)] {
+            let state = &tick_hidden(&mut hubs, &[], NOBODY)[&1];
+            assert_eq!((state.x - a.x, state.ack), (x, tick.min(3)), "tick {tick}");
+        }
+        // A clump past the backlog keeps the newest moves.
+        for seq in 10..10 + MAX_MOVES as u32 + 3 {
+            hubs.intent(1, seq, east).unwrap();
+        }
+        assert_eq!(tick(&mut hubs, &[])[&1].ack, 13);
     }
 
     #[test]

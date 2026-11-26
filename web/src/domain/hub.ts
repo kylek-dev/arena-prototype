@@ -10,8 +10,6 @@ import { isHandle } from "./handles";
 export const MAX_HUB_PLAYERS = 40;
 /** Movement axes run −1000..1000, normalized as in the arena. */
 export const AXIS_LIMIT = 1000;
-/** The page sends at most this many intents a second (the door allows 20). */
-export const HUB_MOVES_PER_SECOND = 10;
 
 const WIRE_ID = /^[A-Za-z0-9_-]{1,32}$/;
 const MAX_GROUPS = 24;

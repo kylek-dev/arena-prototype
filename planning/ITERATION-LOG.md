@@ -932,3 +932,10 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 ## 2026-11-26 — Backlog cleared
 - All outstanding BACKLOG items are implemented as a stack of PRs: #115 (map editor admin-only), #116 (no in-game invites), #117 and #118 (launcher page), #119 to #122 (social hub: ADR and rules, door service, page, renderer). Every Lane B change is pending human browser review in `docs/UI-REVIEW.md`; ADR 0056 is proposed, with the open questions answered provisionally.
 
+## 2026-11-26 — Hub rubber-banding (playtest)
+- **Branch / Commit:** `auto/hub-render` (PR #122; touches the door's hub too)
+- **Lane:** A + B
+- **Task:** the user saw rubber-banding walking in the hub.
+- **Root cause:** the door applied the newest intent every tick while the page merged intents to 10 a second and the client predicted on its own clock, so the two started, stopped and turned on different ticks; the client only corrected past 3 m or when standing, so the drift showed as snaps (at every stop, and on curves).
+- **Fix:** moves are numbered steps. The client sends one per hub tick while walking or turning; the door queues them (8 at most) and applies each once in order, acknowledging the last; the client starts each state from the door's place, replays the moves after the acknowledged one (exactly the door's arithmetic) and fades any small difference over about 150 ms. The page passes moves through unchanged; `arena-bot --hub` sends one per tick. ADR 0056 and PROTOCOL amended.
+
