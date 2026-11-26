@@ -105,7 +105,7 @@ export function HubWindow() {
       className="hub-window"
     >
       {hub.status === "in" ? (
-        <div className="hub" role="group" aria-label="Hub" ref={body}>
+        <div className="hub-panel" role="group" aria-label="Hub" ref={body}>
           <p className="hub-status" role="status">
             Hub {hub.instance}.{" "}
             {players.length === 0
@@ -145,7 +145,7 @@ export function HubWindow() {
           </div>
         </div>
       ) : (
-        <div className="hub" role="group" aria-label="Hub">
+        <div className="hub-panel" role="group" aria-label="Hub">
           <p className="hub-status" role="status">
             {hub.status === "joining"
               ? "Entering the hub."

@@ -1,5 +1,5 @@
 /* The H window: the hub's players around you (ADR 0056). */
-.hub {
+.hub-panel {
   display: grid;
   gap: 8px;
 }

@@ -945,3 +945,10 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Root cause:** not the code: `dist/pkg/arena_client.js` and `arena_client_bg.wasm` on disk matched, but Caddy's `file_server` sent no `Cache-Control`, so the browser reused the previous build's JS glue (heuristic freshness) with the new WASM, whose import names changed with the hub intent's new signature.
 - **Fix:** `deploy/Caddyfile` sends `Cache-Control: no-cache` for the static files (revalidation; 304 when unchanged), verified on the running stack with `curl` (header present, `If-None-Match` → 304). `docs/DEPLOYMENT.md` notes it.
 
+## 2026-11-26 — Hub chat lines broken apart (playtest)
+- **Branch / Commit:** `auto/hub-render` (PR #122)
+- **Symptom:** a hub chat line showed `[Hub] Name#0000` on one row (bold, centred for others' lines) and `: text` on the next.
+- **Root cause:** chat lines carry their channel as a class (`chat-line hub`), and the H window's stylesheet styled a bare `.hub` (`display: grid`), which caught every hub chat line.
+- **Fix:** the window's class is `hub-panel`; hub chat lines get their own colour (`--pal-leaf-5`); `tests/unit/hud-css.test.mjs` fails on any stylesheet styling a bare channel class (checked to catch the old rule and allow `.chat-line.hub`).
+- **Checks Observed:** typecheck, Biome lint and format, palette check, `npm test` (56 Node, 58 Vitest files / 473 tests), `npm run build`.
+
