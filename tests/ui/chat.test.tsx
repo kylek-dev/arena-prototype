@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import { App } from "../../web/src/app/App";
 import { initial } from "../../web/src/domain/preferences/schema";
 import { installInput } from "../../web/src/runtime/input-router";
-import { persistence, preferences } from "../../web/src/state/config";
+import { persistence, preferences, updateConfig } from "../../web/src/state/config";
 import { matchQueue } from "../../web/src/state/network";
 import { engine, error, focus, interaction, selectedLayout } from "../../web/src/state/session";
 import { fakeQueue } from "./fake-queue";
@@ -227,6 +227,8 @@ it("starts a seated player on Team and hints a missing whisper target", async ()
 });
 
 it("resizes by its grip down to a minimum, keeping its top-left corner, and by keys", async () => {
+  // A chat box the player moved away from the launcher.
+  updateConfig((c) => ({ ...c, chatAttached: false }));
   render(<App />);
   const box = screen.getByRole("region", { name: "Chat" });
   const placed = box.closest(".placed") as HTMLElement;
@@ -321,5 +323,91 @@ it("keeps a drag within the screen, cancels a lost drag, and hides the grip whil
   } finally {
     Object.assign(window, { innerWidth: width, innerHeight: height });
     act(() => interaction.set({ ...interaction.get(), layout: false }));
+  }
+});
+
+it("sits beside the launcher by default, filling the width to the action bar, until moved", async () => {
+  // jsdom has no layout: report where the launcher and action bar are drawn.
+  const rect = (left: number, top: number, width: number, height: number) =>
+    ({
+      left,
+      top,
+      width,
+      height,
+      right: left + width,
+      bottom: top + height,
+      x: left,
+      y: top,
+    }) as DOMRect;
+  const original = Element.prototype.getBoundingClientRect;
+  Element.prototype.getBoundingClientRect = function (this: Element) {
+    if (this.querySelector?.(".launcher")) return rect(12, innerHeight - 162, 34, 150);
+    if (this.querySelector?.(".action-bar") || this.classList?.contains("action-bar"))
+      return rect(520, innerHeight - 80, 824, 64);
+    return original.call(this);
+  };
+  try {
+    render(<App />);
+    await act(async () => {
+      await new Promise((done) => requestAnimationFrame(() => done(null)));
+    });
+    const box = screen.getByRole("region", { name: "Chat" });
+    // From 8 px right of the launcher (46) to 8 px left of the bar (520).
+    expect(box.style.width).toBe(`${520 - 8 - 54}px`);
+    // Layout editing moves it: it detaches.
+    act(() => interaction.set({ ...interaction.get(), layout: true }));
+    const edit = screen.getByRole("button", { name: "Edit chat" });
+    fireEvent.pointerDown(edit, { button: 0, clientX: 100, clientY: 100, pointerId: 1 });
+    fireEvent.pointerMove(edit, { clientX: 140, clientY: 100, pointerId: 1 });
+    fireEvent.pointerUp(edit, { pointerId: 1 });
+    const saved = preferences.get().profiles.find((p) => p.id === preferences.get().active)!.config;
+    expect(saved.chatAttached).toBe(false);
+    // It keeps the width it showed beside the launcher.
+    expect(saved.chatSize.width).toBe(520 - 8 - 54);
+  } finally {
+    Element.prototype.getBoundingClientRect = original;
+    act(() => interaction.set({ ...interaction.get(), layout: false }));
+  }
+});
+
+it("follows the launcher when it moves", async () => {
+  let launcherLeft = 12;
+  const rect = (left: number, top: number, width: number, height: number) =>
+    ({
+      left,
+      top,
+      width,
+      height,
+      right: left + width,
+      bottom: top + height,
+      x: left,
+      y: top,
+    }) as DOMRect;
+  const original = Element.prototype.getBoundingClientRect;
+  Element.prototype.getBoundingClientRect = function (this: Element) {
+    if (this.querySelector?.(".launcher")) return rect(launcherLeft, innerHeight - 162, 34, 150);
+    if (this.querySelector?.(".action-bar") || this.classList?.contains("action-bar"))
+      return rect(700, innerHeight - 80, 824, 64);
+    return original.call(this);
+  };
+  const frame = () =>
+    act(async () => {
+      await new Promise((done) => requestAnimationFrame(() => done(null)));
+    });
+  try {
+    render(<App />);
+    await frame();
+    const box = screen.getByRole("region", { name: "Chat" });
+    expect(box.style.width).toBe(`${700 - 8 - 54}px`);
+    // The launcher moves 100 px right (its frame's style changes): the chat
+    // re-measures and narrows to keep filling the space.
+    launcherLeft = 112;
+    const launcher = document.querySelector(".launcher")!.closest(".placed") as HTMLElement;
+    launcher.style.left = "112px";
+    await frame();
+    await frame();
+    expect(box.style.width).toBe(`${700 - 8 - 154}px`);
+  } finally {
+    Element.prototype.getBoundingClientRect = original;
   }
 });

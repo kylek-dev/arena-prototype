@@ -814,3 +814,13 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Changes:** door: `Matchmaker::party_mates` and `announce_parties_of`; the `party` message carries `mates` (other members' handles, leader first) filled from the queue's holders at send; Rename/Revoke re-announce parties. Web: `Party.mates` parsed strictly; party members missing from the match on screen are greyed entries ("Not in this match") at the end of the team frames.
 - **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/center-panel` (`smoke=true web_build=true wasm=true`): pass — 484 Rust (1 pre-existing ignored), 58 Python, 55 Node, 55 Vitest files / 441 tests, headless pass, server smoke 495 ticks / 0 overruns / drained cleanly, WASM clippy pass; `./scripts/build-web.sh` pass.
 - **Fresh-Eyes Review:** no Critical or Important. Minor taken: unique keys and labels, shared greyed opacity, memoized matching, test cleanup; handle-matching limits documented.
+
+## 2026-11-25 — Launcher bottom-left, chat attached beside it (playtest)
+- **Branch / Commit:** `auto/hud-defaults`
+- **Base / PR:** `auto/party-frames` (stacked on PR #110)
+- **Lane:** B (pending human review)
+- **Task:** user screenshot: the launcher in the bottom-left corner and the chat right next to it filling the space
+- **Changes:** launcher default `layout(0, 1)`; `chatAttached` (default) places the chat by measuring the launcher and the action bars on screen (`besideLauncher`, watched with ResizeObserver/MutationObserver), bottoms aligned and as wide as the space to a level bar unless `chatSizeCustom`; no room keeps its own place; moving detaches (keeping the shown width); layout settings gain **Attach chat to the launcher** and Reset reattaches; profiles with both frames at earlier defaults migrate.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/party-frames`: pass — 484 Rust (1 pre-existing ignored), 58 Python, 55 Node, 55 Vitest files / 445 tests, headless pass, `npm run build` pass.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): resize measured the launcher before it moved; detaching reverted the width; small screens covered the action bar; bars at any height limited the width; old profiles could attach to a moved launcher. Minor taken: height-only resize keeps the fill, render order, migrated chat position, comments.
+- **Learnings:** frames are placed by fractions of their free travel, so "beside another frame" can only be measured in the DOM; watch the other frame's size and style (MutationObserver on `style`) to follow it.

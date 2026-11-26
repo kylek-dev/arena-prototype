@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
 import {
   MAX_CHAT_CHARS,
   chatErrorText,
@@ -15,8 +15,8 @@ import { isHandle } from "../../domain/handles";
 import type { Queue } from "../../runtime/matchmaking";
 import { chatFocusRequest, chatShown } from "../../state/chat";
 import { updateConfig, useConfigSelector } from "../../state/config";
-import { anchorAt } from "../../domain/layout/model";
-import { clampChatSize, type ChatSize } from "../../domain/preferences/schema";
+import { anchorAt, besideLauncher } from "../../domain/layout/model";
+import { CHAT_SIZE, clampChatSize, type ChatSize } from "../../domain/preferences/schema";
 import { matchQueue } from "../../state/network";
 import { engine, interaction } from "../../state/session";
 import { createStore, useStore } from "../../state/store";
@@ -448,11 +448,104 @@ function Box({
  * markers, the door's messages and refusals, whispers, and ignoring from a
  * name. Enter opens it; while typing, keys go to it, not to combat. Placed
  * with the layout editor like the unit frames. */
+/** The launcher's place and the action bar's left edge, measured on screen
+ * (frames are positioned by fractions, so only the DOM knows where the
+ * launcher really is); `null` when not attached, nothing is measurable or
+ * there is no room beside the launcher. Watches the launcher and the bars
+ * themselves (size and style), so the chat follows them as they move. */
+function useBesideLauncher(
+  attached: boolean,
+  height: number,
+  scale: number,
+  watch: readonly unknown[],
+) {
+  const [at, setAt] = useState<ReturnType<typeof besideLauncher> | null>(null);
+  useLayoutEffect(() => {
+    if (!attached) {
+      setAt(null);
+      return;
+    }
+    let frame = 0;
+    const measure = () => {
+      const placed = document.querySelector(".launcher")?.closest(".placed");
+      const rect = placed?.getBoundingClientRect();
+      if (!rect || !rect.width) {
+        setAt(null);
+        return;
+      }
+      // Only bars level with the chat (whose bottom meets the launcher's).
+      const top = rect.bottom - height * scale;
+      const lefts = [...document.querySelectorAll(".action-bar")]
+        .map((bar) => (bar.closest(".placed") ?? bar).getBoundingClientRect())
+        .filter(
+          (bar) => bar.width && bar.left > rect.right && bar.top < rect.bottom && bar.bottom > top,
+        )
+        .map((bar) => bar.left);
+      const next = besideLauncher(
+        rect,
+        lefts.length ? Math.min(...lefts) : null,
+        height,
+        scale,
+        innerWidth,
+        CHAT_SIZE.min.width,
+      );
+      setAt((before) =>
+        before === next ||
+        (before &&
+          next &&
+          before.left === next.left &&
+          before.top === next.top &&
+          before.width === next.width)
+          ? before
+          : next,
+      );
+    };
+    const soon = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
+    };
+    const targets = () =>
+      [document.querySelector(".launcher"), ...document.querySelectorAll(".action-bar")].flatMap(
+        (element) => {
+          const placed = element?.closest(".placed") ?? element;
+          return placed ? [placed] : [];
+        },
+      );
+    const sizes = new ResizeObserver(soon);
+    const moves = new MutationObserver(soon);
+    for (const target of targets()) {
+      sizes.observe(target);
+      moves.observe(target, { attributes: true, attributeFilter: ["style"] });
+    }
+    measure();
+    soon();
+    addEventListener("resize", soon);
+    return () => {
+      cancelAnimationFrame(frame);
+      sizes.disconnect();
+      moves.disconnect();
+      removeEventListener("resize", soon);
+    };
+  }, [attached, height, scale, ...watch]);
+  return at;
+}
+
+/** The movable chat box (planning/issues/chat.md): channel tabs with unread
+ * markers, the door's messages and refusals, whispers, and ignoring from a
+ * name. Enter opens it; while typing, keys go to it, not to combat. Placed
+ * with the layout editor, beside the launcher by default. */
 export function ChatBox() {
   const queue = useStore(matchQueue, (q) => q);
   const editing = useStore(interaction, (s) => s.layout);
   const saved = useConfigSelector((c) => c.frames.chat);
   const savedSize = useConfigSelector((c) => c.chatSize);
+  const attached = useConfigSelector((c) => c.chatAttached);
+  const custom = useConfigSelector((c) => c.chatSizeCustom);
+  const launcher = useConfigSelector((c) => c.frames.launcher);
+  const bars = useConfigSelector((c) => c.bars);
+  // Attached: measured beside the launcher (bottoms aligned), as wide as
+  // the space up to the action bar unless the player sized it.
+  const beside = useBesideLauncher(attached, savedSize.height, saved.scale, [launcher, bars]);
   // While the grip is dragged: the size, and the layout keeping the box's
   // top-left corner where it was; saved once, on release.
   const [draft, setDraft] = useState<ChatDraft | null>(null);
@@ -460,7 +553,11 @@ export function ChatBox() {
   useEffect(() => {
     if (editing) setDraft(null);
   }, [editing]);
-  const size = draft?.size ?? savedSize;
+  const size =
+    draft?.size ??
+    (beside && !custom && beside.width !== null
+      ? clampChatSize({ width: beside.width, height: savedSize.height })
+      : savedSize);
   const keep = (next: ChatDraft) =>
     anchorAt(
       { ...saved, scale: next.scale },
@@ -469,7 +566,17 @@ export function ChatBox() {
       { width: innerWidth - 24, height: innerHeight - 24 },
       next.size,
     );
-  const value = draft ? { ...keep(draft), scale: saved.scale } : saved;
+  const value = draft
+    ? { ...keep(draft), scale: saved.scale }
+    : beside
+      ? anchorAt(
+          saved,
+          beside.left,
+          beside.top,
+          { width: innerWidth - 24, height: innerHeight - 24 },
+          size,
+        )
+      : saved;
   const shown = !!queue && (saved.visible || editing);
   useEffect(() => {
     chatShown.set(shown && saved.visible);
@@ -481,7 +588,16 @@ export function ChatBox() {
     <Placed
       id="chat"
       value={value}
-      onChange={(next) => updateConfig((c) => ({ ...c, frames: { ...c.frames, chat: next } }))}
+      // Moving the box detaches it from the launcher, keeping the width
+      // it showed.
+      onChange={(next) =>
+        updateConfig((c) => ({
+          ...c,
+          chatAttached: false,
+          chatSize: size,
+          frames: { ...c.frames, chat: next },
+        }))
+      }
     >
       <Box
         queue={queue}
@@ -491,10 +607,17 @@ export function ChatBox() {
           draft: setDraft,
           commit: (next) => {
             setDraft(null);
+            // A resize keeps the player's size; an attached box stays
+            // attached (its bottom-left corner follows the launcher).
             updateConfig((c) => ({
               ...c,
               chatSize: next.size,
-              frames: { ...c.frames, chat: { ...keep(next), scale: c.frames.chat.scale } },
+              // Only a width change is the player's width; a taller box
+              // still fills the space beside the launcher.
+              chatSizeCustom: c.chatSizeCustom || next.size.width !== size.width,
+              frames: c.chatAttached
+                ? c.frames
+                : { ...c.frames, chat: { ...keep(next), scale: c.frames.chat.scale } },
             }));
           },
         }}

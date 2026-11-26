@@ -120,8 +120,9 @@ export function App() {
             )}
             <RoundClock />
             <MatchStatus />
-            <ChatBox />
+            {/* The launcher first: the chat measures it to sit beside it. */}
             <Launcher />
+            <ChatBox />
           </>
         )}
         <Diagnostics />
