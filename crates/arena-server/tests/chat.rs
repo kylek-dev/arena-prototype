@@ -410,3 +410,101 @@ async fn team_chat_in_a_2v2_reaches_one_teammate() {
     }
     door.stop().await.unwrap();
 }
+
+const UNKNOWN: u8 = 0;
+const LIVE: u8 = 1;
+const ENDED: u8 = 2;
+
+/// A stand-in match server answering `GET /matches/{id}` with what `state`
+/// says: [`UNKNOWN`] (404), [`LIVE`] or [`ENDED`].
+async fn fake_match_server(state: std::sync::Arc<std::sync::atomic::AtomicU8>) -> SocketAddr {
+    use axum::Json;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use axum::routing::get;
+    let router = axum::Router::new().route(
+        "/matches/{id}",
+        get(move || {
+            let state = state.load(std::sync::atomic::Ordering::SeqCst);
+            async move {
+                match state {
+                    LIVE => Json(serde_json::json!({ "state": "live" })).into_response(),
+                    ENDED => Json(serde_json::json!({ "state": "ended" })).into_response(),
+                    _ => StatusCode::NOT_FOUND.into_response(),
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await });
+    addr
+}
+
+#[tokio::test]
+async fn players_leave_the_match_as_soon_as_the_match_server_says_it_ended() {
+    let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(UNKNOWN));
+    let server = fake_match_server(state.clone()).await;
+    let mut config = DoorConfig::new(
+        TicketKey::random(),
+        "ws://127.0.0.1:1/play".into(),
+        "http://localhost:8000/".into(),
+    );
+    config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
+    config.match_status = Some(format!("http://{server}"));
+    config.match_check_every = Duration::from_millis(50);
+    let door = door::start(config).await.unwrap();
+    let mut host = connect(door.addr, 1).await;
+    let mut rival = connect(door.addr, 2).await;
+    say(&mut host, r#"{"type":"create_lobby","mode":"1v1"}"#.into()).await;
+    let code = until(&mut host, |m| match m {
+        QueueMessage::Lobby(view) => Some(view.code),
+        _ => None,
+    })
+    .await;
+    say(
+        &mut rival,
+        format!(r#"{{"type":"join_lobby","code":"{code}"}}"#),
+    )
+    .await;
+    until(&mut rival, |m| {
+        matches!(m, QueueMessage::Lobby(_)).then_some(())
+    })
+    .await;
+    say(&mut host, r#"{"type":"start_lobby"}"#.into()).await;
+    for socket in [&mut host, &mut rival] {
+        until(socket, |m| {
+            matches!(m, QueueMessage::Match { .. }).then_some(())
+        })
+        .await;
+    }
+    // Unknown to the server (nobody joined yet), then live, each checked
+    // several times: the players stay seated and match chat works.
+    for now in [UNKNOWN, LIVE] {
+        state.store(now, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        post(&mut host, "match", "glhf").await;
+        assert_eq!(heard(&mut rival).await.2, "glhf");
+        assert_eq!(heard(&mut host).await.2, "glhf");
+    }
+
+    state.store(ENDED, std::sync::atomic::Ordering::SeqCst);
+    // Within a few checks the door no longer counts them as in a match.
+    let mut left = false;
+    for _ in 0..40 {
+        post(&mut host, "match", "gg").await;
+        let answer = until(&mut host, |m| match m {
+            QueueMessage::Refused { code } => Some(Some(code)),
+            QueueMessage::Chat { .. } => Some(None),
+            _ => None,
+        })
+        .await;
+        if answer.as_deref() == Some("not_in_match") {
+            left = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(left, "the ended match still holds its players");
+    door.stop().await.unwrap();
+}

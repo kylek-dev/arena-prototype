@@ -32,14 +32,15 @@ use arena_protocol::{
 use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::{Arena, MAX_ROUND_TICKS};
 use arena_sim::map::Layout;
+use axum::Json;
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
@@ -143,9 +144,22 @@ const COMMAND_QUEUE: usize = 1024;
 #[derive(Default)]
 struct Registry {
     live: HashMap<u64, mpsc::Sender<Command>>,
-    /// Ended match identifiers and when their tickets expire.
-    ended: HashMap<u64, u64>,
+    /// Ended matches, kept until their tickets expire (and at least
+    /// [`ENDED_KEPT`], for the door to hear of the end).
+    ended: HashMap<u64, Ended>,
 }
+
+#[derive(Clone, Copy)]
+struct Ended {
+    expires: u64,
+    /// Played out, rather than closed by a server stop: only these are
+    /// reported `ended` to the door. A stopped match may start again on the
+    /// next process, so its players must stay seated there.
+    finished: bool,
+}
+
+/// Seconds an ended match stays known after it ends.
+const ENDED_KEPT: u64 = 10 * 60;
 
 pub struct App {
     config: Config,
@@ -157,6 +171,21 @@ pub struct App {
     shutdown: watch::Sender<bool>,
     layout: Layout,
     map: u64,
+}
+
+/// A match as `GET /matches/{id}` reports it to the front door, which
+/// clears its in-match seats once a match has ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MatchState {
+    Live,
+    Ended,
+}
+
+/// `GET /matches/{id}`'s body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatchStatus {
+    pub state: MatchState,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,6 +217,21 @@ impl App {
     }
     pub fn is_draining(&self) -> bool {
         self.draining.load(Ordering::Relaxed)
+    }
+
+    /// Whether this server hosts match `id` now (`Live`), hosted it and its
+    /// tickets are still valid (`Ended`), or knows nothing of it.
+    pub fn match_state(&self, id: u64) -> Option<MatchState> {
+        let matches = self.matches.lock().expect("match registry");
+        if matches.live.contains_key(&id) {
+            Some(MatchState::Live)
+        } else {
+            matches
+                .ended
+                .get(&id)
+                .filter(|ended| ended.finished)
+                .map(|_| MatchState::Ended)
+        }
     }
 
     /// Issues a ticket per seat for a new match on this server, which
@@ -273,14 +317,13 @@ impl App {
         Ok(sender)
     }
 
-    fn end_match(&self, id: u64, expires: u64) {
+    fn end_match(&self, id: u64, expires: u64, finished: bool) {
         let now = unix_now();
         let mut matches = self.matches.lock().expect("match registry lock");
         matches.live.remove(&id);
-        matches.ended.retain(|_, expires| *expires > now);
-        if expires > now {
-            matches.ended.insert(id, expires);
-        }
+        matches.ended.retain(|_, ended| ended.expires > now);
+        let expires = expires.max(now + ENDED_KEPT);
+        matches.ended.insert(id, Ended { expires, finished });
     }
 }
 
@@ -520,7 +563,9 @@ async fn run_match(
             break;
         }
     }
-    app.end_match(id, expires);
+    // Closed by a server stop (not played out) when shutdown was signalled.
+    let finished = !*app.shutdown.borrow();
+    app.end_match(id, expires, finished);
     Metrics::sub(&app.metrics.matches_active, 1);
     let _ended = span.enter();
     match session.arena().result() {
@@ -680,6 +725,9 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/play", get(play))
         .route("/healthz", get(|| async { "ok" }))
         .route("/readyz", get(ready))
+        // For the front door on the private network (Caddy routes only
+        // /play here): whether a match is live, ended, or unknown.
+        .route("/matches/{id}", get(match_status))
         .route("/metrics", get(render_metrics));
     if app.config.dev {
         router = router.route("/dev/match", post(dev_match));
@@ -688,7 +736,7 @@ pub fn router(app: Arc<App>) -> Router {
 }
 
 /// Paths scraped or probed every few seconds: no span each time.
-const UNTRACED_PATHS: [&str; 3] = ["/metrics", "/healthz", "/readyz"];
+const UNTRACED_PATHS: [&str; 4] = ["/metrics", "/healthz", "/readyz", "/matches/{id}"];
 
 /// One `http.request` span per request (a WebSocket's is its upgrade), with
 /// the method, the route (never the query; `unmatched` for unknown paths, so
@@ -721,6 +769,19 @@ pub fn traced(router: Router) -> Router {
                 },
             ),
     )
+}
+
+async fn match_status(State(app): State<Arc<App>>, Path(id): Path<String>) -> Response {
+    let Some(id) = (id.len() == 16 && id.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then(|| u64::from_str_radix(&id, 16).ok())
+        .flatten()
+    else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    match app.match_state(id) {
+        Some(state) => Json(MatchStatus { state }).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn ready(State(app): State<Arc<App>>) -> Response {
@@ -1230,6 +1291,39 @@ pub fn fnv1a(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn match_state_reads_the_registry() {
+        let app = App::new(Config::new(TicketKey::random()));
+        assert_eq!(app.match_state(7), None);
+        let (sender, _receiver) = mpsc::channel(1);
+        app.matches.lock().unwrap().live.insert(7, sender);
+        assert_eq!(app.match_state(7), Some(MatchState::Live));
+        let mut matches = app.matches.lock().unwrap();
+        matches.live.remove(&7);
+        matches.ended.insert(
+            7,
+            Ended {
+                expires: u64::MAX,
+                finished: true,
+            },
+        );
+        drop(matches);
+        assert_eq!(app.match_state(7), Some(MatchState::Ended));
+        // A match closed by a server stop is not reported ended.
+        app.end_match(8, 0, false);
+        assert_eq!(app.match_state(8), None);
+        // Short tickets still leave the end known for a while.
+        app.end_match(9, 0, true);
+        assert_eq!(app.match_state(9), Some(MatchState::Ended));
+        assert_eq!(
+            serde_json::to_string(&MatchStatus {
+                state: MatchState::Ended
+            })
+            .unwrap(),
+            r#"{"state":"ended"}"#
+        );
+    }
 
     #[test]
     fn hello_frames_resolve_to_a_ticket_or_the_right_error() {

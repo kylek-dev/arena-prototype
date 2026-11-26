@@ -1691,3 +1691,19 @@ async fn seats_show_the_handles_their_tickets_name() {
     assert_eq!(next_handles(&mut back).await, [rook, ash]);
     running.shut_down(Duration::ZERO).await.unwrap();
 }
+
+#[tokio::test]
+async fn the_door_can_ask_whether_a_match_is_live() {
+    let running = start(config(true)).await.unwrap();
+    let created = running.app.issue_match(1).unwrap();
+    let path = format!("/matches/{:016x}", created.match_id);
+    // Issued but not joined: the server knows nothing of it yet.
+    assert_eq!(http(running.addr, "GET", &path).await.0, 404);
+    assert_eq!(http(running.addr, "GET", "/matches/nothex").await.0, 400);
+    assert_eq!(http(running.addr, "GET", "/matches/12").await.0, 400);
+    let (_a, _) = Client::join(running.addr, &created.tickets[0]).await;
+    let (status, body) = http(running.addr, "GET", &path).await;
+    assert_eq!(status, 200);
+    assert!(body.contains(r#"{"state":"live"}"#), "{body}");
+    running.shut_down(Duration::ZERO).await.unwrap();
+}
