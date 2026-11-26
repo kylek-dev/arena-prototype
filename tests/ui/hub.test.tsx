@@ -244,3 +244,60 @@ it("offers no way into the hub during a match", async () => {
   expect(screen.queryByRole("button", { name: "Enter the hub" })).toBeNull();
   networkLink.set(null);
 });
+
+it("hands the renderer the hub, and only a new revision when it changed", async () => {
+  const { readHub, onHubIntent, onHubScreen, hubScreen } = await import(
+    "../../web/src/state/hub-render"
+  );
+  expect(readHub()[1]).toBe("null");
+  const outside = readHub()[0];
+  inHub();
+  const [revision, json] = readHub() as [number, string];
+  expect(revision).toBeGreaterThan(outside as number);
+  const view = JSON.parse(json);
+  expect(view).toMatchObject({ x: 0, z: 24000, tick: 1 });
+  expect(view.players.map((p: { id: number }) => p.id)).toEqual([2, 3]);
+  // No kits installed here: no spec, so the renderer stands a plain body in.
+  expect(view.players[0].spec).toBeNull();
+  expect(readHub()[0]).toBe(revision);
+  // The renderer's intent goes to the door through the queue.
+  onHubIntent(1000, 0, 0);
+  expect(fake.sent().at(-1)).toEqual({ type: "hub_move", seq: 1, x: 1000, z: 0, facing: 0 });
+  // Until the door applies it, its place for this player lags: not settled.
+  expect(JSON.parse(readHub()[1] as string).settled).toBe(false);
+  fake.say({ type: "hub_state", tick: 2, ack: 1, x: 720, z: 24000, players: [] });
+  expect(JSON.parse(readHub()[1] as string).settled).toBe(true);
+  // Names on screen: malformed entries are dropped, an unchanged list is quiet.
+  onHubScreen('[[2,0.5,0.25],[3,2,0.5],["x",0,0]]');
+  expect(hubScreen.get()).toEqual([{ id: 2, x: 0.5, y: 0.25 }]);
+  const same = hubScreen.get();
+  onHubScreen("[[2,0.5,0.25]]");
+  expect(hubScreen.get()).toBe(same);
+  onHubScreen("not json");
+  expect(hubScreen.get()).toBe(same);
+  onHubScreen("[]");
+});
+
+it("names the players in the world, opens their menu on a click, and hides the combat HUD", async () => {
+  const { App } = await import("../../web/src/app/App");
+  const { hubScreen } = await import("../../web/src/state/hub-render");
+  const { engine } = await import("../../web/src/state/session");
+  const { snapshot } = await import("./fixtures");
+  const { hubWindowVisible } = await import("../../web/src/state/windows");
+  await logIn();
+  engine.set(snapshot());
+  inHub();
+  act(() => hubScreen.set([{ id: 2, x: 0.4, y: 0.3 }]));
+  render(<App />);
+  // No unit frames, nameplates or action bars in the hub.
+  expect(screen.queryByRole("meter")).toBeNull();
+  expect(screen.queryByLabelText("World health bars")).toBeNull();
+  const name = screen.getByRole("button", { name: "Ash#1000. Open their menu" });
+  expect(name.style.left).toBe("40%");
+  await act(async () => fireEvent.click(name));
+  expect(hubWindowVisible.get()).toBe(true);
+  expect(screen.getByRole("menu", { name: "Actions for Ash#1000" })).toBeTruthy();
+  hubWindowVisible.set(false);
+  act(() => hubScreen.set([]));
+  engine.set(null);
+});

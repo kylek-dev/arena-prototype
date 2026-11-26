@@ -377,6 +377,8 @@ export function createQueue(deps: QueueDeps) {
       sentMove = "";
       request(hubRequests.leave());
     },
+    /** The sequence number of the last intent sent (0 before any). */
+    lastMoveSeq: () => moveSeq,
     /** The current movement intent: sent when it changes, at most 10 a
      * second, the newest one winning. */
     moveHub(x: number, z: number, facing: number) {

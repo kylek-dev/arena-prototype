@@ -10,6 +10,7 @@ mod graphics;
 mod held_weapon;
 mod heraldry;
 mod hover;
+mod hub;
 mod humanoid;
 mod lighting;
 mod lightning;
@@ -219,6 +220,7 @@ pub fn run() {
         .init_resource::<props::PropModels>()
         .init_resource::<Practice>()
         .init_resource::<Net>()
+        .init_resource::<hub::Hub>()
         .init_resource::<Orbit>()
         .init_resource::<SpectatorCamera>()
         .init_resource::<animation::Settings>()
@@ -262,7 +264,9 @@ pub fn run() {
                     practice_catch_up,
                     network_receive,
                     apply_map_edits,
+                    hub::read,
                     read_controls,
+                    hub::steer,
                 )
                     .chain(),
             ),
@@ -274,6 +278,7 @@ pub fn run() {
                 rebuild_venue.run_if(resource_changed::<ActiveMap>),
                 character::check_loading,
                 appearance::switch_kit,
+                hub::spawn_kits,
                 appearance::apply,
                 held_weapon::read,
                 held_weapon::attach,
@@ -282,6 +287,7 @@ pub fn run() {
                 textures::mip_character_textures,
                 sky::attach,
                 startup::update,
+                hub::advance,
                 present,
                 animation::animate,
                 character_animation::animate,
@@ -296,6 +302,9 @@ pub fn run() {
             PostUpdate,
             (
                 publish
+                    .after(bevy::transform::TransformSystems::Propagate)
+                    .after(bevy::camera::CameraUpdateSystems),
+                hub::screen
                     .after(bevy::transform::TransformSystems::Propagate)
                     .after(bevy::camera::CameraUpdateSystems),
                 // This frame's animated hand, before visibility is resolved.
@@ -1230,22 +1239,31 @@ fn present(
     spec_cam: Res<SpectatorCamera>,
     startup: Res<startup::State>,
     preview: Res<appearance::Preview>,
-    obstacles: Query<&camera::Obstacle>,
+    obstacles: Query<(&camera::Obstacle, Has<hub::PlazaObstacle>)>,
     added_obstacles: Query<(), Added<camera::Obstacle>>,
     mut removed_obstacles: RemovedComponents<camera::Obstacle>,
     mut cached_obstacles: Local<Vec<camera::Obstacle>>,
+    mut cached_for_hub: Local<bool>,
     fixed: Res<Time<Fixed>>,
     time: Res<Time>,
     mut fighters: Query<(&FighterVisual, &mut Transform, &mut Visibility), Without<Camera>>,
     mut cameras: Query<&mut Transform, (With<Camera>, Without<FighterVisual>)>,
     net: Option<Res<Net>>,
+    hub: Option<Res<hub::Hub>>,
 ) {
     let spectating = net
         .as_ref()
         .and_then(|net| net.session.as_ref())
         .is_some_and(network::Session::is_spectator);
     let mut positions = [Vec3::ZERO; arena_protocol::MAX_FIGHTERS];
+    // In the hub the local player walks the plaza alone; the arena's other
+    // fighters are not drawn (ADR 0056).
+    let walk = hub.as_ref().and_then(|hub| hub.walk);
     let count = match &practice.remote {
+        _ if walk.is_some() && !spectating => {
+            positions[0] = walk.expect("checked").shown();
+            1
+        }
         // In a network match the player's own fighter is predicted, drawn
         // part-way through the current fixed tick like local practice.
         Some(remote) => {
@@ -1275,9 +1293,20 @@ fn present(
     let positions = &positions[..count];
     let obstacles_changed =
         !added_obstacles.is_empty() || removed_obstacles.read().next().is_some();
-    if obstacles_changed || (cached_obstacles.is_empty() && !obstacles.is_empty()) {
+    // In the hub the boom meets only the plaza, never the hidden arena.
+    let in_hub = walk.is_some();
+    if obstacles_changed
+        || *cached_for_hub != in_hub
+        || (cached_obstacles.is_empty() && !obstacles.is_empty())
+    {
+        *cached_for_hub = in_hub;
         cached_obstacles.clear();
-        cached_obstacles.extend(obstacles.iter().copied());
+        cached_obstacles.extend(
+            obstacles
+                .iter()
+                .filter(|(_, plaza)| *plaza == in_hub)
+                .map(|(obstacle, _)| *obstacle),
+        );
     }
     practice.combat_text.advance(time.delta_secs());
     let mut hidden_actor: Option<usize> = None;
@@ -1829,7 +1858,7 @@ mod platform {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen(
-        inline_js = "export function arena_character() { const id = globalThis.arenaShell.characterModel; return typeof id === 'string' ? id : undefined; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(tag) { globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); } export function arena_map() { return globalThis.arenaShell.readMap?.() ?? []; } export function arena_map_status(json) { globalThis.arenaShell.onMapStatus?.(JSON.parse(json)); } export function arena_appearance() { return globalThis.arenaShell.readAppearance?.() ?? []; } export function arena_preview() { return globalThis.arenaShell.readPreview?.() ?? []; } export function arena_network() { return globalThis.arenaShell.readNetwork?.() ?? []; } export function arena_network_send(frame) { globalThis.arenaShell.sendNetwork?.(frame.slice()); } export function arena_network_status(json) { globalThis.arenaShell.onNetwork?.(JSON.parse(json)); } export function arena_network_appearances(json) { globalThis.arenaShell.onAppearances?.(JSON.parse(json)); } export function arena_network_handles(json) { globalThis.arenaShell.onHandles?.(JSON.parse(json)); } export function arena_network_tags(json) { globalThis.arenaShell.onTags?.(JSON.parse(json)); }"
+        inline_js = "export function arena_character() { const id = globalThis.arenaShell.characterModel; return typeof id === 'string' ? id : undefined; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(tag) { globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); } export function arena_map() { return globalThis.arenaShell.readMap?.() ?? []; } export function arena_map_status(json) { globalThis.arenaShell.onMapStatus?.(JSON.parse(json)); } export function arena_appearance() { return globalThis.arenaShell.readAppearance?.() ?? []; } export function arena_preview() { return globalThis.arenaShell.readPreview?.() ?? []; } export function arena_network() { return globalThis.arenaShell.readNetwork?.() ?? []; } export function arena_network_send(frame) { globalThis.arenaShell.sendNetwork?.(frame.slice()); } export function arena_network_status(json) { globalThis.arenaShell.onNetwork?.(JSON.parse(json)); } export function arena_network_appearances(json) { globalThis.arenaShell.onAppearances?.(JSON.parse(json)); } export function arena_network_handles(json) { globalThis.arenaShell.onHandles?.(JSON.parse(json)); } export function arena_network_tags(json) { globalThis.arenaShell.onTags?.(JSON.parse(json)); } export function arena_hub() { return globalThis.arenaShell.readHub?.() ?? []; } export function arena_hub_intent(x, z, facing) { globalThis.arenaShell.onHubIntent?.(x, z, facing); } export function arena_hub_screen(json) { globalThis.arenaShell.onHubScreen?.(json); }"
     )]
     extern "C" {
         fn arena_character() -> Option<String>;
@@ -1850,6 +1879,21 @@ mod platform {
         fn arena_network_appearances(json: &str);
         fn arena_network_handles(json: &str);
         fn arena_network_tags(json: &str);
+        fn arena_hub() -> js_sys::Array;
+        fn arena_hub_intent(x: i16, z: i16, facing: u16);
+        fn arena_hub_screen(json: &str);
+    }
+    /// The page's hub (ADR 0056) as `[revision, json]`; older shells send none.
+    pub fn read_hub() -> Option<(f64, String)> {
+        let values = arena_hub();
+        let revision = values.get(0).as_f64().filter(|r| r.is_finite())?;
+        Some((revision, values.get(1).as_string()?))
+    }
+    pub fn hub_intent(x: i16, z: i16, facing: u16) {
+        arena_hub_intent(x, z, facing);
+    }
+    pub fn hub_screen(json: &str) {
+        arena_hub_screen(json);
     }
     /// The runtime's match feed as `[generation, ...frames]`; `None` when
     /// there is no match (older shells send nothing).
@@ -3061,6 +3105,83 @@ mod tests {
     }
 
     #[test]
+    fn the_hub_replaces_the_venue_walks_the_player_and_shows_the_others() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .init_asset::<AnimationGraph>()
+            .init_resource::<Practice>()
+            .init_resource::<hub::Hub>()
+            .init_resource::<appearance::Desired>()
+            .init_resource::<character::KitCache>()
+            .add_systems(
+                Update,
+                (hub::read, hub::steer, hub::spawn_kits, hub::advance).chain(),
+            );
+        let venue = app
+            .world_mut()
+            .spawn((venue::VenueEntity, Visibility::Inherited))
+            .id();
+        platform::HUB_INTENTS.lock().unwrap().clear();
+        *platform::HUB.lock().unwrap() = Some((
+            1.0,
+            r#"{"x":-5250,"z":24000,"tick":1,"players":[{"id":7,"x":0,"z":30000,"facing":0,"admin":false,"spec":null}]}"#.into(),
+        ));
+        app.update();
+        app.update();
+        let world = app.world_mut();
+        assert_eq!(world.get::<Visibility>(venue), Some(&Visibility::Hidden));
+        let plaza = world
+            .query_filtered::<(), (With<hub::Plaza>, Without<hub::PlazaObstacle>)>()
+            .iter(world)
+            .count();
+        assert_eq!(plaza, 1 + arena_sim::hub::COLUMNS.len());
+        // The camera meets the plaza's floor and columns.
+        let obstacles = world
+            .query_filtered::<(), (With<hub::PlazaObstacle>, With<camera::Obstacle>)>()
+            .iter(world)
+            .count();
+        assert_eq!(obstacles, 1 + arena_sim::hub::COLUMNS.len());
+        let avatars: Vec<hub::HubAvatar> = world
+            .query::<&hub::HubAvatar>()
+            .iter(world)
+            .copied()
+            .collect();
+        assert_eq!(avatars, vec![hub::HubAvatar { id: 7, slot: 0 }]);
+        // Without a look to show, a plain body stands in.
+        assert_eq!(world.query::<&hub::StandIn>().iter(world).count(), 1);
+        // Walking east: the intent goes to the page, the arena gets none.
+        {
+            let mut practice = world.resource_mut::<Practice>();
+            practice.movement = Vec2::new(1.0, 0.0);
+            practice.facing = 0.0;
+        }
+        app.update();
+        assert_eq!(
+            platform::HUB_INTENTS.lock().unwrap().last().copied(),
+            Some((1000, 0, 0))
+        );
+        assert_eq!(app.world().resource::<Practice>().movement, Vec2::ZERO);
+        assert!(app.world().resource::<hub::Hub>().active());
+        // Leaving: the plaza and the others go, the venue comes back.
+        *platform::HUB.lock().unwrap() = Some((2.0, "null".into()));
+        app.update();
+        let world = app.world_mut();
+        assert_eq!(world.get::<Visibility>(venue), Some(&Visibility::Inherited));
+        assert_eq!(
+            world
+                .query_filtered::<(), With<hub::Plaza>>()
+                .iter(world)
+                .count(),
+            0
+        );
+        assert_eq!(world.query::<&hub::HubAvatar>().iter(world).count(), 0);
+        assert!(!world.resource::<hub::Hub>().active());
+        *platform::HUB.lock().unwrap() = None;
+    }
+
+    #[test]
     fn spectator_free_camera_clamps_inside_venue_bounds() {
         let map = arena_map::colosseum();
         let mut cam = SpectatorCamera::default();
@@ -3158,4 +3279,18 @@ mod platform {
     /// worker threads, so these are process-wide rather than thread-local.
     pub static MAP: std::sync::Mutex<Option<(f64, String)>> = std::sync::Mutex::new(None);
     pub static STATUS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    /// Tests stand in for the page's hub through these.
+    pub static HUB: std::sync::Mutex<Option<(f64, String)>> = std::sync::Mutex::new(None);
+    pub static HUB_INTENTS: std::sync::Mutex<Vec<(i16, i16, u16)>> =
+        std::sync::Mutex::new(Vec::new());
+    pub static HUB_SCREEN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    pub fn read_hub() -> Option<(f64, String)> {
+        HUB.lock().unwrap().clone()
+    }
+    pub fn hub_intent(x: i16, z: i16, facing: u16) {
+        HUB_INTENTS.lock().unwrap().push((x, z, facing));
+    }
+    pub fn hub_screen(json: &str) {
+        *HUB_SCREEN.lock().unwrap() = Some(json.to_owned());
+    }
 }

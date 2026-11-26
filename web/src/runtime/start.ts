@@ -40,6 +40,7 @@ import { installTelemetry } from "./telemetry";
 import { matchQueue, networkLink, remoteHandles, remoteTags } from "../state/network";
 import { parseHandles, parseTags, withHandles, withTags } from "../domain/handles";
 import { clearPostMatchScoreboard, syncPostMatchScoreboard } from "../state/scoreboard";
+import { onHubIntent, onHubScreen, readHub } from "../state/hub-render";
 export function startRuntime(canvas: HTMLCanvasElement) {
   const pointer = installPointer(canvas, () => router.cancel());
   const router = installInput(canvas, pointer.end);
@@ -106,6 +107,9 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     onAppearances,
     onHandles: (raw) => remoteHandles.set(parseHandles(raw)),
     onTags: (raw) => remoteTags.set(parseTags(raw)),
+    readHub,
+    onHubIntent,
+    onHubScreen,
     readInput: router.sample,
     readHover: unitHover.read,
     readGraphics,

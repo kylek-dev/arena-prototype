@@ -320,6 +320,7 @@ pub(crate) fn animate(
     practice: Res<crate::Practice>,
     model: Res<crate::character::CharacterModel>,
     fighters: Query<(&crate::FighterVisual, &Transform)>,
+    hub_avatars: Query<(&crate::hub::HubAvatar, &Transform)>,
     mut players: Query<(
         &mut Controller,
         &mut AnimationPlayer,
@@ -333,13 +334,27 @@ pub(crate) fn animate(
         }
     }
     let roster = practice.arena.fighters();
+    // Hub players (ADR 0056) stand and walk; they never jump or cast.
+    let hub: std::collections::HashMap<usize, Transform> = hub_avatars
+        .iter()
+        .map(|(avatar, transform)| (crate::hub::HUB_ACTOR_BASE + avatar.slot, *transform))
+        .collect();
+    let standing = arena_sim::arena::Combatant::new(arena_sim::arena::Position { x: 0, z: 0 }, 0);
     for (mut controller, mut player, mut transitions) in &mut players {
         let actor = controller.actor;
-        let Some(&fighter) = roster.get(actor) else {
-            continue;
-        };
-        let Some(transform) = transforms.get(actor).copied().flatten() else {
-            continue;
+        let (fighter, transform) = if actor >= crate::hub::HUB_ACTOR_BASE {
+            let Some(transform) = hub.get(&actor).copied() else {
+                continue;
+            };
+            (standing, transform)
+        } else {
+            let Some(&fighter) = roster.get(actor) else {
+                continue;
+            };
+            let Some(transform) = transforms.get(actor).copied().flatten() else {
+                continue;
+            };
+            (fighter, transform)
         };
         let playback = controller.step(Sample {
             position: transform.translation,
