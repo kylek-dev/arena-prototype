@@ -464,6 +464,39 @@ impl Matchmaker {
         Some((mode, since, members))
     }
 
+    /// The other members of `conn`'s party, in party order (leader first);
+    /// empty on one's own. The door names them when it sends the view.
+    pub fn party_mates(&self, conn: QueueConn) -> Vec<QueueConn> {
+        self.of
+            .get(&conn)
+            .and_then(|id| self.parties.get(id))
+            .map(|party| {
+                party
+                    .members
+                    .iter()
+                    .map(|member| member.conn)
+                    .filter(|&other| other != conn)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The current party view for everyone in each of these connections'
+    /// parties (each party once), say after a member's name changed.
+    pub fn announce_parties_of(&self, conns: impl IntoIterator<Item = QueueConn>) -> Vec<Out> {
+        let mut ids: Vec<u64> = conns
+            .into_iter()
+            .filter_map(|conn| self.of.get(&conn).copied())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let mut out = Vec::new();
+        for id in ids {
+            self.announce(id, &mut out);
+        }
+        out
+    }
+
     fn view(&self, party: &Party, conn: QueueConn) -> PartyView {
         PartyView {
             code: party.code.clone(),
@@ -1204,6 +1237,24 @@ mod tests {
             .iter()
             .flat_map(|conn| mm.accept(*conn, now))
             .collect()
+    }
+
+    #[test]
+    fn party_mates_list_the_others_leader_first_and_reannounce_on_rename() {
+        let now = Instant::now();
+        let mut mm = Matchmaker::new(Duration::from_secs(15), |_| 0);
+        connect(&mut mm, 1..=4, now);
+        let out = mm.create_party(1, now);
+        let invite = code(&out, 1);
+        mm.join_party(2, &invite, now);
+        mm.join_party(3, &invite, now);
+        assert_eq!(mm.party_mates(1), vec![2, 3]);
+        assert_eq!(mm.party_mates(3), vec![1, 2]);
+        assert!(mm.party_mates(4).is_empty());
+        // Renamed members re-announce each party once, to every member
+        // (player 4 is a party of one).
+        let out = mm.announce_parties_of([2, 3, 4]);
+        assert_eq!(out.len(), 4, "{out:?}");
     }
 
     #[test]

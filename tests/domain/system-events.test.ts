@@ -57,16 +57,21 @@ it("tells lobby joins, leaves, hosting and kicks", () => {
 });
 
 it("tells party changes", () => {
-  const party = (members: number, leader = false) => ({ code: "M9Q3RT", members, leader });
+  const party = (members: number, leader = false) => ({
+    code: "M9Q3RT",
+    members,
+    leader,
+    mates: [],
+  });
   expect(partyEvents(null, party(2))).toEqual(["You joined a party."]);
   expect(partyEvents(null, party(1, true))).toEqual([]);
   expect(partyEvents(party(1, true), party(2, true))).toEqual(["A player joined your party."]);
   expect(partyEvents(party(3), party(2))).toEqual(["A player left your party."]);
   expect(partyEvents(party(2), party(2, true))).toEqual(["You now lead the party."]);
-  expect(partyEvents(party(2), { code: null, members: 1, leader: true })).toEqual([
+  expect(partyEvents(party(2), { code: null, members: 1, leader: true, mates: [] })).toEqual([
     "You left the party.",
   ]);
-  expect(partyEvents(null, { code: null, members: 1, leader: true })).toEqual([]);
+  expect(partyEvents(null, { code: null, members: 1, leader: true, mates: [] })).toEqual([]);
 });
 
 it("tells friends coming online, requests and acceptances, but not the first list", () => {

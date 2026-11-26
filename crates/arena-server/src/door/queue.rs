@@ -151,6 +151,9 @@ pub enum ToClient {
         members: usize,
         leader: bool,
         queue: Option<String>,
+        /// The other members' handles, leader first; `null` for one the
+        /// door cannot name. The page shows them as teammates.
+        mates: Vec<Option<String>>,
     },
     /// Searching: `waiting` players (including this party) want `mode`;
     /// this search has run `waited_ms`; recent matches took about
@@ -237,12 +240,13 @@ impl ToClient {
             message: message.into(),
         }
     }
-    fn party(view: PartyView) -> Self {
+    fn party(view: PartyView, mates: Vec<Option<String>>) -> Self {
         Self::Party {
             code: view.code,
             members: view.members,
             leader: view.leader,
             queue: view.queue.map(|mode| mode.id().into()),
+            mates,
         }
     }
 }
@@ -561,8 +565,10 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                             renamed.push(*conn);
                         }
                     }
-                    // Lobby-mates see the new (guest) name at once.
-                    mm.announce_lobbies_of(renamed)
+                    // Lobby- and party-mates see the new (guest) name at once.
+                    let mut out = mm.announce_lobbies_of(renamed.iter().copied());
+                    out.extend(mm.announce_parties_of(renamed));
+                    out
                 }
                 Some(Command::Rename { account, handle }) => {
                     let mut renamed = Vec::new();
@@ -572,7 +578,9 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                             renamed.push(*conn);
                         }
                     }
-                    mm.announce_lobbies_of(renamed)
+                    let mut out = mm.announce_lobbies_of(renamed.iter().copied());
+                    out.extend(mm.announce_parties_of(renamed));
+                    out
                 }
                 Some(Command::Invite { conn, from, to, to_handle }) => {
                     if holders.get(&conn).and_then(|h| h.account) == Some(from) {
@@ -671,7 +679,19 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
         for action in out {
             searches.observe(&action);
             match action {
-                Out::Party { conn, view } => send(&conns, conn, ToClient::party(view)),
+                Out::Party { conn, view } => {
+                    let mates = mm
+                        .party_mates(conn)
+                        .into_iter()
+                        .map(|mate| {
+                            holders
+                                .get(&mate)
+                                .and_then(|holder| holder.handle)
+                                .map(|handle| handle.to_string())
+                        })
+                        .collect();
+                    send(&conns, conn, ToClient::party(view, mates));
+                }
                 Out::ReadyCheck { conn, check } => send(
                     &conns,
                     conn,
@@ -1949,14 +1969,17 @@ mod tests {
         assert!(command(1, parse(r#"{"type":"queue","mode":"4v4"}"#).unwrap()).is_err());
         assert!(command(1, parse(r#"{"type":"hello","guest":"ab"}"#).unwrap()).is_err());
         assert_eq!(
-            serde_json::to_string(&ToClient::party(PartyView {
-                code: Some("K7P2QX".into()),
-                members: 2,
-                leader: true,
-                queue: Some(Mode::Team2v2),
-            }))
+            serde_json::to_string(&ToClient::party(
+                PartyView {
+                    code: Some("K7P2QX".into()),
+                    members: 2,
+                    leader: true,
+                    queue: Some(Mode::Team2v2),
+                },
+                vec![Some("Rook#0042".into())]
+            ))
             .unwrap(),
-            r#"{"type":"party","code":"K7P2QX","members":2,"leader":true,"queue":"2v2"}"#
+            r#"{"type":"party","code":"K7P2QX","members":2,"leader":true,"queue":"2v2","mates":["Rook#0042"]}"#
         );
         // Custom lobby requests parse strictly and reject free-form map/mode fields.
         assert!(matches!(

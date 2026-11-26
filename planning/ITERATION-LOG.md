@@ -805,3 +805,12 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/window-dock`: pass — 483 Rust (1 pre-existing ignored), 58 Python, 54 Node, 55 Vitest files / 439 tests, headless pass, `npm run build` pass.
 - **Fresh-Eyes Review:** no Critical. Important (fixed): the tooltip wrapper replaced the tab's `data-state`, so the active style never showed (matching the user's report); centered cards covered centered modals. Minor taken: shared hooks, panel role, wording, test phase, docs.
 - **Learnings:** Radix `Tooltip.Trigger asChild` passes its own `data-state` to the child and overrides the child's; never wrap a Radix trigger whose style keys on `data-state` (tabs, toggles) in a tooltip trigger — put the tooltip inside it.
+
+## 2026-11-25 — Party members as teammates (playtest)
+- **Branch / Commit:** `auto/party-frames`
+- **Base / PR:** `auto/center-panel` (stacked on PR #109)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox: see party members as teammates, greyed when not in the same match
+- **Changes:** door: `Matchmaker::party_mates` and `announce_parties_of`; the `party` message carries `mates` (other members' handles, leader first) filled from the queue's holders at send; Rename/Revoke re-announce parties. Web: `Party.mates` parsed strictly; party members missing from the match on screen are greyed entries ("Not in this match") at the end of the team frames.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/center-panel` (`smoke=true web_build=true wasm=true`): pass — 484 Rust (1 pre-existing ignored), 58 Python, 55 Node, 55 Vitest files / 441 tests, headless pass, server smoke 495 ticks / 0 overruns / drained cleanly, WASM clippy pass; `./scripts/build-web.sh` pass.
+- **Fresh-Eyes Review:** no Critical or Important. Minor taken: unique keys and labels, shared greyed opacity, memoized matching, test cleanup; handle-matching limits documented.

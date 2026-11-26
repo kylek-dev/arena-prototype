@@ -194,7 +194,7 @@ the connection with `error`.
 
 | From the door | Meaning |
 | --- | --- |
-| `party` `{code, members, leader, queue}` | The party, whenever it changes (`code` is `null` on one's own). |
+| `party` `{code, members, leader, queue, mates}` | The party, whenever it changes (`code` is `null` on one's own). `mates` lists the other members' handles, leader first (`null` for one the door cannot name); it is sent again when a member's name changes. The page shows mates as teammates and never shows the code. |
 | `queued` `{mode, waiting, waited_ms, expected_ms}` | Searching; sent on queueing and every 2 s. `waited_ms` is this search's time on the door's clock; `expected_ms` is the median of the queue's last 20 waits, or `null` with fewer than 3. |
 | `ready_check` `{mode, accepted, total, you, remaining_ms}` | A match to accept within 15 s; sent again whenever someone accepts. |
 | `requeued` `{mode}` | Someone else did not accept; back at the front of the queue. |
