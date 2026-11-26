@@ -9,9 +9,10 @@ Source roadmap and full issue definitions remain in [ROADMAP.md](ROADMAP.md) and
 
 ## Playtest Inbox (User Notes — Highest Priority)
 
-<!-- Add raw one-line observations below while playing. Example:
-- [ ] (Lane B) Camera feels too close after jumping near pillars.
-- [ ] (Lane A) Reconnecting twice within 5s leaves opponent nameplate stuck greyed out.
+<!-- Add raw one-line observations below while playing, each as an unchecked
+checkbox item with its lane, for example "(Lane B) Camera feels too close
+after jumping near pillars." or "(Lane A) Reconnecting twice within 5s leaves
+opponent nameplate stuck greyed out." (illustrations only, not reported bugs).
 -->
 
 Playtest notes and decisions from the user, 2026-11-26:
