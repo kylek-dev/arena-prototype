@@ -37,7 +37,7 @@ export function partyEvents(before: Party | null, after: Party | null): string[]
   if (before?.code && !after?.code) return ["You left the party."];
   if (!after?.code) return [];
   if (!before?.code || before.code !== after.code)
-    return after.members > 1 ? [`You joined party ${after.code}.`] : [];
+    return after.members > 1 ? ["You joined a party."] : [];
   if (after.members > before.members) return ["A player joined your party."];
   if (after.members < before.members) return ["A player left your party."];
   if (!before.leader && after.leader) return ["You now lead the party."];

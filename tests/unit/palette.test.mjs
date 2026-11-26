@@ -43,7 +43,9 @@ test("palette validation rejects duplicates and unknown references", () => {
 });
 
 test("web sources use palette variables instead of color literals", () => {
-  const literal = /#[0-9a-fA-F]{3,8}\b|\b(rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(/;
+  // A # right after a letter or digit is never a color: player handles
+  // such as Name#0000 are text.
+  const literal = /(?<![\w])#[0-9a-fA-F]{3,8}\b|\b(rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(/;
   // CSS named colors other than transparent/currentColor (checked in CSS only,
   // where they cannot be prose).
   const named =
@@ -104,4 +106,11 @@ test("default light and backdrop colors are swatches", () => {
     const match = channels.find(({ rgb }) => rgb.every((c, i) => Math.abs(c - value[i]) <= 0.005));
     assert.ok(match, `lighting.json ${prefix} ${value} is not a palette swatch`);
   }
+});
+
+test('the color-literal check reads a # after a letter as text, not a color', () => {
+  const literal = /(?<![\w])#[0-9a-fA-F]{3,8}\b/;
+  assert.equal(literal.test('placeholder="Name#0000"'), false);
+  assert.equal(literal.test('color: #0000;'), true);
+  assert.equal(literal.test('fill="#abc"'), true);
 });

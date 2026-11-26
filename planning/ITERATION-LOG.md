@@ -9,6 +9,9 @@ before editing code so context compounds on disk instead of decaying in long cha
 Reusable repo invariants, canonical helpers, and CI traps promoted across iterations:
 
 - **Simulation purity:** `arena-sim` must stay pure, fixed-tick, integer-based, and deterministic (no graphics, OS clocks, network I/O, or runtime LLM calls).
+- **Focus-policy tests:** widgets that close on blur inside windows that do not own the keyboard must be tested with `installInput` and `userEvent` (real focus); `fireEvent` never moves focus, so the focus policy handing keys back to the game goes unseen.
+- **Radix trigger stacking:** `Tooltip.Trigger asChild` overrides its child's `data-state`; put tooltips inside tab/toggle triggers, never around them, or the active style disappears (tests on `aria-selected` still pass, so assert `data-state` too).
+- **No transforms on overlay containers:** a `transform` on an ancestor becomes the containing block of `position: fixed` descendants (menus, popovers), which then open off screen; center overlays with flexbox, and pin it with a stylesheet test since jsdom has no layout.
 - **Static web pages:** `web/public/` is generated and gitignored (`scripts/build-web.sh`); add tracked pages such as `web/privacy.html` as Vite `rollupOptions.input` entries. `vite.config.ts` is type-checked without Node types, so it cannot import `node:*`.
 - **CI `browser` vs `scripts/check.sh`:** `./scripts/check.sh` checks `typecheck`, `lint`, `format:check`, and `npm test`, while `.github/workflows/ci.yml`'s `browser` job also runs `npm run build`. Run `.agents/skills/iterate-game/scripts/run-critics.sh --auto` (or `--web-build`) whenever `web/` changes.
 - **CI `client-build` trigger:** `.github/workflows/client-build.yml` runs full native + WASM builds only when `crates/**`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain*`, `.cargo/**`, `assets/**`, `scripts/**`, or `.github/workflows/**` change; doc/skill/planning-only PRs skip them cleanly.
@@ -736,3 +739,115 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fresh-Eyes Review:** no Critical. Important (fixed): `/lobby` opened over a live match and beside the customizer; `/queue <mode>` skipped `queueBlocked` and the phase check. Minor taken: no false lobby/party lines on a dropped connection, no repeated round start on reconnect, draft kept on `/`, bare `/`, layout-independent `/`, the menu's in-match/spectating definitions, admin errors worded from the body, party-leave lines, doc notes. Open for the user: `/mapeditor` is not admin-only (the menu's editor is open to all).
 - **Learnings:** commands must reuse the guards of the buttons they stand for (`queueBlocked`, the menu's in-match test), or they open windows the UI never allows together.
 - **Next Recommended Slice:** human browser review of the six Lane B entries (scenarios 14–19), or a critic audit to refill Lane A.
+
+## 2026-11-25 — Resizable chat box (playtest)
+- **Branch / Commit:** `auto/chat-resize`
+- **Base / PR:** `auto/chat-commands` (stacked on PR #105)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox "Chat box needs to be resizable with a minimum size"
+- **Changes:**
+  - `chatSize` in each profile (`CHAT_SIZE` 260×150 … 960×720, `clampChatSize`, old profiles get 360×210); `anchorAt` keeps a resized frame's top-left corner.
+  - Chat box: a bottom-right grip (drag, or arrow keys) with a draft that never outgrows the screen at the frame's scale, cancels on lost capture and when layout editing starts; the log fills the height and gives way first. Width/Height sliders in the layout editor.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/chat-commands` (`smoke=false web_build=true wasm=false`): pass — 483 Rust tests (1 pre-existing ignored), 58 Python, 50 Node, 53 Vitest files / 421 tests, headless pass, `npm run build` pass.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): on small windows the CSS width cap, the saved size and the effective scale disagreed, so drags slipped off the pointer. Minor taken: lost-capture cancel, draft cleared on layout editing, clipping at the minimum height, grip clear of the field.
+- **Learnings:** frames are positioned by fractions of their free travel, so anything that changes a frame's size must re-anchor its layout, or it grows in both directions.
+- **Next Recommended Slice:** the in-game P/F/S/C launcher and the simpler game menu (stacked on this branch).
+
+## 2026-11-25 — In-game launcher and a simpler game menu (playtest)
+- **Branch / Commit:** `auto/game-launcher`
+- **Base / PR:** `auto/chat-resize` (stacked on PR #106)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox: launcher P/F/S/C, remove lighting tweaks, no invite/join-party section and no account management in game
+- **Changes:**
+  - `features/launcher`: a movable `launcher` frame (P Play, F Friends, S Spells, C Customize; full tooltips, disabled states with reasons), a movable Play window (queues, custom games, practice mode and reset) and Friends window; `state/windows.ts`; Escape closes them before the menu; full-screen overlays close them.
+  - Game menu: Resume, Leave/Rejoin, Home screen (outside a match), Settings, Map editor, Edit layout, Quick binding, debug diagnostics. `PlayOnline inGame` hides account, friends and party invite/join (a formed party shows with Leave party). `/queue` (`/play`) and `/friends` open the windows.
+  - Lighting tweaks removed (window, menu/Graphics entries, `/lighting`, `lightingVisible`); the preset still feeds the renderer; ADR 0020 superseded; docs updated.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/chat-resize` (`smoke=false web_build=true wasm=false`): pass — 483 Rust tests (1 pre-existing ignored), 58 Python, 50 Node, 54 Vitest files / 429 tests, headless pass, `npm run build` pass.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): practice had no way back to the home screen (account, name, party) — Home screen in the menu; a party member had no Leave party in game — read-only party line; Play/Friends windows stayed hidden under overlays and swallowed Escape — overlays close them and Escape skips them there. Minor taken: default positions, Friends loading state, stale docs and comments, assets/README on the preset.
+- **Learnings:** moving controls out of a menu means auditing every flow that reached them through it (home screen, party leave, Escape order) — the menu was also the only route back to some places.
+- **Next Recommended Slice:** human review of scenarios 14–20; decide whether friends' Invite buttons stay in game.
+
+## 2026-11-25 — Window dock, Friends list, Play tabs and formal copy (playtest)
+- **Branch / Commit:** `auto/window-dock`
+- **Base / PR:** `auto/game-launcher` (stacked on PR #107)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox (user mockup): one window place and size, Friends list with Add, formal copy, Play tabs; then full-width bracket buttons and no top highlight on tabs
+- **Changes:**
+  - `ui/DockWindow.tsx` + `ui/dock.css`, `features/launcher/WindowDock.tsx`: Spells, Friends and Play in one dock at the left middle (320 × up to 460 each, side by side in that order, shrinking to fit, above the home screen); the spellbook left its Radix dialog (no keyboard ownership, see-through while dragging); Escape closes Spells, then Friends and Play.
+  - Play window: bottom tab bar (Practice, Queue, Host; selected tab filled and bold), full-width bracket buttons, `/practice`, `/queue`, `/host` open a tab.
+  - Friends: one list of rows with a ⋮ menu (fixed layer, focus and Escape handled, confirmations), Add prompt with the Name#0000 example, invite refusals shown there.
+  - Formal copy across queue/friends/account/invite notices, launcher and tab tooltips, command messages, match-ready window, game menu and dialogs; helper paragraphs replaced by tooltips. The palette test's literal pattern ignores a `#` after a letter or digit (never a color).
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/game-launcher` (`smoke=false web_build=true wasm=false`): pass — 483 Rust tests (1 pre-existing ignored), 58 Python, 53 Node, 54 Vitest files / 433 tests, headless pass, `npm run build` pass.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): the Spells window owned the keyboard; the dock sat under the home screen; Escape on a ⋮ menu closed the window; refused invitations were silent; copy remained informal in places; the first `palette-ignore` marker was broader than needed (replaced by a precise pattern). Minor taken: Escape order, tab hints, menu clipping, dead CSS.
+- **Learnings:** the input router listens on `window` in the capture phase, so a widget that wants its own Escape must be marked (`data-escape-owner`) for the router to step aside; `data-keyboard-owner` on a window blocks gameplay keys for anything focused inside it.
+- **Next Recommended Slice:** human review of scenarios 18–21.
+
+## 2026-11-25 — Friends ⋮ menu fix and blocking (playtest)
+- **Branch / Commit:** `auto/window-dock` (follow-up commit on PR #108)
+- **Lane:** B (pending human review)
+- **Task:** user report: the ⋮ menu does nothing; how to block someone
+- **Root cause:** `.window-dock` was centered with `transform: translateY(-50%)`; a transformed ancestor becomes the containing block of `position: fixed` descendants, so the menu's viewport coordinates placed it off screen. jsdom does no layout, so the UI tests passed.
+- **Changes:** dock centered with flexbox (`top: 0; bottom: 0; align-items: center`), a CSS test forbidding transforms on the dock and its windows; the menu opens below its button or above it near the bottom edge; **Block player** in the Add prompt for any `Name#number`; Block in the ⋮ menu of incoming and sent requests.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/game-launcher`: pass — 483 Rust (1 pre-existing ignored), 58 Python, 53 Node, 54 Vitest files / 435 tests, headless pass, `npm run build` pass.
+- **Learnings:** never center an overlay container with a transform if anything inside uses `position: fixed`; DOM tests cannot see layout, so pin such CSS invariants with a stylesheet test.
+
+## 2026-11-25 — Center panel, hidden party codes and Radix tabs (playtest)
+- **Branch / Commit:** `auto/center-panel`
+- **Base / PR:** `auto/window-dock` (stacked on PR #108)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox: one central anchor for popups and queue news outside a match; never show party codes; Radix Tabs in the Play window; tabs must show the selection and not take the keyboard
+- **Changes:**
+  - `features/center/CenterPanel.tsx` (`useInMatch`, `useCenterFree`): a flexbox-centered, click-through stack for the match-ready card (backdrop removed), the queue card and invitation cards when the center is free; in a match or with a centered window open, the queue keeps the top bar (and `below-queue` offsets) and invitations the right edge.
+  - Party codes never show; invite link, join-by-code and "Invite friends" removed (friend invitations form parties); "This party no longer exists."; system line "You joined a party."
+  - Play window: Radix `Tabs` under the title with the tooltip inside the trigger (a wrapper overwrote `data-state`, so no tab looked selected), a soft highlight on the active tab; Play and Friends windows no longer own the keyboard.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/window-dock`: pass — 483 Rust (1 pre-existing ignored), 58 Python, 54 Node, 55 Vitest files / 439 tests, headless pass, `npm run build` pass.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): the tooltip wrapper replaced the tab's `data-state`, so the active style never showed (matching the user's report); centered cards covered centered modals. Minor taken: shared hooks, panel role, wording, test phase, docs.
+- **Learnings:** Radix `Tooltip.Trigger asChild` passes its own `data-state` to the child and overrides the child's; never wrap a Radix trigger whose style keys on `data-state` (tabs, toggles) in a tooltip trigger — put the tooltip inside it.
+
+## 2026-11-25 — Party members as teammates (playtest)
+- **Branch / Commit:** `auto/party-frames`
+- **Base / PR:** `auto/center-panel` (stacked on PR #109)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox: see party members as teammates, greyed when not in the same match
+- **Changes:** door: `Matchmaker::party_mates` and `announce_parties_of`; the `party` message carries `mates` (other members' handles, leader first) filled from the queue's holders at send; Rename/Revoke re-announce parties. Web: `Party.mates` parsed strictly; party members missing from the match on screen are greyed entries ("Not in this match") at the end of the team frames.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/center-panel` (`smoke=true web_build=true wasm=true`): pass — 484 Rust (1 pre-existing ignored), 58 Python, 55 Node, 55 Vitest files / 441 tests, headless pass, server smoke 495 ticks / 0 overruns / drained cleanly, WASM clippy pass; `./scripts/build-web.sh` pass.
+- **Fresh-Eyes Review:** no Critical or Important. Minor taken: unique keys and labels, shared greyed opacity, memoized matching, test cleanup; handle-matching limits documented.
+
+## 2026-11-25 — Launcher bottom-left, chat attached beside it (playtest)
+- **Branch / Commit:** `auto/hud-defaults`
+- **Base / PR:** `auto/party-frames` (stacked on PR #110)
+- **Lane:** B (pending human review)
+- **Task:** user screenshot: the launcher in the bottom-left corner and the chat right next to it filling the space
+- **Changes:** launcher default `layout(0, 1)`; `chatAttached` (default) places the chat by measuring the launcher and the action bars on screen (`besideLauncher`, watched with ResizeObserver/MutationObserver), bottoms aligned and as wide as the space to a level bar unless `chatSizeCustom`; no room keeps its own place; moving detaches (keeping the shown width); layout settings gain **Attach chat to the launcher** and Reset reattaches; profiles with both frames at earlier defaults migrate.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/party-frames`: pass — 484 Rust (1 pre-existing ignored), 58 Python, 55 Node, 55 Vitest files / 445 tests, headless pass, `npm run build` pass.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): resize measured the launcher before it moved; detaching reverted the width; small screens covered the action bar; bars at any height limited the width; old profiles could attach to a moved launcher. Minor taken: height-only resize keeps the fill, render order, migrated chat position, comments.
+- **Learnings:** frames are placed by fractions of their free travel, so "beside another frame" can only be measured in the DOM; watch the other frame's size and style (MutationObserver on `style`) to follow it.
+
+## 2026-11-25 — Chat: All tab, conversations and /w (playtest)
+- **Branch / Commit:** `auto/chat-all`
+- **Base / PR:** `auto/hud-defaults` (stacked on PR #111)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox: `/w Name#number` with a purple whisper field instead of a To box; Whisper buttons enter that mode; All as the default tab; a tab per whisper partner instead of one Whispers tab
+- **Changes:** `ChatTab` (`all`, channels, `w:<handle>`); `whisperDraft`; `defaultChannel` for All (Team seated, Spectators watching, else Public); conversation tabs (six at most, never evicting the one shown, case-insensitive, closable) with unread counts shared with All; the chat box's To field removed, the field turns purple ("Whispering to …") for a typed `/w Name#number ` or in a conversation tab (where `//text` stays a whisper and real commands still run); Whisper in Friends and on chat names pre-fills `/w Name#number ` ahead of any draft; ignoring closes the conversation.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/hud-defaults`: pass — 484 Rust (1 pre-existing ignored), 58 Python, 55 Node, 55 Vitest files / 448 tests, headless pass, `npm run build` pass.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): `//` lines in a conversation tab went to the open channel; the conversation cap could close the tab being typed in. Minor taken: All's unread follows the other tabs (including evicted conversations), field label, draft kept on Whisper, ignore ends the conversation, docs and `/r` text. Open: spectators see whisper tabs the door refuses to answer from, and close buttons sit inside the tablist.
+
+## 2026-11-25 — Friends menu regression and whisper autocomplete (playtest)
+- **Branches:** fix on `auto/center-panel` (PR #109), merged forward into `auto/party-frames`, `auto/hud-defaults`, `auto/chat-all`; autocomplete on `auto/chat-all` (PR #112)
+- **Lane:** B (pending human review)
+- **Root cause (menu):** PR #109 made the dock windows stop owning the keyboard; the focus policy then returned focus to the game after the ⋮ click, and the menu closed on blur. Unit tests used synthetic clicks without the input router, so focus never moved. Fixed by `data-keyboard-owner` on the menu, with a test that clicks with real focus and the router installed (verified failing without the fix).
+- **Changes (autocomplete):** `whisperQuery` and `whisperSuggestions`; a listbox above the chat field (friends online first, then conversation partners); Tab/Enter complete to `/w Name#number `, arrows choose, click completes.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/hud-defaults`: pass — 484 Rust (1 pre-existing ignored), 58 Python, 55 Node, 55 Vitest files / 451 tests, headless pass, `npm run build` pass. The fix's own run on `auto/center-panel` also passed (440 Vitest).
+- **Learnings:** any change to keyboard ownership must be tested with the input router installed and real focus (`userEvent`), not `fireEvent`, or focus-driven closes go unseen.
+
+## 2026-11-26 — Players leave the in-match state when the match ends (playtest)
+- **Branch / Commit:** `auto/match-ended`
+- **Base / PR:** `auto/chat-all` (stacked on PR #112)
+- **Lane:** A
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox: a friend still showed "In a match" after a finished 1v1, and whispers to them were refused (`in_match`). Root cause: the door never heard when a match ended and kept seats for a fixed 21 minutes.
+- **Changes:** the match server answers `GET /matches/{id}` (`live`, `ended`, 404 unknown, 400 bad id; private network only, untraced); a match closed by a server stop is not reported `ended`, and ends stay known at least 10 minutes. The door (`--match-status`, set in `deploy/compose.yaml` and `scripts/dev-door.sh`) asks every 5 s about matches with a fresh seat (16 at a time), clears an ended match's seats and presence, forgets seats past the 21-minute window, and warns at most once a minute when the server does not answer. Unknown and live matches keep their seats (anti-ghosting fail-safe).
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/chat-all`: see PR. New tests: door end-to-end against a fake match server (unknown and live keep seats, ended clears; fails with clearing disabled), server endpoint, registry and seat unit tests.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): a forced server stop reported live matches `ended`, which could unseat players whose match then restarted on the next process; `scripts/dev-door.sh` lacked the flag. Minor (fixed): stale ids polled forever, unbounded concurrency, silent failures, ends lost with short tickets, tracing spam, doc drift, test gaps, signed hex ids.

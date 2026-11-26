@@ -43,7 +43,7 @@ it("builds help from the registry, so every command is listed exactly once", () 
   expect(player.some((line) => line.startsWith("/mute"))).toBe(false);
   expect(admin).toContain("Admin commands:");
   expect(helpLine(findCommand(CHAT_COMMANDS, "w", false)!)).toBe(
-    "/whisper <Name#number> <text> (also /w) — Whisper to a friend.",
+    "/whisper <Name#0000> <message> (also /w) — Whisper to a friend.",
   );
   // Names are unique, aliases never shadow a name.
   const names = CHAT_COMMANDS.flatMap((c) => [c.name, ...(c.aliases ?? [])]);
@@ -62,7 +62,6 @@ it("builds help from the registry, so every command is listed exactly once", () 
     "mapeditor",
     "menu",
     "friends",
-    "lighting",
     "quickbind",
   ])
     expect(findCommand(CHAT_COMMANDS, panel, false), panel).not.toBeNull();

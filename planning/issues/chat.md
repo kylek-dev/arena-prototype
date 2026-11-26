@@ -10,10 +10,9 @@ senders, limits, filter, ignore, blocks and admin mutes. Still to do:
   admin-only commands are `/mute`, `/unmute` and `/clearname`, checked by the
   door's admin routes; `/mapeditor` is open to everyone, as the menu's Map
   editor is, while its server storage stays admin-only (to confirm in review).
-- a seat lasts the 21-minute in-match window even when the match ends
-  sooner, so right after a short match `team` still means the old match
-  team and a finished spectator is still confined; clearing seats needs the
-  match server to tell the door a match ended.
+- ~~a seat lasts the 21-minute in-match window even when the match ends
+  sooner~~ — fixed on `auto/match-ended`: the door asks the match server
+  (`GET /matches/{id}`) and clears a match's seats once it has ended.
 
 Acceptance criteria:
 
