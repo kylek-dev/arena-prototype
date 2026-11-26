@@ -4,14 +4,18 @@
    Radix scales the palette drives. */
 .window-dock {
   position: fixed;
-  top: 50%;
+  /* Centered by flexbox over the full height, never by a transform: a
+     transform would become the containing block of fixed-position menus
+     inside the windows (the Friends ⋮ menu) and push them off screen. */
+  top: 0;
+  bottom: 0;
   left: 16px;
   /* Above the home screen (15) so Spells works there, below scrims (20). */
   z-index: 16;
   display: flex;
+  align-items: center;
   gap: 12px;
   max-width: calc(100vw - 32px);
-  transform: translateY(-50%);
   pointer-events: none;
 }
 .dock-window {

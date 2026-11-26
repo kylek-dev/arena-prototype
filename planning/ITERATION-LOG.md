@@ -9,6 +9,7 @@ before editing code so context compounds on disk instead of decaying in long cha
 Reusable repo invariants, canonical helpers, and CI traps promoted across iterations:
 
 - **Simulation purity:** `arena-sim` must stay pure, fixed-tick, integer-based, and deterministic (no graphics, OS clocks, network I/O, or runtime LLM calls).
+- **No transforms on overlay containers:** a `transform` on an ancestor becomes the containing block of `position: fixed` descendants (menus, popovers), which then open off screen; center overlays with flexbox, and pin it with a stylesheet test since jsdom has no layout.
 - **Static web pages:** `web/public/` is generated and gitignored (`scripts/build-web.sh`); add tracked pages such as `web/privacy.html` as Vite `rollupOptions.input` entries. `vite.config.ts` is type-checked without Node types, so it cannot import `node:*`.
 - **CI `browser` vs `scripts/check.sh`:** `./scripts/check.sh` checks `typecheck`, `lint`, `format:check`, and `npm test`, while `.github/workflows/ci.yml`'s `browser` job also runs `npm run build`. Run `.agents/skills/iterate-game/scripts/run-critics.sh --auto` (or `--web-build`) whenever `web/` changes.
 - **CI `client-build` trigger:** `.github/workflows/client-build.yml` runs full native + WASM builds only when `crates/**`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain*`, `.cargo/**`, `assets/**`, `scripts/**`, or `.github/workflows/**` change; doc/skill/planning-only PRs skip them cleanly.
@@ -781,3 +782,12 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fresh-Eyes Review:** no Critical. Important (fixed): the Spells window owned the keyboard; the dock sat under the home screen; Escape on a ⋮ menu closed the window; refused invitations were silent; copy remained informal in places; the first `palette-ignore` marker was broader than needed (replaced by a precise pattern). Minor taken: Escape order, tab hints, menu clipping, dead CSS.
 - **Learnings:** the input router listens on `window` in the capture phase, so a widget that wants its own Escape must be marked (`data-escape-owner`) for the router to step aside; `data-keyboard-owner` on a window blocks gameplay keys for anything focused inside it.
 - **Next Recommended Slice:** human review of scenarios 18–21.
+
+## 2026-11-25 — Friends ⋮ menu fix and blocking (playtest)
+- **Branch / Commit:** `auto/window-dock` (follow-up commit on PR #108)
+- **Lane:** B (pending human review)
+- **Task:** user report: the ⋮ menu does nothing; how to block someone
+- **Root cause:** `.window-dock` was centered with `transform: translateY(-50%)`; a transformed ancestor becomes the containing block of `position: fixed` descendants, so the menu's viewport coordinates placed it off screen. jsdom does no layout, so the UI tests passed.
+- **Changes:** dock centered with flexbox (`top: 0; bottom: 0; align-items: center`), a CSS test forbidding transforms on the dock and its windows; the menu opens below its button or above it near the bottom edge; **Block player** in the Add prompt for any `Name#number`; Block in the ⋮ menu of incoming and sent requests.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/game-launcher`: pass — 483 Rust (1 pre-existing ignored), 58 Python, 53 Node, 54 Vitest files / 435 tests, headless pass, `npm run build` pass.
+- **Learnings:** never center an overlay container with a transform if anything inside uses `position: fixed`; DOM tests cannot see layout, so pin such CSS invariants with a stylesheet test.

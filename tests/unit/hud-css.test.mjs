@@ -8,13 +8,23 @@ test('the live player cast bar never blocks pointer input over the arena', () =>
 });
 
 test('dock windows share one size and open at the left middle, side by side', () => {
-  const css = readFileSync(new URL('../../web/src/ui/dock.css', import.meta.url), 'utf8');
+  // Declarations only: comments may explain what must not be there.
+  const css = readFileSync(new URL('../../web/src/ui/dock.css', import.meta.url), 'utf8').replace(
+    /\/\*[\s\S]*?\*\//g,
+    '',
+  );
   const rule = (selector) => css.match(new RegExp(`${selector.replace('.', '\\.')}\\s*\\{([^}]*)\\}`))[1];
   const dock = rule('.window-dock');
-  assert.match(dock, /top:\s*50%/);
+  assert.match(dock, /top:\s*0/);
+  assert.match(dock, /bottom:\s*0/);
   assert.match(dock, /left:\s*16px/);
   assert.match(dock, /display:\s*flex/);
-  assert.match(dock, /translateY\(-50%\)/);
+  assert.match(dock, /align-items:\s*center/);
+  // No transform on the dock or its windows: a transform makes them the
+  // containing block of the fixed ⋮ menus, which then open off screen.
+  assert.doesNotMatch(dock, /transform:/);
+  assert.doesNotMatch(rule('.dock-window'), /transform:/);
+  assert.doesNotMatch(rule('.dock-window-body'), /transform:/);
   const window = rule('.dock-window');
   assert.match(window, /width:\s*320px/);
   assert.match(window, /height:\s*min\(460px/);

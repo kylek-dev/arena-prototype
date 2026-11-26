@@ -160,7 +160,7 @@ it("adds through a prompt, accepts, removes and blocks after confirming, and wor
     render(<Friends />);
   });
   fireEvent.click(screen.getByRole("button", { name: "Add" }));
-  const form = within(screen.getByRole("form", { name: "Add a friend" }));
+  const form = within(screen.getByRole("form", { name: "Add or block a player" }));
   const field = form.getByRole("textbox", { name: "Player name and number" });
   expect(field.getAttribute("placeholder")).toBe("Name#0000");
   fireEvent.change(field, { target: { value: "Nobody" } });
@@ -176,7 +176,7 @@ it("adds through a prompt, accepts, removes and blocks after confirming, and wor
   expect(calls.filter((c) => c.url === "/api/friends/request").at(-1)?.body).toEqual({
     handle: "Nobody#0009",
   });
-  expect(screen.queryByRole("form", { name: "Add a friend" })).toBeNull();
+  expect(screen.queryByRole("form", { name: "Add or block a player" })).toBeNull();
   expect(screen.getByRole("status").textContent).toMatch(/^Friend request sent to Nobody#0009\./);
   await act(async () => fireEvent.click(screen.getByRole("button", { name: "Accept Cyd#0003" })));
   expect(calls.at(-2)).toEqual({
@@ -466,4 +466,67 @@ it("closes only an open ⋮ menu on Escape, and answers a refused invitation", a
     router.dispose();
     friendsWindowVisible.set(false);
   }
+});
+
+it("blocks any player by name from the Add prompt, and a requester from their row", async () => {
+  const { account, calls } = fakeDoor({
+    "/api/auth/me": { status: 200, body: ROOK },
+    "/api/friends": { status: 200, body: LIST },
+    "/api/friends/block": { status: 204 },
+  });
+  await account.refresh();
+  await act(async () => {
+    render(<Friends />);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Add" }));
+  const form = within(screen.getByRole("form", { name: "Add or block a player" }));
+  fireEvent.change(form.getByRole("textbox", { name: "Player name and number" }), {
+    target: { value: "Spammer#0666" },
+  });
+  await act(async () => fireEvent.click(form.getByRole("button", { name: "Block player" })));
+  expect(calls.filter((c) => c.url === "/api/friends/block").at(-1)?.body).toEqual({
+    handle: "Spammer#0666",
+  });
+  expect(screen.queryByRole("form")).toBeNull();
+  // An incoming request can be blocked from its ⋮ menu, after confirming.
+  fireEvent.click(menuOf("Cyd#0003").getByRole("menuitem", { name: "Block" }));
+  await act(async () => fireEvent.click(screen.getByRole("menuitem", { name: "Confirm block" })));
+  expect(calls.filter((c) => c.url === "/api/friends/block").at(-1)?.body).toEqual({
+    handle: "Cyd#0003",
+  });
+});
+
+it("opens the ⋮ menu under its button, or above it near the bottom of the screen", async () => {
+  const { account } = fakeDoor({
+    "/api/auth/me": { status: 200, body: ROOK },
+    "/api/friends": { status: 200, body: LIST },
+  });
+  await account.refresh();
+  await act(async () => {
+    render(<Friends />);
+  });
+  const button = screen.getByRole("button", { name: "Actions for Ash#1000" });
+  const at = (top: number) =>
+    (button.getBoundingClientRect = () =>
+      ({
+        top,
+        bottom: top + 26,
+        left: 300,
+        right: 326,
+        width: 26,
+        height: 26,
+        x: 300,
+        y: top,
+      }) as DOMRect);
+  at(100);
+  fireEvent.click(button);
+  let list = screen.getByRole("menu", { name: "Actions for Ash#1000" });
+  expect(list.style.top).toBe("130px");
+  expect(list.style.right).toBe(`${innerWidth - 326}px`);
+  fireEvent.click(button);
+  at(innerHeight - 40);
+  fireEvent.click(button);
+  list = screen.getByRole("menu", { name: "Actions for Ash#1000" });
+  expect(list.style.top).toBe("");
+  expect(list.style.bottom).toBe("44px");
 });

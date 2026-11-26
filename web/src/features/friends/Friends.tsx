@@ -35,7 +35,7 @@ function RowMenu({ handle, actions }: { handle: string; actions: Action[] }) {
   const [asking, setAsking] = useState<Action | null>(null);
   /** Where the menu shows: fixed, under the button, so the scrolling window
    * never clips it. */
-  const [at, setAt] = useState<{ top: number; right: number } | null>(null);
+  const [at, setAt] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
   const root = useRef<HTMLSpanElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLSpanElement>(null);
@@ -77,7 +77,14 @@ function RowMenu({ handle, actions }: { handle: string; actions: Action[] }) {
             return;
           }
           const rect = event.currentTarget.getBoundingClientRect();
-          setAt({ top: rect.bottom + 4, right: Math.max(8, innerWidth - rect.right) });
+          const right = Math.max(8, innerWidth - rect.right);
+          // Below the button, or above it when the menu would leave the screen.
+          const height = actions.length * 32 + 12;
+          setAt(
+            rect.bottom + 4 + height > innerHeight
+              ? { bottom: innerHeight - rect.top + 4, right }
+              : { top: rect.bottom + 4, right },
+          );
           setOpen(true);
         }}
       >
@@ -89,7 +96,7 @@ function RowMenu({ handle, actions }: { handle: string; actions: Action[] }) {
           className="friend-menu-list"
           role="menu"
           aria-label={`Actions for ${handle}`}
-          style={at ? { top: at.top, right: at.right } : undefined}
+          style={at ?? undefined}
         >
           {asking ? (
             <>
@@ -161,18 +168,18 @@ function AddFriend({ friends, close }: { friends: FriendsService; close: () => v
   const [text, setText] = useState("");
   const [tried, setTried] = useState(false);
   const handle = normalizeHandle(text);
-  const add = async () => {
+  const run = async (action: "request" | "block") => {
     setTried(true);
     if (!handle) return;
-    if (await friends.act("request", handle)) close();
+    if (await friends.act(action, handle)) close();
   };
   return (
     <form
       className="friend-add"
-      aria-label="Add a friend"
+      aria-label="Add or block a player"
       onSubmit={(event) => {
         event.preventDefault();
-        void add();
+        void run("request");
       }}
     >
       <label className="friend-add-field">
@@ -201,6 +208,9 @@ function AddFriend({ friends, close }: { friends: FriendsService; close: () => v
       <div className="friend-add-actions">
         <Button type="button" size="1" variant="soft" color="gray" onClick={close}>
           Cancel
+        </Button>
+        <Button type="button" size="1" variant="soft" color="red" onClick={() => void run("block")}>
+          Block player
         </Button>
         <Button type="submit" size="1">
           Send request
@@ -315,6 +325,17 @@ export function Friends() {
               >
                 Decline
               </Button>
+              <RowMenu
+                handle={friend.handle}
+                actions={[
+                  {
+                    label: "Block",
+                    run: () => void friends.act("block", friend.handle),
+                    danger: true,
+                    confirm: "Confirm block",
+                  },
+                ]}
+              />
             </Row>
           ))}
           {groups.friends.map((friend) => (
@@ -338,6 +359,12 @@ export function Friends() {
                   {
                     label: "Withdraw request",
                     run: () => void friends.act("remove", friend.handle),
+                  },
+                  {
+                    label: "Block",
+                    run: () => void friends.act("block", friend.handle),
+                    danger: true,
+                    confirm: "Confirm block",
                   },
                 ]}
               />
