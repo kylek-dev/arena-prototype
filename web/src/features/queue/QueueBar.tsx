@@ -34,12 +34,10 @@ function useQueueVisible(): boolean {
 }
 
 /** Canonical top-center visibility check for HUD elements using
- * `.below-queue`: true only while the queue shows as the top bar (in a
- * match, or with a centered window open), not as a center-panel card. */
+ * `.below-queue`: the queue shows at the top center, as the bar or as the
+ * first card of the notification panel. */
 export function useQueueBarVisible(): boolean {
-  const visible = useQueueVisible();
-  const centered = useCenterFree();
-  return visible && !centered;
+  return useQueueVisible();
 }
 
 function Bar({ queue, centered }: { queue: Queue; centered: boolean }) {

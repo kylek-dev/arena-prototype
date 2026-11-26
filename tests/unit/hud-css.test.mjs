@@ -47,3 +47,12 @@ test('the active Play tab carries a visible highlight', () => {
     /\.play-tabs \.rt-TabsTrigger\[data-state="active"\] \.rt-BaseTabListTriggerInner\s*\{[^}]*background-color:/,
   );
 });
+
+test('the notification panel stacks its cards from the top center, without a transform', () => {
+  const css = readFileSync(new URL('../../web/src/features/center/center.css', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  const panel = css.match(/\.center-panel\s*\{([^}]*)\}/)[1];
+  assert.match(panel, /justify-content:\s*flex-start/);
+  assert.match(panel, /align-items:\s*center/);
+  assert.doesNotMatch(panel, /transform:/);
+});

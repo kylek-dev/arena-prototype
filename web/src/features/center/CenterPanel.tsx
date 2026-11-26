@@ -14,7 +14,7 @@ export function useInMatch() {
   return phase !== "idle" && phase !== "ended";
 }
 
-/** Whether the center of the screen is free for notifications: outside a
+/** Whether the notification panel is free for cards: outside a
  * match, with no centered window open (scoreboard, custom lobby, game menu
  * or settings). Otherwise the queue keeps the top and invitations the
  * right edge, as in a match. */
@@ -26,10 +26,10 @@ export function useCenterFree() {
   return !inMatch && !scoreboard && !lobby && !dialog;
 }
 
-/** The center of the screen: the one place for questions and queue news
- * outside a match (an invitation to accept, a found match, the search and
- * its wait, why a search stopped), stacked as cards. Elsewhere its
- * children keep their own corners. */
+/** The top center of the screen: the one place for questions and queue
+ * news outside a match (an invitation to accept, a found match, the search
+ * and its wait, why a search stopped), stacked as cards from the top.
+ * Elsewhere its children keep their own corners. */
 export function CenterPanel({ children }: { children: ReactNode }) {
   return (
     <div className="center-panel" role="group" aria-label="Notifications">
