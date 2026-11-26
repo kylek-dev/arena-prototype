@@ -252,7 +252,7 @@ function friendActions(
   ];
 }
 
-/** The friends list (home screen and the F window; social-identity step 4):
+/** The friends list (launcher page and the F window; social-identity step 4):
  * requests to answer, friends with presence, requests sent and blocked
  * players, each with its actions in a ⋮ menu, and Add at the bottom.
  * Logged-in players only. `invites` offers Invite to group; the in-game
@@ -285,7 +285,7 @@ export function Friends({ invites = true }: { invites?: boolean }) {
   const busy = !!state.busy;
   const groups = state.list ? groupFriends(state.list) : null;
   // A refused invitation is answered in either list (sent only from the
-  // home screen's; the in-game window may show its answer after entering).
+  // launcher page's; the in-game window may show its answer after entering).
   const inviteRefused =
     queueState.notice && INVITE_REFUSALS.has(queueState.notice)
       ? noticeText(queueState.notice)

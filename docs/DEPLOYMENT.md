@@ -120,7 +120,7 @@ before.
    - how to delete an account.
 
    The game ships one at `web/privacy.html` (served as `/privacy.html`
-   and linked from Play online). Add who runs the server and how to reach
+   and linked from the launcher page). Add who runs the server and how to reach
    them, and review it against your own logs and jurisdiction.
 2. **Create a WorkOS application** (dashboard.workos.com; the first million
    monthly active users are free). Use the Staging environment for trials;

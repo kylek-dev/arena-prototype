@@ -7,7 +7,8 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, expect, it } from "vitest";
 import { Friends } from "../../web/src/features/friends/Friends";
 import { FriendsWindow } from "../../web/src/features/launcher/FriendsWindow";
-import { PlayOnline } from "../../web/src/features/play-online/PlayOnline";
+import { LauncherPage } from "../../web/src/features/launcher-page/LauncherPage";
+import { beforeMatch } from "../../web/src/state/appearance";
 import { InvitePrompt } from "../../web/src/features/friends/InvitePrompt";
 import { createAccount } from "../../web/src/runtime/account";
 import { createFriends } from "../../web/src/runtime/friends";
@@ -105,6 +106,7 @@ function fakeDoor(routes: Record<string, Reply | Reply[]>) {
 
 afterEach(() => {
   cleanup();
+  beforeMatch.set(false);
   accountService.set(null);
   friendsService.set(null);
   matchQueue.set(null);
@@ -169,7 +171,7 @@ it("offers no party invitations in the in-game Friends window", async () => {
   expect(fake.sent().some((m) => m.type === "invite")).toBe(false);
 });
 
-it("keeps party invitations in the home screen's friends list", async () => {
+it("keeps party invitations in the launcher page's friends list", async () => {
   const { account } = fakeDoor({
     "/api/auth/me": { status: 200, body: ROOK },
     "/api/friends": { status: 200, body: LIST },
@@ -178,7 +180,8 @@ it("keeps party invitations in the home screen's friends list", async () => {
   const fake = fakeQueue();
   matchQueue.set(fake.queue);
   await act(async () => {
-    render(<PlayOnline />, { wrapper: TooltipProvider });
+    beforeMatch.set(true);
+    render(<LauncherPage />, { wrapper: TooltipProvider });
   });
   expect(menuOf("Ash#1000").getByRole("menuitem", { name: "Invite to group" })).toBeTruthy();
 });

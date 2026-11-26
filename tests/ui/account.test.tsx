@@ -50,7 +50,7 @@ afterEach(() => {
   accountService.set(null);
 });
 
-it("offers login and sign-up to a guest, with the privacy notice", async () => {
+it("offers login and sign-up to a guest", async () => {
   const { account } = fakeAccount({ "/api/auth/me": { status: 200, body: GUEST } });
   await account.refresh();
   render(<AccountPanel />, { wrapper: TooltipProvider });
@@ -59,9 +59,7 @@ it("offers login and sign-up to a guest, with the privacy notice", async () => {
   expect(screen.getByRole("link", { name: "Sign up" }).getAttribute("href")).toBe(
     "/api/auth/login?sign_up",
   );
-  expect(screen.getByRole("link", { name: "Privacy notice" }).getAttribute("href")).toBe(
-    "privacy.html",
-  );
+  // The launcher page links the privacy notice (launcher-page.test.tsx).
 });
 
 it("shows nothing where the door has no login or cannot be reached", async () => {

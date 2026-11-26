@@ -30,8 +30,8 @@ export const interaction = createStore({
 export const error = createStore("");
 // Set by the character customizer; kept here so input does not import UI state.
 export const customizing = createStore(false);
-// The start screen before the first round: the player may customize, then
-// enters the arena. Gameplay waits until then.
+// The launcher page before entering the game (features/launcher-page).
+// Gameplay waits until the player enters.
 export const prematch = createStore(false);
 // Post-match scoreboard modal retained locally after the match ends.
 export const scoreboardVisible = createStore(false);

@@ -883,3 +883,12 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Changes:** `door::auth::guest_handle_for(guest)` (`guest % 9999 + 1`) applied at hello for a holder without a handle (guests, and accounts without a name) and on logout revocation; the browser computes the same name with `guestHandle(id)` (`domain/matchmaking.ts`). Golden vectors shared by a Rust unit test and a Vitest test; the chat and identity tests now expect exact guest names. An admin clearing a name (`Command::Rename { handle: None }`) gives each open connection its browser's guest name too. Groundwork only: the launcher page slice shows the name (the `launcher-page` item stays open).
 - **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/friends-no-invite`: see PR.
 - **Fresh-Eyes Review:** no Critical. Important (by design, next slice): `guestHandle` has no UI caller yet. Minor (fixed): the admin clear-name path drew a random guest name; PROTOCOL.md notes the cross-session linkability.
+
+## 2026-11-26 — Launcher page (epic, Lane B slice)
+- **Branch / Commit:** `auto/launcher-page`
+- **Base / PR:** `auto/guest-names` (stacked on PR #117)
+- **Lane:** B (pending human review)
+- **Task:** [launcher-page](issues/launcher-page.md), ROADMAP order 5.
+- **Changes:** `features/launcher-page/{LauncherPage,PartyStatus}.tsx` and styles; `AccountPanel` takes the guest name and leaves the privacy link to the page; `startRuntime` raises the page unless a join link or reload is joining a match (the loader no longer does, so entering early cannot be undone by the asset config arriving); `returnToHome` became `returnToLauncher` and works without character kits (the close-up behind the page needs a kit); game menu **Launcher page**; `arenaReady` shared with the loading screen; removed `StartScreen`, the customizer's pre-match branch and `PlayOnline` (its tests now drive the Play window).
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/guest-names`: see PR.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): party refusals (`no_such_party`, `party_full`, `party_busy`, `rate_limited`) had lost their only display with `PlayOnline`; `PartyStatus` shows them (also to guests) with a test. Minor (fixed): a reload rejoin that ends before opening now shows the page; the page is a `section` (no nested `main`) and focuses **Enter the arena**; stale comments, an unused class and docs scenarios 14–27 and DEPLOYMENT now say launcher page.

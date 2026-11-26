@@ -31,7 +31,7 @@ import { Diagnostics } from "../features/diagnostics/Diagnostics";
 import { MapEditor } from "../features/map-editor/MapEditor";
 import { Customizer } from "../features/customizer/Customizer";
 import { beforeMatch, customizerVisible } from "../state/appearance";
-import { StartScreen } from "../features/customizer/StartScreen";
+import { LauncherPage } from "../features/launcher-page/LauncherPage";
 import { Modal } from "../ui/Dialog";
 import {
   customLobbyVisible,
@@ -58,7 +58,7 @@ export function App() {
   const lobbyOpen = useStore(customLobbyVisible, (v) => v);
   const boardOpen = useStore(scoreboardVisible, (v) => v);
   // The Play and Friends windows belong to the arena: a full-screen overlay
-  // (customizer, home screen, custom lobby, scoreboard) closes them.
+  // (customizer, launcher page, custom lobby, scoreboard) closes them.
   useEffect(() => {
     if (customizing || lobby || lobbyOpen || boardOpen) closeLauncherWindows();
   }, [customizing, lobby, lobbyOpen, boardOpen]);
@@ -128,7 +128,7 @@ export function App() {
         <Diagnostics />
         <Scoreboard />
         <CustomLobby />
-        {/* The queue follows the player from the home screen into the arena. */}
+        {/* The queue follows the player from the launcher page into the arena. */}
         <CenterPanel>
           <MatchReady />
           <QueueBar />
@@ -136,7 +136,7 @@ export function App() {
         </CenterPanel>
         <WindowDock />
         <MapEditor />
-        <StartScreen />
+        <LauncherPage />
         <Customizer />
         <Loading />
         {(mode.panel === "menu" || mode.panel === "settings") && (

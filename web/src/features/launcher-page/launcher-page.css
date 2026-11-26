@@ -1,0 +1,77 @@
+/* The launcher page: an opaque page of its own over the loading arena,
+ * above the loading screen and window dock, below dialogs, the custom
+ * lobby, the scoreboard and the center panel (invitations, match found). */
+.launcher-page {
+  position: fixed;
+  inset: 0;
+  z-index: 17;
+  overflow-y: auto;
+  display: grid;
+  justify-items: center;
+  padding: 48px 20px;
+  color: var(--gray-12);
+  background: var(--pal-night-1);
+  pointer-events: auto;
+}
+.launcher-page-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: min(480px, 100%);
+}
+.launcher-page-header h1 {
+  margin: 4px 0 8px;
+  font-size: clamp(28px, 4vw, 40px);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+.launcher-page-header p {
+  margin: 0;
+}
+.launcher-page-eyebrow {
+  color: var(--accent-11);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.launcher-page-card {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  background: var(--color-panel-solid);
+  border: 1px solid var(--gray-6);
+  border-radius: var(--radius-4);
+}
+.launcher-page-card h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.launcher-page-card .account {
+  border: 0;
+  padding: 0;
+}
+.launcher-page-card .party {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--gray-6);
+  border-radius: var(--radius-3);
+}
+.party-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--pal-gold-5);
+}
+.launcher-page-enter {
+  display: grid;
+  gap: 8px;
+}
+.launcher-page-footer {
+  font-size: 12px;
+}
+.launcher-page-footer a {
+  color: var(--pal-sky-4);
+}

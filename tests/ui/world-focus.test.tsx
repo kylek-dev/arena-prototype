@@ -4,6 +4,7 @@ import { preferences } from "../../web/src/state/config";
 import { draggingSpell, engine, error, focus, interaction } from "../../web/src/state/session";
 import { input } from "../../web/src/runtime/commands";
 import { startRuntime } from "../../web/src/runtime/start";
+import { beforeMatch } from "../../web/src/state/appearance";
 import { snapshot } from "./fixtures";
 
 vi.mock("../../web/src/bridge/loader", () => ({
@@ -25,6 +26,9 @@ beforeEach(() => {
   interaction.set({ panel: null, quick: false, layout: false, hovered: null, capture: null });
   input.cancel();
   stop = startRuntime(document.querySelector("canvas")!);
+  // The launcher page comes first; these tests play after entering.
+  expect(beforeMatch.get()).toBe(true);
+  beforeMatch.set(false);
 });
 afterEach(() => stop());
 

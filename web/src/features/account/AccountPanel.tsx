@@ -2,7 +2,6 @@ import { Button, Text } from "@radix-ui/themes";
 import { useState } from "react";
 import {
   LOGIN_URL,
-  PRIVACY_URL,
   SIGN_UP_URL,
   accountErrorText,
   isName,
@@ -17,14 +16,6 @@ import { Hint } from "../../ui/Tooltip";
 import "./account.css";
 
 const NO_ACCOUNT = createStore(LOADING_ACCOUNT);
-
-function PrivacyLink() {
-  return (
-    <a className="account-privacy" href={PRIVACY_URL} target="_blank" rel="noopener">
-      Privacy notice
-    </a>
-  );
-}
 
 /** "Choose your name": the player picks the word, the door the number. */
 function ChooseName({ account, me, busy }: { account: Account; me: Me; busy: boolean }) {
@@ -96,9 +87,10 @@ function ChooseName({ account, me, busy }: { account: Account; me: Me; busy: boo
   );
 }
 
-/** Login and account status in Play online (social-identity, ADR 0055).
- * Shows nothing where the door offers no login, or cannot be reached. */
-export function AccountPanel() {
+/** Login and account status on the launcher page (social-identity, ADR
+ * 0055), which links the privacy notice. Shows nothing where the door offers
+ * no login, or cannot be reached. `guest` is this browser's guest name. */
+export function AccountPanel({ guest = null }: { guest?: string | null }) {
   const account = useStore(accountService, (a) => a);
   const state = useStore(account?.state ?? NO_ACCOUNT, (s) => s);
   const [confirming, setConfirming] = useState(false);
@@ -115,8 +107,15 @@ export function AccountPanel() {
   if (!me.account)
     return (
       <div className="account" role="group" aria-label="Account">
-        <Text size="1" color="gray">
-          You are playing as a guest. Log in to keep a player name, add friends and use public chat.
+        <Text size="2">
+          {guest ? (
+            <>
+              You are playing as the guest <strong className="account-handle">{guest}</strong>.
+            </>
+          ) : (
+            "You are playing as a guest."
+          )}{" "}
+          Log in to keep a player name, add friends and use public chat.
         </Text>
         <div className="account-actions">
           <Button size="1" asChild>
@@ -125,7 +124,6 @@ export function AccountPanel() {
           <Button size="1" variant="surface" asChild>
             <a href={SIGN_UP_URL}>Sign up</a>
           </Button>
-          <PrivacyLink />
         </div>
         {notice}
       </div>
@@ -205,7 +203,6 @@ export function AccountPanel() {
           >
             Delete account…
           </Button>
-          <PrivacyLink />
         </div>
       )}
       {notice}
