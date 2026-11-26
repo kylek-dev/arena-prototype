@@ -30,6 +30,9 @@ it("finds commands by name or alias, and hides admin commands from others", () =
   expect(findCommand(CHAT_COMMANDS, "mute", false)).toBeNull();
   expect(findCommand(CHAT_COMMANDS, "mute", true)?.admin).toBe(true);
   expect(findCommand(CHAT_COMMANDS, "dance", true)).toBeNull();
+  // The map editor is for admins only (decided 2026-11-26).
+  expect(findCommand(CHAT_COMMANDS, "mapeditor", false)).toBeNull();
+  expect(findCommand(CHAT_COMMANDS, "mapeditor", true)?.admin).toBe(true);
   expect(unknownCommandText("dance")).toBe("Unknown command /dance. Type /help for the list.");
 });
 
@@ -41,6 +44,10 @@ it("builds help from the registry, so every command is listed exactly once", () 
   expect(listed(player)).toEqual(CHAT_COMMANDS.filter((c) => !c.admin).map((c) => `/${c.name}`));
   expect(listed(admin)).toHaveLength(CHAT_COMMANDS.length);
   expect(player.some((line) => line.startsWith("/mute"))).toBe(false);
+  expect(player.some((line) => line.startsWith("/mapeditor"))).toBe(false);
+  expect(admin.slice(admin.indexOf("Admin commands:"))).toContain(
+    "/mapeditor — Open the map editor and the maps kept on the server.",
+  );
   expect(admin).toContain("Admin commands:");
   expect(helpLine(findCommand(CHAT_COMMANDS, "w", false)!)).toBe(
     "/whisper <Name#0000> <message> (also /w) — Whisper to a friend.",
@@ -59,7 +66,6 @@ it("builds help from the registry, so every command is listed exactly once", () 
     "lobby",
     "scoreboard",
     "diagnostics",
-    "mapeditor",
     "menu",
     "friends",
     "quickbind",

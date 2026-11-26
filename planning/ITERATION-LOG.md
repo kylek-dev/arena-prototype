@@ -856,3 +856,12 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Branch:** `auto/plan-launcher-hub` (planning only, no code)
 - **Decisions recorded (user, 2026-11-26):** `/mapeditor` and the menu's Map editor become admin-only; the in-game Friends window loses its Invite buttons; Settings stays out of the launcher dock.
 - **Added:** BACKLOG Playtest Inbox items for the two UI changes; two epics with issue definitions, [launcher-page](issues/launcher-page.md) (ROADMAP order 5) and [social-hub](issues/social-hub.md) (order 6, ADR first), with open questions for the user.
+
+## 2026-11-26 — Map editor for admins only (playtest decision)
+- **Branch / Commit:** `auto/admin-map-editor`
+- **Base / PR:** `auto/plan-launcher-hub` (stacked on PR #114)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox: `/mapeditor` and the game menu's **Map editor** are admin-only; the command is unknown to others and missing from `/help`.
+- **Changes:** `mapeditor` is an admin command (listed under **Admin commands**); `features/map-editor/access.ts` (`useAdmin`, `useMapEditorAllowed`) gates the menu button and the editor, which closes when access is lost; `mapEditorAllowed` in `state/map-editor.ts` also allows the local authoring server (`__map-editor/status` writable, `npm run dev`/`serve` only) so maps can be authored without a door, while the command stays admin-only everywhere.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/plan-launcher-hub`: see PR.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): docs still presented the editor as open to everyone (README, BROWSER scenarios 19/20, the new scenario's test host). Minor (fixed): the editor stayed "visible" behind the render guard after logout; added guest/unprobed and real-logout tests and a test that `/mapeditor` stays unknown on the dev server.

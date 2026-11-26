@@ -7,7 +7,7 @@ import { CHAT_COMMANDS, runSlash, type CommandContext } from "../../web/src/runt
 import { installInput } from "../../web/src/runtime/input-router";
 import { installSystemEvents } from "../../web/src/runtime/system-events";
 import { createFriends } from "../../web/src/runtime/friends";
-import { mapEditorVisible } from "../../web/src/state/map-editor";
+import { mapEditorVisible, mapWritable } from "../../web/src/state/map-editor";
 import { characterKits, customizerVisible } from "../../web/src/state/appearance";
 import { persistence, preferences } from "../../web/src/state/config";
 import { matchQueue } from "../../web/src/state/network";
@@ -81,8 +81,18 @@ it("opens every panel by command", () => {
   expect(interaction.get().quick).toBe(true);
   opened("/customize");
   expect(customizerVisible.get()).toBe(true);
+  // Admins only, even on the local authoring server where the menu offers
+  // the editor to anyone: everyone else is told the command is unknown.
+  mapWritable.set(true);
   opened("/mapeditor");
+  mapWritable.set(null);
+  expect(mapEditorVisible.get()).toBe(false);
+  expect(said.at(-1)).toBe("Unknown command /mapeditor. Type /help for the list.");
+  said = [];
+  interaction.set({ panel: "menu", quick: false, layout: false, hovered: null, capture: null });
+  runSlash("/mapeditor", ctx({ admin: true }));
   expect(mapEditorVisible.get()).toBe(true);
+  expect(interaction.get().panel).toBeNull();
   opened("/queue");
   expect(playWindowVisible.get()).toBe(true);
   opened("/friends");

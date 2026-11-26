@@ -240,6 +240,8 @@ it("saves only valid, changed maps through the local server, and falls back to d
   cleanup();
   resetMapEditor();
   writable = false;
+  // A deployed host has no local server, so only an admin reaches the editor.
+  await logIn(true);
   await openEditor();
   await act(async () => {});
   expect(screen.queryByRole("button", { name: "Save as colosseum.json" })).toBeNull();
@@ -411,6 +413,83 @@ it("gives every prop a fixed-size click target, however small the model", async 
   expect(Number(hit.getAttribute("r"))).toBeCloseTo(9 / 4);
   fireEvent.pointerDown(hit, { button: 0, pointerId: 1, clientX: 0, clientY: 0 });
   expect(screen.getByRole("region", { name: "Selected prop" }).textContent).toContain("Coin");
+});
+
+it("is offered to admins only, except on the local authoring server", async () => {
+  // A deployed host (no local map server): a player sees no Map editor, and
+  // the editor stays closed even when asked to open.
+  writable = false;
+  await logIn(false);
+  await act(() => loadMap());
+  setPanel("menu");
+  const { unmount } = render(
+    <>
+      <GameMenu />
+      <MapEditor />
+    </>,
+  );
+  expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Map editor" })).toBeNull();
+  act(() => mapEditorVisible.set(true));
+  expect(screen.queryByRole("complementary", { name: "Map editor" })).toBeNull();
+  expect(calls.some((c) => c.url.includes("/api/admin/"))).toBe(false);
+  unmount();
+
+  // The same player on `npm run dev` can author maps locally.
+  resetMapEditor();
+  writable = true;
+  await openEditor();
+
+  // An admin on a deployed host gets it; losing the role closes it.
+  cleanup();
+  resetMapEditor();
+  writable = false;
+  await logIn(true);
+  await openEditor();
+  await logIn(false);
+  await act(async () => {});
+  expect(screen.queryByRole("complementary", { name: "Map editor" })).toBeNull();
+  expect(mapEditorVisible.get()).toBe(false);
+});
+
+it("hides the map editor from a guest before the saving probe answers", () => {
+  // No account service (a guest, or before startup) and no probe yet.
+  accountService.set(null);
+  setPanel("menu");
+  render(
+    <>
+      <GameMenu />
+      <MapEditor />
+    </>,
+  );
+  expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Map editor" })).toBeNull();
+  act(() => mapEditorVisible.set(true));
+  expect(screen.queryByRole("complementary", { name: "Map editor" })).toBeNull();
+  expect(mapEditorVisible.get()).toBe(false);
+});
+
+it("closes the editor when the admin logs out", async () => {
+  writable = false;
+  let loggedIn = true;
+  const account = createAccount({
+    fetch: async () =>
+      Response.json(
+        loggedIn
+          ? { account: "00112233445566ff", admin: true, login: true, handle: "Rook#0042" }
+          : // The door answers a logged-out page as a guest.
+            { account: null, admin: false, login: true, handle: null },
+      ),
+    navigate: () => {},
+    pageProtocol: "https:",
+  });
+  await account.refresh();
+  accountService.set(account);
+  await openEditor();
+  loggedIn = false;
+  await act(() => account.refresh());
+  expect(screen.queryByRole("complementary", { name: "Map editor" })).toBeNull();
+  expect(mapEditorVisible.get()).toBe(false);
 });
 
 it("offers server maps to admins only, opens them and shows the server's problems", async () => {

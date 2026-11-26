@@ -16,7 +16,7 @@ Source roadmap and full issue definitions remain in [ROADMAP.md](ROADMAP.md) and
 
 Playtest notes and decisions from the user, 2026-11-26:
 
-- [ ] (Lane B) `/mapeditor` and the game menu's **Map editor** are admin-only (decided 2026-11-26). Hide both from non-admins (the command is then unknown to them and missing from `/help`); the door already keeps map storage admin-only.
+- [x] (Lane B) `/mapeditor` and the game menu's **Map editor** are admin-only (decided 2026-11-26). Hide both from non-admins (the command is then unknown to them and missing from `/help`); the door already keeps map storage admin-only. — `auto/admin-map-editor`: `mapeditor` is an admin command (unknown and unlisted for others, under **Admin commands** in `/help`); the menu button and the editor itself show only for admins, or on the local authoring server (`npm run dev`) so maps can still be authored without a door.
 - [ ] (Lane B) Remove the friend **Invite** buttons from the in-game Friends window (decided 2026-11-26). Parties form from the launcher page; the ⋮ menu in game keeps Whisper, Remove and Block.
 - [x] (Decision) Settings does **not** join the launcher dock (decided 2026-11-26): it stays in the game menu. No change.
 - [ ] (Lane B, epic) Replace the **Home Screen** with an out-of-game **launcher page** for account management: sign in or sign up, play as a guest, delete account, privacy notice. See [launcher-page](issues/launcher-page.md) and ROADMAP order 5.
