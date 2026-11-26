@@ -328,6 +328,7 @@ hears it:
 | `team` | The sender's team in that match; outside one, their custom lobby or else their party, except members now playing a match. |
 | `spectator` | The spectators of the sender's match. Players never hear it, and a spectator can post (or whisper) nowhere else. |
 | `whisper` | One friend, on every open tab of theirs not playing a live match (logged-in players only). |
+| `hub` | Everyone in the sender's hub instance ([ADR 0056](decisions/0056-social-hub.md)). Logged-in players only. |
 
 One rule keeps spectators from feeding players hidden information
 (ghosting), even from a second tab or account: **a player in a live match
@@ -364,6 +365,46 @@ Rules:
 - A player stops hearing someone they ignore (per connection, by account or
   guest id) or blocked (per account). An admin can mute an account; the
   mute holds on tabs that log out.
+
+## Hub
+
+The hub ([ADR 0056](decisions/0056-social-hub.md), proposed; `door/hub.rs`,
+rules in `arena_sim::hub`) also rides on the queue WebSocket:
+
+| Direction | Message | Meaning |
+| --- | --- | --- |
+| client → door | `hub_join {appearance, friend?}` | Enter an instance with this look (a `WireAppearance` as JSON, checked as in the match protocol), beside a friend or party-mate (`Name#number`) when given. |
+| client → door | `hub_move {seq, x, z, facing}` | The current intent: `x`, `z` in −1000..1000 (normalized as arena movement), `facing` a binary angle. |
+| client → door | `hub_leave {}` | Leave the hub. |
+| door → client | `hub {instance, you, x, z}` | Joined: the instance number, this player's hub id and place (millimetres). |
+| door → client | `hub_state {tick, ack, x, z, players, enter?, exit?}` | Every hub tick (10 a second): the last `seq` applied, this player's place, `[id, x, z, facing]` per player in view (40 m), `enter` (`{id, handle, admin, appearance}` for players new in view or renamed) and `exit` (ids gone from view). |
+| door → client | `hub_left {reason}` | Out of the hub: `left`, or `match` when a seat or spectator ticket was issued. |
+
+Rules:
+- The door integrates intents; clients never send positions. Bodies pass
+  through each other; the plaza edge, fountain and columns are solid.
+- An instance holds 40 players. Joining picks a followed friend's instance
+  (refused `not_in_hub`, `hub_full`, or `not_friends` for anyone who is not
+  an accepted friend or party-mate), else a party-mate's, else the
+  connection's last one, else the fullest with room, else a new one.
+  `in_hub` refuses a second join, `not_in_hub` a move outside the hub, and
+  `no_name` a connection without a handle.
+- One `hub_state` per player per tick. A view change (including a player
+  back under a new id, or renamed) counts as delivered only when the
+  connection's outbox accepted that state; otherwise the next state carries
+  it again. States never take the outbox's last 12 slots, kept for
+  tickets, ready checks and chat.
+- `hub_move` has its own budget of 20 a second (this amends the single
+  10-a-second budget above): moves over it are dropped without closing the
+  connection, up to 80 a second, past which it closes (`rate_limited`).
+  Clients send at most 10 a second. Following a friend shares the
+  per-account invite budget.
+- A player never sees, nor is seen by, nor hears in `hub` chat, a player
+  either of them blocked; a block made meanwhile takes effect on the next
+  tick. Blocks are between accounts, so guests are never hidden. A friend
+  who is not on gets `not_in_hub`; anyone else not followable, `not_friends`.
+- `/metrics`: `arena_door_hub_players`, `arena_door_hub_instances`,
+  `arena_door_hub_ticks_total`, `arena_door_hub_tick_microseconds_total`.
 
 ## Browser telemetry
 

@@ -52,7 +52,7 @@ lives in the front door's queue task, reached over the queue WebSocket.
 ### Movement and authority
 
 - **Intent only.** A client sends its movement intent (a direction on the
-  ground, each axis −127..127, and its facing), never a position. The door
+  ground, each axis −1000..1000 as in the arena, and its facing), never a position. The door
   integrates every player at 10 hub ticks per second with the same speed as
   the arena (7.2 m/s), keeps them inside the plaza and outside its
   obstacles, and sends the results. Speed, teleport and wall hacks have
@@ -99,7 +99,12 @@ at decode; anything malformed is refused like any queue message):
   message keeps the old budget.
 - **Following is for friends.** `hub_join {friend}` only works for an
   accepted friend (or a party-mate), so nobody can follow a stranger into
-  an instance; otherwise it is refused `not_friends`.
+  an instance; otherwise it is refused `not_friends`. Friend lookups share
+  the per-account invite budget.
+- **Room for what matters.** Hub states never take the last slots of a
+  connection's outbox, which stay for tickets, ready checks and chat; a
+  state that does not fit waits for the next tick. Moves past four times
+  their budget close the connection.
 
 ### What each client receives
 
@@ -115,7 +120,8 @@ at decode; anything malformed is refused like any queue message):
 - **Blocks hide.** A player never sees, and is never seen by, a player
   either of them blocked, in the hub or its chat. A block made while both
   are present takes each out of the other's view on the next tick
-  (`exit` both ways); unblocking brings them back (`enter`).
+  (`exit` both ways); unblocking brings them back (`enter`). Blocks are
+  between accounts, so guests (who cannot be blocked) are never hidden.
 - **Radius.** On the 80 m graybox plaza, 40 m filters little; it bounds
   the cost once hubs grow.
 

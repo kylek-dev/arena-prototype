@@ -190,6 +190,11 @@ async fn run() -> Result<(), String> {
     }
     config.maps = maps;
     config.match_status = match_status;
+    if dev {
+        // A loopback door: local load tests (`arena-bot --hub`) open many
+        // queue connections from one address.
+        config.queue_per_address = config.queue_per_address.max(64);
+    }
     config.identity = IdentityConfig::from_env()?;
     if std::env::var("ARENA_SESSION_KEY")
         .ok()

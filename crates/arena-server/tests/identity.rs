@@ -1541,3 +1541,127 @@ async fn whispers_reach_friends_and_admins_mute_while_blocks_silence() {
     door.stop().await.unwrap();
     let _ = std::fs::remove_dir_all(directory);
 }
+
+const LOOK: &str = r#"{"ancestry":"human","body":"male","skin_tone":"s1","hair_color":"h1","facial_hair_color":"h1","eyes":"e1","build":0,"groups":[],"variants":[]}"#;
+
+/// Joins the hub (ADR 0056); `Err(code)` when refused.
+async fn hub_join(socket: &mut Socket, friend: Option<&str>) -> Result<u32, String> {
+    let friend = friend.map_or(String::new(), |name| format!(r#","friend":"{name}""#));
+    say(
+        socket,
+        format!(r#"{{"type":"hub_join","appearance":{LOOK}{friend}}}"#),
+    )
+    .await;
+    until(socket, |m| match m {
+        QueueMessage::Hub(joined) => Some(Ok(joined.you)),
+        QueueMessage::Refused { code } => Some(Err(code)),
+        _ => None,
+    })
+    .await
+}
+
+/// The hub ids `socket` sees, once its view has settled on `want` players.
+async fn hub_view(socket: &mut Socket, want: usize) -> Vec<u32> {
+    loop {
+        let state = until(socket, |m| match m {
+            QueueMessage::HubState(state) => Some(state),
+            _ => None,
+        })
+        .await;
+        if state.players.len() == want {
+            return state.players.iter().map(|player| player.0).collect();
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_hub_follows_friends_carries_chat_and_hides_blocked_players() {
+    if no_database() {
+        return;
+    }
+    let fake = Fake::default();
+    let provider = fake_provider(fake.clone()).await;
+    let (door, _) = door_tuned(
+        Origins::Only(vec!["https://arena.example.com".into()]),
+        provider,
+        |config| config.auth_burst = 1000,
+    )
+    .await;
+    let addr = door.addr;
+    let mut players = Vec::new();
+    for who in ["alice", "bob", "carol"] {
+        let session = log_in_as(addr, &fake, who).await;
+        let (status, picked) = choose(addr, &session, &format!("{who}x")).await;
+        assert_eq!(status, 200, "{picked}");
+        players.push((session, picked["handle"].as_str().unwrap().to_owned()));
+    }
+    let [(alice, alice_h), (bob, bob_h), (carol, carol_h)] =
+        <[(String, String); 3]>::try_from(players).unwrap();
+    friend(addr, &alice, "request", &bob_h).await;
+    friend(addr, &bob, "accept", &alice_h).await;
+    let mut alice_socket = connect_queue(addr, 1, &alice).await;
+    let mut bob_socket = connect_queue(addr, 2, &bob).await;
+    let mut carol_socket = connect_queue(addr, 3, &carol).await;
+
+    // Following a friend works; following a stranger does not.
+    let alice_id = hub_join(&mut alice_socket, None).await.unwrap();
+    assert_eq!(
+        hub_join(&mut carol_socket, Some(&alice_h)).await,
+        Err("not_friends".into())
+    );
+    hub_join(&mut bob_socket, Some(&alice_h)).await.unwrap();
+    let carol_id = hub_join(&mut carol_socket, None).await.unwrap();
+    assert_eq!(hub_view(&mut carol_socket, 2).await.len(), 2);
+    assert!(hub_view(&mut alice_socket, 2).await.contains(&carol_id));
+
+    // Hub chat reaches the instance, logged-in speakers only.
+    say(
+        &mut alice_socket,
+        r#"{"type":"chat","channel":"hub","text":"hi all"}"#.into(),
+    )
+    .await;
+    for socket in [&mut bob_socket, &mut carol_socket] {
+        let (channel, from, _, _, text) = chat_heard(socket).await;
+        assert_eq!(
+            (channel.as_str(), from.as_str(), text.as_str()),
+            ("hub", alice_h.as_str(), "hi all")
+        );
+    }
+
+    // Carol blocks Alice: neither sees the other any more, and Carol no
+    // longer hears her; Bob still sees both.
+    assert_eq!(friend(addr, &carol, "block", &alice_h).await.0, 204);
+    assert!(!hub_view(&mut carol_socket, 1).await.contains(&alice_id));
+    assert!(!hub_view(&mut alice_socket, 1).await.contains(&carol_id));
+    assert_eq!(hub_view(&mut bob_socket, 2).await.len(), 2);
+    say(
+        &mut alice_socket,
+        r#"{"type":"chat","channel":"hub","text":"still there?"}"#.into(),
+    )
+    .await;
+    assert_eq!(chat_heard(&mut bob_socket).await.4, "still there?");
+    assert!(
+        !hears(&mut carol_socket, 300, |m| matches!(
+            m,
+            QueueMessage::Chat { .. }
+        ))
+        .await
+    );
+    // Both ways: Alice no longer hears Carol either (after her own copy).
+    assert_eq!(chat_heard(&mut alice_socket).await.4, "still there?");
+    say(
+        &mut carol_socket,
+        r#"{"type":"chat","channel":"hub","text":"anyone?"}"#.into(),
+    )
+    .await;
+    assert_eq!(chat_heard(&mut bob_socket).await.4, "anyone?");
+    assert!(
+        !hears(&mut alice_socket, 300, |m| matches!(
+            m,
+            QueueMessage::Chat { .. }
+        ))
+        .await
+    );
+    let _ = carol_h;
+    door.stop().await.unwrap();
+}

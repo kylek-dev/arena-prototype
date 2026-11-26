@@ -367,3 +367,35 @@ async fn bots_measure_spectator_bandwidth_and_privacy_with_zero_mismatches() {
     assert_eq!(report.spectator_private_events, 0);
     running.shut_down(Duration::ZERO).await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_full_hub_instance_stays_within_its_budget() {
+    use arena_bot::hub::{self, HubScenario};
+    use arena_server::door::{self, DoorConfig};
+    let key = arena_server::ticket::TicketKey::random();
+    let mut config = DoorConfig::new(
+        key,
+        "ws://127.0.0.1:1/play".into(),
+        "http://localhost:8000/".into(),
+    );
+    config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
+    // Every bot connects from this one address.
+    config.queue_per_address = 64;
+    let door = door::start(config).await.unwrap();
+    // One more than an instance holds: the last bot opens a second one.
+    let report = hub::run(HubScenario {
+        door: door.addr.to_string(),
+        bots: arena_sim::hub::MAX_HUB_PLAYERS + 1,
+        duration: Duration::from_secs(3),
+        seed: 7,
+    })
+    .await;
+    println!("{report}");
+    assert!(report.healthy(), "{report}");
+    assert_eq!(report.instances, 2);
+    assert_eq!(report.largest_view, arena_sim::hub::MAX_HUB_PLAYERS - 1);
+    // About 10 states a second, within the ADR's 32 KB/s per client.
+    assert!(report.states_per_second_mean > 6.0, "{report}");
+    assert!(report.bytes_per_second_max < 32_000.0, "{report}");
+    door.stop().await.unwrap();
+}
