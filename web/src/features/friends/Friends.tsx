@@ -160,7 +160,7 @@ function AddFriend({ friends, busy }: { friends: FriendsService; busy: boolean }
   );
 }
 
-/** The friends list in Play online (social-identity step 4): presence,
+/** The friends list (home screen Play online and the in-game F window) (social-identity step 4): presence,
  * requests to answer, adding by `Name#number`, one-click invites, removing,
  * blocking and unblocking. Logged-in players only. */
 export function Friends() {

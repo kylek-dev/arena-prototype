@@ -62,7 +62,6 @@ it("builds help from the registry, so every command is listed exactly once", () 
     "mapeditor",
     "menu",
     "friends",
-    "lighting",
     "quickbind",
   ])
     expect(findCommand(CHAT_COMMANDS, panel, false), panel).not.toBeNull();

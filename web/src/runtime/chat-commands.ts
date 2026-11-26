@@ -1,6 +1,6 @@
 // The slash-command registry (planning/issues/chat.md): every command the
 // chat box knows, what it does, and its help line (`domain/commands.ts`
-// builds `/help` from this list). Panels open as their menu buttons do;
+// builds `/help` from this list). Panels open as their launcher and menu buttons do;
 // admin commands call the door's admin routes, which check the role again.
 
 import {
@@ -17,9 +17,9 @@ import type { Queue } from "./matchmaking";
 import { debugEnabled, diagnosticsVisible } from "./diagnostics";
 import { characterKits, customizerVisible } from "../state/appearance";
 import { accountService } from "../state/account";
-import { lightingVisible } from "../state/lighting";
 import { mapEditorVisible } from "../state/map-editor";
 import { networkLink } from "../state/network";
+import { friendsWindowVisible, playWindowVisible } from "../state/windows";
 import { reopenPostMatchScoreboard } from "../state/scoreboard";
 import { customLobbyVisible, engine, selectedLayout, setMode, setPanel } from "../state/session";
 
@@ -154,11 +154,12 @@ export const CHAT_COMMANDS: readonly ChatCommand[] = [
   },
   {
     name: "queue",
+    aliases: ["play"],
     usage: "[1v1|2v2|3v3]",
-    description: "Search for a match, or open Play online.",
+    description: "Search for a match, or open the Play window.",
     run(args, ctx) {
       const mode = args.toLowerCase();
-      if (!mode) outsideMatch(ctx, "Play online", () => setPanel("menu"));
+      if (!mode) playWindowVisible.set(true);
       else if (!isQueueMode(mode)) ctx.say("Queue for 1v1, 2v2 or 3v3, e.g. /queue 2v2.");
       else if (ctx.inMatch) ctx.say("Finish or leave this match before queueing.");
       else {
@@ -176,7 +177,7 @@ export const CHAT_COMMANDS: readonly ChatCommand[] = [
     description: "Open your custom lobby.",
     run(_, ctx) {
       if (!ctx.queue.state.get().lobby)
-        ctx.say("You are not in a custom lobby. Host or join one in Play online (/queue).");
+        ctx.say("You are not in a custom lobby. Host or join one in the Play window (/queue).");
       else
         outsideMatch(ctx, "The custom lobby", () => {
           setPanel(null);
@@ -187,8 +188,8 @@ export const CHAT_COMMANDS: readonly ChatCommand[] = [
   },
   {
     name: "friends",
-    description: "Open Play online, where your friends are.",
-    run: (_, ctx) => outsideMatch(ctx, "The friends list", () => setPanel("menu")),
+    description: "Open the Friends window.",
+    run: () => friendsWindowVisible.set(true),
   },
   {
     name: "scoreboard",
@@ -203,14 +204,6 @@ export const CHAT_COMMANDS: readonly ChatCommand[] = [
     run(_, ctx) {
       if (!debugEnabled) ctx.say("Diagnostics need ?debug in the page address.");
       else diagnosticsVisible.set(!diagnosticsVisible.get());
-    },
-  },
-  {
-    name: "lighting",
-    description: "Open the lighting tweaks.",
-    run() {
-      setPanel(null);
-      lightingVisible.set(true);
     },
   },
   {

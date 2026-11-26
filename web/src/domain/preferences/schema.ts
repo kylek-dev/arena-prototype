@@ -23,7 +23,8 @@ export type FrameRole =
   | "team"
   | "unitTooltip"
   | "castBar"
-  | "chat";
+  | "chat"
+  | "launcher";
 export type Config = {
   bars: Bar[];
   bindings: Bindings;
@@ -69,6 +70,8 @@ export function defaultConfig(): Config {
       // Left side, below the team frames and above the action bars (y 0.92),
       // which span most of the width on small screens.
       chat: layout(0.01, 0.7),
+      // Near the right edge, below the opponent frames and invite prompts.
+      launcher: layout(0.99, 0.74),
     },
     castBarAttached: false,
     chatSize: { ...CHAT_SIZE.initial },
@@ -253,6 +256,7 @@ export function validateConfig(value: unknown): Config {
       unitTooltip: cleanLayout(frames.unitTooltip, d.frames.unitTooltip),
       castBar: cleanLayout(frames.castBar, d.frames.castBar),
       chat: cleanLayout(frames.chat, d.frames.chat),
+      launcher: cleanLayout(frames.launcher, d.frames.launcher),
     },
     castBarAttached: bool(r.castBarAttached, false),
     chatSize: cleanChatSize(r.chatSize),

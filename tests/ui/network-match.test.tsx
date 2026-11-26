@@ -6,6 +6,10 @@ import type { MatchTicket } from "../../web/src/domain/network";
 import { Diagnostics } from "../../web/src/features/diagnostics/Diagnostics";
 import { MatchStatus } from "../../web/src/features/match-status/MatchStatus";
 import { GameMenu } from "../../web/src/features/menu/GameMenu";
+import { Launcher } from "../../web/src/features/launcher/Launcher";
+import { TooltipProvider } from "../../web/src/ui/Tooltip";
+import { PlayWindow } from "../../web/src/features/launcher/PlayWindow";
+import { playWindowVisible } from "../../web/src/state/windows";
 import { Nameplates } from "../../web/src/features/nameplates/Nameplates";
 import { Frames } from "../../web/src/features/unit-frames/Frames";
 import { diagnosticsVisible } from "../../web/src/runtime/diagnostics";
@@ -294,22 +298,32 @@ it("tells the player about connecting, waiting, reconnecting, the end and a rejo
 it("offers leaving in the menu during a match and hides practice-only controls", () => {
   characterKits.set([humanKit()]);
   engine.set(snapshot());
-  render(<GameMenu />);
+  playWindowVisible.set(true);
+  render(
+    <TooltipProvider>
+      <GameMenu />
+      <Launcher />
+      <PlayWindow />
+    </TooltipProvider>,
+  );
+  const customize = () => screen.getByRole("button", { name: "Customize character" });
   expect(screen.getByText("Local solo practice")).toBeTruthy();
   expect(screen.getByRole("combobox", { name: "Practice mode" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Customize character" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Reset practice" })).toBeTruthy();
+  expect(customize().getAttribute("aria-disabled")).toBeNull();
   expect(screen.queryByRole("button", { name: "Leave match" })).toBeNull();
   act(() => link.join(ticket));
   expect(screen.getByText("Network match")).toBeTruthy();
   expect(screen.queryByRole("combobox", { name: "Practice mode" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Reset practice" })).toBeNull();
+  expect(screen.getByText(/You are in a match/)).toBeTruthy();
   // Character look is locked once in a match.
-  expect(screen.queryByRole("button", { name: "Customize character" })).toBeNull();
+  expect(customize().getAttribute("aria-disabled")).toBe("true");
   fireEvent.click(screen.getByRole("button", { name: "Leave match" }));
   expect(link.state.get().phase).toBe("idle");
   expect(link.read()).toEqual([]);
   // Back in practice, the match can be rejoined from the menu and customization returns.
-  expect(screen.getByRole("button", { name: "Customize character" })).toBeTruthy();
+  expect(customize().getAttribute("aria-disabled")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Rejoin last match" }));
   expect(link.state.get().phase).toBe("connecting");
   characterKits.set([]);

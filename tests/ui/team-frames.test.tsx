@@ -1,7 +1,8 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { Frames } from "../../web/src/features/unit-frames/Frames";
-import { GameMenu } from "../../web/src/features/menu/GameMenu";
+import { PlayWindow } from "../../web/src/features/launcher/PlayWindow";
+import { playWindowVisible } from "../../web/src/state/windows";
 import { dispatch, input } from "../../web/src/runtime/commands";
 import { installInput } from "../../web/src/runtime/input-router";
 import { engine, error, focus, interaction } from "../../web/src/state/session";
@@ -72,12 +73,14 @@ it("targets/focuses every roster slot and cycles only living opponents", () => {
 
 it("changes practice mode with a reset and drains the request once", () => {
   engine.set(teamSnapshot(1));
-  interaction.set({ ...interaction.get(), panel: "menu" });
+  // From the launcher's Play window, with no menu open.
+  interaction.set({ ...interaction.get(), panel: null });
   const canvas = document.createElement("canvas");
   document.body.append(canvas);
   const router = installInput(canvas, () => {});
   try {
-    render(<GameMenu />);
+    playWindowVisible.set(true);
+    render(<PlayWindow />);
     fireEvent.change(screen.getByRole("combobox", { name: "Practice mode" }), {
       target: { value: "3" },
     });

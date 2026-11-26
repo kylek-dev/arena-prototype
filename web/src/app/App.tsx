@@ -23,16 +23,26 @@ import { SpectatorHud } from "../features/spectator/SpectatorHud";
 import { MatchReady } from "../features/queue/MatchReady";
 import { InvitePrompt } from "../features/friends/InvitePrompt";
 import { ChatBox } from "../features/chat/ChatBox";
+import { Launcher } from "../features/launcher/Launcher";
+import { PlayWindow } from "../features/launcher/PlayWindow";
+import { FriendsWindow } from "../features/launcher/FriendsWindow";
 import { QueueBar } from "../features/queue/QueueBar";
 import { Loading } from "../features/loading/Loading";
 import { Diagnostics } from "../features/diagnostics/Diagnostics";
-import { LightingTweaks } from "../features/lighting-tweaks/LightingTweaks";
 import { MapEditor } from "../features/map-editor/MapEditor";
 import { Customizer } from "../features/customizer/Customizer";
 import { beforeMatch, customizerVisible } from "../state/appearance";
 import { StartScreen } from "../features/customizer/StartScreen";
 import { Modal } from "../ui/Dialog";
-import { draggingSpell, engine, interaction, setPanel } from "../state/session";
+import {
+  customLobbyVisible,
+  draggingSpell,
+  engine,
+  interaction,
+  scoreboardVisible,
+  setPanel,
+} from "../state/session";
+import { closeLauncherWindows } from "../state/windows";
 import { saveMessage, useConfigSelector } from "../state/config";
 import { useStore } from "../state/store";
 import { pendingBinding } from "../state/binding-capture";
@@ -46,6 +56,13 @@ export function App() {
   const customizing = useStore(customizerVisible, (s) => s);
   const lobby = useStore(beforeMatch, (s) => s);
   const spectating = useStore(engine, (s) => Boolean(s?.spectating));
+  const lobbyOpen = useStore(customLobbyVisible, (v) => v);
+  const boardOpen = useStore(scoreboardVisible, (v) => v);
+  // The Play and Friends windows belong to the arena: a full-screen overlay
+  // (customizer, home screen, custom lobby, scoreboard) closes them.
+  useEffect(() => {
+    if (customizing || lobby || lobbyOpen || boardOpen) closeLauncherWindows();
+  }, [customizing, lobby, lobbyOpen, boardOpen]);
   useEffect(() => {
     if (!spectating) return;
     const current = interaction.get();
@@ -106,6 +123,7 @@ export function App() {
             <RoundClock />
             <MatchStatus />
             <ChatBox />
+            <Launcher />
           </>
         )}
         <Diagnostics />
@@ -115,7 +133,8 @@ export function App() {
         <QueueBar />
         <MatchReady />
         <InvitePrompt />
-        <LightingTweaks />
+        <PlayWindow />
+        <FriendsWindow />
         <MapEditor />
         <StartScreen />
         <Customizer />

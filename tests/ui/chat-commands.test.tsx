@@ -7,11 +7,11 @@ import { CHAT_COMMANDS, runSlash, type CommandContext } from "../../web/src/runt
 import { installInput } from "../../web/src/runtime/input-router";
 import { installSystemEvents } from "../../web/src/runtime/system-events";
 import { createFriends } from "../../web/src/runtime/friends";
-import { lightingVisible } from "../../web/src/state/lighting";
 import { mapEditorVisible } from "../../web/src/state/map-editor";
 import { characterKits, customizerVisible } from "../../web/src/state/appearance";
 import { persistence, preferences } from "../../web/src/state/config";
 import { matchQueue } from "../../web/src/state/network";
+import { friendsWindowVisible, playWindowVisible } from "../../web/src/state/windows";
 import {
   customLobbyVisible,
   engine,
@@ -54,7 +54,6 @@ beforeEach(() => {
   interaction.set({ panel: null, quick: false, layout: false, hovered: null, capture: null });
   customizerVisible.set(false);
   customLobbyVisible.set(false);
-  lightingVisible.set(false);
   mapEditorVisible.set(false);
 });
 afterEach(() => {
@@ -82,17 +81,17 @@ it("opens every panel by command", () => {
   expect(interaction.get().quick).toBe(true);
   opened("/customize");
   expect(customizerVisible.get()).toBe(true);
-  opened("/lighting");
-  expect(lightingVisible.get()).toBe(true);
   opened("/mapeditor");
   expect(mapEditorVisible.get()).toBe(true);
   opened("/queue");
-  expect(interaction.get().panel).toBe("menu");
+  expect(playWindowVisible.get()).toBe(true);
+  opened("/friends");
+  expect(friendsWindowVisible.get()).toBe(true);
   // Panels that need something to show say so instead.
   runSlash("/lobby", ctx());
   runSlash("/scoreboard", ctx());
   expect(said).toEqual([
-    "You are not in a custom lobby. Host or join one in Play online (/queue).",
+    "You are not in a custom lobby. Host or join one in the Play window (/queue).",
     "No finished match to show yet.",
   ]);
   expect(scoreboardVisible.get()).toBe(false);

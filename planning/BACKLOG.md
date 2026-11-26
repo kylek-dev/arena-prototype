@@ -17,10 +17,10 @@ Source roadmap and full issue definitions remain in [ROADMAP.md](ROADMAP.md) and
 Playtest notes from the user, 2026-11-25:
 
 - [x] (Lane B) Chat box needs to be resizable with a minimum size: width and height adjustable, not just scale. — `auto/chat-resize`: a bottom-right grip (drag, or arrow keys) and Width/Height sliders in the layout editor; 260×150 minimum, 960×720 maximum; the top-left corner stays put; saved per profile as `chatSize`.
-- [ ] (Lane B) The game menu is too complex and is bad UX (everything inside it). Add a separate set of movable in-game buttons with simple one-letter text and a full tooltip for each window: **P** Play (queue each bracket and custom games; also change and reset practice mode), **F** Friends (friends list, add, remove, block), **S** Spells (the spell window), **C** Customize character.
-- [ ] (Lane B) Remove lighting tweaks.
-- [ ] (Lane B) Remove the invite friends and join a party section in game mode.
-- [ ] (Lane B) Remove account management from the game menu; it should not be part of the game UI.
+- [x] (Lane B) The game menu is too complex and is bad UX (everything inside it). Add a separate set of movable in-game buttons with simple one-letter text and a full tooltip for each window: **P** Play (queue each bracket and custom games; also change and reset practice mode), **F** Friends (friends list, add, remove, block), **S** Spells (the spell window), **C** Customize character. — `auto/game-launcher`: a movable `launcher` frame (right edge) with P/F/S/C and full tooltips; Play and Friends are movable windows (Escape closes them first); the game menu keeps Resume, Leave/Rejoin, Settings, Map editor, Edit layout, Quick binding; `/queue` (`/play`) and `/friends` open the new windows.
+- [x] (Lane B) Remove lighting tweaks. — `auto/game-launcher`: window, menu and Graphics entries and `/lighting` removed; the renderer keeps the authored preset; ADR 0020 marked superseded.
+- [x] (Lane B) Remove the invite friends and join a party section in game mode. — `auto/game-launcher`: the in-game Play window has no party section (`PlayOnline inGame`); the home screen keeps it, and friends' invites still work in game.
+- [x] (Lane B) Remove account management from the game menu; it should not be part of the game UI. — `auto/game-launcher`: no account section anywhere in game; login, names and account deletion stay on the home screen (before entering the arena), which is the only place a player can log in.
 
 ## Lane A — Autonomous Queue (Machine-Verified)
 

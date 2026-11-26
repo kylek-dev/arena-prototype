@@ -20,6 +20,7 @@ import { escapeStopsCast } from "../domain/bindings/escape";
 import { dispatch, input, isCasting, stopCasting, stopRecentlyRequested } from "./commands";
 import { installFocusPolicy, isTextEntry } from "./focus";
 import { chatShown, requestChat } from "../state/chat";
+import { closeLauncherWindows } from "../state/windows";
 // Precedence: conflict > capture > quick bind > text entry > Escape stops a cast >
 // modal/typing > layout > gameplay (see domain/bindings/escape.ts).
 export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void) {
@@ -156,6 +157,19 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
     ) {
       e.preventDefault();
       customLobbyVisible.set(false);
+      return;
+    }
+    // Escape closes the launcher's Play and Friends windows first.
+    if (
+      e.code === "Escape" &&
+      !mode.panel &&
+      !customizing.get() &&
+      !prematch.get() &&
+      !scoreboardVisible.get() &&
+      !isTextEntry(document.activeElement) &&
+      closeLauncherWindows()
+    ) {
+      e.preventDefault();
       return;
     }
     if (customizing.get() && e.code === "Escape" && !mode.panel) {

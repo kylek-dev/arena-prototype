@@ -3,7 +3,7 @@ import { afterEach, expect, it } from "vitest";
 import type { MatchTicket } from "../../web/src/domain/network";
 import { MatchReady } from "../../web/src/features/queue/MatchReady";
 import { QueueBar } from "../../web/src/features/queue/QueueBar";
-import { GameMenu } from "../../web/src/features/menu/GameMenu";
+import { PlayOnline } from "../../web/src/features/play-online/PlayOnline";
 import { createQueue, installPartyLinks, type Queue } from "../../web/src/runtime/matchmaking";
 import { matchQueue } from "../../web/src/state/network";
 
@@ -245,7 +245,7 @@ it("the queue bar shows the queue, time waited, expected wait and players, with 
   const fake = withQueue();
   render(
     <>
-      <GameMenu />
+      <PlayOnline />
       <QueueBar />
     </>,
   );
@@ -304,7 +304,7 @@ it("the match-ready window counts down, shows acceptances and takes Accept or De
 
 it("a party member waits for the leader to choose the queue", () => {
   const fake = withQueue();
-  render(<GameMenu />);
+  render(<PlayOnline />);
   act(() => fake.queue.joinParty("K7P2QX"));
   fake.open();
   fake.say({ type: "party", code: "K7P2QX", members: 2, leader: false, queue: null });

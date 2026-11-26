@@ -153,8 +153,16 @@ function JoinLobby({ queue }: { queue: Queue }) {
   );
 }
 
-/** Party, public queue and private custom match controls. */
-export function PlayOnline({ onQueue }: { onQueue?: () => void }) {
+/** Party, public queue and private custom match controls. In game (the
+ * launcher's Play window) it is only the queues and custom games: account,
+ * friends and party invites stay on the home screen. */
+export function PlayOnline({
+  onQueue,
+  inGame = false,
+}: {
+  onQueue?: () => void;
+  inGame?: boolean;
+}) {
   const queue = useStore(matchQueue, (q) => q);
   const state = useStore(queue?.state ?? NO_QUEUE, (s) => s);
   if (!queue) return null;
@@ -177,8 +185,8 @@ export function PlayOnline({ onQueue }: { onQueue?: () => void }) {
       <Text id="play-online-heading" size="2" weight="medium">
         Play online
       </Text>
-      <AccountPanel />
-      <Friends />
+      {!inGame && <AccountPanel />}
+      {!inGame && <Friends />}
       {state.connection === "ended" && (
         <div className="play-online-ended" role="alert">
           <Text size="1">{endedText(state.ended)}</Text>
@@ -187,7 +195,9 @@ export function PlayOnline({ onQueue }: { onQueue?: () => void }) {
           </Button>
         </div>
       )}
-      {!lobby && (
+      {/* In game, only a party already formed shows (to see and leave it);
+          inviting and joining by code stay on the home screen. */}
+      {!lobby && (!inGame || party) && (
         <div className="party" role="group" aria-label="Party">
           {party ? (
             <>
@@ -196,7 +206,7 @@ export function PlayOnline({ onQueue }: { onQueue?: () => void }) {
                 {party.leader ? "you lead" : "a friend leads"}
               </Text>
               <div className="party-actions">
-                {party.code && <InviteLink code={party.code} />}
+                {party.code && !inGame && <InviteLink code={party.code} />}
                 <Button
                   size="1"
                   variant="soft"

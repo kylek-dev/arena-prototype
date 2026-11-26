@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, expect, it } from "vitest";
 import type { MatchTicket } from "../../web/src/domain/network";
 import { CustomLobby } from "../../web/src/features/custom-lobby/CustomLobby";
-import { GameMenu } from "../../web/src/features/menu/GameMenu";
+import { PlayOnline } from "../../web/src/features/play-online/PlayOnline";
 import { QueueBar } from "../../web/src/features/queue/QueueBar";
 import { Scoreboard } from "../../web/src/features/scoreboard/Scoreboard";
 import { createQueue, installPartyLinks, type Queue } from "../../web/src/runtime/matchmaking";
@@ -127,7 +127,7 @@ it("hosts a custom lobby from the game menu, controls teams/settings/host, and s
   matchQueue.set(fake.queue);
   render(
     <>
-      <GameMenu />
+      <PlayOnline />
       <CustomLobby />
       <QueueBar />
     </>,

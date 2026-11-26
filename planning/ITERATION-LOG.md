@@ -750,3 +750,18 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fresh-Eyes Review:** no Critical. Important (fixed): on small windows the CSS width cap, the saved size and the effective scale disagreed, so drags slipped off the pointer. Minor taken: lost-capture cancel, draft cleared on layout editing, clipping at the minimum height, grip clear of the field.
 - **Learnings:** frames are positioned by fractions of their free travel, so anything that changes a frame's size must re-anchor its layout, or it grows in both directions.
 - **Next Recommended Slice:** the in-game P/F/S/C launcher and the simpler game menu (stacked on this branch).
+
+## 2026-11-25 — In-game launcher and a simpler game menu (playtest)
+- **Branch / Commit:** `auto/game-launcher`
+- **Base / PR:** `auto/chat-resize` (stacked on PR #106)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox: launcher P/F/S/C, remove lighting tweaks, no invite/join-party section and no account management in game
+- **Changes:**
+  - `features/launcher`: a movable `launcher` frame (P Play, F Friends, S Spells, C Customize; full tooltips, disabled states with reasons), a movable Play window (queues, custom games, practice mode and reset) and Friends window; `state/windows.ts`; Escape closes them before the menu; full-screen overlays close them.
+  - Game menu: Resume, Leave/Rejoin, Home screen (outside a match), Settings, Map editor, Edit layout, Quick binding, debug diagnostics. `PlayOnline inGame` hides account, friends and party invite/join (a formed party shows with Leave party). `/queue` (`/play`) and `/friends` open the windows.
+  - Lighting tweaks removed (window, menu/Graphics entries, `/lighting`, `lightingVisible`); the preset still feeds the renderer; ADR 0020 superseded; docs updated.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/chat-resize` (`smoke=false web_build=true wasm=false`): pass — 483 Rust tests (1 pre-existing ignored), 58 Python, 50 Node, 54 Vitest files / 429 tests, headless pass, `npm run build` pass.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): practice had no way back to the home screen (account, name, party) — Home screen in the menu; a party member had no Leave party in game — read-only party line; Play/Friends windows stayed hidden under overlays and swallowed Escape — overlays close them and Escape skips them there. Minor taken: default positions, Friends loading state, stale docs and comments, assets/README on the preset.
+- **Learnings:** moving controls out of a menu means auditing every flow that reached them through it (home screen, party leave, Escape order) — the menu was also the only route back to some places.
+- **Next Recommended Slice:** human review of scenarios 14–20; decide whether friends' Invite buttons stay in game.

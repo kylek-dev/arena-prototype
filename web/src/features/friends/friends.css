@@ -1,4 +1,4 @@
-/* Friends list in Play online, and friends' invite prompts. Colors are
+/* Friends list (home screen and the F window), and friends' invite prompts. Colors are
    palette swatches or the Radix scales the palette drives. */
 .friends {
   display: grid;
