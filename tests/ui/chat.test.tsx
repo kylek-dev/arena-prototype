@@ -6,7 +6,7 @@ import { initial } from "../../web/src/domain/preferences/schema";
 import { installInput } from "../../web/src/runtime/input-router";
 import { persistence, preferences } from "../../web/src/state/config";
 import { matchQueue } from "../../web/src/state/network";
-import { engine, error, focus, interaction } from "../../web/src/state/session";
+import { engine, error, focus, interaction, selectedLayout } from "../../web/src/state/session";
 import { fakeQueue } from "./fake-queue";
 import { snapshot } from "./fixtures";
 
@@ -224,4 +224,102 @@ it("starts a seated player on Team and hints a missing whisper target", async ()
   await user.keyboard("hello{Enter}");
   expect(fake.sent().some((m) => m.type === "whisper")).toBe(false);
   expect(screen.getByText(/Pick who to whisper/)).toBeTruthy();
+});
+
+it("resizes by its grip down to a minimum, keeping its top-left corner, and by keys", async () => {
+  render(<App />);
+  const box = screen.getByRole("region", { name: "Chat" });
+  const placed = box.closest(".placed") as HTMLElement;
+  // jsdom has no layout: report the box where it is drawn, at scale 1.
+  const rect = (width: number, height: number) =>
+    ({
+      left: 20,
+      top: 300,
+      width,
+      height,
+      right: 20 + width,
+      bottom: 300 + height,
+      x: 20,
+      y: 300,
+    }) as DOMRect;
+  placed.getBoundingClientRect = () => rect(360, 210);
+  box.getBoundingClientRect = () => rect(360, 210);
+  const grip = screen.getByRole("button", { name: /Resize chat \(360 × 210\)/ });
+  fireEvent.pointerDown(grip, { button: 0, clientX: 380, clientY: 510, pointerId: 1 });
+  fireEvent.pointerMove(grip, { clientX: 520, clientY: 610, pointerId: 1 });
+  expect(box.style.width).toBe("500px");
+  expect(box.style.height).toBe("310px");
+  fireEvent.pointerUp(grip, { pointerId: 1 });
+  const saved = preferences.get().profiles.find((p) => p.id === preferences.get().active)!.config;
+  expect(saved.chatSize).toEqual({ width: 500, height: 310 });
+  // The saved layout puts the top-left corner back at (20, 300) for the new size.
+  const travelX = innerWidth - 24 - 500;
+  const travelY = innerHeight - 24 - 310;
+  expect(saved.frames.chat.x * travelX).toBeCloseTo(8, 0);
+  expect(saved.frames.chat.y * travelY).toBeCloseTo(288, 0);
+  // Never smaller than the minimum.
+  fireEvent.pointerDown(grip, { button: 0, clientX: 500, clientY: 600, pointerId: 2 });
+  fireEvent.pointerMove(grip, { clientX: 0, clientY: 0, pointerId: 2 });
+  fireEvent.pointerUp(grip, { pointerId: 2 });
+  const shrunk = preferences.get().profiles.find((p) => p.id === preferences.get().active)!.config;
+  expect(shrunk.chatSize).toEqual({ width: 260, height: 150 });
+  // Arrow keys on the grip, for keyboards.
+  box.getBoundingClientRect = () => rect(260, 150);
+  fireEvent.keyDown(screen.getByRole("button", { name: /Resize chat/ }), { key: "ArrowRight" });
+  fireEvent.keyDown(screen.getByRole("button", { name: /Resize chat/ }), {
+    key: "ArrowDown",
+    shiftKey: true,
+  });
+  const keyed = preferences.get().profiles.find((p) => p.id === preferences.get().active)!.config;
+  expect(keyed.chatSize).toEqual({ width: 270, height: 190 });
+});
+
+it("sets width and height in the layout editor when the chat box is selected", async () => {
+  render(<App />);
+  act(() => {
+    interaction.set({ ...interaction.get(), layout: true });
+    selectedLayout.set("chat");
+  });
+  fireEvent.change(screen.getByRole("slider", { name: /Width/ }), { target: { value: "500" } });
+  fireEvent.change(screen.getByRole("slider", { name: /Height/ }), { target: { value: "320" } });
+  expect(screen.getByRole("region", { name: "Chat" }).style.width).toBe("500px");
+  expect(screen.getByRole("region", { name: "Chat" }).style.height).toBe("320px");
+  fireEvent.click(screen.getByRole("button", { name: "Reset selected" }));
+  expect(screen.getByRole("region", { name: "Chat" }).style.width).toBe("360px");
+});
+
+it("keeps a drag within the screen, cancels a lost drag, and hides the grip while editing", () => {
+  const width = innerWidth;
+  const height = innerHeight;
+  Object.assign(window, { innerWidth: 800, innerHeight: 600 });
+  try {
+    render(<App />);
+    const box = screen.getByRole("region", { name: "Chat" });
+    const placed = box.closest(".placed") as HTMLElement;
+    const rect = {
+      left: 20,
+      top: 300,
+      width: 360,
+      height: 210,
+      right: 380,
+      bottom: 510,
+      x: 20,
+      y: 300,
+    } as DOMRect;
+    placed.getBoundingClientRect = () => rect;
+    box.getBoundingClientRect = () => rect;
+    const grip = screen.getByRole("button", { name: /Resize chat/ });
+    fireEvent.pointerDown(grip, { button: 0, clientX: 380, clientY: 510, pointerId: 1 });
+    fireEvent.pointerMove(grip, { clientX: 2000, clientY: 2000, pointerId: 1 });
+    // 800×600 leaves 776×576 to use.
+    expect(box.style.width).toBe("776px");
+    expect(box.style.height).toBe("576px");
+    fireEvent.lostPointerCapture(grip, { pointerId: 1 });
+    expect(box.style.width).toBe("360px");
+    act(() => interaction.set({ ...interaction.get(), layout: true }));
+    expect(screen.queryByRole("button", { name: /Resize chat/ })).toBeNull();
+  } finally {
+    Object.assign(window, { innerWidth: width, innerHeight: height });
+    act(() => interaction.set({ ...interaction.get(), layout: false }));
+  }
 });

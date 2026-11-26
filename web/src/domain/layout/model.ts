@@ -21,3 +21,22 @@ export function move(l: Layout, dx: number, dy: number, width: number, height: n
     y: clamp(l.y + dy / Math.max(1, height), 0, 1),
   };
 }
+
+/** The layout fractions that put a frame's top-left corner at `left`/`top`
+ * (px from the usable area's origin) for its current size: a frame resized
+ * from its bottom-right corner keeps its top-left where it was. */
+export function anchorAt(
+  l: Layout,
+  left: number,
+  top: number,
+  viewport: { width: number; height: number },
+  size: { width: number; height: number },
+): Layout {
+  const travelX = viewport.width - size.width * l.scale;
+  const travelY = viewport.height - size.height * l.scale;
+  return {
+    ...l,
+    x: travelX > 0 ? clamp(left / travelX, 0, 1) : 0,
+    y: travelY > 0 ? clamp(top / travelY, 0, 1) : 0,
+  };
+}

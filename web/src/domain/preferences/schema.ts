@@ -30,9 +30,25 @@ export type Config = {
   frames: Record<FrameRole, Layout>;
   /** Show the player's cast bar inside the player frame instead of its own frame. */
   castBarAttached: boolean;
+  /** The chat box's own width and height (px, before its layout scale). */
+  chatSize: ChatSize;
   assignmentsLocked: boolean;
   nameplates: { friendly: boolean; enemy: boolean };
 };
+export type ChatSize = { width: number; height: number };
+/** The chat box's size limits: big enough for tabs, a few lines and the
+ * field; at most most of a large screen. */
+export const CHAT_SIZE = {
+  min: { width: 260, height: 150 },
+  max: { width: 960, height: 720 },
+  initial: { width: 360, height: 210 },
+} as const;
+export function clampChatSize(size: ChatSize): ChatSize {
+  return {
+    width: Math.round(clamp(size.width, CHAT_SIZE.min.width, CHAT_SIZE.max.width)),
+    height: Math.round(clamp(size.height, CHAT_SIZE.min.height, CHAT_SIZE.max.height)),
+  };
+}
 export type Profile = { id: string; name: string; config: Config };
 export type Preferences = { version: 1; active: string; profiles: Profile[] };
 export const MAX_PROFILES = 8;
@@ -55,6 +71,7 @@ export function defaultConfig(): Config {
       chat: layout(0.01, 0.7),
     },
     castBarAttached: false,
+    chatSize: { ...CHAT_SIZE.initial },
     assignmentsLocked: false,
     nameplates: { friendly: true, enemy: true },
   };
@@ -238,6 +255,7 @@ export function validateConfig(value: unknown): Config {
       chat: cleanLayout(frames.chat, d.frames.chat),
     },
     castBarAttached: bool(r.castBarAttached, false),
+    chatSize: cleanChatSize(r.chatSize),
     assignmentsLocked: bool(r.assignmentsLocked, false),
     nameplates: {
       friendly: bool(record(r.nameplates).friendly, true),
@@ -276,4 +294,14 @@ export function parsePreferences(text: string): Preferences {
     active: profiles.some((p) => p.id === r.active) ? (r.active as string) : profiles[0].id,
     profiles,
   };
+}
+
+function cleanChatSize(raw: unknown): ChatSize {
+  const value = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const number = (n: unknown, fallback: number) =>
+    typeof n === "number" && Number.isFinite(n) ? n : fallback;
+  return clampChatSize({
+    width: number(value.width, CHAT_SIZE.initial.width),
+    height: number(value.height, CHAT_SIZE.initial.height),
+  });
 }

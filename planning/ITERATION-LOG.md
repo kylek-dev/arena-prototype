@@ -736,3 +736,17 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fresh-Eyes Review:** no Critical. Important (fixed): `/lobby` opened over a live match and beside the customizer; `/queue <mode>` skipped `queueBlocked` and the phase check. Minor taken: no false lobby/party lines on a dropped connection, no repeated round start on reconnect, draft kept on `/`, bare `/`, layout-independent `/`, the menu's in-match/spectating definitions, admin errors worded from the body, party-leave lines, doc notes. Open for the user: `/mapeditor` is not admin-only (the menu's editor is open to all).
 - **Learnings:** commands must reuse the guards of the buttons they stand for (`queueBlocked`, the menu's in-match test), or they open windows the UI never allows together.
 - **Next Recommended Slice:** human browser review of the six Lane B entries (scenarios 14–19), or a critic audit to refill Lane A.
+
+## 2026-11-25 — Resizable chat box (playtest)
+- **Branch / Commit:** `auto/chat-resize`
+- **Base / PR:** `auto/chat-commands` (stacked on PR #105)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox "Chat box needs to be resizable with a minimum size"
+- **Changes:**
+  - `chatSize` in each profile (`CHAT_SIZE` 260×150 … 960×720, `clampChatSize`, old profiles get 360×210); `anchorAt` keeps a resized frame's top-left corner.
+  - Chat box: a bottom-right grip (drag, or arrow keys) with a draft that never outgrows the screen at the frame's scale, cancels on lost capture and when layout editing starts; the log fills the height and gives way first. Width/Height sliders in the layout editor.
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/chat-commands` (`smoke=false web_build=true wasm=false`): pass — 483 Rust tests (1 pre-existing ignored), 58 Python, 50 Node, 53 Vitest files / 421 tests, headless pass, `npm run build` pass.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): on small windows the CSS width cap, the saved size and the effective scale disagreed, so drags slipped off the pointer. Minor taken: lost-capture cancel, draft cleared on layout editing, clipping at the minimum height, grip clear of the field.
+- **Learnings:** frames are positioned by fractions of their free travel, so anything that changes a frame's size must re-anchor its layout, or it grows in both directions.
+- **Next Recommended Slice:** the in-game P/F/S/C launcher and the simpler game menu (stacked on this branch).

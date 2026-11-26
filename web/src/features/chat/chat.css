@@ -1,9 +1,14 @@
 /* The chat box. Colors are palette swatches or the Radix scales the
    palette drives. Translucent until typing, so the arena shows through. */
 .chat-box {
-  display: grid;
+  position: relative;
+  display: flex;
+  flex-direction: column;
   gap: 4px;
-  width: min(360px, calc(100vw - 24px));
+  box-sizing: border-box;
+  /* Room for the resize grip under the field. */
+  padding-bottom: 12px;
+  overflow: hidden;
   padding: 6px;
   color: var(--gray-12);
   background: color-mix(in srgb, var(--pal-night-1) 45%, transparent);
@@ -50,8 +55,9 @@
   text-align: center;
 }
 .chat-log {
-  /* Shorter on short screens, to stay clear of frames and bars. */
-  height: min(140px, 18vh);
+  /* Fills whatever height the box was given, and gives way first. */
+  flex: 1 1 auto;
+  min-height: 0;
   margin: 0;
   padding: 0 2px;
   overflow-y: auto;
@@ -136,4 +142,29 @@
 .chat-line.system {
   color: var(--pal-gold-5);
   font-style: italic;
+}
+.chat-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  background: linear-gradient(
+    135deg,
+    transparent 0 45%,
+    var(--gray-8) 45% 55%,
+    transparent 55% 70%,
+    var(--gray-8) 70% 80%,
+    transparent 80%
+  );
+  border: 0;
+  border-bottom-right-radius: var(--radius-3);
+  cursor: nwse-resize;
+  touch-action: none;
+  opacity: 0.6;
+}
+.chat-resize:hover,
+.chat-resize:focus-visible {
+  opacity: 1;
 }
