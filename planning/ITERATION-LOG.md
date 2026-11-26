@@ -842,3 +842,12 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Changes (autocomplete):** `whisperQuery` and `whisperSuggestions`; a listbox above the chat field (friends online first, then conversation partners); Tab/Enter complete to `/w Name#number `, arrows choose, click completes.
 - **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/hud-defaults`: pass — 484 Rust (1 pre-existing ignored), 58 Python, 55 Node, 55 Vitest files / 451 tests, headless pass, `npm run build` pass. The fix's own run on `auto/center-panel` also passed (440 Vitest).
 - **Learnings:** any change to keyboard ownership must be tested with the input router installed and real focus (`userEvent`), not `fireEvent`, or focus-driven closes go unseen.
+
+## 2026-11-26 — Players leave the in-match state when the match ends (playtest)
+- **Branch / Commit:** `auto/match-ended`
+- **Base / PR:** `auto/chat-all` (stacked on PR #112)
+- **Lane:** A
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox: a friend still showed "In a match" after a finished 1v1, and whispers to them were refused (`in_match`). Root cause: the door never heard when a match ended and kept seats for a fixed 21 minutes.
+- **Changes:** the match server answers `GET /matches/{id}` (`live`, `ended`, 404 unknown, 400 bad id; private network only, untraced); a match closed by a server stop is not reported `ended`, and ends stay known at least 10 minutes. The door (`--match-status`, set in `deploy/compose.yaml` and `scripts/dev-door.sh`) asks every 5 s about matches with a fresh seat (16 at a time), clears an ended match's seats and presence, forgets seats past the 21-minute window, and warns at most once a minute when the server does not answer. Unknown and live matches keep their seats (anti-ghosting fail-safe).
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/chat-all`: see PR. New tests: door end-to-end against a fake match server (unknown and live keep seats, ended clears; fails with clearing disabled), server endpoint, registry and seat unit tests.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): a forced server stop reported live matches `ended`, which could unseat players whose match then restarted on the next process; `scripts/dev-door.sh` lacked the flag. Minor (fixed): stale ids polled forever, unbounded concurrency, silent failures, ends lost with short tickets, tracing spam, doc drift, test gaps, signed hex ids.

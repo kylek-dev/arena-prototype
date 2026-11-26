@@ -287,7 +287,7 @@ step 4, `door/friends.rs`, `identity/friends.rs`). Players are addressed by
 
 | Request | Answer |
 | --- | --- |
-| `GET /api/friends` | `{friends: [{handle, relation, presence}], blocked: [handle]}`. `relation` is `friend`, `incoming` or `outgoing`; friends also get `presence`: `offline`, `online`, `searching`, `in_lobby` or `in_match` (a match ticket in the last 21 minutes; the door never hears when a match ends). |
+| `GET /api/friends` | `{friends: [{handle, relation, presence}], blocked: [handle]}`. `relation` is `friend`, `incoming` or `outgoing`; friends also get `presence`: `offline`, `online`, `searching`, `in_lobby` or `in_match` (a match ticket in the last 21 minutes, until the match server reports the match ended; see Chat). |
 | `POST /api/friends/<request\|accept\|decline\|remove\|block\|unblock>` `{"handle"}` | `request` answers `{"relation"}` (`outgoing`, or `friend` when they had asked you); the others answer 204. Errors are `{"error"}`: `no_such_player` (404; also when they blocked you), `yourself` (422), `bad_request` (422), `already_friends`, `already_asked`, `too_many` (50 waiting requests, or 200 friends on either side), `nothing_there`, `pick_a_name_first` (409), `not_logged_in` (401), `rate_limited` (429). |
 
 Acting needs an allowed `Origin`. Rate limits are per account:
@@ -327,9 +327,17 @@ One rule keeps spectators from feeding players hidden information
 (ghosting), even from a second tab or account: **a player in a live match
 hears only `match` and `team`, and only players of that match post there.**
 
-A player is "in a match" for 21 minutes after the door issued their ticket
-from the queue or a custom lobby, unless they search again; players who
-joined by a lobby link have no `match`, `team` or `spectator` channel.
+A player is "in a match" from the moment the door issued their ticket from
+the queue or a custom lobby until the match ends, they search again, or 21
+minutes pass. With `--match-status`, the door asks the match server
+(`GET /matches/{id}`, 16 hexadecimal digits, on the private network) every
+5 seconds about each match it seated; `{"state":"ended"}` clears that
+match's players and spectators at once (`live` and an unknown match, 404,
+keep them seated until the 21 minutes run out). The match ends 5 seconds
+after its round result (plus the spectator delay when it has spectators).
+A match closed by a server stop is never reported `ended`: it may start
+again on the next process. Players who joined by a lobby link have no `match`,
+`team` or `spectator` channel.
 
 Rules:
 - Text is cleaned (control characters and line separators become spaces,

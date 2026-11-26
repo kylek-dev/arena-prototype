@@ -13,6 +13,7 @@ Source roadmap and full issue definitions remain in [ROADMAP.md](ROADMAP.md) and
 - [ ] (Lane B) Camera feels too close after jumping near pillars.
 - [ ] (Lane A) Reconnecting twice within 5s leaves opponent nameplate stuck greyed out.
 -->
+- [x] (Lane A) A friend still shows "In a match" after our 1v1 ended, and whispers to them are refused. — `auto/match-ended`: the match server answers `GET /matches/{id}` (live, ended, unknown) on the private network; the door (`--match-status`) asks every 5 s and clears an ended match's seats, so presence and whispers recover within about 10 s of the result instead of 21 minutes.
 
 Playtest notes from the user, 2026-11-25:
 
