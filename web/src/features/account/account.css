@@ -29,3 +29,17 @@
   gap: 8px;
   color: var(--pal-gold-5);
 }
+.account-name {
+  display: grid;
+  gap: 4px;
+}
+.account-name-field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.account-name-field input {
+  width: 17ch;
+  font-family: ui-monospace, monospace;
+}

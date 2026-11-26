@@ -159,7 +159,7 @@ change. No browser performance improvement is claimed without review.
 
 The user confirmed that `assets/Aetherthorn.glb` and `assets/Verdant Eclipse.glb` are their original assets and explicitly authorized public redistribution under the repository's MIT license. This supersedes the historical pending publication/license notes for these two weapon files below, including their generated runtime derivatives. Preserve the recorded provenance; AI assistance does not establish exclusive rights. This authorization does not extend to the absent `assets/BaseMale.glb`, whose binary publication/license status remains unconfirmed.
 
-`assets/lighting.json` is the user's exported tuning preset from the temporary lighting panel, included as editable reference data under the repository MIT terms. It is not automatically loaded as the default lighting configuration.
+`assets/lighting.json` is the user's exported tuning preset from the former temporary lighting panel, included under the repository MIT terms. It is the default lighting the arena loads (`web/src/domain/lighting.ts`); with the panel removed (2026-11-25), edit this file to change lighting.
 
 ## BaseMale rigged character (2026-11-07)
 

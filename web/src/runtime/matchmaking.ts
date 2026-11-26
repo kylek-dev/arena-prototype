@@ -16,11 +16,29 @@ import {
   queueUrl,
   requests,
   type LobbySlot,
+  MAX_INVITES,
+  type Invite,
   type MatchSettings,
   type QueueMode,
   type QueueState,
 } from "../domain/matchmaking";
 import type { MatchTicket } from "../domain/network";
+import {
+  CHAT_ONLY_REFUSALS,
+  EMPTY_CHAT,
+  IGNORE_REFUSALS,
+  MAX_IGNORE_REPLAY,
+  SHARED_CHAT_REFUSALS,
+  receiveChat,
+  closeConversation,
+  openConversation,
+  showChatTab,
+  systemChat,
+  withIgnored,
+  type ChatChannel,
+  type ChatState,
+  type ChatTab,
+} from "../domain/chat";
 import { createStore } from "../state/store";
 
 type TextSocket = {
@@ -67,10 +85,31 @@ function loadGuest(deps: QueueDeps) {
 
 export function createQueue(deps: QueueDeps) {
   const state = createStore<QueueState>(IDLE_QUEUE);
+  /** Chat apart from the queue state, so a busy channel re-renders only
+   * the chat box. Kept across connections. */
+  const chat = createStore<ChatState>(EMPTY_CHAT);
+  const updateChat = (patch: Partial<ChatState>) => chat.set({ ...chat.get(), ...patch });
+  /** What the last request was, to tell whose refusal arrives next. */
+  let lastAsked: "chat" | "other" = "other";
+  /** An ignore waiting on the door (it answers only refusals). */
+  let ignoring: string | null = null;
+  let pendingIgnore: string | null = null;
+  /** Replayed ignores whose refusals are still to come (silently). */
+  let replaying = 0;
   const guest = loadGuest(deps);
   let socket: TextSocket | null = null;
   /** Requests made while the connection opens. */
   let pending: string[] = [];
+  /** Opens the connection with nothing to send, to hear invites, chat and
+   * friend changes (logged-in players). */
+  const open = () => {
+    if (socket) return;
+    background = true;
+    request(null);
+  };
+  /** Whether the connection was opened only to listen, with nothing asked
+   * of it yet: its end is not news to the player (no "lost" bar). */
+  let background = false;
   const update = (patch: Partial<QueueState>) => state.set({ ...state.get(), ...patch });
   const drop = () => {
     if (!socket) return;
@@ -81,15 +120,31 @@ export function createQueue(deps: QueueDeps) {
   };
   const end = (reason: string) => {
     drop();
-    state.set({ ...IDLE_QUEUE, connection: "ended", ended: reason });
+    // A listening connection ends quietly: offline, with the reason kept for
+    // whoever reopens it (`runtime/social.ts`).
+    state.set({ ...IDLE_QUEUE, connection: background ? "offline" : "ended", ended: reason });
+    background = false;
   };
   /** Sends `request`, connecting first when needed. */
-  const request = (message: string) => {
+  const request = (message: string | null, kind: "chat" | "other" = "other") => {
+    if (message) {
+      lastAsked = kind;
+      // The door answers an ignore before any later request of the same
+      // connection reaches its matchmaker: once another request goes out,
+      // an ignore refusal is no longer expected for the earlier one.
+      if (message !== pendingIgnore) ignoring = null;
+    }
     if (socket?.readyState === OPEN && state.get().connection === "online") {
-      socket.send(message);
+      if (message) {
+        socket.send(message);
+        background = false;
+      }
       return;
     }
-    pending.push(message);
+    if (message) {
+      pending.push(message);
+      background = false;
+    }
     if (socket) return;
     update({ connection: "connecting", ended: null, notice: null });
     const next = deps.createSocket(deps.url);
@@ -97,8 +152,17 @@ export function createQueue(deps: QueueDeps) {
     next.onopen = () => {
       next.send(requests.hello(guest));
       update({ connection: "online" });
+      // An ignore sent on the old connection gets no answer here; one still
+      // waiting to be sent does, and comes before the replays below.
+      if (!pendingIgnore || !pending.includes(pendingIgnore)) ignoring = pendingIgnore = null;
       for (const queued of pending) next.send(queued);
       pending = [];
+      // The door keeps ignores per connection: tell a new one the newest few
+      // again (the chat box hides the rest itself). Their refusals, such as
+      // an ignored player who is offline now, are expected and stay quiet.
+      const replay = chat.get().ignored.slice(-MAX_IGNORE_REPLAY);
+      replaying = replay.length;
+      for (const handle of replay) next.send(requests.ignore(handle, true));
     };
     next.onmessage = (event) => receive(event.data);
     next.onerror = () => {};
@@ -115,6 +179,8 @@ export function createQueue(deps: QueueDeps) {
     const now = deps.now();
     switch (message.type) {
       case "party":
+        if (current.joining && message.party.code === current.joining.code)
+          update({ joining: null });
         if (message.queue === null)
           update({ party: message.party, phase: "idle", since: null, readyCheck: null });
         else
@@ -156,14 +222,37 @@ export function createQueue(deps: QueueDeps) {
         update({ phase: "idle", since: null, readyCheck: null, notice: message.reason });
         break;
       case "refused":
-        update({ notice: message.code });
+        if (IGNORE_REFUSALS.has(message.code) && replaying > 0 && !ignoring) {
+          replaying -= 1;
+          break;
+        }
+        if (
+          CHAT_ONLY_REFUSALS.has(message.code) ||
+          (lastAsked === "chat" && SHARED_CHAT_REFUSALS.has(message.code))
+        ) {
+          const failed = IGNORE_REFUSALS.has(message.code) ? ignoring : null;
+          if (failed) ignoring = null;
+          const log = chat.get();
+          chat.set({
+            ...(failed ? withIgnored(log, failed, false) : log),
+            error: message.code,
+          });
+          break;
+        }
+        // An accepted invite that could not be joined is told at the prompt.
+        if (current.joining)
+          update({
+            joining: null,
+            inviteError: { from: current.joining.from, code: message.code },
+          });
+        else update({ notice: message.code, inviting: null });
         break;
       case "match":
         update({ phase: "idle", since: null, readyCheck: null, notice: null });
         deps.onMatch(message.ticket);
         break;
       case "lobby":
-        update({ lobby: message.lobby, notice: null });
+        update({ lobby: message.lobby, notice: null, joining: null });
         break;
       case "lobby_left":
         update({
@@ -171,13 +260,30 @@ export function createQueue(deps: QueueDeps) {
           notice: message.reason === "kicked" ? "kicked" : null,
         });
         break;
+      case "invite": {
+        // One prompt per friend, the newest kept; a few at most.
+        const others = current.invites.filter((invite) => invite.from !== message.invite.from);
+        update({ invites: [...others, message.invite].slice(-MAX_INVITES) });
+        break;
+      }
+      case "invite_sent":
+        update({ inviteSent: message.to, inviting: null, notice: null });
+        break;
+      case "friends_changed":
+        update({ friendsChanged: current.friendsChanged + 1 });
+        break;
+      case "chat":
+        chat.set(receiveChat(chat.get(), message.line));
+        break;
       case "error":
         end(message.code);
         break;
     }
   };
+  const forget = (invite: Invite) =>
+    update({ invites: state.get().invites.filter((other) => other !== invite) });
 
-  return {
+  const api = {
     state,
     guest,
     /** The clock search times are measured on. */
@@ -259,6 +365,85 @@ export function createQueue(deps: QueueDeps) {
     startLobby() {
       request(requests.startLobby());
     },
+    /** Opens the door connection now, if it is not open (logged-in players
+     * hear invites and friend changes without queueing first). */
+    connect: open,
+    /** Invites a friend to this player's custom lobby, else party. */
+    invite(handle: string) {
+      if (state.get().inviting) return;
+      update({ notice: null, inviteSent: null, inviting: handle });
+      request(requests.invite(handle));
+    },
+    /** Clears "invite sent". */
+    dismissInviteSent() {
+      update({ inviteSent: null });
+    },
+    /** Chat: the log, tabs and last refusal. */
+    chat,
+    /** Posts `text` to a channel (the door names the sender). */
+    say(channel: Exclude<ChatChannel, "whisper">, text: string) {
+      updateChat({ error: null });
+      request(requests.chat(channel, text), "chat");
+    },
+    /** Whispers to a friend. */
+    whisper(to: string, text: string) {
+      // `/r` answers the last conversation, whoever began it.
+      updateChat({ error: null, whisperTo: to });
+      request(requests.whisper(to, text), "chat");
+    },
+    /** Stops (or resumes) hearing a player on this connection. */
+    ignore(handle: string, on: boolean) {
+      const message = requests.ignore(handle, on);
+      ignoring = on ? handle : null;
+      pendingIgnore = message;
+      const log = withIgnored(chat.get(), handle, on);
+      // Ignoring a player also ends the conversation with them.
+      chat.set(
+        on
+          ? {
+              ...closeConversation(log, handle),
+              whisperTo:
+                log.whisperTo?.toLowerCase() === handle.toLowerCase() ? null : log.whisperTo,
+              error: null,
+            }
+          : { ...log, error: null },
+      );
+      request(message, "chat");
+    },
+    /** Adds a system line (written by the page, never sent). */
+    system(text: string) {
+      chat.set(systemChat(chat.get(), text));
+    },
+    /** Empties the chat log (ignores stay). */
+    clearChat() {
+      chat.set({ ...chat.get(), messages: [], unread: {} });
+    },
+    showChat(tab: ChatTab) {
+      chat.set(showChatTab(chat.get(), tab));
+    },
+    /** Opens the conversation tab with a player. */
+    openConversation(handle: string) {
+      chat.set(openConversation(chat.get(), handle));
+    },
+    closeConversation(handle: string) {
+      chat.set(closeConversation(chat.get(), handle));
+    },
+    dismissChatError() {
+      updateChat({ error: null });
+    },
+    /** Clears an invite that could not be joined. */
+    dismissInviteError() {
+      update({ inviteError: null });
+    },
+    /** Joins the party or lobby an invite is for. */
+    acceptInvite(invite: Invite) {
+      forget(invite);
+      update({ joining: invite, inviteError: null });
+      if (invite.kind === "lobby") api.joinLobby(invite.code);
+      else api.joinParty(invite.code);
+    },
+    /** Declining is doing nothing: the prompt goes. */
+    declineInvite: forget,
     /** Clears the notice, or an ended connection's message. */
     dismiss() {
       const current = state.get();
@@ -269,6 +454,7 @@ export function createQueue(deps: QueueDeps) {
       drop();
     },
   };
+  return api;
 }
 export type Queue = ReturnType<typeof createQueue>;
 

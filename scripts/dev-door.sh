@@ -17,7 +17,8 @@ export ARENA_TICKET_KEY
 target/debug/arena-server --dev --bind 127.0.0.1:8080 &
 server=$!
 target/debug/arena-door --dev --bind 127.0.0.1:8090 \
-  --match-server ws://127.0.0.1:8080/play --page "$page" &
+  --match-server ws://127.0.0.1:8080/play --page "$page" \
+  --match-status http://127.0.0.1:8080 &
 door=$!
 trap 'kill -INT "$server" "$door" 2>/dev/null; wait' INT TERM EXIT
 wait -n "$server" "$door"

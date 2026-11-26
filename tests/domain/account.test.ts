@@ -1,5 +1,8 @@
 import { expect, it } from "vitest";
 import {
+  isName,
+  refusalRenameAt,
+  renameWait,
   accountErrorText,
   errorCode,
   logoutTarget,
@@ -88,4 +91,20 @@ it("words refusals, including the deletion retry", () => {
   expect(statusCode(500)).toBe("failed");
   expect(accountErrorText("unavailable")).toMatch(/nothing was deleted.*try again/i);
   expect(accountErrorText("something_new")).toBe(accountErrorText("failed"));
+});
+
+it("checks names as the door does, and words the rename wait", () => {
+  for (const good of ["Rook", "abc", "Gladiator7", "abcdefghijklmnop"])
+    expect(isName(good)).toBe(true);
+  for (const bad of ["ab", "7Rook", "Ro ok", "abcdefghijklmnopq", "Rook#0042", "Röök", ""])
+    expect(isName(bad), bad).toBe(false);
+  expect(refusalRenameAt({ error: "too_soon", rename_at: 1_800_000_000 })).toBe(1_800_000_000);
+  expect(refusalRenameAt({ error: "too_soon", rename_at: "later" })).toBeNull();
+  const now = 1_000_000;
+  expect(renameWait(null, now)).toBeNull();
+  expect(renameWait(now, now)).toBeNull();
+  expect(renameWait(now + 600, now)).toBe("within the hour");
+  expect(renameWait(now + 5 * 3600, now)).toBe("in 5 hours");
+  expect(renameWait(now + 3 * 86_400, now)).toBe("in 3 days");
+  expect(accountErrorText("name_full")).toMatch(/pick another/i);
 });

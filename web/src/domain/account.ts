@@ -74,7 +74,34 @@ export function errorCode(raw: unknown): string | null {
   return typeof code === "string" && /^[a-z_]{1,32}$/.test(code) ? code : null;
 }
 
+/** A name the door may accept: 3–16 ASCII letters and digits, starting with
+ * a letter (the door also refuses blocked words and picks the number). */
+export function isName(text: string) {
+  return /^[A-Za-z][A-Za-z0-9]{2,15}$/.test(text);
+}
+
+/** The `rename_at` of a `too_soon` refusal, if it is a time. */
+export function refusalRenameAt(raw: unknown): number | null {
+  if (!raw || typeof raw !== "object") return null;
+  const at = (raw as Record<string, unknown>).rename_at;
+  return seconds(at) ? at : null;
+}
+
+/** How long until a different name may be picked: "in 3 days", "in 5 hours",
+ * "within the hour"; `null` once it may. */
+export function renameWait(renameAt: number | null, nowSeconds: number) {
+  if (renameAt === null || renameAt <= nowSeconds) return null;
+  const hours = Math.ceil((renameAt - nowSeconds) / 3600);
+  if (hours <= 1) return "within the hour";
+  if (hours < 48) return `in ${hours} hours`;
+  return `in ${Math.ceil(hours / 24)} days`;
+}
+
 const ACCOUNT_ERRORS: Record<string, string> = {
+  invalid_name: "Use 3–16 letters and digits, starting with a letter.",
+  blocked_name: "That name is not allowed. Pick another.",
+  name_full: "Too many players have that name. Pick another.",
+  too_soon: "You changed your name recently. You can change only its capital letters until then.",
   unavailable:
     "The login service could not be reached, so nothing was deleted. Try again in a minute.",
   rate_limited: "Too many requests. Wait a moment and try again.",

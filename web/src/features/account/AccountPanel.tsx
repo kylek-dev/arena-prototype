@@ -1,9 +1,19 @@
 import { Button, Text } from "@radix-ui/themes";
 import { useState } from "react";
-import { LOGIN_URL, PRIVACY_URL, SIGN_UP_URL, accountErrorText } from "../../domain/account";
-import { LOADING_ACCOUNT } from "../../runtime/account";
+import {
+  LOGIN_URL,
+  PRIVACY_URL,
+  SIGN_UP_URL,
+  accountErrorText,
+  isName,
+  renameWait,
+  type Me,
+} from "../../domain/account";
+import { handleName } from "../../domain/handles";
+import { LOADING_ACCOUNT, type Account } from "../../runtime/account";
 import { accountService } from "../../state/account";
 import { createStore, useStore } from "../../state/store";
+import { Hint } from "../../ui/Tooltip";
 import "./account.css";
 
 const NO_ACCOUNT = createStore(LOADING_ACCOUNT);
@@ -13,6 +23,76 @@ function PrivacyLink() {
     <a className="account-privacy" href={PRIVACY_URL} target="_blank" rel="noopener">
       Privacy notice
     </a>
+  );
+}
+
+/** "Choose your name": the player picks the word, the door the number. */
+function ChooseName({ account, me, busy }: { account: Account; me: Me; busy: boolean }) {
+  const [open, setOpen] = useState(!me.handle);
+  const [name, setName] = useState("");
+  const wait = renameWait(me.renameAt, Date.now() / 1000);
+  if (!open)
+    return (
+      <div className="account-actions">
+        <Button size="1" variant="surface" color="gray" onClick={() => setOpen(true)}>
+          Change name
+        </Button>
+        {wait && (
+          <Text size="1" color="gray">
+            You can choose a different name {wait}.
+          </Text>
+        )}
+      </div>
+    );
+  const valid = isName(name);
+  const save = async () => {
+    if (!valid || busy) return;
+    if (await account.chooseName(name)) {
+      setName("");
+      setOpen(false);
+    }
+  };
+  return (
+    <div className="account-name" role="group" aria-label="Choose your name">
+      <label className="account-name-field">
+        <Text size="1">Choose your name</Text>
+        <Hint text="Use 3 to 16 letters and digits, starting with a letter. A number is assigned automatically.">
+          <input
+            value={name}
+            maxLength={16}
+            placeholder={me.handle ? handleName(me.handle) : "Name"}
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(event) => setName(event.target.value.trim())}
+            onKeyDown={(event) => event.key === "Enter" && void save()}
+          />
+        </Hint>
+      </label>
+      {wait && (
+        <Text size="1" color="gray">
+          You can choose a different name {wait}. Changes to capitalization are allowed at any time.
+        </Text>
+      )}
+      <div className="account-actions">
+        <Button size="1" disabled={!valid || busy} onClick={() => void save()}>
+          Save name
+        </Button>
+        {me.handle && (
+          <Button
+            size="1"
+            variant="soft"
+            color="gray"
+            onClick={() => {
+              setName("");
+              setOpen(false);
+              account.dismiss();
+            }}
+          >
+            Cancel
+          </Button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -36,7 +116,7 @@ export function AccountPanel() {
     return (
       <div className="account" role="group" aria-label="Account">
         <Text size="1" color="gray">
-          Playing as a guest. Log in to keep a name, add friends and chat.
+          You are playing as a guest. Log in to keep a player name, add friends and use public chat.
         </Text>
         <div className="account-actions">
           <Button size="1" asChild>
@@ -58,9 +138,10 @@ export function AccountPanel() {
             Logged in as <strong className="account-handle">{me.handle}</strong>
           </>
         ) : (
-          "Logged in. You have no name yet, so others see you as a guest."
+          "You are logged in without a player name."
         )}
       </Text>
+      <ChooseName key={me.handle ?? ""} account={account} me={me} busy={!!busy} />
       {confirming ? (
         <div className="account-confirm" role="alertdialog" aria-label="Delete account">
           <Text size="1">

@@ -25,6 +25,7 @@ function rowsEqual(a: readonly ScoreboardRow[], b: readonly ScoreboardRow[]): bo
       left.actor !== right.actor ||
       left.tag !== right.tag ||
       left.name !== right.name ||
+      left.admin !== right.admin ||
       left.damageDone !== right.damageDone ||
       left.damageTaken !== right.damageTaken ||
       left.healingDone !== right.healingDone ||
@@ -64,9 +65,21 @@ export function setPostMatchScoreboard(board: MatchScoreboard | null) {
   scoreboardVisible.set(board !== null);
 }
 
+/** The last match's board after it was closed, until the next match. */
+let dismissedBoard: MatchScoreboard | null = null;
+/** Shows the last match's scoreboard again (`/scoreboard`); `false` when
+ * there is none (no match finished since the last one started). */
+export function reopenPostMatchScoreboard() {
+  const board = postMatchScoreboard.get() ?? dismissedBoard;
+  if (!board) return false;
+  setPostMatchScoreboard(board);
+  return true;
+}
+
 /** Clears the retained scoreboard and rearms capture for the next match. */
 export function clearPostMatchScoreboard() {
   dismissed = false;
+  dismissedBoard = null;
   lastCapturedSnapshot = null;
   if (postMatchScoreboard.get() !== null || scoreboardVisible.get()) {
     setPostMatchScoreboard(null);
@@ -76,6 +89,7 @@ export function clearPostMatchScoreboard() {
 /** Dismisses the current finished match's scoreboard until a new match or practice snapshot arrives. */
 export function dismissPostMatchScoreboard() {
   dismissed = true;
+  dismissedBoard = postMatchScoreboard.get() ?? dismissedBoard;
   lastCapturedSnapshot = null;
   if (postMatchScoreboard.get() !== null || scoreboardVisible.get()) {
     setPostMatchScoreboard(null);

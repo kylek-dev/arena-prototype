@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  memberLabel,
+  memberName,
   IDLE_QUEUE,
   QUEUE_MODES,
   customInviteLink,
@@ -50,7 +52,7 @@ describe("queue messages", () => {
       parseQueueMessage('{"type":"party","code":"K7P2QX","members":2,"leader":true,"queue":"3v3"}'),
     ).toEqual({
       type: "party",
-      party: { code: "K7P2QX", members: 2, leader: true },
+      party: { code: "K7P2QX", members: 2, leader: true, mates: [] },
       queue: "3v3",
     });
     expect(parseQueueMessage(JSON.stringify(QUEUED))).toEqual({
@@ -177,11 +179,13 @@ describe("queue wording", () => {
 
   it("explains why a queue is closed to a party, and what happened", () => {
     const party = (members: number, leader: boolean) =>
-      at({ party: { code: "K7P2QX", members, leader } });
+      at({ party: { code: "K7P2QX", members, leader, mates: [] } });
     expect(queueBlocked(IDLE_QUEUE, "1v1")).toBeNull();
     expect(queueBlocked(party(2, true), "2v2")).toBeNull();
-    expect(queueBlocked(party(2, true), "1v1")).toBe("1v1 is for one player.");
-    expect(queueBlocked(party(3, true), "2v2")).toBe("Parties of up to 2 only.");
+    expect(queueBlocked(party(2, true), "1v1")).toBe("The 1v1 queue does not accept parties.");
+    expect(queueBlocked(party(3, true), "2v2")).toBe(
+      "This queue accepts parties of up to 2 players.",
+    );
     expect(queueBlocked(party(2, false), "3v3")).toContain("leader");
     expect(noticeText("not_accepted")).toContain("in time");
     expect(noticeText("member_declined")).toContain("party member declined");
@@ -213,7 +217,8 @@ describe("custom lobbies", () => {
     host: true,
     can_start: false,
     members: [
-      { id: 1, slot: "team_a", host: true, you: true },
+      { id: 1, slot: "team_a", host: true, you: true, handle: "Rook#0042" },
+      // An older door sends no handle.
       { id: 2, slot: "team_b", host: false, you: false },
     ],
   };
@@ -231,8 +236,8 @@ describe("custom lobbies", () => {
         host: true,
         canStart: false,
         members: [
-          { id: 1, slot: "team_a", host: true, you: true },
-          { id: 2, slot: "team_b", host: false, you: false },
+          { id: 1, slot: "team_a", host: true, you: true, handle: "Rook#0042" },
+          { id: 2, slot: "team_b", host: false, you: false, handle: null },
         ],
       },
     });
@@ -257,10 +262,33 @@ describe("custom lobbies", () => {
       },
       { ...LOBBY_WIRE, members: [] },
       { ...LOBBY_WIRE, members: [{ id: 1, slot: "team_c", host: true, you: true }] },
+      { ...LOBBY_WIRE, members: [{ id: 1, slot: "team_a", host: true, you: true, handle: "<b>" }] },
+      { ...LOBBY_WIRE, members: [{ id: 1, slot: "team_a", host: true, you: true, handle: 7 }] },
       { type: "lobby_left", reason: "other" },
     ]) {
       expect(parseQueueMessage(JSON.stringify(bad))).toBeNull();
     }
+  });
+
+  it("names lobby members by handle, numbering repeated names on buttons", () => {
+    const members = [
+      { id: 1, handle: "Rook#0042" },
+      { id: 2, handle: "Guest#0007" },
+      { id: 3, handle: "Guest#0007" },
+      { id: 4, handle: null },
+    ];
+    expect(members.map((member) => memberName(member))).toEqual([
+      "Rook#0042",
+      "Guest#0007",
+      "Guest#0007",
+      "Player 4",
+    ]);
+    expect(members.map((member) => memberLabel(member, members))).toEqual([
+      "Rook#0042",
+      "Guest#0007 (Player 2)",
+      "Guest#0007 (Player 3)",
+      "Player 4",
+    ]);
   });
 
   it("formats custom invite links, requests, readiness, and blocks public queues while in a lobby", () => {
@@ -291,16 +319,31 @@ describe("custom lobbies", () => {
       you: 1,
       host: true,
       canStart: false,
-      members: [{ id: 1, slot: "team_a", host: true, you: true }],
+      members: [{ id: 1, slot: "team_a", host: true, you: true, handle: null }],
     };
     expect(lobbyReadinessText(lobby)).toBe("Need 1 more on Team B to start.");
     expect(
       lobbyReadinessText({
         ...lobby,
         canStart: true,
-        members: [...lobby.members, { id: 2, slot: "team_b", host: false, you: false }],
+        members: [
+          ...lobby.members,
+          { id: 2, slot: "team_b", host: false, you: false, handle: null },
+        ],
       }),
     ).toBe("Both teams are full. Ready to start.");
     expect(queueBlocked({ ...IDLE_QUEUE, lobby }, "1v1")).toContain("custom lobby");
   });
+});
+
+it("parses party mates' handles strictly", () => {
+  const party = { type: "party", code: "K7P2QX", members: 3, leader: true, queue: null };
+  expect(parseQueueMessage(JSON.stringify({ ...party, mates: ["Ash#1000", null] }))).toMatchObject({
+    party: { mates: ["Ash#1000", null] },
+  });
+  for (const mates of [["<b>"], ["Ash#1000", "Bea#0002", "Cyd#0003"], "Ash#1000", [7]])
+    expect(
+      parseQueueMessage(JSON.stringify({ ...party, mates })),
+      JSON.stringify(mates),
+    ).toBeNull();
 });

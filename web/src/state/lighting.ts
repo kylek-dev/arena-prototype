@@ -1,14 +1,8 @@
-import {
-  defaultLighting,
-  lightingValues,
-  patchLighting,
-  type LightingKey,
-} from "../domain/lighting";
+import { defaultLighting, lightingValues } from "../domain/lighting";
 import { createStore } from "./store";
 
-export const lightingVisible = createStore(false);
+// The arena's lighting, read by the renderer each frame: the authored
+// preset (assets/lighting.json). The temporary tweaks window was removed
+// (playtest inbox, 2026-11-25); the preset is edited as a file.
 export const lighting = createStore({ ...defaultLighting });
 export const readLighting = () => lightingValues(lighting.get());
-export const updateLighting = (key: LightingKey, value: number) =>
-  lighting.set(patchLighting(lighting.get(), key, value));
-export const resetLighting = () => lighting.set({ ...defaultLighting });

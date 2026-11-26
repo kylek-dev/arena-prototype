@@ -146,10 +146,14 @@ export async function loadMap(id = mapId.get()) {
     const other = id !== mapId.get() || !mapHistory.get();
     if (!replaceMap(text, true, other)) throw new Error(mapNotice.get()?.text);
     mapId.set(id);
+    mapSource.set("local");
+    serverSavedText.set(null);
     rememberMap(id);
     mapLoad.set({ state: "ready" });
   } catch (e) {
     mapLoad.set({ state: "failed", message: (e as Error).message });
+    // With a map already open, the failure would otherwise go unseen.
+    if (mapHistory.get()) mapNotice.set({ tone: "error", text: (e as Error).message });
   }
   probeSaving();
 }
@@ -170,10 +174,25 @@ export function createMap(id: string, map: ArenaMap): string | null {
   if (mapList.get().some((m) => m.id === id)) return `A map called "${id}" already exists.`;
   startMap(map, false, true);
   mapId.set(id);
+  mapSource.set("local");
+  serverSavedText.set(null);
   mapList.set([...mapList.get(), { id, name: map.name }]);
   mapLoad.set({ state: "ready" });
   mapNotice.set({ tone: "ok", text: `New map ${id}: save it to keep it.` });
   return null;
+}
+
+/** The `{maps: [{id, name}]}` of a map listing, keeping well-formed entries;
+ * `null` when the body is not a listing. */
+function parseMapList(body: unknown) {
+  const maps = (body as { maps?: unknown } | null)?.maps;
+  if (!Array.isArray(maps)) return null;
+  return maps.filter(
+    (m): m is { id: string; name: string } =>
+      typeof (m as { id?: unknown })?.id === "string" &&
+      MAP_ID.test((m as { id: string }).id) &&
+      typeof (m as { name?: unknown }).name === "string",
+  );
 }
 
 /** Map files to open: the dev server lists assets/maps; builds ship an index. */
@@ -181,14 +200,9 @@ export async function listMaps() {
   const read = async (url: URL) => {
     const response = await fetch(url, { cache: "no-store" });
     if (!response.ok) throw new Error();
-    const body = await response.json();
-    if (!Array.isArray(body?.maps)) throw new Error();
-    return (body.maps as unknown[]).filter(
-      (m): m is { id: string; name: string } =>
-        typeof (m as { id?: unknown })?.id === "string" &&
-        MAP_ID.test((m as { id: string }).id) &&
-        typeof (m as { name?: unknown }).name === "string",
-    );
+    const maps = parseMapList(await response.json());
+    if (!maps) throw new Error();
+    return maps;
   };
   let maps: { id: string; name: string }[] = [];
   for (const url of [
@@ -203,7 +217,7 @@ export async function listMaps() {
     }
   }
   const current = mapId.get();
-  if (!maps.some((m) => m.id === current))
+  if (mapSource.get() === "local" && !maps.some((m) => m.id === current))
     maps.push({ id: current, name: mapHistory.get()?.present.name ?? current });
   mapList.set(maps.sort((a, b) => a.id.localeCompare(b.id)));
 }
@@ -252,6 +266,118 @@ export async function saveMap(id = mapId.get()) {
   }
 }
 
+// Admin map storage on the front door (social-identity step 5): admins can
+// keep maps on the server. The door checks the role on every request; the
+// page only hides the buttons from everyone else.
+
+/** Where the open map came from: a map file, or the server's storage. */
+export const mapSource = createStore<"local" | "server">("local");
+/** The map as last opened from or saved on the server; dirty tracking for
+ * the server copy, apart from `mapSavedText` (the map file). */
+export const serverSavedText = createStore<string | null>(null);
+/** Maps saved on the server (`GET /api/admin/maps`); `null` until listed. */
+export const serverMaps = createStore<{ id: string; name: string }[] | null>(null);
+/** Why the server refused the last save (`invalid_map` problems). */
+export const serverProblems = createStore<string[] | null>(null);
+const adminUrl = (path: string) => new URL(`/api/admin/maps${path}`, window.location.origin);
+const ADMIN_ERRORS: Record<number, string> = {
+  401: "Log in as an admin to use server maps.",
+  404: "The server has no such map, or no map storage.",
+  413: "The map is too big for the server (256 KiB at most).",
+  429: "Too many requests. Wait a moment and try again.",
+};
+/** Words for a refused admin request; a 403 is either the role or, as plain
+ * text, an origin the door does not allow. */
+const adminError = (status: number, body?: unknown) => {
+  if (status === 403)
+    return (body as { error?: unknown } | null)?.error === "not_admin"
+      ? "Only admins can use server maps."
+      : "This page is not allowed to use server maps. Open the game from its own address.";
+  return ADMIN_ERRORS[status] ?? `The server could not be used (HTTP ${status}).`;
+};
+const problemList = (raw: unknown) =>
+  Array.isArray(raw) ? raw.filter((p): p is string => typeof p === "string").slice(0, 50) : [];
+
+/** Lists the maps saved on the server. */
+export async function listServerMaps() {
+  try {
+    const response = await fetch(adminUrl(""), { cache: "no-store", credentials: "same-origin" });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(adminError(response.status, body));
+    const maps = parseMapList(body);
+    if (!maps) throw new Error("The server's map list was not understood.");
+    serverMaps.set(maps.sort((a, b) => a.id.localeCompare(b.id)));
+  } catch (e) {
+    serverMaps.set([]);
+    mapNotice.set({ tone: "error", text: (e as Error).message });
+  }
+}
+
+/** Opens a map saved on the server, live in the arena, as map `id`. */
+export async function openServerMap(id: string) {
+  if (!MAP_ID.test(id)) return;
+  try {
+    const response = await fetch(adminUrl(`/${id}.json`), {
+      cache: "no-store",
+      credentials: "same-origin",
+    });
+    if (!response.ok)
+      throw new Error(adminError(response.status, await response.json().catch(() => null)));
+    const text = await response.text();
+    // Not saved as a map file: the local save stays available.
+    if (!replaceMap(text, false, true)) throw new Error(mapNotice.get()?.text);
+    mapSavedText.set(null);
+    serverSavedText.set(serializeMap(mapHistory.get()!.present));
+    mapId.set(id);
+    mapSource.set("server");
+    serverProblems.set(null);
+    mapLoad.set({ state: "ready" });
+    mapNotice.set({ tone: "ok", text: `Opened ${id} from the server.` });
+  } catch (e) {
+    mapNotice.set({ tone: "error", text: `Open failed: ${(e as Error).message}` });
+  }
+}
+
+/** Saves the current map on the server as `id`, where the door validates it
+ * as the editor and the build do. */
+export async function saveServerMap(id = mapId.get()) {
+  const map = mapHistory.get()?.present;
+  if (!map || !MAP_ID.test(id)) return;
+  const text = serializeMap(map);
+  serverProblems.set(null);
+  try {
+    const response = await fetch(adminUrl(`/${id}.json`), {
+      method: "PUT",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: text,
+    });
+    const body = await response.json().catch(() => ({}));
+    if (response.status === 422 && body?.error === "invalid_map") {
+      const problems = problemList(body.problems);
+      if (!problems.length) throw new Error("the server could not read the map.");
+      serverProblems.set(problems);
+      throw new Error(
+        `the server found ${problems.length} problem${problems.length === 1 ? "" : "s"} (listed below).`,
+      );
+    }
+    if (response.status === 422 && body?.error === "invalid_id")
+      throw new Error("map ids use lowercase letters, digits and dashes.");
+    if (!response.ok) throw new Error(adminError(response.status, body));
+    serverSavedText.set(text);
+    mapSource.set("server");
+    const saved = { id, name: typeof body?.name === "string" ? body.name : map.name };
+    serverMaps.set(
+      [...(serverMaps.get() ?? []).filter((m) => m.id !== id), saved].sort((a, b) =>
+        a.id.localeCompare(b.id),
+      ),
+    );
+    mapNotice.set({ tone: "ok", text: `Saved ${id} on the server.` });
+  } catch (e) {
+    mapNotice.set({ tone: "error", text: `Server save failed: ${(e as Error).message}` });
+  }
+}
+
 /** Test and reload hook. */
 export function resetMapEditor() {
   sent = null;
@@ -268,4 +394,8 @@ export function resetMapEditor() {
   mapId.set(DEFAULT_MAP_ID);
   mapList.set([]);
   propCatalog.set([]);
+  serverMaps.set(null);
+  serverProblems.set(null);
+  serverSavedText.set(null);
+  mapSource.set("local");
 }

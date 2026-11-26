@@ -42,12 +42,19 @@ impl LobbyLeft {
 /// One member of a custom lobby, safe to share with everyone in that lobby.
 /// Uses a per-lobby numeric id so neither guest tokens nor global connection
 /// counts leak across players.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LobbyMemberView {
     pub id: u32,
     pub slot: LobbySlot,
     pub host: bool,
     pub you: bool,
+    /// The member's `Name#number` (a guest's temporary one included). The
+    /// matchmaker knows no names; the door fills this in as it sends the
+    /// view, from the member's queue connection.
+    pub handle: Option<String>,
+    /// The member's queue connection, for the door; never sent.
+    #[serde(skip)]
+    pub conn: QueueConn,
 }
 
 /// A custom lobby as one member sees it.
@@ -140,6 +147,8 @@ impl CustomLobby {
                     slot: member.slot,
                     host: member.id == self.host,
                     you: member.conn == conn,
+                    handle: None,
+                    conn: member.conn,
                 })
                 .collect(),
         }
@@ -177,6 +186,22 @@ impl Matchmaker {
                 });
             }
         }
+    }
+
+    /// The current lobby view for everyone in each of these connections'
+    /// lobbies (each lobby once), say after a member's name changed.
+    pub fn announce_lobbies_of(&self, conns: impl IntoIterator<Item = QueueConn>) -> Vec<Out> {
+        let mut ids: Vec<u64> = conns
+            .into_iter()
+            .filter_map(|conn| self.in_lobby.get(&conn).copied())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let mut out = Vec::new();
+        for id in ids {
+            self.announce_lobby(id, &mut out);
+        }
+        out
     }
 
     /// Removes `conn` from its custom lobby, passing host to the next member
@@ -631,6 +656,28 @@ mod tests {
                 _ => None,
             })
             .expect("lobby view for connection")
+    }
+
+    #[test]
+    fn renamed_members_reannounce_each_lobby_once_and_never_send_connections() {
+        let now = Instant::now();
+        let mut mm = Matchmaker::new(Duration::from_secs(15), seeded_random);
+        for id in 1u64..=4 {
+            mm.connect(id, u128::from(id), now);
+        }
+        let code = lobby_of(&mm.create_lobby(1, Mode::Duel, now), 1).code;
+        mm.join_lobby(2, &code, now);
+        // Two renamed tabs in one lobby, and one connection in none.
+        let out = mm.announce_lobbies_of([1, 2, 3]);
+        assert_eq!(out.len(), 2, "{out:?}");
+        assert_eq!(lobby_of(&out, 2).members.len(), 2);
+        assert!(mm.announce_lobbies_of([3, 4]).is_empty());
+        // The member's queue connection is for the door only.
+        let json = serde_json::to_value(lobby_of(&out, 1)).unwrap();
+        for member in json["members"].as_array().unwrap() {
+            assert!(member.get("conn").is_none(), "{member}");
+            assert!(member.get("handle").is_some(), "{member}");
+        }
     }
 
     #[test]

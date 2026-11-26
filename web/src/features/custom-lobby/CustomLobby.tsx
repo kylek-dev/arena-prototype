@@ -1,6 +1,8 @@
 import { Button, Text } from "@radix-ui/themes";
 import { useEffect, useRef, useState } from "react";
 import {
+  memberLabel,
+  memberName,
   ALLOWED_ROUND_SECONDS,
   CUSTOM_MAPS,
   IDLE_QUEUE,
@@ -76,6 +78,7 @@ function LobbyInvite({ code }: { code: string }) {
 
 function MemberRow({
   member,
+  label,
   isHost,
   teamAFull,
   teamBFull,
@@ -83,6 +86,8 @@ function MemberRow({
   queue,
 }: {
   member: LobbyMember;
+  /** The name buttons use, unique within the lobby. */
+  label: string;
   isHost: boolean;
   teamAFull: boolean;
   teamBFull: boolean;
@@ -94,7 +99,7 @@ function MemberRow({
   return (
     <li className={`custom-lobby-member${member.you ? " you" : ""}`}>
       <div className="custom-lobby-member-identity">
-        <span className="custom-lobby-member-name">Player {member.id}</span>
+        <span className="custom-lobby-member-name">{memberName(member)}</span>
         {member.you && <span className="custom-lobby-badge you">You</span>}
         {member.host && <span className="custom-lobby-badge host">Host</span>}
       </div>
@@ -108,7 +113,7 @@ function MemberRow({
                 variant="surface"
                 color="gray"
                 disabled={teamAFull}
-                aria-label={`Move Player ${member.id} to Team A`}
+                aria-label={`Move ${label} to Team A`}
                 onClick={() => queue.moveLobbyMember(member.id, "team_a")}
               >
                 Team A
@@ -119,7 +124,7 @@ function MemberRow({
                 variant="surface"
                 color="gray"
                 disabled={teamBFull}
-                aria-label={`Move Player ${member.id} to Team B`}
+                aria-label={`Move ${label} to Team B`}
                 onClick={() => queue.moveLobbyMember(member.id, "team_b")}
               >
                 Team B
@@ -132,7 +137,7 @@ function MemberRow({
                 size="1"
                 variant="surface"
                 color="gray"
-                aria-label={`Move Player ${member.id} to ${otherTeamLabel}`}
+                aria-label={`Move ${label} to ${otherTeamLabel}`}
                 onClick={() => queue.moveLobbyMember(member.id, otherTeam)}
               >
                 {otherTeamLabel}
@@ -143,7 +148,7 @@ function MemberRow({
                 variant="surface"
                 color="gray"
                 disabled={spectatorsFull}
-                aria-label={`Move Player ${member.id} to Spectators`}
+                aria-label={`Move ${label} to Spectators`}
                 onClick={() => queue.moveLobbyMember(member.id, "spectator")}
               >
                 Spectate
@@ -157,7 +162,7 @@ function MemberRow({
                 size="1"
                 variant="surface"
                 color="gray"
-                aria-label={`Make Player ${member.id} host`}
+                aria-label={`Make ${label} host`}
                 onClick={() => queue.transferLobbyHost(member.id)}
               >
                 Make host
@@ -167,7 +172,7 @@ function MemberRow({
                 size="1"
                 variant="surface"
                 color="red"
-                aria-label={`Remove Player ${member.id}`}
+                aria-label={`Remove ${label}`}
                 onClick={() => queue.kickLobbyMember(member.id)}
               >
                 Remove
@@ -237,6 +242,7 @@ function SlotColumn({
             <MemberRow
               key={member.id}
               member={member}
+              label={memberLabel(member, lobby.members)}
               isHost={lobby.host}
               teamAFull={teamAFull}
               teamBFull={teamBFull}
