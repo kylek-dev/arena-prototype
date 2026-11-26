@@ -283,7 +283,7 @@ it("queues again for the same mode, respects party-leader limits, and clears on 
     queueFn,
   } = makeFakeQueue({
     connection: "online",
-    party: { code: "ABC234", members: 2, leader: false },
+    party: { code: "ABC234", members: 2, leader: false, mates: [] },
   });
   networkLink.set(link);
   matchQueue.set(queue);
@@ -300,13 +300,15 @@ it("queues again for the same mode, respects party-leader limits, and clears on 
   act(() =>
     queueState.set({
       ...queueState.get(),
-      party: { code: "ABC234", members: 2, leader: true },
+      party: { code: "ABC234", members: 2, leader: true, mates: [] },
     }),
   );
   expect(queueBtn.disabled).toBe(false);
   fireEvent.click(queueBtn);
   expect(leave).toHaveBeenCalledTimes(1);
   expect(queueFn).toHaveBeenCalledWith("2v2");
+  // With the scoreboard open the search keeps the top bar (the center is
+  // taken), and the scoreboard moves below it.
   expect(document.querySelector(".scoreboard-backdrop")?.className).toContain("below-queue");
   expect((screen.getByRole("button", { name: "In 2v2 queue" }) as HTMLButtonElement).disabled).toBe(
     true,
@@ -344,7 +346,7 @@ it("prefers the finished match mode over stale queueState.mode and guards in-fli
     ...IDLE_QUEUE,
     connection: "online",
     mode: "1v1", // Stale from an earlier search; finished match is 2v2!
-    party: { code: "ABC234", members: 2, leader: true },
+    party: { code: "ABC234", members: 2, leader: true, mates: [] },
   });
   const queueFn = vi.fn(); // Deliberately async (leaves phase idle until door replies).
   const queue = {
@@ -382,7 +384,7 @@ it("prefers the finished match mode over stale queueState.mode and guards in-fli
     queueState.set({
       ...queueState.get(),
       notice: null,
-      party: { code: "ABC234", members: 3, leader: true },
+      party: { code: "ABC234", members: 3, leader: true, mates: [] },
     }),
   );
   expect((screen.getByRole("button", { name: "Queue again" }) as HTMLButtonElement).disabled).toBe(

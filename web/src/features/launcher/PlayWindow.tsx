@@ -1,4 +1,4 @@
-import { Button } from "@radix-ui/themes";
+import { Button, Tabs } from "@radix-ui/themes";
 import { useState } from "react";
 import {
   IDLE_QUEUE,
@@ -76,8 +76,8 @@ function QueueTab({ queue }: { queue: Queue }) {
       {party && (
         <div className="play-row" role="group" aria-label="Party">
           <span>
-            Party <strong className="party-code">{party.code}</strong>, {party.members} of 3
-            members. {party.leader ? "You lead the party." : "Another member leads the party."}
+            You are in a party of {party.members}.{" "}
+            {party.leader ? "You lead the party." : "Another member leads the party."}
           </span>
           <Button
             size="1"
@@ -225,41 +225,44 @@ export function PlayWindow() {
   useStore(queue?.state ?? NO_QUEUE, (s) => s.phase);
   const inMatch = phase !== "idle" && phase !== "ended";
   return (
+    // Clicking tabs and buttons leaves the keys with the game; only its text
+    // field (the lobby code) takes them, as every text field does.
     <DockWindow
       title="Play"
+      keyboardOwner={false}
       close={() => playWindowVisible.set(false)}
       className="play-window"
-      footer={
-        <div className="dock-tabs" role="tablist" aria-label="Play">
-          {TABS.map((entry) => (
-            <Hint key={entry.id} text={entry.hint}>
-              <button
-                type="button"
-                role="tab"
-                className="dock-tab"
-                aria-selected={tab === entry.id}
-                onClick={() => playTab.set(entry.id)}
-              >
-                {entry.label}
-              </button>
-            </Hint>
-          ))}
-        </div>
-      }
     >
-      <div role="tabpanel" aria-label={TABS.find((entry) => entry.id === tab)?.label}>
-        {inMatch ? (
-          <p className="play-status">These options are available outside a match.</p>
-        ) : tab === "practice" ? (
-          <Practice />
-        ) : !queue ? (
-          <p className="play-status">Online play is unavailable.</p>
-        ) : tab === "queue" ? (
-          <QueueTab queue={queue} />
-        ) : (
-          <HostTab queue={queue} />
-        )}
-      </div>
+      <Tabs.Root
+        className="play-tabs"
+        value={tab}
+        onValueChange={(value) => playTab.set(value as PlayTab)}
+      >
+        <Tabs.List aria-label="Play" size="2">
+          {TABS.map((entry) => (
+            // The tooltip sits inside the trigger: wrapping the trigger would
+            // replace its data-state, which draws the active tab's style.
+            <Tabs.Trigger key={entry.id} value={entry.id}>
+              <Hint text={entry.hint}>
+                <span>{entry.label}</span>
+              </Hint>
+            </Tabs.Trigger>
+          ))}
+        </Tabs.List>
+        <Tabs.Content value={tab} className="play-tab-panel">
+          {inMatch ? (
+            <p className="play-status">These options are available outside a match.</p>
+          ) : tab === "practice" ? (
+            <Practice />
+          ) : !queue ? (
+            <p className="play-status">Online play is unavailable.</p>
+          ) : tab === "queue" ? (
+            <QueueTab queue={queue} />
+          ) : (
+            <HostTab queue={queue} />
+          )}
+        </Tabs.Content>
+      </Tabs.Root>
     </DockWindow>
   );
 }

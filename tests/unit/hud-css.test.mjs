@@ -32,10 +32,27 @@ test('dock windows share one size and open at the left middle, side by side', ()
   assert.match(window, /flex:\s*0 1 320px/);
 });
 
-test('the Queue tab stacks full-width bracket buttons, and tabs carry no top highlight', () => {
+test('the Queue tab stacks full-width bracket buttons', () => {
   const css = readFileSync(new URL('../../web/src/ui/dock.css', import.meta.url), 'utf8');
   assert.match(css, /\.play-queue-modes\s*\{[^}]*display:\s*grid/);
   assert.match(css, /\.play-queue-modes > \*\s*\{[^}]*width:\s*100%/);
-  const selected = css.match(/\.dock-tab\[aria-selected="true"\]\s*\{([^}]*)\}/)[1];
-  assert.doesNotMatch(selected, /box-shadow|border-top/);
+  // The Play window uses Radix tabs; no hand-made tab styles remain.
+  assert.doesNotMatch(css, /\.dock-tab/);
+});
+
+test('the active Play tab carries a visible highlight', () => {
+  const css = readFileSync(new URL('../../web/src/ui/dock.css', import.meta.url), 'utf8');
+  assert.match(
+    css,
+    /\.play-tabs \.rt-TabsTrigger\[data-state="active"\] \.rt-BaseTabListTriggerInner\s*\{[^}]*background-color:/,
+  );
+});
+
+test('the notification panel stacks its cards from the top center, without a transform', () => {
+  const css = readFileSync(new URL('../../web/src/features/center/center.css', import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  const panel = css.match(/\.center-panel\s*\{([^}]*)\}/)[1];
+  assert.match(panel, /justify-content:\s*flex-start/);
+  assert.match(panel, /align-items:\s*center/);
+  assert.doesNotMatch(panel, /transform:/);
 });

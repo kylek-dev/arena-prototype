@@ -77,32 +77,29 @@
 .dock-window-footer {
   border-top: 1px solid var(--gray-6);
 }
-/* A bottom tab bar (the Play window). */
-.dock-tabs {
+/* The Play window: Radix tabs under the title, the panel scrolling below. */
+.play-window .dock-window-body {
   display: flex;
+  padding: 0;
+  overflow: hidden;
 }
-.dock-tab {
-  flex: 1 1 0;
-  padding: 9px 4px;
-  color: var(--gray-11);
-  background: none;
-  border: 0;
-  border-right: 1px solid var(--gray-6);
-  font: inherit;
-  font-size: 13px;
-  cursor: pointer;
+.play-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
 }
-.dock-tab:last-child {
-  border-right: 0;
-}
-.dock-tab[aria-selected="true"] {
+/* The active tab: bold with its underline (Radix), plus a soft highlight
+   so the current section is unmistakable. */
+.play-tabs .rt-TabsTrigger[data-state="active"] .rt-BaseTabListTriggerInner {
+  background-color: var(--gray-a4);
   color: var(--gray-12);
-  background: var(--gray-5);
-  font-weight: 600;
 }
-.dock-tab:hover,
-.dock-tab:focus-visible {
-  color: var(--gray-12);
+.play-tab-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 12px 14px;
+  overflow-y: auto;
 }
 /* Play window contents. */
 .play-field {

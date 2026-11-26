@@ -14,6 +14,7 @@ import { NO_FRIENDS, type Friends as FriendsService } from "../../runtime/friend
 import type { Queue } from "../../runtime/matchmaking";
 import { accountService, friendsService } from "../../state/account";
 import { matchQueue } from "../../state/network";
+import { requestChat } from "../../state/chat";
 import { createStore, useStore } from "../../state/store";
 import "./friends.css";
 
@@ -54,6 +55,10 @@ function RowMenu({ handle, actions }: { handle: string; actions: Action[] }) {
       ref={root}
       // While open, Escape closes the menu only, not the window.
       data-escape-owner={open ? "true" : undefined}
+      // The menu keeps keyboard focus while it is used: the dock windows do
+      // not own the keyboard, and the focus policy would otherwise hand it
+      // back to the game, which closes the menu the moment it opens.
+      data-keyboard-owner="true"
       onBlur={(event) => {
         if (!root.current?.contains(event.relatedTarget as Node | null)) close();
       }}
@@ -236,10 +241,8 @@ function friendActions(
       ? [
           {
             label: "Whisper",
-            run: () => {
-              queue.whisperTo(friend.handle);
-              queue.showChat("whisper");
-            },
+            // Starts a whisper in the chat field: `/w Name#0000 `.
+            run: () => requestChat(`/w ${friend.handle} `),
           },
         ]
       : []),

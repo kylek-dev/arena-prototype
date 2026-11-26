@@ -4,7 +4,6 @@ import {
   IDLE_QUEUE,
   QUEUE_MODES,
   endedText,
-  inviteLink,
   modeLabel,
   noticeText,
   queueBlocked,
@@ -36,80 +35,6 @@ const REFUSALS = new Set([
   "no_such_lobby",
   "lobby_full",
 ]);
-
-function InviteLink({ code }: { code: string }) {
-  const link = inviteLink(window.location, code);
-  const [copied, setCopied] = useState<"yes" | "failed" | null>(null);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(link);
-      setCopied("yes");
-    } catch {
-      setCopied("failed");
-    }
-  };
-  return (
-    <div className="stack">
-      <div className="party-invite">
-        <Button size="1" variant="soft" onClick={copy}>
-          {copied === "yes" ? "Link copied" : "Copy invite link"}
-        </Button>
-      </div>
-      {copied === "failed" && (
-        <input
-          className="party-link"
-          readOnly
-          value={link}
-          aria-label="Invite link"
-          onFocus={(event) => event.currentTarget.select()}
-        />
-      )}
-    </div>
-  );
-}
-
-function JoinParty({ queue }: { queue: Queue }) {
-  const [open, setOpen] = useState(false);
-  const [code, setCode] = useState("");
-  if (!open)
-    return (
-      <Button size="1" variant="surface" color="gray" onClick={() => setOpen(true)}>
-        Join a party
-      </Button>
-    );
-  const join = () => {
-    if (queue.joinParty(code)) {
-      setOpen(false);
-      setCode("");
-    }
-  };
-  return (
-    <div className="party-join">
-      <input
-        value={code}
-        maxLength={12}
-        placeholder="Code"
-        aria-label="Party code"
-        autoComplete="off"
-        spellCheck={false}
-        onChange={(event) => setCode(event.target.value.toUpperCase())}
-        onKeyDown={(event) => event.key === "Enter" && join()}
-      />
-      <Button size="1" className="action-button" onClick={join} disabled={!code.trim()}>
-        Join
-      </Button>
-      <Button
-        size="1"
-        className="action-button"
-        variant="surface"
-        color="gray"
-        onClick={() => setOpen(false)}
-      >
-        Cancel
-      </Button>
-    </div>
-  );
-}
 
 function JoinLobby({ queue }: { queue: Queue }) {
   const [open, setOpen] = useState(false);
@@ -196,46 +121,24 @@ export function PlayOnline({
           </Button>
         </div>
       )}
-      {/* In game, only a party already formed shows (to see and leave it);
-          inviting and joining by code stay on the home screen. */}
-      {!lobby && (!inGame || party) && (
+      {/* Parties form by inviting friends; their codes stay internal. */}
+      {!lobby && party && (
         <div className="party" role="group" aria-label="Party">
-          {party ? (
-            <>
-              <Text size="1">
-                Party <strong className="party-code">{party.code}</strong>, {party.members} of 3
-                members. {party.leader ? "You lead the party." : "Another member leads the party."}
-              </Text>
-              <div className="party-actions">
-                {party.code && !inGame && <InviteLink code={party.code} />}
-                <Button
-                  size="1"
-                  variant="soft"
-                  color="gray"
-                  disabled={searching}
-                  onClick={() => queue.leaveParty()}
-                >
-                  Leave party
-                </Button>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="party-actions">
-                <Hint text="Create a party and invite friends to queue with you.">
-                  <Button
-                    size="1"
-                    variant="surface"
-                    disabled={searching}
-                    onClick={() => queue.createParty()}
-                  >
-                    Invite friends
-                  </Button>
-                </Hint>
-                {!searching && <JoinParty queue={queue} />}
-              </div>
-            </>
-          )}
+          <Text size="1">
+            You are in a party of {party.members}.{" "}
+            {party.leader ? "You lead the party." : "Another member leads the party."}
+          </Text>
+          <div className="party-actions">
+            <Button
+              size="1"
+              variant="soft"
+              color="gray"
+              disabled={searching}
+              onClick={() => queue.leaveParty()}
+            >
+              Leave party
+            </Button>
+          </div>
         </div>
       )}
       {notice && (

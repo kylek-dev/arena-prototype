@@ -15,6 +15,7 @@ export function FriendsWindow() {
   return (
     <DockWindow
       title="Friends"
+      keyboardOwner={false}
       close={() => friendsWindowVisible.set(false)}
       className="friends-window"
     >

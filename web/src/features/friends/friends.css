@@ -179,3 +179,7 @@
   display: flex;
   gap: 6px;
 }
+.invite-prompts.centered {
+  position: static;
+  width: min(380px, calc(100vw - 32px));
+}

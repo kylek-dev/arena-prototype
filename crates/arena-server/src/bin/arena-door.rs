@@ -1,12 +1,14 @@
 //! `arena-door --match-server URL --page URL [--bind ADDR] [--dev]
 //!  [--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]...
-//!  [--ticket-minutes N] [--maps-dir PATH]`
+//!  [--ticket-minutes N] [--maps-dir PATH] [--match-status URL]`
 //!
 //! The front door (ADR 0045): creates matches for remote players and hands
 //! out one join link per seat. `--match-server` is the match server's
 //! `/play` URL and `--page` the game page, both as players reach them. The
 //! signing key comes from `ARENA_TICKET_KEY`, the same key the match server
-//! uses. The lobby is at `/lobby/`.
+//! uses. The lobby is at `/lobby/`. `--match-status` is the match server's
+//! base URL on the private network (`http://server:8080`): the door asks it
+//! which matches ended, so their players leave the in-match state at once.
 //!
 //! Without `--dev` both URLs must be secure (`wss://`, `https://`), since
 //! browsers refuse a plain `ws://` connection from an `https://` page and
@@ -32,7 +34,7 @@ use arena_server::ingress::{Cidr, Origins};
 use arena_server::ticket::TicketKey;
 
 const USAGE: &str = "usage: arena-door --match-server URL --page URL [--bind ADDR] [--dev] \
-[--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]... [--ticket-minutes N] [--maps-dir PATH]";
+[--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]... [--ticket-minutes N] [--maps-dir PATH] [--match-status URL]";
 
 fn main() -> ExitCode {
     // Telemetry starts before and stops after the runtime: the OTLP HTTP
@@ -109,6 +111,7 @@ async fn run() -> Result<(), String> {
     let mut trusted_proxies = Vec::new();
     let mut ticket_minutes = None;
     let mut maps = None;
+    let mut match_status = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| USAGE.to_owned());
@@ -144,6 +147,13 @@ async fn run() -> Result<(), String> {
                 );
             }
             "--maps-dir" => maps = Some(std::path::PathBuf::from(value()?)),
+            "--match-status" => {
+                let text = value()?;
+                if !(text.starts_with("http://") || text.starts_with("https://")) {
+                    return Err(format!("--match-status {text} must be an http(s):// URL"));
+                }
+                match_status = Some(text);
+            }
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());
@@ -179,6 +189,7 @@ async fn run() -> Result<(), String> {
         config.ticket_ttl = Duration::from_secs(minutes * 60);
     }
     config.maps = maps;
+    config.match_status = match_status;
     config.identity = IdentityConfig::from_env()?;
     if std::env::var("ARENA_SESSION_KEY")
         .ok()

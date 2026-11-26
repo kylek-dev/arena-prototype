@@ -111,6 +111,9 @@ export type Party = {
   code: string | null;
   members: number;
   leader: boolean;
+  /** The other members' handles, leader first (`null` when unnamed); empty
+   * from older doors. Shown as teammates. */
+  mates: (string | null)[];
 };
 
 /** A friend's invite: accepting joins their party or custom lobby by code. */
@@ -188,9 +191,16 @@ export function parseQueueMessage(text: unknown): QueueMessage | null {
       if ((v.code !== null && code === null) || !count(v.members)) return null;
       if (v.members < 1 || v.members > MAX_PARTY || typeof v.leader !== "boolean") return null;
       if (v.queue !== null && !isQueueMode(v.queue)) return null;
+      const mates = v.mates ?? [];
+      if (
+        !Array.isArray(mates) ||
+        mates.length >= MAX_PARTY ||
+        !mates.every((mate) => mate === null || isHandle(mate))
+      )
+        return null;
       return {
         type: "party",
-        party: { code, members: v.members, leader: v.leader },
+        party: { code, members: v.members, leader: v.leader, mates: mates as (string | null)[] },
         queue: v.queue as QueueMode | null,
       };
     }
@@ -492,7 +502,7 @@ const NOTICES: Record<string, string> = {
   party_too_big: "Your party has too many members for this queue.",
   party_full: "This party is full.",
   party_busy: "This party is currently in a queue. Please try again when the search ends.",
-  no_such_party: "No party exists with this code.",
+  no_such_party: "This party no longer exists.",
   in_lobby: "Leave your custom lobby before joining a queue or a party.",
   no_such_lobby: "No custom lobby exists with this code.",
   lobby_full: "This custom lobby is full.",

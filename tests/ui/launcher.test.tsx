@@ -79,17 +79,24 @@ it("opens each window from a one-letter button with a full tooltip", async () =>
   const play = screen.getByRole("dialog", { name: "Play" });
   // Tabs along the bottom, opening on Queue.
   const tabs = within(play).getByRole("tablist", { name: "Play" });
+  // Radix renders each label twice (a hidden copy keeps the width when bold).
   expect(
     within(tabs)
       .getAllByRole("tab")
-      .map((tab) => tab.textContent),
+      .map((tab) => tab.textContent?.replace(/^(.+)\1$/, "$1")),
   ).toEqual(["Practice", "Queue", "Host"]);
-  expect(within(play).getByRole("tab", { name: "Queue", selected: true })).toBeTruthy();
+  expect(within(play).getByRole("tab", { name: /^Queue/, selected: true })).toBeTruthy();
+  // The active tab keeps Radix's own state, which draws its bold label and underline.
+  expect(
+    within(play)
+      .getByRole("tab", { name: /^Queue/, selected: true })
+      .getAttribute("data-state"),
+  ).toBe("active");
   expect(within(play).getByRole("button", { name: "2v2" })).toBeTruthy();
-  await user.click(within(play).getByRole("tab", { name: "Host" }));
+  await user.click(within(play).getByRole("tab", { name: /^Host/ }));
   expect(within(play).getByRole("button", { name: "Host custom match" })).toBeTruthy();
   expect(within(play).getByRole("textbox", { name: "Custom lobby code" })).toBeTruthy();
-  await user.click(within(play).getByRole("tab", { name: "Practice" }));
+  await user.click(within(play).getByRole("tab", { name: /^Practice/ }));
   expect(within(play).getByRole("combobox", { name: "Practice mode" })).toBeTruthy();
   expect(within(play).getByRole("button", { name: "Reset practice" })).toBeTruthy();
   // No account or party invitations in game.
@@ -158,7 +165,9 @@ it("keeps account and party controls on the home screen", async () => {
   await logIn(null);
   render(<PlayOnline />, { wrapper: TooltipProvider });
   expect(screen.getByRole("group", { name: "Account" })).toBeTruthy();
-  expect(screen.getByRole("group", { name: "Party" })).toBeTruthy();
+  // No party to show yet, and no codes or links to share one.
+  expect(screen.queryByRole("group", { name: "Party" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Invite friends" })).toBeNull();
 });
 
 it("disables Spells while spectating, and moves with the layout editor", async () => {
@@ -196,7 +205,9 @@ it("shows a party already formed, with Leave party, but no invite or join", () =
   const party = within(screen.getByRole("dialog", { name: "Play" })).getByRole("group", {
     name: "Party",
   });
-  expect(party.textContent).toContain("K7P2QX");
+  // The party code stays internal.
+  expect(party.textContent).not.toContain("K7P2QX");
+  expect(party.textContent).toContain("You are in a party of 2.");
   expect(within(party).queryByRole("button", { name: /Copy invite link/ })).toBeNull();
   within(party).getByRole("button", { name: "Leave party" }).click();
   expect(fake.sent().at(-1)).toEqual({ type: "leave_party" });
@@ -260,7 +271,7 @@ it("opens the Play window directly on a tab by command", async () => {
     act(() => {
       runSlash(command, pageCommandContext(fake.queue));
     });
-    expect(screen.getByRole("tab", { name: tab, selected: true })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: new RegExp(`^${tab}`), selected: true })).toBeTruthy();
   }
 });
 
@@ -273,4 +284,26 @@ it("keeps gameplay keys working after a spell is clicked in the Spells window", 
   act(() => screen.getByRole("button", { name: "Pulse spell" }).focus());
   await user.keyboard("p");
   expect(screen.queryByRole("dialog", { name: "Spells" })).toBeNull();
+});
+
+it("shows the selected Play tab and leaves the keys with the game after a tab is clicked", async () => {
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(launcher().getByRole("button", { name: "Play" }));
+  const play = screen.getByRole("dialog", { name: "Play" });
+  expect(play.hasAttribute("data-keyboard-owner")).toBe(false);
+  await user.click(within(play).getByRole("tab", { name: /^Host/ }));
+  expect(within(play).getByRole("tab", { name: /^Host/ }).getAttribute("data-state")).toBe(
+    "active",
+  );
+  expect(
+    within(play)
+      .getByRole("tab", { name: /^Queue/ })
+      .getAttribute("data-state"),
+  ).toBe("inactive");
+  // The game has the keys again: W walks.
+  await waitFor(() => expect(document.activeElement?.id).toBe("arena"));
+  await user.keyboard("{w>}");
+  expect(router.sample()[1]).toBe(-1);
+  await user.keyboard("{/w}");
 });
