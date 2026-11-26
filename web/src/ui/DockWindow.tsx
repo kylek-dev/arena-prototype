@@ -16,8 +16,9 @@ export function DockWindow({
   children: ReactNode;
   footer?: ReactNode;
   className?: string;
-  /** Whether focus inside keeps the keys from gameplay (forms and lists);
-   * Spells does not, so movement and its own toggle key keep working. */
+  /** Whether any focus inside keeps the keys from gameplay. The dock's
+   * windows do not: their buttons and tabs leave the keys with the game,
+   * and text fields take them by themselves (`isTextEntry`). */
   keyboardOwner?: boolean;
 }) {
   return (

@@ -23,6 +23,7 @@ import { MatchReady } from "../features/queue/MatchReady";
 import { InvitePrompt } from "../features/friends/InvitePrompt";
 import { ChatBox } from "../features/chat/ChatBox";
 import { Launcher } from "../features/launcher/Launcher";
+import { CenterPanel } from "../features/center/CenterPanel";
 import { WindowDock } from "../features/launcher/WindowDock";
 import { QueueBar } from "../features/queue/QueueBar";
 import { Loading } from "../features/loading/Loading";
@@ -127,9 +128,11 @@ export function App() {
         <Scoreboard />
         <CustomLobby />
         {/* The queue follows the player from the home screen into the arena. */}
-        <QueueBar />
-        <MatchReady />
-        <InvitePrompt />
+        <CenterPanel>
+          <MatchReady />
+          <QueueBar />
+          <InvitePrompt />
+        </CenterPanel>
         <WindowDock />
         <MapEditor />
         <StartScreen />

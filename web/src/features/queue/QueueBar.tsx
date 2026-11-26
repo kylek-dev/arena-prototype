@@ -14,26 +14,35 @@ import { customizerVisible } from "../../state/appearance";
 import { matchQueue, networkLink } from "../../state/network";
 import { customLobbyVisible, scoreboardVisible, setPanel } from "../../state/session";
 import { createStore, useStore } from "../../state/store";
+import { useCenterFree, useInMatch } from "../center/CenterPanel";
 import { useClock } from "./useClock";
 import "./queue.css";
 
 const NO_QUEUE = createStore(IDLE_QUEUE);
 const NO_LINK = createStore<LinkState>({ phase: "idle", attempt: 0, ended: null, status: null });
 
-/** Canonical top-center visibility check shared by QueueBar and HUD elements using `.below-queue`. */
-export function useQueueBarVisible(): boolean {
+/** Whether the queue's state has something to show (search, ended
+ * connection, minimized lobby, a stopped search), wherever it shows. */
+function useQueueVisible(): boolean {
   const queue = useStore(matchQueue, (q) => q);
   const lobbyOpen = useStore(customLobbyVisible, (v) => v);
   const scoreboardOpen = useStore(scoreboardVisible, (v) => v);
-  const link = useStore(networkLink, (l) => l);
-  const linkPhase = useStore(link?.state ?? NO_LINK, (s) => s.phase);
-  const inMatch = linkPhase !== "idle" && linkPhase !== "ended";
+  const inMatch = useInMatch();
   return useStore(queue?.state ?? NO_QUEUE, (state) =>
     isQueueBarVisible(state, { lobbyOpen, inMatch, scoreboardOpen }),
   );
 }
 
-function Bar({ queue }: { queue: Queue }) {
+/** Canonical top-center visibility check for HUD elements using
+ * `.below-queue`: true only while the queue shows as the top bar (in a
+ * match, or with a centered window open), not as a center-panel card. */
+export function useQueueBarVisible(): boolean {
+  const visible = useQueueVisible();
+  const centered = useCenterFree();
+  return visible && !centered;
+}
+
+function Bar({ queue, centered }: { queue: Queue; centered: boolean }) {
   const state = useStore(queue.state, (s) => s);
   const lobbyOpen = useStore(customLobbyVisible, (v) => v);
   const scoreboardOpen = useStore(scoreboardVisible, (v) => v);
@@ -44,7 +53,7 @@ function Bar({ queue }: { queue: Queue }) {
   const status = queueStatus(state, now);
   if (state.connection === "ended")
     return (
-      <div className="queue-bar warning" role="status">
+      <div className={`queue-bar warning${centered ? " centered" : ""}`} role="status">
         <span className="queue-bar-text">{endedText(state.ended)}</span>
         <Button size="1" variant="soft" color="gray" onClick={() => queue.dismiss()}>
           OK
@@ -53,7 +62,7 @@ function Bar({ queue }: { queue: Queue }) {
     );
   if (status)
     return (
-      <div className="queue-bar" role="status" aria-label="Queue">
+      <div className={`queue-bar${centered ? " centered" : ""}`} role="status" aria-label="Queue">
         <span className="queue-pulse" aria-hidden="true" />
         <div className="queue-bar-body">
           <div className="queue-bar-head">
@@ -77,7 +86,11 @@ function Bar({ queue }: { queue: Queue }) {
     );
   if (state.lobby && !lobbyOpen && !inMatch && !scoreboardOpen)
     return (
-      <div className="queue-bar" role="status" aria-label="Custom lobby">
+      <div
+        className={`queue-bar${centered ? " centered" : ""}`}
+        role="status"
+        aria-label="Custom lobby"
+      >
         <div className="queue-bar-body">
           <div className="queue-bar-head">
             <strong>
@@ -104,7 +117,7 @@ function Bar({ queue }: { queue: Queue }) {
     );
   if (state.phase === "idle" && state.notice && LEFT_QUEUE_NOTICES.has(state.notice))
     return (
-      <div className="queue-bar warning" role="status">
+      <div className={`queue-bar warning${centered ? " centered" : ""}`} role="status">
         <span className="queue-bar-text">{noticeText(state.notice)}</span>
         <Button size="1" variant="soft" color="gray" onClick={() => queue.dismiss()}>
           OK
@@ -114,10 +127,11 @@ function Bar({ queue }: { queue: Queue }) {
   return null;
 }
 
-/** The queue (or minimized custom lobby) at a glance: shown on the home
- * screen and in the arena alike. */
+/** The queue (or minimized custom lobby) at a glance: a card in the center
+ * panel when the center is free, else the top-center bar. */
 export function QueueBar() {
   const queue = useStore(matchQueue, (q) => q);
-  const visible = useQueueBarVisible();
-  return queue && visible ? <Bar queue={queue} /> : null;
+  const visible = useQueueVisible();
+  const centered = useCenterFree();
+  return queue && visible ? <Bar queue={queue} centered={centered} /> : null;
 }

@@ -313,7 +313,7 @@ it("a party member waits for the leader to choose the queue", () => {
   expect(screen.getByText("The party leader selects the queue.")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "2v2" })).toBeNull();
   fake.say({ type: "refused", code: "no_such_party" });
-  expect(screen.getByText(/No party exists with this code/)).toBeTruthy();
+  expect(screen.getByText(/This party no longer exists/)).toBeTruthy();
 });
 
 it("the bar explains why online play stopped and can be dismissed", () => {

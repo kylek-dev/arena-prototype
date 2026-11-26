@@ -2,6 +2,7 @@ import { Button } from "@radix-ui/themes";
 import { IDLE_QUEUE, noticeText } from "../../domain/matchmaking";
 import { matchQueue } from "../../state/network";
 import { createStore, useStore } from "../../state/store";
+import { useCenterFree } from "../center/CenterPanel";
 import "./friends.css";
 
 const NO_QUEUE = createStore(IDLE_QUEUE);
@@ -14,9 +15,11 @@ export function InvitePrompt() {
   const queue = useStore(matchQueue, (q) => q);
   const invites = useStore(queue?.state ?? NO_QUEUE, (s) => s.invites);
   const failed = useStore(queue?.state ?? NO_QUEUE, (s) => s.inviteError);
+  const centered = useCenterFree();
   if (!queue || (invites.length === 0 && !failed)) return null;
   return (
-    <div className="invite-prompts" aria-live="polite">
+    // Outside a match, cards in the center panel; in one, the right edge.
+    <div className={`invite-prompts${centered ? " centered" : ""}`} aria-live="polite">
       {failed && (
         <section className="invite-prompt" role="group" aria-label="Invite could not be joined">
           <p>

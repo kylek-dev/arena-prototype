@@ -1,0 +1,18 @@
+/* The center panel: a full-screen, click-through column that stacks its
+   cards in the middle of the screen. Centered by flexbox, never by a
+   transform, so fixed-position children keep their own placement. */
+.center-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px;
+  pointer-events: none;
+}
+.center-panel > * {
+  pointer-events: auto;
+}

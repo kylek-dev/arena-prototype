@@ -9,6 +9,7 @@ before editing code so context compounds on disk instead of decaying in long cha
 Reusable repo invariants, canonical helpers, and CI traps promoted across iterations:
 
 - **Simulation purity:** `arena-sim` must stay pure, fixed-tick, integer-based, and deterministic (no graphics, OS clocks, network I/O, or runtime LLM calls).
+- **Radix trigger stacking:** `Tooltip.Trigger asChild` overrides its child's `data-state`; put tooltips inside tab/toggle triggers, never around them, or the active style disappears (tests on `aria-selected` still pass, so assert `data-state` too).
 - **No transforms on overlay containers:** a `transform` on an ancestor becomes the containing block of `position: fixed` descendants (menus, popovers), which then open off screen; center overlays with flexbox, and pin it with a stylesheet test since jsdom has no layout.
 - **Static web pages:** `web/public/` is generated and gitignored (`scripts/build-web.sh`); add tracked pages such as `web/privacy.html` as Vite `rollupOptions.input` entries. `vite.config.ts` is type-checked without Node types, so it cannot import `node:*`.
 - **CI `browser` vs `scripts/check.sh`:** `./scripts/check.sh` checks `typecheck`, `lint`, `format:check`, and `npm test`, while `.github/workflows/ci.yml`'s `browser` job also runs `npm run build`. Run `.agents/skills/iterate-game/scripts/run-critics.sh --auto` (or `--web-build`) whenever `web/` changes.
@@ -791,3 +792,16 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Changes:** dock centered with flexbox (`top: 0; bottom: 0; align-items: center`), a CSS test forbidding transforms on the dock and its windows; the menu opens below its button or above it near the bottom edge; **Block player** in the Add prompt for any `Name#number`; Block in the ⋮ menu of incoming and sent requests.
 - **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/game-launcher`: pass — 483 Rust (1 pre-existing ignored), 58 Python, 53 Node, 54 Vitest files / 435 tests, headless pass, `npm run build` pass.
 - **Learnings:** never center an overlay container with a transform if anything inside uses `position: fixed`; DOM tests cannot see layout, so pin such CSS invariants with a stylesheet test.
+
+## 2026-11-25 — Center panel, hidden party codes and Radix tabs (playtest)
+- **Branch / Commit:** `auto/center-panel`
+- **Base / PR:** `auto/window-dock` (stacked on PR #108)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox: one central anchor for popups and queue news outside a match; never show party codes; Radix Tabs in the Play window; tabs must show the selection and not take the keyboard
+- **Changes:**
+  - `features/center/CenterPanel.tsx` (`useInMatch`, `useCenterFree`): a flexbox-centered, click-through stack for the match-ready card (backdrop removed), the queue card and invitation cards when the center is free; in a match or with a centered window open, the queue keeps the top bar (and `below-queue` offsets) and invitations the right edge.
+  - Party codes never show; invite link, join-by-code and "Invite friends" removed (friend invitations form parties); "This party no longer exists."; system line "You joined a party."
+  - Play window: Radix `Tabs` under the title with the tooltip inside the trigger (a wrapper overwrote `data-state`, so no tab looked selected), a soft highlight on the active tab; Play and Friends windows no longer own the keyboard.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/window-dock`: pass — 483 Rust (1 pre-existing ignored), 58 Python, 54 Node, 55 Vitest files / 439 tests, headless pass, `npm run build` pass.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): the tooltip wrapper replaced the tab's `data-state`, so the active style never showed (matching the user's report); centered cards covered centered modals. Minor taken: shared hooks, panel role, wording, test phase, docs.
+- **Learnings:** Radix `Tooltip.Trigger asChild` passes its own `data-state` to the child and overrides the child's; never wrap a Radix trigger whose style keys on `data-state` (tabs, toggles) in a tooltip trigger — put the tooltip inside it.

@@ -307,6 +307,8 @@ it("queues again for the same mode, respects party-leader limits, and clears on 
   fireEvent.click(queueBtn);
   expect(leave).toHaveBeenCalledTimes(1);
   expect(queueFn).toHaveBeenCalledWith("2v2");
+  // With the scoreboard open the search keeps the top bar (the center is
+  // taken), and the scoreboard moves below it.
   expect(document.querySelector(".scoreboard-backdrop")?.className).toContain("below-queue");
   expect((screen.getByRole("button", { name: "In 2v2 queue" }) as HTMLButtonElement).disabled).toBe(
     true,

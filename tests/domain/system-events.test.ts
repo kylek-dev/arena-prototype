@@ -58,7 +58,7 @@ it("tells lobby joins, leaves, hosting and kicks", () => {
 
 it("tells party changes", () => {
   const party = (members: number, leader = false) => ({ code: "M9Q3RT", members, leader });
-  expect(partyEvents(null, party(2))).toEqual(["You joined party M9Q3RT."]);
+  expect(partyEvents(null, party(2))).toEqual(["You joined a party."]);
   expect(partyEvents(null, party(1, true))).toEqual([]);
   expect(partyEvents(party(1, true), party(2, true))).toEqual(["A player joined your party."]);
   expect(partyEvents(party(3), party(2))).toEqual(["A player left your party."]);

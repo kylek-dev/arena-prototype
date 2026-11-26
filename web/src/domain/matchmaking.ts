@@ -492,7 +492,7 @@ const NOTICES: Record<string, string> = {
   party_too_big: "Your party has too many members for this queue.",
   party_full: "This party is full.",
   party_busy: "This party is currently in a queue. Please try again when the search ends.",
-  no_such_party: "No party exists with this code.",
+  no_such_party: "This party no longer exists.",
   in_lobby: "Leave your custom lobby before joining a queue or a party.",
   no_such_lobby: "No custom lobby exists with this code.",
   lobby_full: "This custom lobby is full.",
