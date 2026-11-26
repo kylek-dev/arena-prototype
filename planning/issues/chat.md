@@ -8,8 +8,8 @@ senders, limits, filter, ignore, blocks and admin mutes. Still to do:
   `auto/chat-commands`, pending human review (`system` stays reserved, so
   clients cannot post to it; the page writes its own system lines). The
   admin-only commands are `/mute`, `/unmute` and `/clearname`, checked by the
-  door's admin routes; `/mapeditor` is open to everyone, as the menu's Map
-  editor is, while its server storage stays admin-only (to confirm in review).
+  door's admin routes; `/mapeditor` is to become admin-only, with the menu's
+  Map editor (decided by the user 2026-11-26; BACKLOG Playtest Inbox).
 - ~~a seat lasts the 21-minute in-match window even when the match ends
   sooner~~ — fixed on `auto/match-ended`: the door asks the match server
   (`GET /matches/{id}`) and clears a match's seats once it has ended.

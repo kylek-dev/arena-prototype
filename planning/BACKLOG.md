@@ -13,6 +13,14 @@ Source roadmap and full issue definitions remain in [ROADMAP.md](ROADMAP.md) and
 - [ ] (Lane B) Camera feels too close after jumping near pillars.
 - [ ] (Lane A) Reconnecting twice within 5s leaves opponent nameplate stuck greyed out.
 -->
+
+Playtest notes and decisions from the user, 2026-11-26:
+
+- [ ] (Lane B) `/mapeditor` and the game menu's **Map editor** are admin-only (decided 2026-11-26). Hide both from non-admins (the command is then unknown to them and missing from `/help`); the door already keeps map storage admin-only.
+- [ ] (Lane B) Remove the friend **Invite** buttons from the in-game Friends window (decided 2026-11-26). Parties form from the launcher page; the ⋮ menu in game keeps Whisper, Remove and Block.
+- [x] (Decision) Settings does **not** join the launcher dock (decided 2026-11-26): it stays in the game menu. No change.
+- [ ] (Lane B, epic) Replace the **Home Screen** with an out-of-game **launcher page** for account management: sign in or sign up, play as a guest, delete account, privacy notice. See [launcher-page](issues/launcher-page.md) and ROADMAP order 5.
+- [ ] (Lane A + B, epic) Entering the game from the launcher page puts players in an **open-world hub** where they see each other and interact: chat, invites, adding friends. See [social-hub](issues/social-hub.md) and ROADMAP order 6.
 - [x] (Lane A) A friend still shows "In a match" after our 1v1 ended, and whispers to them are refused. — `auto/match-ended`: the match server answers `GET /matches/{id}` (live, ended, unknown) on the private network; the door (`--match-status`) asks every 5 s and clears an ended match's seats, so presence and whispers recover within about 10 s of the result instead of 21 minutes.
 
 Playtest notes from the user, 2026-11-25:
