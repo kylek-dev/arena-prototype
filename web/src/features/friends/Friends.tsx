@@ -54,6 +54,10 @@ function RowMenu({ handle, actions }: { handle: string; actions: Action[] }) {
       ref={root}
       // While open, Escape closes the menu only, not the window.
       data-escape-owner={open ? "true" : undefined}
+      // The menu keeps keyboard focus while it is used: the dock windows do
+      // not own the keyboard, and the focus policy would otherwise hand it
+      // back to the game, which closes the menu the moment it opens.
+      data-keyboard-owner="true"
       onBlur={(event) => {
         if (!root.current?.contains(event.relatedTarget as Node | null)) close();
       }}
