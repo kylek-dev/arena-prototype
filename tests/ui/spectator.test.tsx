@@ -1,3 +1,4 @@
+import { EMPTY_CHAT } from "../../web/src/domain/chat";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { App } from "../../web/src/app/App";
@@ -232,7 +233,7 @@ it("renders read-only spectator HUD with both teams, camera controls, no action 
   // Game menu shows spectator mode and hides Spells, Edit layout, and Quick binding.
   act(() => setPanel("menu"));
   const menu = screen.getByRole("dialog", { name: "Game menu" });
-  expect(menu.textContent).toContain("Spectating match");
+  expect(menu.textContent).toContain("Spectating");
   expect(within(menu).queryByRole("button", { name: "Spells" })).toBeNull();
   expect(within(menu).queryByRole("button", { name: "Edit layout" })).toBeNull();
   expect(within(menu).queryByRole("button", { name: "Quick binding" })).toBeNull();
@@ -280,6 +281,8 @@ it("shows neutral Team A / Team B post-match scoreboard for spectators without Y
   } as unknown as ReturnType<typeof networkLink.get>);
   matchQueue.set({
     state: createStore({ ...IDLE_QUEUE, connection: "online" }),
+    chat: createStore(EMPTY_CHAT),
+    showChat: () => {},
   } as unknown as ReturnType<typeof matchQueue.get>);
 
   engine.set(spectatorSnapshot({ won: true, roundResult: "won" }));

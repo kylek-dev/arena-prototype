@@ -2,6 +2,8 @@
 
 Date: 2026-11-07. **Status: accepted for local prototype implementation**, requested by the user for art tuning. Human browser/rendered review remains pending.
 
+**Superseded 2026-11-25:** the user asked for the lighting tweaks to be removed (playtest inbox). The window, its menu and Graphics entries and the `/lighting` command are gone (`auto/game-launcher`); the renderer still reads the authored preset from `assets/lighting.json` through `state/lighting.ts`, which is now edited as a file.
+
 ## Decision
 
 Add **Lighting tweaks (temporary)** to the game menu and a shortcut in Settings → Graphics. Open a movable nonmodal window without a scrim, using the existing `MovableWindow`/focus policy. Native range inputs own keyboard input while focused; clicking/refocusing the arena resumes gameplay with the panel still open. Closing/reopening retains values, Escape from a control closes the window, and Reset restores the starting values.

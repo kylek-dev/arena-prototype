@@ -13,6 +13,7 @@ import { useStore } from "../../state/store";
 import { PlayOnline } from "../play-online/PlayOnline";
 import { Stage } from "./Customizer";
 import { describe } from "./labels";
+import { Hint } from "../../ui/Tooltip";
 import "./customizer.css";
 
 /** The home screen before the first round: the saved character, ready to
@@ -33,9 +34,11 @@ export function StartScreen() {
         <h2>Your fighter</h2>
         <p className="customizer-summary">{describe(kit, look)}</p>
         <div className="start-actions">
-          <Button size="3" variant="soft" onClick={() => customizerVisible.set(true)}>
-            Customize character
-          </Button>
+          <Hint text="Change your fighter's appearance. Your appearance, keybinds and spells are saved on this device, and your appearance is locked for each match.">
+            <Button size="3" variant="soft" onClick={() => customizerVisible.set(true)}>
+              Customize character
+            </Button>
+          </Hint>
           <div className="start-setup">
             <Button variant="surface" color="gray" onClick={() => setPanel("settings")}>
               Keybinds
@@ -45,10 +48,6 @@ export function StartScreen() {
             </Button>
           </div>
         </div>
-        <p className="customizer-note">
-          Your look, keybinds and spells are saved on this device. Your look is locked for each
-          match once it starts.
-        </p>
         <Separator size="4" />
         <PlayOnline />
         <Separator size="4" />
