@@ -1,10 +1,15 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { adaptSnapshot } from "../../web/src/bridge/snapshot";
+import { withHandles, withTags } from "../../web/src/domain/handles";
 import type { MatchTicket } from "../../web/src/domain/network";
 import { Diagnostics } from "../../web/src/features/diagnostics/Diagnostics";
 import { MatchStatus } from "../../web/src/features/match-status/MatchStatus";
 import { GameMenu } from "../../web/src/features/menu/GameMenu";
+import { Launcher } from "../../web/src/features/launcher/Launcher";
+import { TooltipProvider } from "../../web/src/ui/Tooltip";
+import { PlayWindow } from "../../web/src/features/launcher/PlayWindow";
+import { openPlay } from "../../web/src/state/windows";
 import { Nameplates } from "../../web/src/features/nameplates/Nameplates";
 import { Frames } from "../../web/src/features/unit-frames/Frames";
 import { diagnosticsVisible } from "../../web/src/runtime/diagnostics";
@@ -181,6 +186,41 @@ it("names network opponents and marks disconnected players, leaving practice unc
   expect(adaptSnapshot({ ...snapshot(), maxHealth: 100 }).networked).toBe(false);
 });
 
+it("shows handles in full on unit frames and by name on nameplates", () => {
+  const named = withHandles(networkSnapshot(), ["Rook#0042", "Ash#1000", null, "Guest#0007"]);
+  engine.set(named);
+  nameplateScene.set(named);
+  render(
+    <>
+      <Frames />
+      <Nameplates />
+    </>,
+  );
+  expect(screen.getAllByText("Ash#1000").length).toBeGreaterThan(0);
+  expect(screen.getByText("Ash")).toBeTruthy();
+  expect(screen.getByText("Teammate 1 · Disconnected")).toBeTruthy();
+  expect(screen.getByText("Guest · Disconnected")).toBeTruthy();
+});
+
+it("tags admins beside their names in frames and on nameplates", () => {
+  const named = withTags(withHandles(networkSnapshot(), ["Rook#0042", "Ash#1000", null, null]), [
+    { admin: false },
+    { admin: true },
+    { admin: false },
+    { admin: false },
+  ]);
+  engine.set(named);
+  nameplateScene.set(named);
+  render(
+    <>
+      <Frames />
+      <Nameplates />
+    </>,
+  );
+  expect(screen.getAllByText("Admin").length).toBeGreaterThanOrEqual(2);
+  expect(screen.getByRole("button", { name: /Ash#1000 \(admin\) health/ })).toBeTruthy();
+});
+
 it("greys out disconnected unit frames and nameplates with a label", () => {
   engine.set(networkSnapshot());
   nameplateScene.set(networkSnapshot());
@@ -258,22 +298,32 @@ it("tells the player about connecting, waiting, reconnecting, the end and a rejo
 it("offers leaving in the menu during a match and hides practice-only controls", () => {
   characterKits.set([humanKit()]);
   engine.set(snapshot());
-  render(<GameMenu />);
-  expect(screen.getByText("Local solo practice")).toBeTruthy();
+  openPlay("practice");
+  render(
+    <TooltipProvider>
+      <GameMenu />
+      <Launcher />
+      <PlayWindow />
+    </TooltipProvider>,
+  );
+  const customize = () => screen.getByRole("button", { name: "Customize character" });
+  expect(document.querySelector(".game-menu > .rt-Text")?.textContent).toBe("Practice");
   expect(screen.getByRole("combobox", { name: "Practice mode" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Customize character" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Reset practice" })).toBeTruthy();
+  expect(customize().getAttribute("aria-disabled")).toBeNull();
   expect(screen.queryByRole("button", { name: "Leave match" })).toBeNull();
   act(() => link.join(ticket));
   expect(screen.getByText("Network match")).toBeTruthy();
   expect(screen.queryByRole("combobox", { name: "Practice mode" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Reset practice" })).toBeNull();
+  expect(screen.getByText("These options are available outside a match.")).toBeTruthy();
   // Character look is locked once in a match.
-  expect(screen.queryByRole("button", { name: "Customize character" })).toBeNull();
+  expect(customize().getAttribute("aria-disabled")).toBe("true");
   fireEvent.click(screen.getByRole("button", { name: "Leave match" }));
   expect(link.state.get().phase).toBe("idle");
   expect(link.read()).toEqual([]);
   // Back in practice, the match can be rejoined from the menu and customization returns.
-  expect(screen.getByRole("button", { name: "Customize character" })).toBeTruthy();
+  expect(customize().getAttribute("aria-disabled")).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Rejoin last match" }));
   expect(link.state.get().phase).toBe("connecting");
   characterKits.set([]);

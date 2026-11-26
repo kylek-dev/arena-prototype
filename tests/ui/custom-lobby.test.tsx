@@ -1,8 +1,9 @@
+import { TooltipProvider } from "../../web/src/ui/Tooltip";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import type { MatchTicket } from "../../web/src/domain/network";
 import { CustomLobby } from "../../web/src/features/custom-lobby/CustomLobby";
-import { GameMenu } from "../../web/src/features/menu/GameMenu";
+import { PlayOnline } from "../../web/src/features/play-online/PlayOnline";
 import { QueueBar } from "../../web/src/features/queue/QueueBar";
 import { Scoreboard } from "../../web/src/features/scoreboard/Scoreboard";
 import { createQueue, installPartyLinks, type Queue } from "../../web/src/runtime/matchmaking";
@@ -127,10 +128,11 @@ it("hosts a custom lobby from the game menu, controls teams/settings/host, and s
   matchQueue.set(fake.queue);
   render(
     <>
-      <GameMenu />
+      <PlayOnline />
       <CustomLobby />
       <QueueBar />
     </>,
+    { wrapper: TooltipProvider },
   );
 
   fireEvent.click(screen.getByRole("button", { name: "Host custom match" }));
@@ -207,6 +209,25 @@ it("hosts a custom lobby from the game menu, controls teams/settings/host, and s
   fireEvent.click(within(dialog).getByRole("button", { name: "Make Player 2 host" }));
   expect(fake.sent().at(-1)).toEqual({ type: "transfer_lobby_host", member: 2 });
   fireEvent.click(within(dialog).getByRole("button", { name: "Remove Player 2" }));
+  expect(fake.sent().at(-1)).toEqual({ type: "kick_lobby_member", member: 2 });
+
+  // With handles from the door, members are named by them.
+  fake.say({
+    type: "lobby",
+    code: "K7P2QX",
+    mode: "1v1",
+    settings: { version: 1, map: "colosseum", round_seconds: 300 },
+    spectator_slots: 4,
+    you: 1,
+    host: true,
+    can_start: true,
+    members: [
+      { id: 1, slot: "team_a", host: true, you: true, handle: "Rook#0042" },
+      { id: 2, slot: "team_b", host: false, you: false, handle: "Guest#0007" },
+    ],
+  });
+  expect(within(dialog).getByText("Rook#0042")).toBeTruthy();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Remove Guest#0007" }));
   expect(fake.sent().at(-1)).toEqual({ type: "kick_lobby_member", member: 2 });
 
   // Minimize shows the top bar pill; clicking Open lobby brings the dialog back.
@@ -366,5 +387,5 @@ it("handles non-host controls, spectator notices, kicks, and suppresses auto-ope
   // Kicked from the lobby shows the QueueBar warning notice.
   fake.say({ type: "lobby_left", reason: "kicked" });
   expect(screen.queryByRole("dialog")).toBeNull();
-  expect(screen.getByRole("status").textContent).toContain("removed from the custom lobby");
+  expect(screen.getByRole("status").textContent).toContain("removed you from the custom lobby");
 });

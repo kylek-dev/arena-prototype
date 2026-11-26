@@ -53,6 +53,21 @@
 .unit-heading strong {
   font-size: 14px;
   font-weight: 600;
+  /* Long handles (16 letters and a number) end in an ellipsis; the full
+     name is in the title. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.unit-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.unit-heading .unit-status {
+  flex-shrink: 0;
 }
 .health-track,
 .resource-track {
@@ -112,4 +127,10 @@
 .placed > div > .rt-Button,
 .placed > div > .row {
   margin-top: 7px;
+}
+/* A party member who is not in this match: with the team, greyed out. */
+.unit-frame.party-away {
+  /* Greyed like a disconnected frame. */
+  filter: grayscale(1);
+  opacity: 0.6;
 }

@@ -151,6 +151,9 @@ pub enum ToClient {
         members: usize,
         leader: bool,
         queue: Option<String>,
+        /// The other members' handles, leader first; `null` for one the
+        /// door cannot name. The page shows them as teammates.
+        mates: Vec<Option<String>>,
     },
     /// Searching: `waiting` players (including this party) want `mode`;
     /// this search has run `waited_ms`; recent matches took about
@@ -237,12 +240,13 @@ impl ToClient {
             message: message.into(),
         }
     }
-    fn party(view: PartyView) -> Self {
+    fn party(view: PartyView, mates: Vec<Option<String>>) -> Self {
         Self::Party {
             code: view.code,
             members: view.members,
             leader: view.leader,
             queue: view.queue.map(|mode| mode.id().into()),
+            mates,
         }
     }
 }
@@ -321,6 +325,11 @@ pub(super) enum Command {
     },
     Gone {
         conn: QueueConn,
+    },
+    /// The match server reports these matches ended: their players and
+    /// spectators are no longer in a match (presence, whispers, chat).
+    MatchesEnded {
+        ids: Vec<u64>,
     },
     /// The account was deleted or logged out everywhere: its open queue
     /// connections stop signing it into tickets at once (ADR 0055).
@@ -483,6 +492,9 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
     let mut tick = tokio::time::interval(TICK_EVERY);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut status_at = Instant::now() + STATUS_EVERY;
+    let mut check = tokio::time::interval(door.config.match_check_every);
+    check.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut checking: Option<tokio::task::JoinHandle<()>> = None;
     let mut stop = door.shutdown.subscribe();
     loop {
         let now = Instant::now();
@@ -493,6 +505,24 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
         let out = tokio::select! {
             _ = stop.wait_for(|stop| *stop) => break,
             _ = tick.tick() => mm.tick(now),
+            _ = check.tick(), if door.match_status.is_some() => {
+                // Past the in-match window a seat counts for nothing: forget
+                // it rather than ask about its match forever.
+                for id in chat.stale_matches(now) {
+                    for conn in chat.end_match(id) {
+                        matched_at.remove(&conn);
+                    }
+                }
+                if checking.as_ref().is_none_or(|task| task.is_finished())
+                    && !chat.members.is_empty()
+                {
+                    checking = Some(tokio::spawn(check_matches(
+                        door.clone(),
+                        chat.members.keys().copied().collect(),
+                    )));
+                }
+                Vec::new()
+            }
             command = commands.recv() => match command {
                 None => break,
                 Some(Command::Hello { conn, guest, address, holder, out }) => {
@@ -546,8 +576,17 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     mm.set_lobby_settings(conn, settings)
                 }
                 Some(Command::StartLobby { conn }) => mm.start_lobby(conn),
+                Some(Command::MatchesEnded { ids }) => {
+                    for id in ids {
+                        for conn in chat.end_match(id) {
+                            matched_at.remove(&conn);
+                        }
+                    }
+                    Vec::new()
+                }
                 Some(Command::Revoke { account }) => {
                     by_account.remove(&account);
+                    let mut renamed = Vec::new();
                     for (conn, holder) in holders.iter_mut() {
                         if holder.account == Some(account) {
                             // A mute outlives logging out.
@@ -557,17 +596,25 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                                 handle: Some(super::auth::guest_handle()),
                                 admin: false,
                             };
+                            renamed.push(*conn);
                         }
                     }
-                    Vec::new()
+                    // Lobby- and party-mates see the new (guest) name at once.
+                    let mut out = mm.announce_lobbies_of(renamed.iter().copied());
+                    out.extend(mm.announce_parties_of(renamed));
+                    out
                 }
                 Some(Command::Rename { account, handle }) => {
-                    for holder in holders.values_mut() {
+                    let mut renamed = Vec::new();
+                    for (conn, holder) in holders.iter_mut() {
                         if holder.account == Some(account) {
                             holder.handle = Some(handle);
+                            renamed.push(*conn);
                         }
                     }
-                    Vec::new()
+                    let mut out = mm.announce_lobbies_of(renamed.iter().copied());
+                    out.extend(mm.announce_parties_of(renamed));
+                    out
                 }
                 Some(Command::Invite { conn, from, to, to_handle }) => {
                     if holders.get(&conn).and_then(|h| h.account) == Some(from) {
@@ -666,7 +713,19 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
         for action in out {
             searches.observe(&action);
             match action {
-                Out::Party { conn, view } => send(&conns, conn, ToClient::party(view)),
+                Out::Party { conn, view } => {
+                    let mates = mm
+                        .party_mates(conn)
+                        .into_iter()
+                        .map(|mate| {
+                            holders
+                                .get(&mate)
+                                .and_then(|holder| holder.handle)
+                                .map(|handle| handle.to_string())
+                        })
+                        .collect();
+                    send(&conns, conn, ToClient::party(view, mates));
+                }
                 Out::ReadyCheck { conn, check } => send(
                     &conns,
                     conn,
@@ -737,7 +796,15 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                         searches.matched(conn, match_id);
                     }
                 }
-                Out::Lobby { conn, view } => send(&conns, conn, ToClient::Lobby(view)),
+                Out::Lobby { conn, mut view } => {
+                    for member in &mut view.members {
+                        member.handle = holders
+                            .get(&member.conn)
+                            .and_then(|holder| holder.handle)
+                            .map(|handle| handle.to_string());
+                    }
+                    send(&conns, conn, ToClient::Lobby(view));
+                }
                 Out::LobbyLeft { conn, reason } => send(
                     &conns,
                     conn,
@@ -878,8 +945,8 @@ pub(super) enum Presence {
     Online,
     Searching,
     InLobby,
-    /// Got a match ticket within [`IN_MATCH`] (shown unless searching right
-    /// now; the door never hears when a match ends).
+    /// Got a match ticket within [`IN_MATCH`] and the match server has not
+    /// reported the match ended (shown unless searching right now).
     InMatch,
 }
 
@@ -895,8 +962,9 @@ impl Presence {
     }
 }
 
-/// How long after a match ticket a player counts as in a match: a round
-/// (20 min) and a little. The door never hears when a match ends.
+/// How long after a match ticket a player counts as in a match at most: a
+/// round (20 min) and a little. Sooner when the match server reports the
+/// match ended (`--match-status`); this is the fallback without an answer.
 const IN_MATCH: Duration = Duration::from_secs(21 * 60);
 
 /// Drops `conn` from the account index.
@@ -913,6 +981,69 @@ fn unindex(
         if conns.is_empty() {
             by_account.remove(&account);
         }
+    }
+}
+
+/// Asks the match server about each seated match and reports those that
+/// ended. Unknown matches (no one has joined yet, or a restarted server)
+/// stay seated until the in-match window runs out.
+async fn check_matches(door: Arc<Door>, ids: Vec<u64>) {
+    let (Some(client), Some(base)) = (&door.match_status, &door.config.match_status) else {
+        return;
+    };
+    let base = base.trim_end_matches('/');
+    // At most this many questions in flight at once.
+    let gate = Arc::new(tokio::sync::Semaphore::new(16));
+    let mut asks = tokio::task::JoinSet::new();
+    for id in ids {
+        let (client, gate) = (client.clone(), gate.clone());
+        let url = format!("{base}/matches/{id:016x}");
+        asks.spawn(async move {
+            let _permit = gate.acquire_owned().await.ok();
+            let reply = client.get(url).send().await.map_err(|_| ())?;
+            match reply.status() {
+                // Not joined yet, or a restarted server: stays seated.
+                reqwest::StatusCode::NOT_FOUND => return Ok(None),
+                status if !status.is_success() => return Err(()),
+                _ => {}
+            }
+            let status: crate::MatchStatus = reply.json().await.map_err(|_| ())?;
+            Ok((status.state == crate::MatchState::Ended).then_some(id))
+        });
+    }
+    let (mut ended, mut failed) = (Vec::new(), 0);
+    while let Some(answer) = asks.join_next().await {
+        match answer {
+            Ok(Ok(id)) => ended.extend(id),
+            _ => failed += 1,
+        }
+    }
+    if failed > 0 {
+        warn_unanswered(failed);
+    }
+    if !ended.is_empty() {
+        let _ = door.queue.send(Command::MatchesEnded { ids: ended }).await;
+    }
+}
+
+/// Unanswered match checks leave players in the 21-minute window: say so,
+/// at most once a minute.
+fn warn_unanswered(failed: usize) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let last = LAST.load(Ordering::Relaxed);
+    if now >= last + 60
+        && LAST
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        tracing::warn!(
+            failed,
+            "the match server did not answer match checks; check --match-status"
+        );
     }
 }
 
@@ -988,6 +1119,30 @@ impl ChatState {
         self.unseat(conn);
         self.members.entry(seat.match_id).or_default().push(conn);
         self.seats.insert(conn, seat);
+    }
+
+    /// Matches whose seats are all past the in-match window.
+    fn stale_matches(&self, now: Instant) -> Vec<u64> {
+        self.members
+            .iter()
+            .filter(|(_, conns)| {
+                conns.iter().all(|conn| {
+                    self.seats
+                        .get(conn)
+                        .is_none_or(|seat| now.saturating_duration_since(seat.at) >= IN_MATCH)
+                })
+            })
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// Unseats everyone still seated in `match_id`, returning them.
+    fn end_match(&mut self, match_id: u64) -> Vec<QueueConn> {
+        let conns = self.members.remove(&match_id).unwrap_or_default();
+        for conn in &conns {
+            self.seats.remove(conn);
+        }
+        conns
     }
 
     fn unseat(&mut self, conn: QueueConn) {
@@ -1898,6 +2053,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ending_a_match_unseats_only_its_players() {
+        let mut chat = ChatState::default();
+        let seat = |match_id, team| ChatSeat {
+            match_id,
+            team,
+            at: Instant::now(),
+        };
+        chat.seat(1, seat(10, Some(0)));
+        chat.seat(2, seat(10, None));
+        chat.seat(3, seat(11, Some(1)));
+        let mut ended = chat.end_match(10);
+        ended.sort_unstable();
+        assert_eq!(ended, vec![1, 2]);
+        assert!(!chat.seats.contains_key(&1) && !chat.seats.contains_key(&2));
+        assert!(chat.seats.contains_key(&3));
+        assert!(!chat.members.contains_key(&10));
+        assert!(chat.end_match(10).is_empty());
+    }
+
+    #[test]
+    fn a_reseated_player_keeps_the_new_seat_when_the_old_match_ends() {
+        let mut chat = ChatState::default();
+        let start = Instant::now();
+        let seat = |match_id, at| ChatSeat {
+            match_id,
+            team: Some(0),
+            at,
+        };
+        chat.seat(1, seat(10, start));
+        chat.seat(2, seat(10, start));
+        chat.seat(1, seat(11, start));
+        assert_eq!(chat.end_match(10), vec![2]);
+        assert_eq!(chat.seats.get(&1).map(|seat| seat.match_id), Some(11));
+        // Seats past the in-match window are stale; fresh ones are not.
+        assert!(chat.stale_matches(start + IN_MATCH / 2).is_empty());
+        assert_eq!(chat.stale_matches(start + IN_MATCH), vec![11]);
+    }
+
+    #[test]
     fn guest_ids_are_exactly_32_hex_digits() {
         assert_eq!(
             parse_guest(&"0f".repeat(16)),
@@ -1936,14 +2130,17 @@ mod tests {
         assert!(command(1, parse(r#"{"type":"queue","mode":"4v4"}"#).unwrap()).is_err());
         assert!(command(1, parse(r#"{"type":"hello","guest":"ab"}"#).unwrap()).is_err());
         assert_eq!(
-            serde_json::to_string(&ToClient::party(PartyView {
-                code: Some("K7P2QX".into()),
-                members: 2,
-                leader: true,
-                queue: Some(Mode::Team2v2),
-            }))
+            serde_json::to_string(&ToClient::party(
+                PartyView {
+                    code: Some("K7P2QX".into()),
+                    members: 2,
+                    leader: true,
+                    queue: Some(Mode::Team2v2),
+                },
+                vec![Some("Rook#0042".into())]
+            ))
             .unwrap(),
-            r#"{"type":"party","code":"K7P2QX","members":2,"leader":true,"queue":"2v2"}"#
+            r#"{"type":"party","code":"K7P2QX","members":2,"leader":true,"queue":"2v2","mates":["Rook#0042"]}"#
         );
         // Custom lobby requests parse strictly and reject free-form map/mode fields.
         assert!(matches!(

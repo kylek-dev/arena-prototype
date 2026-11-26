@@ -14,11 +14,14 @@ import {
   prematch,
   scoreboardVisible,
   customLobbyVisible,
+  setPanel,
 } from "../state/session";
 import { isEngineReady } from "../domain/abilities/catalog";
 import { escapeStopsCast } from "../domain/bindings/escape";
 import { dispatch, input, isCasting, stopCasting, stopRecentlyRequested } from "./commands";
 import { installFocusPolicy, isTextEntry } from "./focus";
+import { chatShown, requestChat } from "../state/chat";
+import { closeLauncherWindows } from "../state/windows";
 // Precedence: conflict > capture > quick bind > text entry > Escape stops a cast >
 // modal/typing > layout > gameplay (see domain/bindings/escape.ts).
 export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void) {
@@ -157,6 +160,27 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
       customLobbyVisible.set(false);
       return;
     }
+    // An open menu inside a window takes its own Escape.
+    if (e.code === "Escape" && document.activeElement?.closest('[data-escape-owner="true"]'))
+      return;
+    // Escape closes the dock's windows (Spells, Friends, Play) first.
+    if (e.code === "Escape" && mode.panel === "spellbook" && !isTextEntry(document.activeElement)) {
+      e.preventDefault();
+      setPanel(null);
+      return;
+    }
+    if (
+      e.code === "Escape" &&
+      !mode.panel &&
+      !customizing.get() &&
+      !prematch.get() &&
+      !scoreboardVisible.get() &&
+      !isTextEntry(document.activeElement) &&
+      closeLauncherWindows()
+    ) {
+      e.preventDefault();
+      return;
+    }
     if (customizing.get() && e.code === "Escape" && !mode.panel) {
       e.preventDefault();
       customizing.set(false);
@@ -178,6 +202,28 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
       return;
     }
     if (blocksGameplay() || error.get() || !focusPolicy.canRoute()) return;
+    // Enter opens chat, and `/` opens it with a command started (unless
+    // `/` is bound to an action); while typing there, keys go to the chat box.
+    const plain = !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey;
+    // `/` by its character (any layout) or the numpad; only when no action
+    // is bound to that key.
+    const slash =
+      (e.key === "/" || e.code === "Slash" || e.code === "NumpadDivide") &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !e.metaKey &&
+      !Object.values(config().bindings).some((pair) => pair.some((c) => same(c, chord(e))));
+    if (((e.code === "Enter" || e.code === "NumpadEnter") && plain) || slash) {
+      if (chatShown.get()) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        // A held key opens the field once, never toggles it.
+        if (e.repeat) return;
+        cancel();
+        requestChat(slash ? "/" : "");
+        return;
+      }
+    }
     if (e.code === "Tab" && e.shiftKey) {
       cancel();
       focusPolicy.leave();

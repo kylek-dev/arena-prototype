@@ -27,6 +27,8 @@ export type ScoreboardRow = ScoreboardEntry & {
   team: ScoreboardTeam;
   isLocalPlayer: boolean;
   disconnected: boolean;
+  /** The server's admin tag for this fighter's player. */
+  admin: boolean;
 };
 
 export type ScoreboardSortKey =
@@ -222,6 +224,7 @@ export function buildMatchScoreboard(source: ScoreboardSource): MatchScoreboard 
       team,
       isLocalPlayer: !spectating && entry.actor === 0,
       disconnected: Boolean(rosterUnit?.disconnected),
+      admin: Boolean(rosterUnit?.admin),
     };
     if (team === "allies") allies.push(row);
     else opponents.push(row);
