@@ -5,15 +5,18 @@ import {
   chatPrefix,
   chatTabLabel,
   chatTabs,
+  defaultChannel,
+  tabPartner,
+  whisperDraft,
   chatText,
   isIgnored,
   tabMessages,
-  type ChatChannel,
   type ChatMessage,
+  type ChatTab,
 } from "../../domain/chat";
-import { isHandle } from "../../domain/handles";
+import { handleName } from "../../domain/handles";
 import type { Queue } from "../../runtime/matchmaking";
-import { chatFocusRequest, chatShown } from "../../state/chat";
+import { chatFocusRequest, chatShown, requestChat } from "../../state/chat";
 import { updateConfig, useConfigSelector } from "../../state/config";
 import { anchorAt, besideLauncher } from "../../domain/layout/model";
 import { CHAT_SIZE, clampChatSize, type ChatSize } from "../../domain/preferences/schema";
@@ -23,7 +26,7 @@ import { createStore, useStore } from "../../state/store";
 import { accountService } from "../../state/account";
 import { LOADING_ACCOUNT } from "../../runtime/account";
 import { pageCommandContext, runSlash } from "../../runtime/chat-commands";
-import { unescapeSlash } from "../../domain/commands";
+import { parseSlash, unescapeSlash } from "../../domain/commands";
 import { AdminTag } from "../../ui/AdminTag";
 import { Placed } from "../../ui/Placed";
 import "./chat.css";
@@ -52,8 +55,8 @@ function NameMenu({
         type="button"
         role="menuitem"
         onClick={() => {
-          queue.whisperTo(handle);
-          queue.showChat("whisper");
+          // Starts a whisper in the field: `/w Name#0000 `.
+          requestChat(`/w ${handle} `);
           close();
         }}
       >
@@ -244,35 +247,27 @@ function Box({
   const seated = useStore(engine, (s) => Boolean(s?.networked && !s.spectating));
   const account = useStore(accountService, (a) => a);
   const me = useStore(account?.state ?? NO_ACCOUNT, (s) => s.me?.handle ?? null);
-  const tabs = chatTabs(spectating);
-  const active: ChatChannel = tabs.includes(chat.active) ? chat.active : tabs[0];
+  const tabs = chatTabs(spectating, chat.conversations);
+  const active: ChatTab = tabs.includes(chat.active) ? chat.active : "all";
   const [draft, setDraft] = useState("");
   const [menu, setMenu] = useState<number | null>(null);
   const [focused, setFocused] = useState(false);
-  const [needsTarget, setNeedsTarget] = useState(false);
   const field = useRef<HTMLInputElement>(null);
   const log = useRef<HTMLOListElement>(null);
   const focusRequest = useStore(chatFocusRequest, (r) => r);
   const lines = tabMessages(chat, active).slice(-SHOWN);
-  // The tab follows where the player is: a seated player on Team (players
-  // in a live match never hear Public), a spectator on Spectators (the only
-  // one they post to), and anyone else on Public. Only on a change, so a
-  // tab picked by hand stays.
-  const place: ChatChannel = spectating ? "spectator" : seated ? "team" : "public";
-  const wasPlace = useRef<ChatChannel | null>(null);
-  useEffect(() => {
-    const before = wasPlace.current;
-    wasPlace.current = place;
-    if (before === null ? place !== "public" : before !== place) queue.showChat(place);
-  }, [queue, place]);
   // Enter (from the input router) opens the field: requests after this box
   // appeared, never the ones before it (a remount must not take the keys).
   const seenRequest = useRef(focusRequest.count);
   useEffect(() => {
     if (focusRequest.count > seenRequest.current) {
-      // `/` starts a command (keeping a draft already begun with one).
-      // `/` starts a command in an empty field; a draft already typed stays.
-      if (focusRequest.prefill) setDraft((d) => d || focusRequest.prefill);
+      const prefill = focusRequest.prefill;
+      // A whisper (`/w Name#0000 `) replaces the field; `/` starts a command
+      // in an empty field and keeps a draft already typed.
+      // Whisper keeps a message already typed, behind `/w Name#0000 `.
+      if (prefill.startsWith("/w "))
+        setDraft((d) => (d.trim() && !d.trimStart().startsWith("/") ? prefill + d : prefill));
+      else if (prefill) setDraft((d) => d || prefill);
       field.current?.focus();
     }
     seenRequest.current = focusRequest.count;
@@ -284,29 +279,41 @@ function Box({
     const element = log.current;
     if (element && pinned.current) element.scrollTop = element.scrollHeight;
   }, [newest, active]);
-  const { text, tooLong } = chatText(draft);
-  const whisperTo = chat.whisperTo;
+  // Who the field whispers to: `/w Name#0000 ` typed, or the conversation
+  // tab shown (unless a command is being typed).
+  const typed = whisperDraft(draft);
+  const partner = tabPartner(active);
+  // Only a real command leaves the conversation; `//text` is a line too.
+  const whisperingTo = typed?.to ?? (partner && !parseSlash(draft) ? partner : null);
+  const body = typed ? typed.text : draft;
+  const { text, tooLong } = chatText(body);
+  const channel = defaultChannel({ seated, spectating });
+  /** The channel plain text goes to: All's default, or the tab's own. */
+  const target =
+    active === "all"
+      ? channel
+      : partner
+        ? null
+        : (active as Exclude<ChatTab, "all" | `w:${string}`>);
   const leave = () => field.current?.blur();
   const send = () => {
     if (!text) {
-      leave();
+      if (!typed) leave();
       return;
     }
     if (tooLong) return;
-    // Commands run here (`/help` and the rest); `//` sends a line with one `/`.
-    if (runSlash(text, pageCommandContext(queue))) {
-      setDraft("");
-      leave();
-      return;
-    }
-    const message = unescapeSlash(text);
-    if (active === "whisper") {
-      if (!whisperTo || !isHandle(whisperTo)) {
-        setNeedsTarget(true);
+    if (whisperingTo) {
+      queue.whisper(whisperingTo, typed ? text : unescapeSlash(text));
+    } else {
+      // Commands run here (`/help` and the rest); `//` sends one `/`.
+      if (runSlash(text, pageCommandContext(queue))) {
+        setDraft("");
+        leave();
         return;
       }
-      queue.whisper(whisperTo, message);
-    } else queue.say(active, message);
+      const message = unescapeSlash(text);
+      queue.say(target ?? channel, message);
+    }
     setDraft("");
     leave();
   };
@@ -332,22 +339,35 @@ function Box({
       <div className="chat-tabs" role="tablist" aria-label="Chat channels">
         {tabs.map((tab) => {
           const unread = chat.unread[tab] ?? 0;
+          const handle = tabPartner(tab);
           return (
-            <button
-              key={tab}
-              type="button"
-              role="tab"
-              aria-selected={tab === active}
-              className="chat-tab"
-              onClick={() => queue.showChat(tab)}
-            >
-              {chatTabLabel(tab)}
-              {unread > 0 && tab !== active && (
-                <span className="chat-unread" aria-label={`${unread} unread`}>
-                  {unread > 99 ? "99+" : unread}
-                </span>
+            <span key={tab} className={`chat-tab-wrap${handle ? " conversation" : ""}`}>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === active}
+                className="chat-tab"
+                title={handle ?? undefined}
+                onClick={() => queue.showChat(tab)}
+              >
+                {handle ? handleName(handle) : chatTabLabel(tab)}
+                {unread > 0 && tab !== active && (
+                  <span className="chat-unread" aria-label={`${unread} unread`}>
+                    {unread > 99 ? "99+" : unread}
+                  </span>
+                )}
+              </button>
+              {handle && (
+                <button
+                  type="button"
+                  className="chat-tab-close"
+                  aria-label={`Close the conversation with ${handle}`}
+                  onClick={() => queue.closeConversation(handle)}
+                >
+                  ×
+                </button>
               )}
-            </button>
+            </span>
           );
         })}
       </div>
@@ -360,12 +380,12 @@ function Box({
         }}
         role="log"
         aria-live="polite"
-        aria-label={chatTabLabel(active)}
+        aria-label={partner ?? chatTabLabel(active)}
       >
         {editing && lines.length === 0 ? (
           <li className="chat-line public">
             <span className="chat-name">[Public] A player</span>
-            <span className="chat-text">: chat appears here</span>
+            <span className="chat-text">: Chat messages appear here.</span>
           </li>
         ) : (
           lines.map((message) => (
@@ -389,43 +409,27 @@ function Box({
           </button>
         </p>
       )}
-      {active === "whisper" && (
-        <label className="chat-to">
-          To
-          <input
-            value={whisperTo ?? ""}
-            maxLength={21}
-            placeholder="Name#number"
-            aria-label="Whisper to"
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(event) => {
-              setNeedsTarget(false);
-              queue.whisperTo(event.target.value.trim() || null);
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                field.current?.focus();
-              } else if (event.key === "Escape") {
-                event.preventDefault();
-                event.currentTarget.blur();
-              }
-            }}
-          />
-        </label>
-      )}
-      {needsTarget && active === "whisper" && (
-        <p className="chat-error" role="status">
-          Pick who to whisper: their name and number, or Whisper from a friend's name.
+      {whisperingTo && (
+        <p className="chat-whispering" role="status">
+          Whispering to {whisperingTo}
         </p>
       )}
       <input
         ref={field}
-        className="chat-input"
+        className={`chat-input${whisperingTo ? " whispering" : ""}`}
         value={draft}
-        placeholder={focused ? `Say in ${chatTabLabel(active)}` : "Press Enter to chat"}
-        aria-label={`Message to ${chatTabLabel(active)}`}
+        placeholder={
+          focused
+            ? whisperingTo
+              ? `Whisper to ${whisperingTo}`
+              : `Say in ${chatTabLabel(target ?? channel)}`
+            : "Press Enter to chat"
+        }
+        aria-label={
+          whisperingTo
+            ? `Whisper to ${whisperingTo}`
+            : `Message to ${chatTabLabel(target ?? channel)}`
+        }
         aria-invalid={tooLong || undefined}
         autoComplete="off"
         spellCheck={false}
@@ -436,7 +440,7 @@ function Box({
       />
       {tooLong && (
         <p className="chat-error" role="status">
-          Too long: {MAX_CHAT_CHARS} characters at most.
+          Messages hold up to {MAX_CHAT_CHARS} characters.
         </p>
       )}
       {!editing && <ResizeGrip size={size} onDraft={resize.draft} onCommit={resize.commit} />}
@@ -444,10 +448,6 @@ function Box({
   );
 }
 
-/** The movable chat box (planning/issues/chat.md): channel tabs with unread
- * markers, the door's messages and refusals, whispers, and ignoring from a
- * name. Enter opens it; while typing, keys go to it, not to combat. Placed
- * with the layout editor like the unit frames. */
 /** The launcher's place and the action bar's left edge, measured on screen
  * (frames are positioned by fractions, so only the DOM knows where the
  * launcher really is); `null` when not attached, nothing is measurable or

@@ -115,17 +115,6 @@
   color: var(--pal-gold-5);
   font-size: 12px;
 }
-.chat-to {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-}
-.chat-to input {
-  flex: 1;
-  min-width: 0;
-  font-family: ui-monospace, monospace;
-}
 .chat-input {
   width: 100%;
   min-width: 0;
@@ -167,4 +156,35 @@
 .chat-resize:hover,
 .chat-resize:focus-visible {
   opacity: 1;
+}
+/* Whispering: the field takes the arcane swatches and says to whom. */
+.chat-whispering {
+  margin: 0;
+  color: var(--pal-arcane-5);
+  font-size: 12px;
+}
+.chat-input.whispering {
+  color: var(--pal-arcane-6);
+  background: color-mix(in srgb, var(--pal-arcane-1) 70%, transparent);
+  border-color: var(--pal-arcane-4);
+}
+.chat-tab-wrap {
+  display: inline-flex;
+  align-items: center;
+}
+.chat-tab-wrap.conversation .chat-tab {
+  color: var(--pal-arcane-5);
+  padding-right: 2px;
+}
+.chat-tab-close {
+  padding: 0 4px;
+  color: var(--gray-10);
+  background: none;
+  border: 0;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chat-tab-close:hover,
+.chat-tab-close:focus-visible {
+  color: var(--gray-12);
 }

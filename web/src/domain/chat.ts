@@ -48,20 +48,49 @@ export function parseChatLine(v: Record<string, unknown>): ChatLine | null {
   };
 }
 
-/** The chat box's tabs: a player's channels, or a spectator's (who can post
- * only to the spectators). Whispers share one tab. */
-export function chatTabs(spectating: boolean): readonly ChatChannel[] {
-  return spectating ? ["spectator", "public", "whisper"] : ["public", "team", "match", "whisper"];
+/** A chat box tab: everything (`all`), one channel, or one whisper
+ * conversation (`w:` and the other player's handle). */
+export type ChatTab = "all" | Exclude<ChatChannel, "whisper"> | `w:${string}`;
+export const conversationTab = (handle: string): ChatTab => `w:${handle}`;
+/** The other player in a whisper tab, or `null` for a channel tab. */
+export function tabPartner(tab: ChatTab) {
+  return tab.startsWith("w:") ? tab.slice(2) : null;
+}
+
+/** The chat box's tabs: All, the channels this player can use (a
+ * spectator's first), then one per whisper conversation. */
+export function chatTabs(spectating: boolean, conversations: readonly string[] = []): ChatTab[] {
+  return [
+    "all",
+    ...(spectating ? (["spectator", "public"] as const) : (["public", "team", "match"] as const)),
+    ...conversations.map(conversationTab),
+  ];
 }
 const TAB_LABELS: Record<ChatChannel, string> = {
   public: "Public",
   team: "Team",
   match: "Match",
   spectator: "Spectators",
-  whisper: "Whispers",
+  whisper: "Whisper",
 };
-export function chatTabLabel(tab: ChatChannel) {
-  return TAB_LABELS[tab];
+export function chatTabLabel(tab: ChatTab) {
+  if (tab === "all") return "All";
+  const partner = tabPartner(tab);
+  return partner ?? TAB_LABELS[tab as ChatChannel];
+}
+
+/** Where text typed in the All tab goes: the team when seated in a match,
+ * the spectators when watching, otherwise the public channel. */
+export function defaultChannel(place: { seated: boolean; spectating: boolean }) {
+  return place.spectating ? "spectator" : place.seated ? "team" : "public";
+}
+
+/** A draft that whispers: `/w Name#0000 ` (or `/whisper`) and the message
+ * so far. `null` until the handle is complete and followed by a space. */
+export function whisperDraft(draft: string) {
+  const match = /^\/(?:w|whisper)\s+(\S+)\s([\s\S]*)$/i.exec(draft);
+  if (!match || !isHandle(match[1])) return null;
+  return { to: match[1], text: match[2] };
 }
 
 /** Text the player typed, as the door will count it: trimmed, and too long
@@ -131,49 +160,84 @@ export function chatPrefix(message: ChatLine | SystemLine) {
     return message.to ? `To ${message.to}` : `${message.from} whispers`;
   return `[${TAB_LABELS[message.channel]}] ${message.from}`;
 }
+/** The other player in a whisper, from either side. */
+export function whisperPartner(message: ChatMessage) {
+  return message.channel === "whisper" ? (message.to ?? message.from) : null;
+}
 
 /** The chat log and the chat box's place in it. */
 export type ChatState = {
   /** Newest last, `MAX_CHAT_LOG` at most. */
   messages: ChatMessage[];
   /** The tab shown. */
-  active: ChatChannel;
-  /** Messages that arrived in each tab while another was shown. */
-  unread: Partial<Record<ChatChannel, number>>;
+  active: ChatTab;
+  /** Messages that arrived in each tab while neither it nor All was shown. */
+  unread: Partial<Record<ChatTab, number>>;
   /** Why the last request was refused (`chatErrorText`). */
   error: string | null;
   /** Players this connection ignores, as typed (the door matches by who
    * they are; this list is for showing and unignoring). */
   ignored: string[];
-  /** Who the whisper tab writes to. */
+  /** Whisper conversations with a tab, in the order they began. */
+  conversations: string[];
+  /** Who whispered last, for `/r`. */
   whisperTo: string | null;
   nextId: number;
 };
 export const MAX_CHAT_LOG = 200;
+/** Conversation tabs kept at once; the oldest closes first. */
+export const MAX_CONVERSATIONS = 6;
 export const EMPTY_CHAT: ChatState = {
   messages: [],
-  active: "public",
+  active: "all",
   unread: {},
   error: null,
   ignored: [],
+  conversations: [],
   whisperTo: null,
   nextId: 1,
 };
+const sameHandle = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
-/** Adds a message: unread in its tab unless shown (or one's own whisper),
- * and the whisper tab answers whoever whispered last if nobody was picked. */
+/** The tab a message belongs to besides All. */
+function tabOf(message: ChatLine): ChatTab {
+  return message.channel === "whisper"
+    ? conversationTab(message.to ?? message.from)
+    : (message.channel as ChatTab);
+}
+
+/** Adds a message: a whisper opens (or reuses) its conversation tab; it is
+ * unread in All and in its own tab unless one of them is shown (one's own
+ * whispers never are); `/r` answers whoever whispered last. */
 export function receiveChat(state: ChatState, line: ChatLine): ChatState {
   const message: ChatMessage = { ...line, id: state.nextId };
   const own = line.channel === "whisper" && line.to !== null;
-  const unread =
-    line.channel === state.active || own
+  let conversations = state.conversations;
+  let tab = tabOf(line);
+  if (line.channel === "whisper") {
+    const partner = line.to ?? line.from;
+    const known = conversations.find((other) => sameHandle(other, partner));
+    if (known) tab = conversationTab(known);
+    else conversations = withConversation(conversations, partner, state.active);
+  }
+  const seen = state.active === "all" || state.active === tab;
+  let unread =
+    own || seen
       ? state.unread
-      : { ...state.unread, [line.channel]: (state.unread[line.channel] ?? 0) + 1 };
+      : {
+          ...state.unread,
+          all: (state.unread.all ?? 0) + 1,
+          [tab]: (state.unread[tab] ?? 0) + 1,
+        };
+  // A conversation closed to make room takes its unread count with it.
+  for (const gone of state.conversations)
+    if (!conversations.includes(gone)) unread = readTab(unread, conversationTab(gone));
   return {
     ...state,
     messages: [...state.messages, message].slice(-MAX_CHAT_LOG),
     unread,
-    whisperTo: line.channel === "whisper" && !own && !state.whisperTo ? line.from : state.whisperTo,
+    conversations,
+    whisperTo: line.channel === "whisper" && !own ? line.from : state.whisperTo,
     nextId: state.nextId + 1,
   };
 }
@@ -195,25 +259,75 @@ export function systemChat(state: ChatState, text: string): ChatState {
   };
 }
 
-/** Shows `tab`, clearing its unread count. */
-export function showChatTab(state: ChatState, tab: ChatChannel): ChatState {
-  const { [tab]: _, ...unread } = state.unread;
-  return { ...state, active: tab, unread };
+/** Adds a conversation, closing the oldest when full, never the tab shown. */
+function withConversation(conversations: string[], handle: string, active: ChatTab) {
+  const next = [...conversations, handle];
+  while (next.length > MAX_CONVERSATIONS) {
+    const oldest = next.findIndex((other) => conversationTab(other) !== active);
+    next.splice(oldest, 1);
+  }
+  return next;
 }
 
-const sameHandle = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+/** Clears `tab`'s unread count, and takes it off All's as well. */
+function readTab(unread: ChatState["unread"], tab: ChatTab): ChatState["unread"] {
+  const next: ChatState["unread"] = { ...unread };
+  const count = next[tab] ?? 0;
+  delete next[tab];
+  const all = (next.all ?? 0) - count;
+  if (all > 0) next.all = all;
+  else delete next.all;
+  return next;
+}
+
+/** Shows `tab`, clearing its unread count (All clears every count). */
+export function showChatTab(state: ChatState, tab: ChatTab): ChatState {
+  if (tab === "all") return { ...state, active: tab, unread: {} };
+  return { ...state, active: tab, unread: readTab(state.unread, tab) };
+}
+
+/** Opens (or shows) the conversation tab with `handle`. */
+export function openConversation(state: ChatState, handle: string): ChatState {
+  const known = state.conversations.find((other) => sameHandle(other, handle));
+  const conversations = known
+    ? state.conversations
+    : withConversation(state.conversations, handle, state.active);
+  return showChatTab({ ...state, conversations }, conversationTab(known ?? handle));
+}
+
+/** Closes a conversation tab (its whispers stay in All). */
+export function closeConversation(state: ChatState, handle: string): ChatState {
+  const tab = conversationTab(
+    state.conversations.find((other) => sameHandle(other, handle)) ?? handle,
+  );
+  return {
+    ...state,
+    conversations: state.conversations.filter((other) => !sameHandle(other, handle)),
+    unread: readTab(state.unread, tab),
+    active: state.active === tab ? "all" : state.active,
+    whisperTo: state.whisperTo,
+  };
+}
+
 /** Whether `handle` is ignored here (names compare without case). */
 export function isIgnored(state: Pick<ChatState, "ignored">, handle: string) {
   return state.ignored.some((other) => sameHandle(other, handle));
 }
-/** The tab's messages, with system lines, without ignored players' earlier
- * lines. */
-export function tabMessages(state: ChatState, tab: ChatChannel) {
-  return state.messages.filter(
-    (message) =>
-      message.channel === "system" ||
-      (message.channel === tab && !(message.to === null && isIgnored(state, message.from))),
-  );
+/** The tab's messages without ignored players' earlier lines: All has
+ * everything; a channel tab its channel and system lines; a conversation
+ * tab the whispers with that player. */
+export function tabMessages(state: ChatState, tab: ChatTab) {
+  const partner = tabPartner(tab);
+  return state.messages.filter((message) => {
+    if (message.channel !== "system" && message.to === null && isIgnored(state, message.from))
+      return false;
+    if (tab === "all") return true;
+    if (partner) {
+      const other = whisperPartner(message);
+      return !!other && sameHandle(other, partner);
+    }
+    return message.channel === "system" || message.channel === tab;
+  });
 }
 export function withIgnored(state: ChatState, handle: string, on: boolean): ChatState {
   const rest = state.ignored.filter((other) => !sameHandle(other, handle));
