@@ -5,7 +5,7 @@ import { characterKits, customizerVisible } from "../../state/appearance";
 import { networkLink } from "../../state/network";
 import { engine, interaction, setPanel } from "../../state/session";
 import { createStore, useStore } from "../../state/store";
-import { friendsWindowVisible, playWindowVisible } from "../../state/windows";
+import { friendsWindowVisible, openPlay, playWindowVisible } from "../../state/windows";
 import type { LinkState } from "../../domain/network";
 import "./launcher.css";
 
@@ -42,15 +42,15 @@ export function Launcher() {
     {
       letter: "P",
       name: "Play",
-      hint: "Play: queue for 1v1, 2v2 or 3v3, host or join a custom game, or change and reset practice",
+      hint: "Play: practice, join a public queue, or host a custom match.",
       open: play,
       disabled: false,
-      toggle: () => playWindowVisible.set(!play),
+      toggle: () => (play ? playWindowVisible.set(false) : openPlay()),
     },
     {
       letter: "F",
       name: "Friends",
-      hint: "Friends: your friends list; add, invite, remove and block players",
+      hint: "Friends: view your friends, add players, and manage requests.",
       open: friends,
       disabled: false,
       toggle: () => friendsWindowVisible.set(!friends),
@@ -59,8 +59,8 @@ export function Launcher() {
       letter: "S",
       name: "Spells",
       hint: spectating
-        ? "Spells: not while spectating"
-        : "Spells: drag spells onto your action bars",
+        ? "Spells are unavailable while spectating."
+        : "Spells: drag spells onto your action bars.",
       open: panel === "spellbook",
       disabled: spectating,
       toggle: () => setPanel(panel === "spellbook" ? null : "spellbook"),
@@ -69,10 +69,10 @@ export function Launcher() {
       letter: "C",
       name: "Customize character",
       hint: !kits
-        ? "Customize character: no character is loaded"
+        ? "Customization is unavailable because no character is loaded."
         : inMatch
-          ? "Customize character: available outside a match (your look is locked for each match)"
-          : "Customize character: change your fighter's look",
+          ? "Customization is unavailable during a match."
+          : "Customize character: change your fighter's appearance.",
       open: customizing,
       disabled: !kits || inMatch,
       toggle: () => {

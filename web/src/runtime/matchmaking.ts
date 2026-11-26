@@ -30,11 +30,14 @@ import {
   MAX_IGNORE_REPLAY,
   SHARED_CHAT_REFUSALS,
   receiveChat,
+  closeConversation,
+  openConversation,
   showChatTab,
   systemChat,
   withIgnored,
   type ChatChannel,
   type ChatState,
+  type ChatTab,
 } from "../domain/chat";
 import { createStore } from "../state/store";
 
@@ -384,6 +387,7 @@ export function createQueue(deps: QueueDeps) {
     },
     /** Whispers to a friend. */
     whisper(to: string, text: string) {
+      // `/r` answers the last conversation, whoever began it.
       updateChat({ error: null, whisperTo: to });
       request(requests.whisper(to, text), "chat");
     },
@@ -392,7 +396,18 @@ export function createQueue(deps: QueueDeps) {
       const message = requests.ignore(handle, on);
       ignoring = on ? handle : null;
       pendingIgnore = message;
-      chat.set({ ...withIgnored(chat.get(), handle, on), error: null });
+      const log = withIgnored(chat.get(), handle, on);
+      // Ignoring a player also ends the conversation with them.
+      chat.set(
+        on
+          ? {
+              ...closeConversation(log, handle),
+              whisperTo:
+                log.whisperTo?.toLowerCase() === handle.toLowerCase() ? null : log.whisperTo,
+              error: null,
+            }
+          : { ...log, error: null },
+      );
       request(message, "chat");
     },
     /** Adds a system line (written by the page, never sent). */
@@ -403,11 +418,15 @@ export function createQueue(deps: QueueDeps) {
     clearChat() {
       chat.set({ ...chat.get(), messages: [], unread: {} });
     },
-    showChat(tab: ChatChannel) {
+    showChat(tab: ChatTab) {
       chat.set(showChatTab(chat.get(), tab));
     },
-    whisperTo(handle: string | null) {
-      updateChat({ whisperTo: handle });
+    /** Opens the conversation tab with a player. */
+    openConversation(handle: string) {
+      chat.set(openConversation(chat.get(), handle));
+    },
+    closeConversation(handle: string) {
+      chat.set(closeConversation(chat.get(), handle));
     },
     dismissChatError() {
       updateChat({ error: null });

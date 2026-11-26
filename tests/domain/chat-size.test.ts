@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { anchorAt, layout, position } from "../../web/src/domain/layout/model";
+import { anchorAt, besideLauncher, layout, position } from "../../web/src/domain/layout/model";
 import {
   CHAT_SIZE,
   clampChatSize,
@@ -43,4 +43,47 @@ it("keeps a resized frame's top-left corner where it was", () => {
     x: 0,
     y: 0,
   });
+});
+
+it("places an attached chat beside the launcher, as wide as the space to the action bar", () => {
+  const launcher = { right: 46, bottom: 960 };
+  expect(besideLauncher(launcher, 512, 210, 1, 1835, 260)).toEqual({
+    left: 42,
+    top: 738,
+    width: 450,
+  });
+  // Scaled frames take less layout width per screen pixel.
+  expect(besideLauncher(launcher, 600, 210, 2, 1835, 260)?.width).toBe(269);
+  // No bar level with it: the saved width applies.
+  expect(besideLauncher(launcher, null, 210, 1, 1835, 260)?.width).toBeNull();
+  // No room for the minimum width (a small screen, or a launcher at the
+  // right edge): the chat keeps its own place.
+  expect(besideLauncher(launcher, 300, 210, 1, 1835, 260)).toBeNull();
+  expect(besideLauncher({ right: 1820, bottom: 960 }, null, 210, 1, 1835, 260)).toBeNull();
+});
+
+it("moves frames still at old defaults, and attaches only a chat nobody moved", () => {
+  const { chatAttached: _a, chatSizeCustom: _c, ...base } = defaultConfig();
+  const profile = (launcher: ReturnType<typeof layout>, chat: ReturnType<typeof layout>) => ({
+    ...base,
+    frames: { ...base.frames, launcher, chat },
+  });
+  for (const [launcher, chat] of [
+    [layout(0.99, 0.74), layout(0.01, 0.7)],
+    [layout(1, 0.66), layout(0.01, 0.97)],
+  ]) {
+    const migrated = validateConfig(profile(launcher, chat));
+    expect(migrated.frames.launcher).toEqual(layout(0, 1));
+    expect(migrated.chatAttached).toBe(true);
+    expect(migrated.frames.chat).toEqual(defaultConfig().frames.chat);
+    expect(migrated.chatSizeCustom).toBe(false);
+  }
+  // A launcher the player moved: the chat stays where it is, detached.
+  const moved = validateConfig(profile(layout(0.5, 0.5), layout(0.01, 0.7)));
+  expect(moved.frames.launcher).toEqual(layout(0.5, 0.5));
+  expect(moved.chatAttached).toBe(false);
+  expect(moved.frames.chat).toEqual(layout(0.01, 0.7));
+  // A chat the player moved stays detached too.
+  expect(validateConfig(profile(layout(0.99, 0.74), layout(0.3, 0.4))).chatAttached).toBe(false);
+  expect(defaultConfig().chatAttached).toBe(true);
 });

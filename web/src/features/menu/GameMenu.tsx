@@ -27,9 +27,9 @@ export function GameMenu() {
       <Text size="2" color="gray">
         {inMatch
           ? spectating
-            ? "Spectating match"
-            : `Network match${seat === null ? "" : ` · seat ${seat + 1}`}`
-          : "Local solo practice"}
+            ? "Spectating"
+            : `Network match${seat === null ? "" : `, seat ${seat + 1}`}`
+          : "Practice"}
       </Text>
       <Button onClick={() => setPanel(null)}>Resume</Button>
       {inMatch && link && (

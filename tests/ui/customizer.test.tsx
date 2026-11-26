@@ -39,6 +39,7 @@ const both = () =>
       <StartScreen />
       <Customizer />
     </>,
+    { wrapper: TooltipProvider },
   );
 
 it("the start screen offers entering directly, without forcing customization", () => {

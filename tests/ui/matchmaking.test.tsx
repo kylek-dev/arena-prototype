@@ -1,3 +1,4 @@
+import { TooltipProvider } from "../../web/src/ui/Tooltip";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import type { MatchTicket } from "../../web/src/domain/network";
@@ -185,7 +186,7 @@ it("forms and joins parties, and tells the player what the door refused", () => 
   fake.open();
   expect(fake.sent().at(-1)).toEqual({ type: "create_party" });
   fake.say({ type: "party", code: "K7P2QX", members: 1, leader: true, queue: null });
-  expect(queue.state.get().party).toEqual({ code: "K7P2QX", members: 1, leader: true });
+  expect(queue.state.get().party).toEqual({ code: "K7P2QX", members: 1, leader: true, mates: [] });
   expect(queue.joinParty(" m9q3rt ")).toBe(true);
   expect(fake.sent().at(-1)).toEqual({ type: "join_party", code: "M9Q3RT" });
   expect(fake.sockets).toHaveLength(1);
@@ -248,6 +249,7 @@ it("the queue bar shows the queue, time waited, expected wait and players, with 
       <PlayOnline />
       <QueueBar />
     </>,
+    { wrapper: TooltipProvider },
   );
   expect(screen.getByRole("region", { name: "Play online" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Solo 2v2" })).toBeNull();
@@ -284,7 +286,7 @@ it("the match-ready window counts down, shows acceptances and takes Accept or De
   expect(document.activeElement?.textContent).toBe("Accept");
   fireEvent.click(within(window).getByRole("button", { name: "Accept" }));
   expect(fake.sent().at(-1)).toEqual({ type: "accept" });
-  expect(window.textContent).toContain("Accepted · waiting for");
+  expect(window.textContent).toContain("You have accepted. Waiting for");
   expect(within(window).queryByRole("button", { name: "Decline" })).toBeNull();
   // Someone did not accept: the window closes and the bar explains.
   fake.say({ type: "requeued", mode: "2v2" });
@@ -304,14 +306,14 @@ it("the match-ready window counts down, shows acceptances and takes Accept or De
 
 it("a party member waits for the leader to choose the queue", () => {
   const fake = withQueue();
-  render(<PlayOnline />);
+  render(<PlayOnline />, { wrapper: TooltipProvider });
   act(() => fake.queue.joinParty("K7P2QX"));
   fake.open();
   fake.say({ type: "party", code: "K7P2QX", members: 2, leader: false, queue: null });
-  expect(screen.getByText("The party leader chooses the queue.")).toBeTruthy();
+  expect(screen.getByText("The party leader selects the queue.")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "2v2" })).toBeNull();
   fake.say({ type: "refused", code: "no_such_party" });
-  expect(screen.getByText(/No party has that code/)).toBeTruthy();
+  expect(screen.getByText(/This party no longer exists/)).toBeTruthy();
 });
 
 it("the bar explains why online play stopped and can be dismissed", () => {
@@ -319,7 +321,7 @@ it("the bar explains why online play stopped and can be dismissed", () => {
   render(<QueueBar />);
   act(() => fake.queue.queue("1v1"));
   fake.drop();
-  expect(screen.getByRole("status").textContent).toContain("Could not reach the matchmaker");
+  expect(screen.getByRole("status").textContent).toContain("The matchmaker could not be reached");
   fireEvent.click(screen.getByRole("button", { name: "OK" }));
   expect(screen.queryByRole("status")).toBeNull();
 });

@@ -1,3 +1,8 @@
+import userEvent from "@testing-library/user-event";
+import { WindowDock } from "../../web/src/features/launcher/WindowDock";
+import { installInput } from "../../web/src/runtime/input-router";
+import { friendsWindowVisible } from "../../web/src/state/windows";
+import { TooltipProvider } from "../../web/src/ui/Tooltip";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { Friends } from "../../web/src/features/friends/Friends";
@@ -103,7 +108,13 @@ afterEach(() => {
   matchQueue.set(null);
 });
 
-it("lists requests, friends with presence, sent requests and blocks", async () => {
+/** Opens a row's ⋮ menu and returns it. */
+function menuOf(handle: string) {
+  fireEvent.click(screen.getByRole("button", { name: `Actions for ${handle}` }));
+  return within(screen.getByRole("menu", { name: `Actions for ${handle}` }));
+}
+
+it("lists requests, friends with presence, sent requests and blocks as rows", async () => {
   const { account } = fakeDoor({
     "/api/auth/me": { status: 200, body: ROOK },
     "/api/friends": { status: 200, body: LIST },
@@ -114,20 +125,26 @@ it("lists requests, friends with presence, sent requests and blocks", async () =
   await act(async () => {
     render(<Friends />);
   });
-  expect(screen.getByText("Friends · 1 online")).toBeTruthy();
-  const friendsList = screen.getByRole("list", { name: "Friends list" });
-  expect(within(friendsList).getByText("Ash#1000")).toBeTruthy();
-  expect(within(friendsList).getByText("Online")).toBeTruthy();
-  expect(within(friendsList).getByText("Offline")).toBeTruthy();
-  // Only friends who are on can be invited.
-  expect(screen.getByRole("button", { name: "Invite Ash#1000" })).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "Invite Zed#0001" })).toBeNull();
+  const rows = within(screen.getByRole("list", { name: "Friends list" }))
+    .getAllByRole("listitem")
+    .map((row) => row.querySelector(".friend-name")?.textContent);
+  expect(rows).toEqual([
+    "Cyd#0003Friend request",
+    "Ash#1000Online",
+    "Zed#0001Offline",
+    "Dot#0004Request sent",
+    "Eve#0005Blocked",
+  ]);
   expect(screen.getByRole("button", { name: "Accept Cyd#0003" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Withdraw request to Dot#0004" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Unblock Eve#0005" })).toBeTruthy();
+  // Only friends who are on can be invited or whispered.
+  expect(menuOf("Ash#1000").getByRole("menuitem", { name: "Invite to group" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Actions for Ash#1000" }));
+  expect(menuOf("Zed#0001").queryByRole("menuitem", { name: "Invite to group" })).toBeNull();
+  expect(menuOf("Dot#0004").getByRole("menuitem", { name: "Withdraw request" })).toBeTruthy();
+  expect(menuOf("Eve#0005").getByRole("menuitem", { name: "Unblock" })).toBeTruthy();
 });
 
-it("adds, accepts, removes and blocks through the door, and words refusals", async () => {
+it("adds through a prompt, accepts, removes and blocks after confirming, and words refusals", async () => {
   const { account, calls } = fakeDoor({
     "/api/auth/me": { status: 200, body: ROOK },
     "/api/friends": { status: 200, body: LIST },
@@ -143,37 +160,41 @@ it("adds, accepts, removes and blocks through the door, and words refusals", asy
   await act(async () => {
     render(<Friends />);
   });
-  const field = screen.getByRole("textbox", { name: /add a friend/i });
-  const add = screen.getByRole("button", { name: "Add friend" });
+  fireEvent.click(screen.getByRole("button", { name: "Add" }));
+  const form = within(screen.getByRole("form", { name: "Add or block a player" }));
+  const field = form.getByRole("textbox", { name: "Player name and number" });
+  expect(field.getAttribute("placeholder")).toBe("Name#0000");
   fireEvent.change(field, { target: { value: "Nobody" } });
-  expect((add as HTMLButtonElement).disabled).toBe(true);
+  await act(async () => fireEvent.click(form.getByRole("button", { name: "Send request" })));
+  expect(screen.getByRole("alert").textContent).toBe(
+    "Enter the player's name and number, for example Name#0000.",
+  );
+  expect(calls.some((c) => c.url === "/api/friends/request")).toBe(false);
   fireEvent.change(field, { target: { value: "Nobody#0009" } });
-  await act(async () => fireEvent.click(add));
-  expect(screen.getByRole("alert").textContent).toMatch(/no player has that name/i);
-  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Add friend" })));
+  await act(async () => fireEvent.click(form.getByRole("button", { name: "Send request" })));
+  expect(screen.getByRole("alert").textContent).toMatch(/^No player has that name and number\./);
+  await act(async () => fireEvent.click(form.getByRole("button", { name: "Send request" })));
   expect(calls.filter((c) => c.url === "/api/friends/request").at(-1)?.body).toEqual({
     handle: "Nobody#0009",
   });
-  expect(screen.getByRole("status").textContent).toMatch(/request sent to Nobody#0009/i);
+  expect(screen.queryByRole("form", { name: "Add or block a player" })).toBeNull();
+  expect(screen.getByRole("status").textContent).toMatch(/^Friend request sent to Nobody#0009\./);
   await act(async () => fireEvent.click(screen.getByRole("button", { name: "Accept Cyd#0003" })));
   expect(calls.at(-2)).toEqual({
     url: "/api/friends/accept",
     method: "POST",
     body: { handle: "Cyd#0003" },
   });
-  // Removing and blocking ask first.
-  const ash = within(screen.getByRole("list", { name: "Friends list" }))
-    .getByText("Ash#1000")
-    .closest("li") as HTMLElement;
-  fireEvent.click(within(ash).getByRole("button", { name: "Remove" }));
-  fireEvent.click(within(ash).getByRole("button", { name: "Keep" }));
+  // Removing and blocking ask once more.
+  fireEvent.click(menuOf("Ash#1000").getByRole("menuitem", { name: "Remove friend" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Cancel" }));
   expect(calls.some((c) => c.url === "/api/friends/remove")).toBe(false);
-  fireEvent.click(within(ash).getByRole("button", { name: "Block" }));
-  await act(async () =>
-    fireEvent.click(within(ash).getByRole("button", { name: "Block Ash#1000" })),
-  );
+  fireEvent.click(screen.getByRole("menuitem", { name: "Block" }));
+  await act(async () => fireEvent.click(screen.getByRole("menuitem", { name: "Confirm block" })));
   expect(calls.some((c) => c.url === "/api/friends/block")).toBe(true);
-  expect(screen.getByRole("status").textContent).toMatch(/blocked Ash#1000/i);
+  expect(screen.getByRole("status").textContent).toMatch(
+    /^Ash#1000 is blocked and can no longer send you requests or invitations\./,
+  );
 });
 
 it("asks a player without a name to choose one, and shows nothing to guests", async () => {
@@ -182,7 +203,7 @@ it("asks a player without a name to choose one, and shows nothing to guests", as
   });
   await account.refresh();
   const { container, rerender } = render(<Friends />);
-  expect(screen.getByText(/choose your name to add friends/i)).toBeTruthy();
+  expect(screen.getByText("Choose a player name before adding friends.")).toBeTruthy();
   const guest = fakeDoor({ "/api/auth/me": { status: 200, body: { ...ROOK, account: null } } });
   await guest.account.refresh();
   rerender(<Friends />);
@@ -200,11 +221,11 @@ it("invites a friend over the queue and says when it arrived", async () => {
   await act(async () => {
     render(<Friends />);
   });
-  fireEvent.click(screen.getByRole("button", { name: "Invite Ash#1000" }));
+  fireEvent.click(menuOf("Ash#1000").getByRole("menuitem", { name: "Invite to group" }));
   fake.open();
   expect(fake.sent().at(-1)).toEqual({ type: "invite", handle: "Ash#1000" });
   fake.say({ type: "invite_sent", to: "Ash#1000" });
-  expect(screen.getByRole("status").textContent).toMatch(/^Invite sent to Ash#1000\./);
+  expect(screen.getByRole("status").textContent).toMatch(/^Invitation sent to Ash#1000\./);
 });
 
 it("prompts for a friend's invite and joins by its code, or just dismisses", () => {
@@ -337,7 +358,9 @@ it("tells the player why an accepted invite could not be joined", () => {
   fireEvent.click(screen.getByRole("button", { name: "Accept" }));
   fake.say({ type: "refused", code: "lobby_full" });
   const failed = screen.getByRole("group", { name: "Invite could not be joined" });
-  expect(failed.textContent).toMatch(/could not join Ash#1000: that custom lobby is full/i);
+  expect(failed.textContent).toMatch(
+    /The invitation from Ash#1000 could not be accepted\. This custom lobby is full\./,
+  );
   fireEvent.click(within(failed).getByRole("button", { name: "OK" }));
   expect(screen.queryByRole("group")).toBeNull();
   // A refusal that is not about joining stays a plain notice.
@@ -360,14 +383,15 @@ it("waits for one invite at a time and words invite refusals", async () => {
   await act(async () => {
     render(<Friends />);
   });
-  const invite = screen.getByRole("button", { name: "Invite Ash#1000" }) as HTMLButtonElement;
-  fireEvent.click(invite);
-  expect(invite.disabled).toBe(true);
+  fireEvent.click(menuOf("Ash#1000").getByRole("menuitem", { name: "Invite to group" }));
+  // While one invitation is on its way, no other is offered.
+  expect(menuOf("Ash#1000").queryByRole("menuitem", { name: "Invite to group" })).toBeNull();
   fake.queue.invite("Ash#1000");
   expect(fake.sent().filter((m) => m.type === "invite")).toHaveLength(1);
   fake.say({ type: "invite_sent", to: "Ash#1000" });
-  expect(invite.disabled).toBe(false);
-  fireEvent.click(screen.getByRole("button", { name: "OK" }));
+  fireEvent.click(screen.getByRole("button", { name: "Actions for Ash#1000" }));
+  expect(menuOf("Ash#1000").getByRole("menuitem", { name: "Invite to group" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
   expect(screen.queryByRole("status")).toBeNull();
 });
 
@@ -405,4 +429,142 @@ it("spaces list reads and retries after the door's 429", async () => {
   now += READ_GAP_MS;
   await act(async () => timers[1].run());
   expect(reads).toBe(3);
+});
+
+it("closes only an open ⋮ menu on Escape, and answers a refused invitation", async () => {
+  const { account } = fakeDoor({
+    "/api/auth/me": { status: 200, body: ROOK },
+    "/api/friends": { status: 200, body: LIST },
+  });
+  await account.refresh();
+  const fake = fakeQueue();
+  matchQueue.set(fake.queue);
+  fake.queue.connect();
+  fake.open();
+  document.body.innerHTML = '<canvas id="arena" tabindex="0"></canvas>';
+  const canvas = document.getElementById("arena") as HTMLCanvasElement;
+  const router = installInput(canvas, () => {});
+  try {
+    friendsWindowVisible.set(true);
+    await act(async () => {
+      render(
+        <TooltipProvider>
+          <WindowDock />
+        </TooltipProvider>,
+      );
+    });
+    menuOf("Ash#1000");
+    // The first item has focus; Escape closes the menu, not the window.
+    expect(document.activeElement?.textContent).toBe("Invite to group");
+    fireEvent.keyDown(document.activeElement!, { key: "Escape", code: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(friendsWindowVisible.get()).toBe(true);
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Actions for Ash#1000");
+    fireEvent.click(menuOf("Ash#1000").getByRole("menuitem", { name: "Invite to group" }));
+    fake.say({ type: "refused", code: "offline" });
+    expect(screen.getByRole("alert").textContent).toMatch(/^This friend is offline\./);
+  } finally {
+    router.dispose();
+    friendsWindowVisible.set(false);
+  }
+});
+
+it("blocks any player by name from the Add prompt, and a requester from their row", async () => {
+  const { account, calls } = fakeDoor({
+    "/api/auth/me": { status: 200, body: ROOK },
+    "/api/friends": { status: 200, body: LIST },
+    "/api/friends/block": { status: 204 },
+  });
+  await account.refresh();
+  await act(async () => {
+    render(<Friends />);
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Add" }));
+  const form = within(screen.getByRole("form", { name: "Add or block a player" }));
+  fireEvent.change(form.getByRole("textbox", { name: "Player name and number" }), {
+    target: { value: "Spammer#0666" },
+  });
+  await act(async () => fireEvent.click(form.getByRole("button", { name: "Block player" })));
+  expect(calls.filter((c) => c.url === "/api/friends/block").at(-1)?.body).toEqual({
+    handle: "Spammer#0666",
+  });
+  expect(screen.queryByRole("form")).toBeNull();
+  // An incoming request can be blocked from its ⋮ menu, after confirming.
+  fireEvent.click(menuOf("Cyd#0003").getByRole("menuitem", { name: "Block" }));
+  await act(async () => fireEvent.click(screen.getByRole("menuitem", { name: "Confirm block" })));
+  expect(calls.filter((c) => c.url === "/api/friends/block").at(-1)?.body).toEqual({
+    handle: "Cyd#0003",
+  });
+});
+
+it("opens the ⋮ menu under its button, or above it near the bottom of the screen", async () => {
+  const { account } = fakeDoor({
+    "/api/auth/me": { status: 200, body: ROOK },
+    "/api/friends": { status: 200, body: LIST },
+  });
+  await account.refresh();
+  await act(async () => {
+    render(<Friends />);
+  });
+  const button = screen.getByRole("button", { name: "Actions for Ash#1000" });
+  const at = (top: number) =>
+    (button.getBoundingClientRect = () =>
+      ({
+        top,
+        bottom: top + 26,
+        left: 300,
+        right: 326,
+        width: 26,
+        height: 26,
+        x: 300,
+        y: top,
+      }) as DOMRect);
+  at(100);
+  fireEvent.click(button);
+  let list = screen.getByRole("menu", { name: "Actions for Ash#1000" });
+  expect(list.style.top).toBe("130px");
+  expect(list.style.right).toBe(`${innerWidth - 326}px`);
+  fireEvent.click(button);
+  at(innerHeight - 40);
+  fireEvent.click(button);
+  list = screen.getByRole("menu", { name: "Actions for Ash#1000" });
+  expect(list.style.top).toBe("");
+  expect(list.style.bottom).toBe("44px");
+});
+
+it("keeps the ⋮ menu open under real clicks while the game owns the keyboard", async () => {
+  const user = userEvent.setup();
+  const { account, calls } = fakeDoor({
+    "/api/auth/me": { status: 200, body: ROOK },
+    "/api/friends": { status: 200, body: LIST },
+    "/api/friends/remove": { status: 204 },
+  });
+  await account.refresh();
+  const fake = fakeQueue();
+  matchQueue.set(fake.queue);
+  document.body.innerHTML = '<canvas id="arena" tabindex="0"></canvas>';
+  const canvas = document.getElementById("arena") as HTMLCanvasElement;
+  const router = installInput(canvas, () => {});
+  canvas.focus();
+  try {
+    friendsWindowVisible.set(true);
+    await act(async () => {
+      render(
+        <TooltipProvider>
+          <WindowDock />
+        </TooltipProvider>,
+      );
+    });
+    await user.click(screen.getByRole("button", { name: "Actions for Ash#1000" }));
+    // Let the focus policy run (it restores the game's focus in a microtask).
+    await act(async () => {});
+    const menu = screen.getByRole("menu", { name: "Actions for Ash#1000" });
+    await user.click(within(menu).getByRole("menuitem", { name: "Remove friend" }));
+    await act(async () => {});
+    await user.click(screen.getByRole("menuitem", { name: "Confirm removal" }));
+    expect(calls.some((c) => c.url === "/api/friends/remove")).toBe(true);
+  } finally {
+    router.dispose();
+    friendsWindowVisible.set(false);
+  }
 });

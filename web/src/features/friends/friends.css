@@ -1,46 +1,27 @@
-/* Friends list (home screen and the F window), and friends' invite prompts. Colors are
-   palette swatches or the Radix scales the palette drives. */
+/* The friends list (home screen and the F window) and friends' invite
+   prompts. Colors are palette swatches or the Radix scales the palette drives. */
 .friends {
-  display: grid;
-  gap: 6px;
-  padding: 8px;
-  border: 1px solid var(--gray-6);
-  border-radius: var(--radius-3);
-}
-.friend-add {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-.friend-add input {
-  width: 22ch;
-  font-family: ui-monospace, monospace;
-}
-.friends-notice {
-  display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
-  color: var(--pal-gold-5);
+  min-height: 100%;
 }
 .friend-list {
   display: grid;
-  gap: 4px;
   margin: 0;
   padding: 0;
   list-style: none;
-  max-height: 240px;
-  overflow-y: auto;
 }
 .friend {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--gray-5);
 }
 .friend-name {
   display: grid;
-  flex: 1 1 10ch;
+  flex: 1 1 auto;
   min-width: 0;
 }
 .friend-handle {
@@ -50,9 +31,13 @@
   font-family: ui-monospace, monospace;
   font-size: 13px;
 }
+.friend-status {
+  color: var(--gray-11);
+  font-size: 12px;
+}
 .friend-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex: none;
   gap: 4px;
 }
 .friend-presence {
@@ -62,6 +47,9 @@
   border-radius: 50%;
   background: var(--gray-8);
 }
+.friend-presence.none {
+  background: transparent;
+}
 .friend-presence.online,
 .friend-presence.searching,
 .friend-presence.in_lobby {
@@ -70,12 +58,99 @@
 .friend-presence.in_match {
   background: var(--pal-gold-4);
 }
-.friends-blocked summary {
+.friend-menu {
+  position: relative;
+}
+.friend-menu-button {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--gray-11);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-2);
+  font-size: 16px;
   cursor: pointer;
 }
-/* Right edge, a third of the way down: clear of the queue bar and round
-   clock (top centre), the spectator HUD (top right), unit frames (left)
-   and the action bars (bottom). */
+.friend-menu-button:hover,
+.friend-menu-button:focus-visible,
+.friend-menu-button[aria-expanded="true"] {
+  color: var(--gray-12);
+  border-color: var(--gray-7);
+}
+.friend-menu-list {
+  position: fixed;
+  z-index: 30;
+  display: grid;
+  min-width: 160px;
+  padding: 4px;
+  background: var(--pal-night-3);
+  border: 1px solid var(--gray-7);
+  border-radius: var(--radius-3);
+  box-shadow: var(--shadow-4);
+}
+.friend-menu-list button {
+  padding: 6px 8px;
+  color: var(--gray-12);
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-2);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.friend-menu-list button:hover,
+.friend-menu-list button:focus-visible {
+  background: var(--gray-5);
+}
+.friend-menu-list button.danger {
+  color: var(--pal-ember-5);
+}
+.friends-empty {
+  margin: 0;
+  color: var(--gray-11);
+  font-size: 13px;
+}
+.friends-notice {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+  color: var(--pal-gold-5);
+  font-size: 13px;
+}
+.friends-dismiss {
+  padding: 0 4px;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.friends-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: auto;
+}
+.friend-add {
+  display: grid;
+  gap: 6px;
+  margin-top: auto;
+}
+.friend-add-field {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+.friend-add-field input {
+  font-family: ui-monospace, monospace;
+}
+.friend-add-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
 .invite-prompts {
   position: fixed;
   top: 33%;
@@ -103,4 +178,8 @@
 .invite-prompt-actions {
   display: flex;
   gap: 6px;
+}
+.invite-prompts.centered {
+  position: static;
+  width: min(380px, calc(100vw - 32px));
 }

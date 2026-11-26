@@ -1,8 +1,13 @@
+import { matchQueue } from "../../web/src/state/network";
+import { adaptSnapshot } from "../../web/src/bridge/snapshot";
+import { withHandles } from "../../web/src/domain/handles";
+import { fakeQueue } from "./fake-queue";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { Frames } from "../../web/src/features/unit-frames/Frames";
 import { PlayWindow } from "../../web/src/features/launcher/PlayWindow";
-import { playWindowVisible } from "../../web/src/state/windows";
+import { openPlay } from "../../web/src/state/windows";
+import { TooltipProvider } from "../../web/src/ui/Tooltip";
 import { dispatch, input } from "../../web/src/runtime/commands";
 import { installInput } from "../../web/src/runtime/input-router";
 import { engine, error, focus, interaction } from "../../web/src/state/session";
@@ -14,7 +19,10 @@ beforeEach(() => {
   focus.set(null);
   interaction.set({ panel: null, quick: false, layout: false, hovered: null, capture: null });
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  matchQueue.set(null);
+});
 
 it("marks only the targeted roster frame, not a focused unit, and clears selection", () => {
   engine.set(teamSnapshot(3, 2));
@@ -79,8 +87,12 @@ it("changes practice mode with a reset and drains the request once", () => {
   document.body.append(canvas);
   const router = installInput(canvas, () => {});
   try {
-    playWindowVisible.set(true);
-    render(<PlayWindow />);
+    openPlay("practice");
+    render(
+      <TooltipProvider>
+        <PlayWindow />
+      </TooltipProvider>,
+    );
     fireEvent.change(screen.getByRole("combobox", { name: "Practice mode" }), {
       target: { value: "3" },
     });
@@ -94,4 +106,46 @@ it("changes practice mode with a reset and drains the request once", () => {
     router.dispose();
     canvas.remove();
   }
+});
+
+it("shows party members with the team, greyed out when they are not in this match", () => {
+  const fake = fakeQueue();
+  matchQueue.set(fake.queue);
+  fake.queue.connect();
+  fake.open();
+  fake.say({
+    type: "party",
+    code: "K7P2QX",
+    members: 3,
+    leader: true,
+    queue: null,
+    mates: ["Ash#1000", "Bea#0002"],
+  });
+  // Practice: nobody from the party is here.
+  engine.set(teamSnapshot(1));
+  const { rerender } = render(<Frames />);
+  let team = screen.getByRole("group", { name: "Team" });
+  expect([...team.querySelectorAll(".party-away")].map((f) => f.textContent)).toEqual([
+    "Ash#1000Not in this match",
+    "Bea#0002Not in this match",
+  ]);
+  // A network match with Ash on the team: Ash is a live teammate, Bea stays greyed.
+  const base = teamSnapshot(2);
+  const network = adaptSnapshot({
+    ...base,
+    maxHealth: 100,
+    roster: base.roster?.map((unit) => ({
+      actor: unit.actor,
+      tag: unit.tag,
+      health: unit.health,
+      connected: true,
+    })),
+  });
+  act(() => engine.set(withHandles(network, ["Rook#0042", "Zed#0001", "Ash#1000", "Yan#0002"])));
+  rerender(<Frames />);
+  team = screen.getByRole("group", { name: "Team" });
+  expect(within(team).getByRole("button", { name: /Ash#1000/ })).toBeTruthy();
+  expect([...team.querySelectorAll(".party-away")].map((f) => f.textContent)).toEqual([
+    "Bea#0002Not in this match",
+  ]);
 });

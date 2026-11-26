@@ -128,3 +128,9 @@
 .placed > div > .row {
   margin-top: 7px;
 }
+/* A party member who is not in this match: with the team, greyed out. */
+.unit-frame.party-away {
+  /* Greyed like a disconnected frame. */
+  filter: grayscale(1);
+  opacity: 0.6;
+}
