@@ -20,7 +20,8 @@ export function InvitePrompt() {
       {failed && (
         <section className="invite-prompt" role="group" aria-label="Invite could not be joined">
           <p>
-            Could not join {failed.from}: {noticeText(failed.code) ?? "the invite has ended."}
+            The invitation from {failed.from} could not be accepted.{" "}
+            {noticeText(failed.code) ?? "The invitation has expired."}
           </p>
           <div className="invite-prompt-actions">
             <Button

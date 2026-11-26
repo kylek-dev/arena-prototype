@@ -233,7 +233,7 @@ it("renders read-only spectator HUD with both teams, camera controls, no action 
   // Game menu shows spectator mode and hides Spells, Edit layout, and Quick binding.
   act(() => setPanel("menu"));
   const menu = screen.getByRole("dialog", { name: "Game menu" });
-  expect(menu.textContent).toContain("Spectating match");
+  expect(menu.textContent).toContain("Spectating");
   expect(within(menu).queryByRole("button", { name: "Spells" })).toBeNull();
   expect(within(menu).queryByRole("button", { name: "Edit layout" })).toBeNull();
   expect(within(menu).queryByRole("button", { name: "Quick binding" })).toBeNull();

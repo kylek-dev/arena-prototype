@@ -372,7 +372,7 @@ it("prefers the finished match mode over stale queueState.mode and guards in-fli
 
   // Server refusal re-enables the button and displays the refusal notice.
   act(() => queueState.set({ ...queueState.get(), notice: "party_busy" }));
-  expect(screen.getByRole("status").textContent).toContain("That party is in a queue right now.");
+  expect(screen.getByRole("status").textContent).toContain("This party is currently in a queue.");
   expect((screen.getByRole("button", { name: "Queue again" }) as HTMLButtonElement).disabled).toBe(
     false,
   );
@@ -388,7 +388,9 @@ it("prefers the finished match mode over stale queueState.mode and guards in-fli
   expect((screen.getByRole("button", { name: "Queue again" }) as HTMLButtonElement).disabled).toBe(
     true,
   );
-  expect(screen.getByRole("status").textContent).toContain("Parties of up to 2 only.");
+  expect(screen.getByRole("status").textContent).toContain(
+    "This queue accepts parties of up to 2 players.",
+  );
 });
 
 it("closes open combat modals/editors on scoreboard open, stays dismissed during linger, and isolates keyboard input", () => {

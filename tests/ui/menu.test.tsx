@@ -102,7 +102,8 @@ it("opens Spells from the launcher's S without taking gameplay focus", async () 
   await user.click(within(launcher).getByRole("button", { name: "Spells" }));
   await waitFor(() => expect(document.activeElement?.id).toBe("arena"));
   expect(screen.getByRole("dialog", { name: "Spells" })).toBeTruthy();
-  expect(screen.getByRole("dialog").classList.contains("window-area-left")).toBe(true);
+  // It opens in the window dock at the left middle, like every window.
+  expect(screen.getByRole("dialog", { name: "Spells" }).closest(".window-dock")).toBeTruthy();
   expect(screen.queryByRole("dialog", { name: "Spellbook" })).toBeNull();
   const spells = screen.getByRole("group", { name: "Known spells" });
   expect(spells.querySelectorAll("button")).toHaveLength(4);

@@ -2,7 +2,8 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { Frames } from "../../web/src/features/unit-frames/Frames";
 import { PlayWindow } from "../../web/src/features/launcher/PlayWindow";
-import { playWindowVisible } from "../../web/src/state/windows";
+import { openPlay } from "../../web/src/state/windows";
+import { TooltipProvider } from "../../web/src/ui/Tooltip";
 import { dispatch, input } from "../../web/src/runtime/commands";
 import { installInput } from "../../web/src/runtime/input-router";
 import { engine, error, focus, interaction } from "../../web/src/state/session";
@@ -79,8 +80,12 @@ it("changes practice mode with a reset and drains the request once", () => {
   document.body.append(canvas);
   const router = installInput(canvas, () => {});
   try {
-    playWindowVisible.set(true);
-    render(<PlayWindow />);
+    openPlay("practice");
+    render(
+      <TooltipProvider>
+        <PlayWindow />
+      </TooltipProvider>,
+    );
     fireEvent.change(screen.getByRole("combobox", { name: "Practice mode" }), {
       target: { value: "3" },
     });

@@ -1,3 +1,4 @@
+import { TooltipProvider } from "../../web/src/ui/Tooltip";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import type { MatchTicket } from "../../web/src/domain/network";
@@ -131,6 +132,7 @@ it("hosts a custom lobby from the game menu, controls teams/settings/host, and s
       <CustomLobby />
       <QueueBar />
     </>,
+    { wrapper: TooltipProvider },
   );
 
   fireEvent.click(screen.getByRole("button", { name: "Host custom match" }));
@@ -385,5 +387,5 @@ it("handles non-host controls, spectator notices, kicks, and suppresses auto-ope
   // Kicked from the lobby shows the QueueBar warning notice.
   fake.say({ type: "lobby_left", reason: "kicked" });
   expect(screen.queryByRole("dialog")).toBeNull();
-  expect(screen.getByRole("status").textContent).toContain("removed from the custom lobby");
+  expect(screen.getByRole("status").textContent).toContain("removed you from the custom lobby");
 });

@@ -182,8 +182,10 @@ describe("queue wording", () => {
       at({ party: { code: "K7P2QX", members, leader } });
     expect(queueBlocked(IDLE_QUEUE, "1v1")).toBeNull();
     expect(queueBlocked(party(2, true), "2v2")).toBeNull();
-    expect(queueBlocked(party(2, true), "1v1")).toBe("1v1 is for one player.");
-    expect(queueBlocked(party(3, true), "2v2")).toBe("Parties of up to 2 only.");
+    expect(queueBlocked(party(2, true), "1v1")).toBe("The 1v1 queue does not accept parties.");
+    expect(queueBlocked(party(3, true), "2v2")).toBe(
+      "This queue accepts parties of up to 2 players.",
+    );
     expect(queueBlocked(party(2, false), "3v3")).toContain("leader");
     expect(noticeText("not_accepted")).toContain("in time");
     expect(noticeText("member_declined")).toContain("party member declined");

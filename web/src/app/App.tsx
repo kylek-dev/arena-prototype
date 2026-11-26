@@ -7,7 +7,6 @@ import { Nameplates } from "../features/nameplates/Nameplates";
 import { CombatText } from "../features/combat-text/CombatText";
 import { UnitTooltip } from "../features/unit-frames/UnitTooltip";
 import { ActionBars } from "../features/action-bars/ActionBars";
-import { Spellbook } from "../features/spellbook/Spellbook";
 import { SpellDragPreview } from "../features/spellbook/SpellDragPreview";
 import { Settings } from "../features/settings/Settings";
 import { GameMenu } from "../features/menu/GameMenu";
@@ -24,8 +23,7 @@ import { MatchReady } from "../features/queue/MatchReady";
 import { InvitePrompt } from "../features/friends/InvitePrompt";
 import { ChatBox } from "../features/chat/ChatBox";
 import { Launcher } from "../features/launcher/Launcher";
-import { PlayWindow } from "../features/launcher/PlayWindow";
-import { FriendsWindow } from "../features/launcher/FriendsWindow";
+import { WindowDock } from "../features/launcher/WindowDock";
 import { QueueBar } from "../features/queue/QueueBar";
 import { Loading } from "../features/loading/Loading";
 import { Diagnostics } from "../features/diagnostics/Diagnostics";
@@ -78,8 +76,7 @@ export function App() {
   }, [spectating]);
   const menuBindings = useConfigSelector((c) => c.bindings.menu);
   const menuKey = menuBindings?.find(Boolean);
-  const title =
-    mode.panel === "menu" ? "Game menu" : mode.panel === "settings" ? "Settings" : "Spells";
+  const title = mode.panel === "menu" ? "Game menu" : "Settings";
 
   return (
     <Theme
@@ -133,35 +130,21 @@ export function App() {
         <QueueBar />
         <MatchReady />
         <InvitePrompt />
-        <PlayWindow />
-        <FriendsWindow />
+        <WindowDock />
         <MapEditor />
         <StartScreen />
         <Customizer />
         <Loading />
-        {mode.panel && !(spectating && mode.panel === "spellbook") && (
+        {(mode.panel === "menu" || mode.panel === "settings") && (
           <Modal
             key={mode.panel}
             title={title}
-            description={mode.panel === "spellbook" ? "Drag a spell onto a slot." : undefined}
-            modal={mode.panel !== "spellbook"}
-            className={
-              mode.panel === "menu"
-                ? "menu-dialog"
-                : mode.panel === "spellbook"
-                  ? `spellbook-dialog window-area-left ${dragging ? "drag-through" : ""}`
-                  : ""
-            }
+            modal
+            className={mode.panel === "menu" ? "menu-dialog" : ""}
             escapeBlocked={!!mode.capture || !!pending}
             close={() => setPanel(null)}
           >
-            {mode.panel === "menu" ? (
-              <GameMenu />
-            ) : mode.panel === "settings" ? (
-              <Settings />
-            ) : (
-              <Spellbook />
-            )}
+            {mode.panel === "menu" ? <GameMenu /> : <Settings />}
           </Modal>
         )}
         <BindingConflict />

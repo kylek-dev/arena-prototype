@@ -86,7 +86,7 @@ function Bar({ queue }: { queue: Queue }) {
           </div>
           <div className="queue-bar-detail">
             {state.lobby.members.length} {state.lobby.members.length === 1 ? "player" : "players"}{" "}
-            in lobby
+            in the lobby.
           </div>
         </div>
         <Button

@@ -14,6 +14,7 @@ import {
   prematch,
   scoreboardVisible,
   customLobbyVisible,
+  setPanel,
 } from "../state/session";
 import { isEngineReady } from "../domain/abilities/catalog";
 import { escapeStopsCast } from "../domain/bindings/escape";
@@ -159,7 +160,15 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
       customLobbyVisible.set(false);
       return;
     }
-    // Escape closes the launcher's Play and Friends windows first.
+    // An open menu inside a window takes its own Escape.
+    if (e.code === "Escape" && document.activeElement?.closest('[data-escape-owner="true"]'))
+      return;
+    // Escape closes the dock's windows (Spells, Friends, Play) first.
+    if (e.code === "Escape" && mode.panel === "spellbook" && !isTextEntry(document.activeElement)) {
+      e.preventDefault();
+      setPanel(null);
+      return;
+    }
     if (
       e.code === "Escape" &&
       !mode.panel &&

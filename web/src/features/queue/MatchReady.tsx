@@ -64,8 +64,8 @@ function Window({ queue }: { queue: Queue }) {
         </div>
         <p id="match-ready-detail" className="match-ready-detail">
           {ready.you
-            ? `Accepted · waiting for ${ready.total - ready.accepted} more (${ready.progress})`
-            : `${ready.progress}. Accept within ${ready.seconds} s or you leave the queue.`}
+            ? `You have accepted. Waiting for ${ready.total - ready.accepted} more ${ready.total - ready.accepted === 1 ? "player" : "players"} (${ready.progress}).`
+            : `${ready.progress}. Accept within ${ready.seconds} seconds to keep your place in the queue.`}
         </p>
         {ready.you ? null : (
           <div className="match-ready-actions">

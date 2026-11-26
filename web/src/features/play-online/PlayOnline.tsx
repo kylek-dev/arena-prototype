@@ -17,6 +17,7 @@ import { customLobbyVisible, setPanel } from "../../state/session";
 import { AccountPanel } from "../account/AccountPanel";
 import { Friends } from "../friends/Friends";
 import { createStore, useStore } from "../../state/store";
+import { Hint } from "../../ui/Tooltip";
 import "./play-online.css";
 
 const NO_QUEUE = createStore(IDLE_QUEUE);
@@ -202,8 +203,8 @@ export function PlayOnline({
           {party ? (
             <>
               <Text size="1">
-                Party <strong className="party-code">{party.code}</strong> · {party.members} of 3 ·{" "}
-                {party.leader ? "you lead" : "a friend leads"}
+                Party <strong className="party-code">{party.code}</strong>, {party.members} of 3
+                members. {party.leader ? "You lead the party." : "Another member leads the party."}
               </Text>
               <div className="party-actions">
                 {party.code && !inGame && <InviteLink code={party.code} />}
@@ -220,18 +221,17 @@ export function PlayOnline({
             </>
           ) : (
             <>
-              <Text size="1" color="gray">
-                Queue alone, or invite friends to play on your team.
-              </Text>
               <div className="party-actions">
-                <Button
-                  size="1"
-                  variant="surface"
-                  disabled={searching}
-                  onClick={() => queue.createParty()}
-                >
-                  Invite friends
-                </Button>
+                <Hint text="Create a party and invite friends to queue with you.">
+                  <Button
+                    size="1"
+                    variant="surface"
+                    disabled={searching}
+                    onClick={() => queue.createParty()}
+                  >
+                    Invite friends
+                  </Button>
+                </Hint>
                 {!searching && <JoinParty queue={queue} />}
               </div>
             </>
@@ -246,9 +246,9 @@ export function PlayOnline({
       {lobby ? (
         <div className="party" role="group" aria-label="Custom match">
           <Text size="1">
-            Custom lobby <strong className="party-code">{lobby.code}</strong> ·{" "}
-            {modeLabel(lobby.mode)} · {lobby.members.length}{" "}
-            {lobby.members.length === 1 ? "player" : "players"}
+            Custom lobby <strong className="party-code">{lobby.code}</strong>,{" "}
+            {modeLabel(lobby.mode)}, {lobby.members.length}{" "}
+            {lobby.members.length === 1 ? "player" : "players"}.
           </Text>
           <div className="party-actions">
             <Button size="1" onClick={openLobby}>
@@ -273,8 +273,8 @@ export function PlayOnline({
             <div className="stack">
               <Text size="1" color="gray">
                 {state.phase === "ready"
-                  ? "Your match is ready: accept it in the window."
-                  : `In the ${modeLabel(state.mode)} queue. The bar at the top shows your wait; you can keep practicing or customizing meanwhile.`}
+                  ? "A match has been found. Accept it to continue."
+                  : `Searching for a ${modeLabel(state.mode)} match.`}
               </Text>
               {state.phase === "queued" && (
                 <Button variant="soft" color="gray" onClick={() => queue.cancel()}>
@@ -284,7 +284,7 @@ export function PlayOnline({
             </div>
           ) : party && !party.leader ? (
             <Text size="1" color="gray">
-              The party leader chooses the queue.
+              The party leader selects the queue.
             </Text>
           ) : (
             <div className="queue-modes">
@@ -305,18 +305,17 @@ export function PlayOnline({
             </div>
           )}
           <div className="party" role="group" aria-label="Custom match">
-            <Text size="1" color="gray">
-              Private match with friends: pick teams, size and round limit.
-            </Text>
             <div className="party-actions">
-              <Button
-                size="1"
-                variant="surface"
-                disabled={searching}
-                onClick={() => queue.createLobby("1v1")}
-              >
-                Host custom match
-              </Button>
+              <Hint text="Create a private lobby. You choose the teams, team size and round limit.">
+                <Button
+                  size="1"
+                  variant="surface"
+                  disabled={searching}
+                  onClick={() => queue.createLobby("1v1")}
+                >
+                  Host custom match
+                </Button>
+              </Hint>
               {!searching && <JoinLobby queue={queue} />}
             </div>
           </div>

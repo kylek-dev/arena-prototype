@@ -765,3 +765,19 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Fresh-Eyes Review:** no Critical. Important (fixed): practice had no way back to the home screen (account, name, party) — Home screen in the menu; a party member had no Leave party in game — read-only party line; Play/Friends windows stayed hidden under overlays and swallowed Escape — overlays close them and Escape skips them there. Minor taken: default positions, Friends loading state, stale docs and comments, assets/README on the preset.
 - **Learnings:** moving controls out of a menu means auditing every flow that reached them through it (home screen, party leave, Escape order) — the menu was also the only route back to some places.
 - **Next Recommended Slice:** human review of scenarios 14–20; decide whether friends' Invite buttons stay in game.
+
+## 2026-11-25 — Window dock, Friends list, Play tabs and formal copy (playtest)
+- **Branch / Commit:** `auto/window-dock`
+- **Base / PR:** `auto/game-launcher` (stacked on PR #107)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox (user mockup): one window place and size, Friends list with Add, formal copy, Play tabs; then full-width bracket buttons and no top highlight on tabs
+- **Changes:**
+  - `ui/DockWindow.tsx` + `ui/dock.css`, `features/launcher/WindowDock.tsx`: Spells, Friends and Play in one dock at the left middle (320 × up to 460 each, side by side in that order, shrinking to fit, above the home screen); the spellbook left its Radix dialog (no keyboard ownership, see-through while dragging); Escape closes Spells, then Friends and Play.
+  - Play window: bottom tab bar (Practice, Queue, Host; selected tab filled and bold), full-width bracket buttons, `/practice`, `/queue`, `/host` open a tab.
+  - Friends: one list of rows with a ⋮ menu (fixed layer, focus and Escape handled, confirmations), Add prompt with the Name#0000 example, invite refusals shown there.
+  - Formal copy across queue/friends/account/invite notices, launcher and tab tooltips, command messages, match-ready window, game menu and dialogs; helper paragraphs replaced by tooltips. The palette test's literal pattern ignores a `#` after a letter or digit (never a color).
+- **Checks Observed:**
+  - `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/game-launcher` (`smoke=false web_build=true wasm=false`): pass — 483 Rust tests (1 pre-existing ignored), 58 Python, 53 Node, 54 Vitest files / 433 tests, headless pass, `npm run build` pass.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): the Spells window owned the keyboard; the dock sat under the home screen; Escape on a ⋮ menu closed the window; refused invitations were silent; copy remained informal in places; the first `palette-ignore` marker was broader than needed (replaced by a precise pattern). Minor taken: Escape order, tab hints, menu clipping, dead CSS.
+- **Learnings:** the input router listens on `window` in the capture phase, so a widget that wants its own Escape must be marked (`data-escape-owner`) for the router to step aside; `data-keyboard-owner` on a window blocks gameplay keys for anything focused inside it.
+- **Next Recommended Slice:** human review of scenarios 18–21.

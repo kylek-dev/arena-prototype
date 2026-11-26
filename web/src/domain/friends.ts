@@ -91,19 +91,19 @@ export function normalizeHandle(text: string) {
 }
 
 const FRIEND_ERRORS: Record<string, string> = {
-  no_such_player: "No player has that name. Check the name and the number after #.",
-  yourself: "That is you.",
-  bad_request: "Type the whole name: the name, then # and its four digits.",
-  already_friends: "You are already friends.",
-  already_asked: "You already asked. They will see your request.",
-  too_many: "Too many friends or waiting requests. Remove some first.",
-  nothing_there: "Nothing to change: that request or friend is gone.",
-  pick_a_name_first: "Choose your name first, above.",
-  not_logged_in: "Log in to have friends.",
-  rate_limited: "Too many requests. Wait a moment and try again.",
-  forbidden: "This page is not allowed to change your friends. Open the game from its own address.",
-  offline: "Could not reach the server. Check your connection and try again.",
-  failed: "Something went wrong on the server. Try again in a minute.",
+  no_such_player: "No player has that name and number.",
+  yourself: "You cannot add yourself as a friend.",
+  bad_request: "Enter the player's full name and four-digit number.",
+  already_friends: "You are already friends with this player.",
+  already_asked: "A friend request to this player is already pending.",
+  too_many: "The friends list or request limit has been reached. Remove an entry and try again.",
+  nothing_there: "This request or friend is no longer available.",
+  pick_a_name_first: "Choose a player name before adding friends.",
+  not_logged_in: "Log in to use the friends list.",
+  rate_limited: "Too many requests. Please wait a moment and try again.",
+  forbidden: "This page cannot change your friends list. Open the game from its own address.",
+  offline: "The server could not be reached. Check your connection and try again.",
+  failed: "The server could not complete the request. Please try again later.",
 };
 /** Words for a friend action the door refused. */
 export function friendErrorText(code: string) {
@@ -120,12 +120,12 @@ export function friendDoneText(action: FriendAction, handle: string, relation?: 
     case "accept":
       return `You and ${handle} are now friends.`;
     case "decline":
-      return `Declined ${handle}'s request.`;
+      return `Friend request from ${handle} declined.`;
     case "remove":
-      return `Removed ${handle}.`;
+      return `${handle} was removed from your friends list.`;
     case "block":
-      return `Blocked ${handle}. They cannot ask or invite you.`;
+      return `${handle} is blocked and can no longer send you requests or invitations.`;
     case "unblock":
-      return `Unblocked ${handle}.`;
+      return `${handle} is no longer blocked.`;
   }
 }

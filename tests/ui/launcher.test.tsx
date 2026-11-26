@@ -1,3 +1,4 @@
+import { TooltipProvider } from "../../web/src/ui/Tooltip";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it } from "vitest";
@@ -12,7 +13,7 @@ import { createFriends } from "../../web/src/runtime/friends";
 import { persistence, preferences } from "../../web/src/state/config";
 import { matchQueue } from "../../web/src/state/network";
 import { engine, error, focus, interaction, selectedLayout } from "../../web/src/state/session";
-import { friendsWindowVisible, playWindowVisible } from "../../web/src/state/windows";
+import { friendsWindowVisible, playTab, playWindowVisible } from "../../web/src/state/windows";
 import { humanKit } from "../domain/kit-fixture";
 import { fakeQueue } from "./fake-queue";
 import { snapshot } from "./fixtures";
@@ -47,6 +48,7 @@ beforeEach(() => {
   customizerVisible.set(false);
   playWindowVisible.set(false);
   friendsWindowVisible.set(false);
+  playTab.set("queue");
   matchQueue.set(fakeQueue().queue);
   const canvas = document.getElementById("arena") as HTMLCanvasElement;
   router = installInput(canvas, () => {});
@@ -69,15 +71,28 @@ it("opens each window from a one-letter button with a full tooltip", async () =>
   render(<App />);
   await user.hover(launcher().getByRole("button", { name: "Play" }));
   await waitFor(() =>
-    expect(screen.getByRole("tooltip").textContent).toMatch(/queue for 1v1, 2v2 or 3v3/),
+    expect(screen.getByRole("tooltip").textContent).toBe(
+      "Play: practice, join a public queue, or host a custom match.",
+    ),
   );
   await user.click(launcher().getByRole("button", { name: "Play" }));
-  const play = screen.getByRole("complementary", { name: "Play" });
-  // Queues, custom games and practice; no account or party section in game.
+  const play = screen.getByRole("dialog", { name: "Play" });
+  // Tabs along the bottom, opening on Queue.
+  const tabs = within(play).getByRole("tablist", { name: "Play" });
+  expect(
+    within(tabs)
+      .getAllByRole("tab")
+      .map((tab) => tab.textContent),
+  ).toEqual(["Practice", "Queue", "Host"]);
+  expect(within(play).getByRole("tab", { name: "Queue", selected: true })).toBeTruthy();
   expect(within(play).getByRole("button", { name: "2v2" })).toBeTruthy();
+  await user.click(within(play).getByRole("tab", { name: "Host" }));
   expect(within(play).getByRole("button", { name: "Host custom match" })).toBeTruthy();
+  expect(within(play).getByRole("textbox", { name: "Custom lobby code" })).toBeTruthy();
+  await user.click(within(play).getByRole("tab", { name: "Practice" }));
   expect(within(play).getByRole("combobox", { name: "Practice mode" })).toBeTruthy();
   expect(within(play).getByRole("button", { name: "Reset practice" })).toBeTruthy();
+  // No account or party invitations in game.
   expect(within(play).queryByRole("group", { name: "Party" })).toBeNull();
   expect(within(play).queryByRole("group", { name: "Account" })).toBeNull();
   expect(within(play).queryByRole("button", { name: "Invite friends" })).toBeNull();
@@ -85,10 +100,10 @@ it("opens each window from a one-letter button with a full tooltip", async () =>
     "true",
   );
   await user.click(launcher().getByRole("button", { name: "Play" }));
-  expect(screen.queryByRole("complementary", { name: "Play" })).toBeNull();
+  expect(screen.queryByRole("dialog", { name: "Play" })).toBeNull();
 
   await user.click(launcher().getByRole("button", { name: "Friends" }));
-  expect(screen.getByRole("complementary", { name: "Friends" }).textContent).toMatch(/account/);
+  expect(screen.getByRole("dialog", { name: "Friends" }).textContent).toMatch(/account/);
   await user.click(launcher().getByRole("button", { name: "Spells" }));
   expect(screen.getByRole("dialog", { name: "Spells" })).toBeTruthy();
   await user.click(launcher().getByRole("button", { name: "Spells" }));
@@ -115,8 +130,8 @@ it("shows friends to a logged-in player, and asks guests to log in on the home s
   await logIn(null);
   friendsWindowVisible.set(true);
   const { unmount } = render(<App />);
-  expect(screen.getByRole("complementary", { name: "Friends" }).textContent).toMatch(
-    /Log in on the home screen/,
+  expect(screen.getByRole("dialog", { name: "Friends" }).textContent).toMatch(
+    /Log in from the home screen to use the friends list\./,
   );
   unmount();
   await logIn("00112233445566ff");
@@ -133,7 +148,7 @@ it("shows friends to a logged-in player, and asks guests to log in on the home s
   );
   render(<App />);
   expect(
-    within(screen.getByRole("complementary", { name: "Friends" })).getByRole("group", {
+    within(screen.getByRole("dialog", { name: "Friends" })).getByRole("group", {
       name: "Friends",
     }),
   ).toBeTruthy();
@@ -141,7 +156,7 @@ it("shows friends to a logged-in player, and asks guests to log in on the home s
 
 it("keeps account and party controls on the home screen", async () => {
   await logIn(null);
-  render(<PlayOnline />);
+  render(<PlayOnline />, { wrapper: TooltipProvider });
   expect(screen.getByRole("group", { name: "Account" })).toBeTruthy();
   expect(screen.getByRole("group", { name: "Party" })).toBeTruthy();
 });
@@ -178,7 +193,7 @@ it("shows a party already formed, with Leave party, but no invite or join", () =
   fake.say({ type: "party", code: "K7P2QX", members: 2, leader: false, queue: null });
   playWindowVisible.set(true);
   render(<App />);
-  const party = within(screen.getByRole("complementary", { name: "Play" })).getByRole("group", {
+  const party = within(screen.getByRole("dialog", { name: "Play" })).getByRole("group", {
     name: "Party",
   });
   expect(party.textContent).toContain("K7P2QX");
@@ -207,5 +222,55 @@ it("opens the Play window from /queue", async () => {
   act(() => {
     runSlash("/queue", pageCommandContext(fake.queue));
   });
-  expect(screen.getByRole("complementary", { name: "Play" })).toBeTruthy();
+  expect(screen.getByRole("dialog", { name: "Play" })).toBeTruthy();
+});
+
+it("opens every window in the dock at the left middle, side by side in one order", async () => {
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(launcher().getByRole("button", { name: "Play" }));
+  await user.click(launcher().getByRole("button", { name: "Friends" }));
+  await user.click(launcher().getByRole("button", { name: "Spells" }));
+  const dock = document.querySelector(".window-dock") as HTMLElement;
+  const windows = [...dock.querySelectorAll(".dock-window")];
+  // Spells, Friends, Play, whatever order they were opened in.
+  expect(windows.map((w) => w.getAttribute("aria-label"))).toEqual(["Spells", "Friends", "Play"]);
+  // Escape closes Spells first, then Friends and Play.
+  await waitFor(() => expect(document.activeElement?.id).toBe("arena"));
+  await user.keyboard("{Escape}");
+  expect(interaction.get().panel).toBeNull();
+  expect(
+    [...document.querySelectorAll(".dock-window")].map((w) => w.getAttribute("aria-label")),
+  ).toEqual(["Friends", "Play"]);
+  await user.keyboard("{Escape}");
+  expect(document.querySelector(".window-dock")).toBeNull();
+  expect(interaction.get().panel).toBeNull();
+});
+
+it("opens the Play window directly on a tab by command", async () => {
+  const { runSlash, pageCommandContext } = await import("../../web/src/runtime/chat-commands");
+  const fake = fakeQueue();
+  matchQueue.set(fake.queue);
+  render(<App />);
+  for (const [command, tab] of [
+    ["/practice", "Practice"],
+    ["/host", "Host"],
+    ["/queue", "Queue"],
+  ] as const) {
+    act(() => {
+      runSlash(command, pageCommandContext(fake.queue));
+    });
+    expect(screen.getByRole("tab", { name: tab, selected: true })).toBeTruthy();
+  }
+});
+
+it("keeps gameplay keys working after a spell is clicked in the Spells window", async () => {
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(launcher().getByRole("button", { name: "Spells" }));
+  const spells = screen.getByRole("dialog", { name: "Spells" });
+  expect(spells.hasAttribute("data-keyboard-owner")).toBe(false);
+  act(() => screen.getByRole("button", { name: "Pulse spell" }).focus());
+  await user.keyboard("p");
+  expect(screen.queryByRole("dialog", { name: "Spells" })).toBeNull();
 });

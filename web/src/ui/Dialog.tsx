@@ -32,6 +32,7 @@ export function Modal({
         <Dialog.Content
           className={`dialog ${modal ? "" : "floating-dialog"} ${className}`}
           data-keyboard-owner={modal ? "true" : undefined}
+          {...(description ? {} : { "aria-describedby": undefined })}
           onOpenAutoFocus={(event) => {
             if (!modal) event.preventDefault();
           }}
@@ -57,9 +58,7 @@ export function Modal({
               </Button>
             </Dialog.Close>
           </div>
-          <Dialog.Description>
-            {description ?? "Local practice configuration. Changes apply immediately."}
-          </Dialog.Description>
+          {description && <Dialog.Description>{description}</Dialog.Description>}
           {children}
         </Dialog.Content>
       </Dialog.Portal>
