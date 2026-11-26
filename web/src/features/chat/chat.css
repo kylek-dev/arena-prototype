@@ -1,9 +1,14 @@
 /* The chat box. Colors are palette swatches or the Radix scales the
    palette drives. Translucent until typing, so the arena shows through. */
 .chat-box {
-  display: grid;
+  position: relative;
+  display: flex;
+  flex-direction: column;
   gap: 4px;
-  width: min(360px, calc(100vw - 24px));
+  box-sizing: border-box;
+  /* Room for the resize grip under the field. */
+  padding-bottom: 12px;
+  overflow: hidden;
   padding: 6px;
   color: var(--gray-12);
   background: color-mix(in srgb, var(--pal-night-1) 45%, transparent);
@@ -50,8 +55,9 @@
   text-align: center;
 }
 .chat-log {
-  /* Shorter on short screens, to stay clear of frames and bars. */
-  height: min(140px, 18vh);
+  /* Fills whatever height the box was given, and gives way first. */
+  flex: 1 1 auto;
+  min-height: 0;
   margin: 0;
   padding: 0 2px;
   overflow-y: auto;
@@ -109,17 +115,6 @@
   color: var(--pal-gold-5);
   font-size: 12px;
 }
-.chat-to {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-}
-.chat-to input {
-  flex: 1;
-  min-width: 0;
-  font-family: ui-monospace, monospace;
-}
 .chat-input {
   width: 100%;
   min-width: 0;
@@ -132,4 +127,85 @@
 }
 .chat-box:not(.typing) .chat-input {
   opacity: 0.6;
+}
+.chat-line.system {
+  color: var(--pal-gold-5);
+  font-style: italic;
+}
+.chat-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  background: linear-gradient(
+    135deg,
+    transparent 0 45%,
+    var(--gray-8) 45% 55%,
+    transparent 55% 70%,
+    var(--gray-8) 70% 80%,
+    transparent 80%
+  );
+  border: 0;
+  border-bottom-right-radius: var(--radius-3);
+  cursor: nwse-resize;
+  touch-action: none;
+  opacity: 0.6;
+}
+.chat-resize:hover,
+.chat-resize:focus-visible {
+  opacity: 1;
+}
+/* Whispering: the field takes the arcane swatches and says to whom. */
+.chat-whispering {
+  margin: 0;
+  color: var(--pal-arcane-5);
+  font-size: 12px;
+}
+.chat-input.whispering {
+  color: var(--pal-arcane-6);
+  background: color-mix(in srgb, var(--pal-arcane-1) 70%, transparent);
+  border-color: var(--pal-arcane-4);
+}
+.chat-tab-wrap {
+  display: inline-flex;
+  align-items: center;
+}
+.chat-tab-wrap.conversation .chat-tab {
+  color: var(--pal-arcane-5);
+  padding-right: 2px;
+}
+.chat-tab-close {
+  padding: 0 4px;
+  color: var(--gray-10);
+  background: none;
+  border: 0;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chat-tab-close:hover,
+.chat-tab-close:focus-visible {
+  color: var(--gray-12);
+}
+/* Whisper suggestions above the field while a `/w` handle is typed. */
+.chat-suggestions {
+  display: grid;
+  margin: 0;
+  padding: 2px;
+  list-style: none;
+  background: var(--pal-night-3);
+  border: 1px solid var(--gray-7);
+  border-radius: var(--radius-2);
+}
+.chat-suggestion {
+  padding: 2px 6px;
+  border-radius: var(--radius-1);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  cursor: pointer;
+}
+.chat-suggestion[aria-selected="true"] {
+  color: var(--pal-arcane-6);
+  background: color-mix(in srgb, var(--pal-arcane-1) 80%, transparent);
 }

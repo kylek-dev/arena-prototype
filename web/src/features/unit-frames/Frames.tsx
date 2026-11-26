@@ -4,11 +4,17 @@ import { useStore } from "../../state/store";
 import { interactUnit, unitRoster } from "../../runtime/commands";
 import { resolveUnit, type UnitTag } from "../../domain/units/tags";
 import type { Entity } from "../../domain/units/selection";
-import { useEffect, type ComponentProps } from "react";
+import { useEffect, useMemo, type ComponentProps } from "react";
 import { Placed } from "../../ui/Placed";
 import { UnitFrame } from "./UnitFrame";
 import { SAMPLE_CAST } from "../cast-bar/PlayerCastBar";
 import { hoveredFrame } from "../../runtime/unit-hover";
+import { IDLE_QUEUE } from "../../domain/matchmaking";
+import { matchQueue } from "../../state/network";
+import { createStore } from "../../state/store";
+
+const NO_QUEUE = createStore(IDLE_QUEUE);
+const NONE: readonly (string | null)[] = [];
 
 function TaggedFrame({
   tag,
@@ -66,6 +72,38 @@ function TaggedFrame({
   );
 }
 
+/** A party member who is not in this match: shown with the team, greyed,
+ * and not a target. */
+function PartyMate({ handle }: { handle: string | null }) {
+  return (
+    <section
+      className="unit-frame teammate party-away"
+      aria-label={`${handle ?? "Party member"} status`}
+    >
+      <div className="unit-heading">
+        <span className="unit-name">
+          <strong title={handle ?? undefined}>{handle ?? "Party member"}</strong>
+        </span>
+        <span className="unit-status">Not in this match</span>
+      </div>
+    </section>
+  );
+}
+
+/** Party members missing from the match on screen (all of them in practice). */
+function usePartyAway(state: ReturnType<typeof engine.get>) {
+  const queue = useStore(matchQueue, (q) => q);
+  const mates = useStore(queue?.state ?? NO_QUEUE, (s) => s.party?.mates ?? NONE);
+  const roster = state?.networked ? state.roster : undefined;
+  return useMemo(() => {
+    if (!mates.length) return NONE;
+    const here = new Set(
+      (roster ?? []).flatMap((unit) => (unit.handle ? [unit.handle.toLowerCase()] : [])),
+    );
+    return mates.filter((mate) => !mate || !here.has(mate.toLowerCase()));
+  }, [mates, roster]);
+}
+
 export function Frames() {
   const state = useStore(engine, (s) => s),
     focused = useStore(focus, (s) => s),
@@ -73,6 +111,7 @@ export function Frames() {
   const frames = useConfigSelector((c) => c.frames);
   const castBarAttached = useConfigSelector((c) => c.castBarAttached);
   const selectedId = state ? unitRoster(state, focused).target?.id : null;
+  const partyAway = usePartyAway(state);
   return (
     <>
       {(["player", "target", "focus"] as const).map((role) => {
@@ -123,7 +162,8 @@ export function Frames() {
           : state
             ? unitRoster(state, focused)[side].filter((unit) => unit.id !== state.player.id)
             : [];
-        if (!editing && !units.length) return null;
+        const away = side === "team" && !editing ? partyAway : NONE;
+        if (!editing && !units.length && !away.length) return null;
         return (
           <Placed
             key={side}
@@ -145,6 +185,9 @@ export function Frames() {
                   editing={editing}
                   selected={unit.id === selectedId}
                 />
+              ))}
+              {away.map((mate, index) => (
+                <PartyMate key={`party-${index}-${mate}`} handle={mate} />
               ))}
             </div>
           </Placed>

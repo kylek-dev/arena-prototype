@@ -1,0 +1,146 @@
+/* The window dock: Spells, Friends and Play open at the left middle of the
+   screen, each the same size, side by side when several are open (they
+   shrink to fit rather than overlap). Colors are palette swatches or the
+   Radix scales the palette drives. */
+.window-dock {
+  position: fixed;
+  /* Centered by flexbox over the full height, never by a transform: a
+     transform would become the containing block of fixed-position menus
+     inside the windows (the Friends ⋮ menu) and push them off screen. */
+  top: 0;
+  bottom: 0;
+  left: 16px;
+  /* Above the home screen (15) so Spells works there, below scrims (20). */
+  z-index: 16;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: calc(100vw - 32px);
+  pointer-events: none;
+}
+.dock-window {
+  display: flex;
+  flex: 0 1 320px;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: 320px;
+  min-width: 220px;
+  height: min(460px, calc(100dvh - 160px));
+  color: var(--gray-12);
+  background: var(--pal-night-2);
+  border: 1px solid var(--gray-6);
+  border-radius: var(--radius-4);
+  box-shadow: var(--shadow-5);
+  pointer-events: auto;
+}
+.dock-window.drag-through {
+  opacity: 0.12;
+  pointer-events: none;
+}
+.dock-window.drag-through * {
+  pointer-events: none !important;
+}
+.dock-window-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px 8px 14px;
+  border-bottom: 1px solid var(--gray-6);
+}
+.dock-window-title h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.dock-window-close {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--gray-11);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-2);
+  font-size: 18px;
+  cursor: pointer;
+}
+.dock-window-close:hover,
+.dock-window-close:focus-visible {
+  color: var(--gray-12);
+  background: var(--gray-4);
+}
+.dock-window-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 12px 14px;
+  overflow-y: auto;
+}
+.dock-window-footer {
+  border-top: 1px solid var(--gray-6);
+}
+/* The Play window: Radix tabs under the title, the panel scrolling below. */
+.play-window .dock-window-body {
+  display: flex;
+  padding: 0;
+  overflow: hidden;
+}
+.play-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+/* The active tab: bold with its underline (Radix), plus a soft highlight
+   so the current section is unmistakable. */
+.play-tabs .rt-TabsTrigger[data-state="active"] .rt-BaseTabListTriggerInner {
+  background-color: var(--gray-a4);
+  color: var(--gray-12);
+}
+.play-tab-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 12px 14px;
+  overflow-y: auto;
+}
+/* Play window contents. */
+.play-field {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+.play-field select,
+.play-field input {
+  min-width: 0;
+}
+.play-join {
+  display: flex;
+  gap: 6px;
+}
+.play-join input {
+  flex: 1 1 auto;
+  font-family: ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.play-row {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+.play-status {
+  margin: 0;
+  color: var(--gray-11);
+  font-size: 13px;
+}
+.play-notice {
+  margin: 0;
+  color: var(--pal-gold-5);
+  font-size: 13px;
+}
+/* The Queue tab: one full-width button per bracket. */
+.play-queue-modes {
+  display: grid;
+  gap: 8px;
+}
+.play-queue-modes > * {
+  width: 100%;
+}

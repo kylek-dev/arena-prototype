@@ -10,8 +10,6 @@ import { pendingBinding } from "../../web/src/state/binding-capture";
 import { installInput } from "../../web/src/runtime/input-router";
 import { activateSlot, dispatch, input } from "../../web/src/runtime/commands";
 import { snapshot } from "./fixtures";
-import { LightingTweaks } from "../../web/src/features/lighting-tweaks/LightingTweaks";
-import { lightingVisible } from "../../web/src/state/lighting";
 
 let router: ReturnType<typeof installInput>;
 let canvas: HTMLCanvasElement;
@@ -74,12 +72,15 @@ describe("production input routing", () => {
     key("KeyN");
     expect(config().nameplates.enemy).toBe(true);
   });
-  it("lets lighting sliders own input without blocking gameplay after canvas refocus", () => {
-    lightingVisible.set(true);
-    render(<LightingTweaks />);
+  it("lets window sliders own input without blocking gameplay after canvas refocus", () => {
+    render(
+      <aside data-keyboard-owner="true">
+        <input type="range" aria-label="A window slider" />
+      </aside>,
+    );
     key("KeyW");
     expect(router.sample()[1]).toBe(-1);
-    act(() => screen.getByRole("slider", { name: "Exposure (EV100)" }).focus());
+    act(() => screen.getByRole("slider", { name: "A window slider" }).focus());
     expect(router.sample()[1]).toBe(0);
     key("Digit1");
     key("KeyW");
@@ -91,7 +92,6 @@ describe("production input routing", () => {
     canvas.focus();
     key("KeyW");
     expect(router.sample()[1]).toBe(-1);
-    act(() => lightingVisible.set(false));
   });
   it("routes a remappable one-shot jump and suppresses it during typing and menus", () => {
     expect(key("Space").defaultPrevented).toBe(true);
