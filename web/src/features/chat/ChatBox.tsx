@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import {
   MAX_CHAT_CHARS,
   chatErrorText,
@@ -8,6 +8,8 @@ import {
   defaultChannel,
   tabPartner,
   whisperDraft,
+  whisperQuery,
+  whisperSuggestions,
   chatText,
   isIgnored,
   tabMessages,
@@ -23,7 +25,8 @@ import { CHAT_SIZE, clampChatSize, type ChatSize } from "../../domain/preference
 import { matchQueue } from "../../state/network";
 import { engine, interaction } from "../../state/session";
 import { createStore, useStore } from "../../state/store";
-import { accountService } from "../../state/account";
+import { accountService, friendsService } from "../../state/account";
+import { NO_FRIENDS } from "../../runtime/friends";
 import { LOADING_ACCOUNT } from "../../runtime/account";
 import { pageCommandContext, runSlash } from "../../runtime/chat-commands";
 import { parseSlash, unescapeSlash } from "../../domain/commands";
@@ -32,6 +35,7 @@ import { Placed } from "../../ui/Placed";
 import "./chat.css";
 
 const NO_ACCOUNT = createStore(LOADING_ACCOUNT);
+const NO_FRIENDS_LIST = createStore(NO_FRIENDS);
 /** A resize in progress: the size, and where the top-left corner stays. */
 type ChatDraft = { size: ChatSize; left: number; top: number; scale: number };
 /** Lines shown per tab; older ones stay in the log. */
@@ -247,6 +251,7 @@ function Box({
   const seated = useStore(engine, (s) => Boolean(s?.networked && !s.spectating));
   const account = useStore(accountService, (a) => a);
   const me = useStore(account?.state ?? NO_ACCOUNT, (s) => s.me?.handle ?? null);
+  const friends = useStore(friendsService, (f) => f);
   const tabs = chatTabs(spectating, chat.conversations);
   const active: ChatTab = tabs.includes(chat.active) ? chat.active : "all";
   const [draft, setDraft] = useState("");
@@ -281,6 +286,28 @@ function Box({
   }, [newest, active]);
   // Who the field whispers to: `/w Name#0000 ` typed, or the conversation
   // tab shown (unless a command is being typed).
+  // While a `/w` handle is typed: friends (those on first) and
+  // conversation partners whose handle starts with it; Tab completes.
+  const friendList = useStore(friends?.state ?? NO_FRIENDS_LIST, (f) => f.list);
+  const candidates = useMemo(
+    () => [
+      ...(friendList?.friends ?? [])
+        .filter((friend) => friend.relation === "friend")
+        .map((friend) => ({ handle: friend.handle, online: friend.presence !== "offline" })),
+      ...chat.conversations.map((handle) => ({ handle, online: false })),
+    ],
+    [friendList, chat.conversations],
+  );
+  const query = whisperQuery(draft);
+  const suggestions = query ? whisperSuggestions(candidates, query.prefix) : [];
+  const [pick, setPick] = useState(0);
+  const picked = suggestions.length ? Math.min(pick, suggestions.length - 1) : -1;
+  const complete = (handle: string) => {
+    if (!query) return;
+    setDraft(`/${query.command} ${handle} `);
+    setPick(0);
+    field.current?.focus();
+  };
   const typed = whisperDraft(draft);
   const partner = tabPartner(active);
   // Only a real command leaves the conversation; `//text` is a line too.
@@ -318,6 +345,20 @@ function Box({
     leave();
   };
   const keys = (event: KeyboardEvent<HTMLInputElement>) => {
+    // Whisper suggestions: Tab (or Enter) completes, arrows choose.
+    if (suggestions.length && !event.nativeEvent.isComposing) {
+      if (event.key === "Tab" || event.key === "Enter") {
+        event.preventDefault();
+        complete(suggestions[picked]);
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        setPick((picked + step + suggestions.length) % suggestions.length);
+        return;
+      }
+    }
     // Enter while an input method composes a character is not a send.
     if (event.key === "Enter" && !event.nativeEvent.isComposing) {
       event.preventDefault();
@@ -409,6 +450,23 @@ function Box({
           </button>
         </p>
       )}
+      {focused && suggestions.length > 0 && (
+        <ul className="chat-suggestions" role="listbox" aria-label="Whisper suggestions">
+          {suggestions.map((handle, index) => (
+            <li
+              key={handle}
+              role="option"
+              aria-selected={index === picked}
+              className="chat-suggestion"
+              // Pressing keeps the field focused; the click completes.
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => complete(handle)}
+            >
+              {handle}
+            </li>
+          ))}
+        </ul>
+      )}
       {whisperingTo && (
         <p className="chat-whispering" role="status">
           Whispering to {whisperingTo}
@@ -433,7 +491,12 @@ function Box({
         aria-invalid={tooLong || undefined}
         autoComplete="off"
         spellCheck={false}
-        onChange={(event) => setDraft(event.target.value)}
+        aria-autocomplete={query ? "list" : undefined}
+        aria-expanded={query ? suggestions.length > 0 : undefined}
+        onChange={(event) => {
+          setDraft(event.target.value);
+          setPick(0);
+        }}
         onKeyDown={keys}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}

@@ -6,6 +6,8 @@ import { initial } from "../../web/src/domain/preferences/schema";
 import { installInput } from "../../web/src/runtime/input-router";
 import { persistence, preferences, updateConfig } from "../../web/src/state/config";
 import { matchQueue } from "../../web/src/state/network";
+import { friendsService } from "../../web/src/state/account";
+import { createFriends } from "../../web/src/runtime/friends";
 import { engine, error, focus, interaction, selectedLayout } from "../../web/src/state/session";
 import { fakeQueue } from "./fake-queue";
 import { snapshot } from "./fixtures";
@@ -455,4 +457,55 @@ it("keeps // lines in a conversation private, and Whisper keeps a draft", async 
   expect(
     (screen.getByRole("textbox", { name: "Whisper to Ash#1000" }) as HTMLInputElement).value,
   ).toBe("/w Ash#1000 half typed");
+});
+
+it("suggests friends and conversation partners while typing /w, and Tab completes", async () => {
+  const user = userEvent.setup();
+  friendsService.set(
+    createFriends({
+      fetch: async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          friends: [
+            { handle: "Ashe#0002", relation: "friend", presence: "offline" },
+            { handle: "Ash#1000", relation: "friend", presence: "online" },
+            { handle: "Cyd#0003", relation: "incoming" },
+          ],
+          blocked: [],
+        }),
+      }),
+      now: () => 0,
+      later: () => () => {},
+    }),
+  );
+  await friendsService.get()!.refresh();
+  try {
+    render(<App />);
+    chatMessage({ channel: "whisper", from: "Asher#0004", text: "hi" });
+    await user.keyboard("{Enter}/w as");
+    const list = screen.getByRole("listbox", { name: "Whisper suggestions" });
+    // Friends who are on first; requests are not suggested.
+    expect(
+      within(list)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["Ash#1000", "Ashe#0002", "Asher#0004"]);
+    expect(within(list).getByRole("option", { selected: true }).textContent).toBe("Ash#1000");
+    await user.keyboard("{ArrowDown}{Tab}");
+    const field = screen.getByRole("textbox", { name: "Whisper to Ashe#0002" }) as HTMLInputElement;
+    expect(field.value).toBe("/w Ashe#0002 ");
+    expect(document.activeElement).toBe(field);
+    expect(screen.queryByRole("listbox")).toBeNull();
+    await user.keyboard("hello{Enter}");
+    expect(fake.sent().at(-1)).toEqual({ type: "whisper", to: "Ashe#0002", text: "hello" });
+    // A click on a suggestion completes too.
+    await user.keyboard("{Enter}/w ash#");
+    await user.click(screen.getByRole("option", { name: "Ash#1000" }));
+    expect(
+      (screen.getByRole("textbox", { name: "Whisper to Ash#1000" }) as HTMLInputElement).value,
+    ).toBe("/w Ash#1000 ");
+  } finally {
+    friendsService.set(null);
+  }
 });

@@ -7,6 +7,8 @@ import {
   defaultChannel,
   openConversation,
   whisperDraft,
+  whisperQuery,
+  whisperSuggestions,
   MAX_CHAT_LOG,
   chatErrorText,
   chatPrefix,
@@ -161,4 +163,22 @@ it("never closes the conversation being shown, and reading a tab clears its shar
   chat = closeConversation(chat, "ccc#0001");
   expect(chat.unread.all).toBe(3);
   expect(chat.unread["w:Ccc#0001"]).toBeUndefined();
+});
+
+it("suggests whisper targets while the handle is typed, friends who are on first", () => {
+  expect(whisperQuery("/w As")).toEqual({ command: "w", prefix: "As" });
+  expect(whisperQuery("/whisper ")).toEqual({ command: "whisper", prefix: "" });
+  expect(whisperQuery("/w Ash#1000 hi")).toBeNull();
+  expect(whisperQuery("hello")).toBeNull();
+  const candidates = [
+    { handle: "Ashe#0002", online: false },
+    { handle: "Ash#1000", online: true },
+    { handle: "Bea#0003", online: true },
+    { handle: "ash#1000", online: false },
+  ];
+  expect(whisperSuggestions(candidates, "as")).toEqual(["Ash#1000", "Ashe#0002"]);
+  expect(whisperSuggestions(candidates, "ash#1")).toEqual(["Ash#1000"]);
+  expect(whisperSuggestions(candidates, "")).toEqual(["Ash#1000", "Bea#0003", "Ashe#0002"]);
+  expect(whisperSuggestions(candidates, "z")).toEqual([]);
+  expect(whisperSuggestions(candidates, "", 1)).toEqual(["Ash#1000"]);
 });

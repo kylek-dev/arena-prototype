@@ -333,3 +333,37 @@ export function withIgnored(state: ChatState, handle: string, on: boolean): Chat
   const rest = state.ignored.filter((other) => !sameHandle(other, handle));
   return { ...state, ignored: on ? [...rest, handle] : rest };
 }
+
+/** The handle being typed after `/w ` (or `/whisper `), before its space:
+ * what whisper suggestions match. `null` once the handle is followed by a
+ * space, or when the draft is not a whisper. */
+export function whisperQuery(draft: string) {
+  const match = /^\/(w|whisper)\s+(\S*)$/i.exec(draft);
+  return match ? { command: match[1].toLowerCase(), prefix: match[2] } : null;
+}
+
+/** Players to whisper whose handle starts with `prefix` (ignoring letter
+ * case; with or without the number), friends who are on first, at most
+ * `limit`, each once. */
+export function whisperSuggestions(
+  candidates: readonly { handle: string; online: boolean }[],
+  prefix: string,
+  limit = 5,
+) {
+  const wanted = prefix.toLowerCase();
+  const seen = new Set<string>();
+  return candidates
+    .filter((candidate) => {
+      const key = candidate.handle.toLowerCase();
+      if (seen.has(key) || !key.startsWith(wanted)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort(
+      (a, b) =>
+        Number(b.online) - Number(a.online) ||
+        a.handle.localeCompare(b.handle, "en", { sensitivity: "base" }),
+    )
+    .slice(0, limit)
+    .map((candidate) => candidate.handle);
+}
