@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { App } from "../../web/src/app/App";
@@ -82,14 +82,28 @@ it("reaches the movable direct-selection layout editor from the menu", async () 
   });
 });
 
-it("opens Spells from the menu without taking gameplay focus", async () => {
+it("opens Spells from the launcher's S without taking gameplay focus", async () => {
   const user = userEvent.setup();
   render(<App />);
+  // The game menu no longer holds the windows (playtest inbox).
   await user.keyboard("{Escape}");
-  await user.click(screen.getByRole("button", { name: "Spells" }));
+  const menu = screen.getByRole("dialog", { name: "Game menu" });
+  for (const gone of ["Spells", "Customize character", "Reset practice", "Invite friends"])
+    expect(within(menu).queryByRole("button", { name: gone }), gone).toBeNull();
+  expect(within(menu).queryByRole("region", { name: "Play online" })).toBeNull();
+  expect(within(menu).queryByRole("group", { name: "Account" })).toBeNull();
+  await user.click(within(menu).getByRole("button", { name: "Resume" }));
+  const launcher = screen.getByRole("navigation", { name: "Windows" });
+  expect(
+    within(launcher)
+      .getAllByRole("button")
+      .map((b) => b.textContent),
+  ).toEqual(["P", "F", "S", "C"]);
+  await user.click(within(launcher).getByRole("button", { name: "Spells" }));
   await waitFor(() => expect(document.activeElement?.id).toBe("arena"));
   expect(screen.getByRole("dialog", { name: "Spells" })).toBeTruthy();
-  expect(screen.getByRole("dialog").classList.contains("window-area-left")).toBe(true);
+  // It opens in the window dock at the left middle, like every window.
+  expect(screen.getByRole("dialog", { name: "Spells" }).closest(".window-dock")).toBeTruthy();
   expect(screen.queryByRole("dialog", { name: "Spellbook" })).toBeNull();
   const spells = screen.getByRole("group", { name: "Known spells" });
   expect(spells.querySelectorAll("button")).toHaveLength(4);

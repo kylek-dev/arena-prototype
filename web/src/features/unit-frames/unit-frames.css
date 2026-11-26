@@ -60,6 +60,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.unit-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
 .unit-heading .unit-status {
   flex-shrink: 0;
 }
@@ -121,4 +127,10 @@
 .placed > div > .rt-Button,
 .placed > div > .row {
   margin-top: 7px;
+}
+/* A party member who is not in this match: with the team, greyed out. */
+.unit-frame.party-away {
+  /* Greyed like a disconnected frame. */
+  filter: grayscale(1);
+  opacity: 0.6;
 }

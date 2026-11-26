@@ -7,7 +7,6 @@ import { Nameplates } from "../features/nameplates/Nameplates";
 import { CombatText } from "../features/combat-text/CombatText";
 import { UnitTooltip } from "../features/unit-frames/UnitTooltip";
 import { ActionBars } from "../features/action-bars/ActionBars";
-import { Spellbook } from "../features/spellbook/Spellbook";
 import { SpellDragPreview } from "../features/spellbook/SpellDragPreview";
 import { Settings } from "../features/settings/Settings";
 import { GameMenu } from "../features/menu/GameMenu";
@@ -21,16 +20,28 @@ import { Scoreboard } from "../features/scoreboard/Scoreboard";
 import { CustomLobby } from "../features/custom-lobby/CustomLobby";
 import { SpectatorHud } from "../features/spectator/SpectatorHud";
 import { MatchReady } from "../features/queue/MatchReady";
+import { InvitePrompt } from "../features/friends/InvitePrompt";
+import { ChatBox } from "../features/chat/ChatBox";
+import { Launcher } from "../features/launcher/Launcher";
+import { CenterPanel } from "../features/center/CenterPanel";
+import { WindowDock } from "../features/launcher/WindowDock";
 import { QueueBar } from "../features/queue/QueueBar";
 import { Loading } from "../features/loading/Loading";
 import { Diagnostics } from "../features/diagnostics/Diagnostics";
-import { LightingTweaks } from "../features/lighting-tweaks/LightingTweaks";
 import { MapEditor } from "../features/map-editor/MapEditor";
 import { Customizer } from "../features/customizer/Customizer";
 import { beforeMatch, customizerVisible } from "../state/appearance";
 import { StartScreen } from "../features/customizer/StartScreen";
 import { Modal } from "../ui/Dialog";
-import { draggingSpell, engine, interaction, setPanel } from "../state/session";
+import {
+  customLobbyVisible,
+  draggingSpell,
+  engine,
+  interaction,
+  scoreboardVisible,
+  setPanel,
+} from "../state/session";
+import { closeLauncherWindows } from "../state/windows";
 import { saveMessage, useConfigSelector } from "../state/config";
 import { useStore } from "../state/store";
 import { pendingBinding } from "../state/binding-capture";
@@ -44,6 +55,13 @@ export function App() {
   const customizing = useStore(customizerVisible, (s) => s);
   const lobby = useStore(beforeMatch, (s) => s);
   const spectating = useStore(engine, (s) => Boolean(s?.spectating));
+  const lobbyOpen = useStore(customLobbyVisible, (v) => v);
+  const boardOpen = useStore(scoreboardVisible, (v) => v);
+  // The Play and Friends windows belong to the arena: a full-screen overlay
+  // (customizer, home screen, custom lobby, scoreboard) closes them.
+  useEffect(() => {
+    if (customizing || lobby || lobbyOpen || boardOpen) closeLauncherWindows();
+  }, [customizing, lobby, lobbyOpen, boardOpen]);
   useEffect(() => {
     if (!spectating) return;
     const current = interaction.get();
@@ -59,8 +77,7 @@ export function App() {
   }, [spectating]);
   const menuBindings = useConfigSelector((c) => c.bindings.menu);
   const menuKey = menuBindings?.find(Boolean);
-  const title =
-    mode.panel === "menu" ? "Game menu" : mode.panel === "settings" ? "Settings" : "Spells";
+  const title = mode.panel === "menu" ? "Game menu" : "Settings";
 
   return (
     <Theme
@@ -103,42 +120,35 @@ export function App() {
             )}
             <RoundClock />
             <MatchStatus />
+            {/* The launcher first: the chat measures it to sit beside it. */}
+            <Launcher />
+            <ChatBox />
           </>
         )}
         <Diagnostics />
         <Scoreboard />
         <CustomLobby />
         {/* The queue follows the player from the home screen into the arena. */}
-        <QueueBar />
-        <MatchReady />
-        <LightingTweaks />
+        <CenterPanel>
+          <MatchReady />
+          <QueueBar />
+          <InvitePrompt />
+        </CenterPanel>
+        <WindowDock />
         <MapEditor />
         <StartScreen />
         <Customizer />
         <Loading />
-        {mode.panel && !(spectating && mode.panel === "spellbook") && (
+        {(mode.panel === "menu" || mode.panel === "settings") && (
           <Modal
             key={mode.panel}
             title={title}
-            description={mode.panel === "spellbook" ? "Drag a spell onto a slot." : undefined}
-            modal={mode.panel !== "spellbook"}
-            className={
-              mode.panel === "menu"
-                ? "menu-dialog"
-                : mode.panel === "spellbook"
-                  ? `spellbook-dialog window-area-left ${dragging ? "drag-through" : ""}`
-                  : ""
-            }
+            modal
+            className={mode.panel === "menu" ? "menu-dialog" : ""}
             escapeBlocked={!!mode.capture || !!pending}
             close={() => setPanel(null)}
           >
-            {mode.panel === "menu" ? (
-              <GameMenu />
-            ) : mode.panel === "settings" ? (
-              <Settings />
-            ) : (
-              <Spellbook />
-            )}
+            {mode.panel === "menu" ? <GameMenu /> : <Settings />}
           </Modal>
         )}
         <BindingConflict />

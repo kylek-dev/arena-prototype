@@ -2,6 +2,7 @@
 // `/api/queue` WebSocket exchanges, the queue's state and how the interface
 // words it. Pure, so it is unit tested without sockets.
 
+import { parseChatLine, type ChatChannel, type ChatLine } from "./chat";
 import { isHandle } from "./handles";
 import { parseTicket, type MatchTicket } from "./network";
 
@@ -13,9 +14,19 @@ export const QUEUE_MODES: readonly {
   maxParty: number;
   hint: string;
 }[] = [
-  { id: "1v1", label: "1v1", maxParty: 1, hint: "One against one." },
-  { id: "2v2", label: "2v2", maxParty: 2, hint: "Alone or with a friend." },
-  { id: "3v3", label: "3v3", maxParty: 3, hint: "Alone or with up to two friends." },
+  { id: "1v1", label: "1v1", maxParty: 1, hint: "Queue for a one-versus-one match." },
+  {
+    id: "2v2",
+    label: "2v2",
+    maxParty: 2,
+    hint: "Queue for a two-versus-two match, alone or with one party member.",
+  },
+  {
+    id: "3v3",
+    label: "3v3",
+    maxParty: 3,
+    hint: "Queue for a three-versus-three match, alone or with up to two party members.",
+  },
 ];
 export function isQueueMode(value: unknown): value is QueueMode {
   return QUEUE_MODES.some((mode) => mode.id === value);
@@ -100,7 +111,15 @@ export type Party = {
   code: string | null;
   members: number;
   leader: boolean;
+  /** The other members' handles, leader first (`null` when unnamed); empty
+   * from older doors. Shown as teammates. */
+  mates: (string | null)[];
 };
+
+/** A friend's invite: accepting joins their party or custom lobby by code. */
+export type Invite = { from: string; kind: "party" | "lobby"; code: string };
+/** Invites kept waiting for an answer at once; older ones give way. */
+export const MAX_INVITES = 3;
 
 /** What the door sends. A `match` carries this player's own seat ticket. */
 export type QueueMessage =
@@ -133,6 +152,10 @@ export type QueueMessage =
     }
   | { type: "lobby"; lobby: CustomLobby }
   | { type: "lobby_left"; reason: "left" | "kicked" }
+  | { type: "invite"; invite: Invite }
+  | { type: "invite_sent"; to: string }
+  | { type: "friends_changed" }
+  | { type: "chat"; line: ChatLine }
   | { type: "error"; code: string };
 
 const count = (value: unknown): value is number =>
@@ -168,9 +191,16 @@ export function parseQueueMessage(text: unknown): QueueMessage | null {
       if ((v.code !== null && code === null) || !count(v.members)) return null;
       if (v.members < 1 || v.members > MAX_PARTY || typeof v.leader !== "boolean") return null;
       if (v.queue !== null && !isQueueMode(v.queue)) return null;
+      const mates = v.mates ?? [];
+      if (
+        !Array.isArray(mates) ||
+        mates.length >= MAX_PARTY ||
+        !mates.every((mate) => mate === null || isHandle(mate))
+      )
+        return null;
       return {
         type: "party",
-        party: { code, members: v.members, leader: v.leader },
+        party: { code, members: v.members, leader: v.leader, mates: mates as (string | null)[] },
         queue: v.queue as QueueMode | null,
       };
     }
@@ -280,6 +310,19 @@ export function parseQueueMessage(text: unknown): QueueMessage | null {
       return v.reason === "left" || v.reason === "kicked"
         ? { type: "lobby_left", reason: v.reason }
         : null;
+    case "invite": {
+      const code = typeof v.code === "string" ? normalizeCode(v.code) : null;
+      if (!isHandle(v.from) || (v.kind !== "party" && v.kind !== "lobby") || !code) return null;
+      return { type: "invite", invite: { from: v.from, kind: v.kind, code } };
+    }
+    case "invite_sent":
+      return isHandle(v.to) ? { type: "invite_sent", to: v.to } : null;
+    case "friends_changed":
+      return { type: "friends_changed" };
+    case "chat": {
+      const line = parseChatLine(v);
+      return line ? { type: "chat", line } : null;
+    }
     case "error":
       return word(v.code) ? { type: "error", code: v.code } : null;
     default:
@@ -317,6 +360,12 @@ export const requests = {
       },
     }),
   startLobby: () => JSON.stringify({ type: "start_lobby" }),
+  invite: (handle: string) => JSON.stringify({ type: "invite", handle }),
+  chat: (channel: Exclude<ChatChannel, "whisper">, text: string) =>
+    JSON.stringify({ type: "chat", channel, text }),
+  whisper: (to: string, text: string) => JSON.stringify({ type: "whisper", to, text }),
+  ignore: (handle: string, on: boolean) =>
+    JSON.stringify({ type: on ? "ignore" : "unignore", handle }),
 };
 
 /** The door's queue endpoint on the page's own origin. */
@@ -381,6 +430,18 @@ export type QueueState = {
   notice: string | null;
   /** Why the connection ended: a door error code, `unreachable` or `lost`. */
   ended: string | null;
+  /** Friends' invites waiting for an answer, newest last. */
+  invites: Invite[];
+  /** Who the last invite reached (the door's `invite_sent`). */
+  inviteSent: string | null;
+  /** An invite on its way to the door, until it is sent or refused. */
+  inviting: string | null;
+  /** An accepted invite waiting to be joined. */
+  joining: Invite | null;
+  /** Why an accepted invite could not be joined (a refusal code). */
+  inviteError: { from: string; code: string } | null;
+  /** Counts the door's `friends_changed` pushes: the list is stale. */
+  friendsChanged: number;
 };
 export const IDLE_QUEUE: QueueState = {
   connection: "offline",
@@ -394,6 +455,12 @@ export const IDLE_QUEUE: QueueState = {
   readyCheck: null,
   notice: null,
   ended: null,
+  invites: [],
+  inviteSent: null,
+  inviting: null,
+  joining: null,
+  inviteError: null,
+  friendsChanged: 0,
 };
 
 /** `m:ss`, or `h:mm:ss` past an hour. */
@@ -415,39 +482,44 @@ export function formatExpected(ms: number) {
 }
 
 const ENDED: Record<string, string> = {
-  replaced: "The game is open in another tab or window; online play continues there.",
-  shutdown: "The matchmaker restarted. Try again in a moment.",
-  rate_limited: "Too many requests. Wait a moment and try again.",
-  bad_request: "The matchmaker did not accept a request. Reload the page and try again.",
-  unreachable: "Could not reach the matchmaker. Online play may not be available here.",
-  lost: "Lost the connection to the matchmaker.",
+  replaced: "The game is open in another tab or window. Online play continues there.",
+  shutdown: "The matchmaker restarted. Please try again in a moment.",
+  rate_limited: "Too many requests. Please wait a moment and try again.",
+  bad_request: "The matchmaker rejected a request. Reload the page and try again.",
+  unreachable: "The matchmaker could not be reached. Online play may be unavailable.",
+  lost: "The connection to the matchmaker was lost.",
 };
 const NOTICES: Record<string, string> = {
-  requeued: "Someone did not accept the match. You are back at the front of the queue.",
+  requeued: "Another player did not accept the match. You are back at the front of the queue.",
   cancelled: "The search was cancelled.",
-  member_left: "A party member left, so your party left the queue.",
-  declined: "You declined the match and left the queue.",
-  not_accepted: "You did not accept the match in time, so you left the queue.",
-  member_declined: "A party member declined the match, so your party left the queue.",
-  member_not_accepted: "A party member did not accept in time, so your party left the queue.",
+  member_left: "A party member left, so your party has left the queue.",
+  declined: "You declined the match and have left the queue.",
+  not_accepted: "The match was not accepted in time, so you have left the queue.",
+  member_declined: "A party member declined the match, so your party has left the queue.",
+  member_not_accepted:
+    "A party member did not accept the match in time, so your party has left the queue.",
   not_leader: "Only the party leader can start a search.",
-  party_too_big: "Your party is too big for that queue.",
-  party_full: "That party is full (3 players).",
-  party_busy: "That party is in a queue right now. Try again when it stops.",
-  no_such_party: "No party has that code. Check it, or ask for a new invite.",
-  in_lobby: "Leave your custom lobby before queueing or joining a party.",
-  no_such_lobby: "No custom lobby has that code. Check it, or ask the host for a new invite.",
-  lobby_full: "That custom lobby is full.",
-  not_host: "Only the lobby host can do that.",
-  slot_full: "That team or spectator slot is already full.",
-  lobby_not_full: "Fill both teams before starting the match.",
-  lobby_too_big: "Too many players are in the lobby for that team size.",
-  no_such_member: "That player is no longer in the lobby.",
-  invalid_settings: "Those match settings are not supported by the server.",
-  kicked: "You were removed from the custom lobby by the host.",
-  rate_limited: "Too many matches started recently. Wait a moment and try again.",
+  party_too_big: "Your party has too many members for this queue.",
+  party_full: "This party is full.",
+  party_busy: "This party is currently in a queue. Please try again when the search ends.",
+  no_such_party: "This party no longer exists.",
+  in_lobby: "Leave your custom lobby before joining a queue or a party.",
+  no_such_lobby: "No custom lobby exists with this code.",
+  lobby_full: "This custom lobby is full.",
+  not_host: "Only the lobby host can perform this action.",
+  slot_full: "This team or spectator slot is full.",
+  lobby_not_full: "Both teams must be full before the match can start.",
+  lobby_too_big: "The lobby has too many players for this team size.",
+  no_such_member: "This player is no longer in the lobby.",
+  invalid_settings: "The server does not support these match settings.",
+  kicked: "The host removed you from the custom lobby.",
+  rate_limited: "Too many requests. Please wait a moment and try again.",
+  not_logged_in: "Log in to invite friends.",
+  no_such_friend: "Only friends can be invited.",
+  offline: "This friend is offline.",
+  unavailable: "The server could not process the invitation. Please try again later.",
   spectators_disabled: "Spectators are disabled in this custom lobby.",
-  spectators_occupied: "Move or remove spectators before turning spectators off.",
+  spectators_occupied: "Move or remove all spectators before disabling spectators.",
 };
 export function endedText(code: string | null) {
   return ENDED[code ?? ""] ?? "Online play stopped.";
@@ -552,6 +624,8 @@ export function queueBlocked(state: QueueState, mode: QueueMode) {
   if (party && !party.leader) return "Only the party leader can start a search.";
   const limit = QUEUE_MODES.find((entry) => entry.id === mode)?.maxParty ?? 1;
   if (party && party.members > limit)
-    return limit === 1 ? "1v1 is for one player." : `Parties of up to ${limit} only.`;
+    return limit === 1
+      ? "The 1v1 queue does not accept parties."
+      : `This queue accepts parties of up to ${limit} players.`;
   return null;
 }

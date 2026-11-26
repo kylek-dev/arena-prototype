@@ -11,10 +11,10 @@ account id in tickets) is implemented on `auto/identity-service`. The login
 UI is implemented on `auto/account-ui`, pending human review. Step 3 (handles, guests' temporary
 `Guest#NNNN`, the protocol relay) is implemented on `auto/display-names`;
 showing them in the HUD (and "Choose your name") is implemented on `auto/handles-ui`, pending human review. Step 4 (friends, presence and
-invites) is implemented on `auto/friends`, with its UI queued as Lane B. Step 5 (admin role from
+invites) is implemented on `auto/friends`, with its UI on `auto/friends-ui` (pending human review). Step 5 (admin role from
 configuration, the tag relay, and the first server-gated tools: map storage
 for the editor and clearing a handle) is implemented on `auto/admin-role`,
-with its UI queued as Lane B.
+with its UI on `auto/admin-ui` (pending human review).
 
 Acceptance criteria, in shipping order (each step is its own PR):
 

@@ -4,6 +4,8 @@ import { defaultAppearance } from "../../web/src/domain/appearance";
 import { Customizer } from "../../web/src/features/customizer/Customizer";
 import { StartScreen } from "../../web/src/features/customizer/StartScreen";
 import { GameMenu } from "../../web/src/features/menu/GameMenu";
+import { Launcher } from "../../web/src/features/launcher/Launcher";
+import { TooltipProvider } from "../../web/src/ui/Tooltip";
 import * as commands from "../../web/src/runtime/commands";
 import {
   appearance,
@@ -37,6 +39,7 @@ const both = () =>
       <StartScreen />
       <Customizer />
     </>,
+    { wrapper: TooltipProvider },
   );
 
 it("the start screen offers entering directly, without forcing customization", () => {
@@ -84,13 +87,12 @@ it("customizing from the start screen saves back to it or enters the arena", () 
   expect(screen.queryByRole("complementary")).toBeNull();
 });
 
-it("opens from the menu during play and closes with Done", () => {
-  setPanel("menu");
+it("opens from the launcher's C during play and closes with Done", () => {
   render(
-    <>
-      <GameMenu />
+    <TooltipProvider>
+      <Launcher />
       <Customizer />
-    </>,
+    </TooltipProvider>,
   );
   fireEvent.click(screen.getByRole("button", { name: "Customize character" }));
   const panel = screen.getByRole("complementary", { name: "Appearance" });

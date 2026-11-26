@@ -1,6 +1,12 @@
 import { Button, Text } from "@radix-ui/themes";
 import { layout, type Layout } from "../../domain/layout/model";
-import { defaultConfig, type FrameRole } from "../../domain/preferences/schema";
+import {
+  CHAT_SIZE,
+  clampChatSize,
+  defaultConfig,
+  type ChatSize,
+  type FrameRole,
+} from "../../domain/preferences/schema";
 import { useConfigSelector, updateConfig } from "../../state/config";
 import { interaction, selectedLayout, setMode } from "../../state/session";
 import { useStore } from "../../state/store";
@@ -9,6 +15,15 @@ import { MovableWindow } from "../../ui/MovableWindow";
 export function LayoutSettings() {
   const frames = useConfigSelector((c) => c.frames);
   const castBarAttached = useConfigSelector((c) => c.castBarAttached);
+  const chatSize = useConfigSelector((c) => c.chatSize);
+  const chatAttached = useConfigSelector((c) => c.chatAttached);
+  const resizeChat = (next: ChatSize) =>
+    updateConfig((c) => ({
+      ...c,
+      chatSize: clampChatSize(next),
+      // Only a width change is the player's width.
+      chatSizeCustom: c.chatSizeCustom || next.width !== c.chatSize.width,
+    }));
   const bars = useConfigSelector((c) => c.bars);
   const selected = useStore(selectedLayout, (s) => s);
   const editing = useStore(interaction, (s) => s.layout);
@@ -61,11 +76,52 @@ export function LayoutSettings() {
               onChange={(e) => change({ ...value, scale: +e.target.value })}
             />
           </label>
+          {selected === "chat" && (
+            <>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={chatAttached}
+                  onChange={(e) => updateConfig((c) => ({ ...c, chatAttached: e.target.checked }))}
+                />
+                Attach chat to the launcher
+              </label>
+              <label>
+                Width {chatSize.width} px
+                <input
+                  type="range"
+                  min={CHAT_SIZE.min.width}
+                  max={CHAT_SIZE.max.width}
+                  step={10}
+                  value={chatSize.width}
+                  onChange={(e) => resizeChat({ ...chatSize, width: +e.target.value })}
+                />
+              </label>
+              <label>
+                Height {chatSize.height} px
+                <input
+                  type="range"
+                  min={CHAT_SIZE.min.height}
+                  max={CHAT_SIZE.max.height}
+                  step={10}
+                  value={chatSize.height}
+                  onChange={(e) => resizeChat({ ...chatSize, height: +e.target.value })}
+                />
+              </label>
+            </>
+          )}
           <Button
             variant="soft"
-            onClick={() =>
-              change(isFrame ? defaultConfig().frames[selected as FrameRole] : layout(0.5, 0.92))
-            }
+            onClick={() => {
+              change(isFrame ? defaultConfig().frames[selected as FrameRole] : layout(0.5, 0.92));
+              if (selected === "chat")
+                updateConfig((c) => ({
+                  ...c,
+                  chatAttached: true,
+                  chatSizeCustom: false,
+                  chatSize: { ...CHAT_SIZE.initial },
+                }));
+            }}
           >
             Reset selected
           </Button>
