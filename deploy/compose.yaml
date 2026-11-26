@@ -69,6 +69,10 @@ services:
       # Maps saved by admins in the server-backed editor.
       - --maps-dir
       - /var/lib/arena/maps
+      # Which matches ended (private network; Caddy never routes here),
+      # so players leave the in-match state when their match ends.
+      - --match-status
+      - http://server:8080
     environment:
       <<: *public
       # Accounts are off (guests only) until ARENA_SESSION_KEY is set: hex,

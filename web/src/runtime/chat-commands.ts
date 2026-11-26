@@ -241,7 +241,7 @@ export const CHAT_COMMANDS: readonly ChatCommand[] = [
     name: "reply",
     aliases: ["r"],
     usage: "<message>",
-    description: "Answer whoever whispered last.",
+    description: "Answer the last conversation.",
     run(args, ctx) {
       const to = ctx.queue.chat.get().whisperTo;
       if (!to || !isHandle(to)) ctx.say("No one has whispered to you yet.");

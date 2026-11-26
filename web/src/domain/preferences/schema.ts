@@ -33,6 +33,12 @@ export type Config = {
   castBarAttached: boolean;
   /** The chat box's own width and height (px, before its layout scale). */
   chatSize: ChatSize;
+  /** The chat box sits beside the launcher (its own `frames.chat` unused
+   * until it is moved), filling the width up to the action bar. */
+  chatAttached: boolean;
+  /** The player set the chat width themselves (grip or slider): an
+   * attached chat keeps it instead of filling the space. */
+  chatSizeCustom: boolean;
   assignmentsLocked: boolean;
   nameplates: { friendly: boolean; enemy: boolean };
 };
@@ -67,14 +73,16 @@ export function defaultConfig(): Config {
       unitTooltip: layout(1, 1),
       // Centred, just above the default action bar (y 0.92), down to 800×600.
       castBar: layout(0.5, 0.78),
-      // Left side, below the team frames and above the action bars (y 0.92),
-      // which span most of the width on small screens.
-      chat: layout(0.01, 0.7),
-      // Near the right edge, below the opponent frames and invite prompts.
-      launcher: layout(0.99, 0.74),
+      // Bottom left, beside the launcher's default place: used once the chat
+      // is detached from the launcher.
+      chat: layout(0.04, 1),
+      // Bottom-left corner; the chat sits beside it by default.
+      launcher: layout(0, 1),
     },
     castBarAttached: false,
     chatSize: { ...CHAT_SIZE.initial },
+    chatAttached: true,
+    chatSizeCustom: false,
     assignmentsLocked: false,
     nameplates: { friendly: true, enemy: true },
   };
@@ -255,11 +263,22 @@ export function validateConfig(value: unknown): Config {
       team: cleanLayout(frames.team, d.frames.team),
       unitTooltip: cleanLayout(frames.unitTooltip, d.frames.unitTooltip),
       castBar: cleanLayout(frames.castBar, d.frames.castBar),
-      chat: cleanLayout(frames.chat, d.frames.chat),
-      launcher: cleanLayout(frames.launcher, d.frames.launcher),
+      chat:
+        typeof r.chatAttached !== "boolean" && untouched(r, frames, d)
+          ? d.frames.chat
+          : cleanLayout(frames.chat, d.frames.chat),
+      launcher: movedDefault(
+        cleanLayout(frames.launcher, d.frames.launcher),
+        OLD_LAUNCHER,
+        d.frames.launcher,
+      ),
     },
     castBarAttached: bool(r.castBarAttached, false),
     chatSize: cleanChatSize(r.chatSize),
+    // Profiles from before attaching: attached when the chat still sat at
+    // an old default (the player never moved it), detached otherwise.
+    chatAttached: typeof r.chatAttached === "boolean" ? r.chatAttached : untouched(r, frames, d),
+    chatSizeCustom: bool(r.chatSizeCustom, false),
     assignmentsLocked: bool(r.assignmentsLocked, false),
     nameplates: {
       friendly: bool(record(r.nameplates).friendly, true),
@@ -308,4 +327,33 @@ function cleanChatSize(raw: unknown): ChatSize {
     width: number(value.width, CHAT_SIZE.initial.width),
     height: number(value.height, CHAT_SIZE.initial.height),
   });
+}
+
+/** Defaults earlier versions saved into every profile. */
+const OLD_LAUNCHER = [layout(0.99, 0.74), layout(1, 0.66)];
+const OLD_CHAT = [layout(0.01, 0.7), layout(0.01, 0.97)];
+function sameLayout(a: Layout, b: Layout) {
+  return (
+    a.x === b.x &&
+    a.y === b.y &&
+    a.scale === b.scale &&
+    a.visible === b.visible &&
+    a.locked === b.locked
+  );
+}
+/** A frame still at an old default moves to the new one; a frame the
+ * player placed stays. */
+function movedDefault(value: Layout, olds: Layout[], next: Layout) {
+  return olds.some((old) => sameLayout(value, old)) ? next : value;
+}
+/** For profiles from before the attached chat: both the launcher and the
+ * chat still sit at earlier defaults (the player moved neither), so the
+ * chat can attach to the launcher's new place. */
+function untouched(_r: Record<string, unknown>, frames: Record<string, unknown>, d: Config) {
+  const launcher = cleanLayout(frames.launcher, d.frames.launcher);
+  const chat = cleanLayout(frames.chat, d.frames.chat);
+  return (
+    OLD_LAUNCHER.some((old) => sameLayout(launcher, old)) &&
+    OLD_CHAT.some((old) => sameLayout(chat, old))
+  );
 }

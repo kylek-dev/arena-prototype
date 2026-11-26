@@ -16,8 +16,14 @@ export function LayoutSettings() {
   const frames = useConfigSelector((c) => c.frames);
   const castBarAttached = useConfigSelector((c) => c.castBarAttached);
   const chatSize = useConfigSelector((c) => c.chatSize);
+  const chatAttached = useConfigSelector((c) => c.chatAttached);
   const resizeChat = (next: ChatSize) =>
-    updateConfig((c) => ({ ...c, chatSize: clampChatSize(next) }));
+    updateConfig((c) => ({
+      ...c,
+      chatSize: clampChatSize(next),
+      // Only a width change is the player's width.
+      chatSizeCustom: c.chatSizeCustom || next.width !== c.chatSize.width,
+    }));
   const bars = useConfigSelector((c) => c.bars);
   const selected = useStore(selectedLayout, (s) => s);
   const editing = useStore(interaction, (s) => s.layout);
@@ -73,6 +79,14 @@ export function LayoutSettings() {
           {selected === "chat" && (
             <>
               <label>
+                <input
+                  type="checkbox"
+                  checked={chatAttached}
+                  onChange={(e) => updateConfig((c) => ({ ...c, chatAttached: e.target.checked }))}
+                />
+                Attach chat to the launcher
+              </label>
+              <label>
                 Width {chatSize.width} px
                 <input
                   type="range"
@@ -100,7 +114,13 @@ export function LayoutSettings() {
             variant="soft"
             onClick={() => {
               change(isFrame ? defaultConfig().frames[selected as FrameRole] : layout(0.5, 0.92));
-              if (selected === "chat") resizeChat(CHAT_SIZE.initial);
+              if (selected === "chat")
+                updateConfig((c) => ({
+                  ...c,
+                  chatAttached: true,
+                  chatSizeCustom: false,
+                  chatSize: { ...CHAT_SIZE.initial },
+                }));
             }}
           >
             Reset selected

@@ -309,8 +309,8 @@ describe("in the chat box", () => {
     expect(document.activeElement).toBe(field);
     expect(field.value).toBe("/");
     await user.keyboard("help{Enter}");
-    expect(screen.getByRole("log", { name: "Public" }).textContent).toContain("Commands");
-    await user.click(screen.getByRole("tab", { name: "Team" }));
+    expect(screen.getByRole("log", { name: "All" }).textContent).toContain("Commands");
+    await user.click(screen.getByRole("tab", { name: /^Team/ }));
     expect(screen.getByRole("log", { name: "Team" }).textContent).toContain("Commands");
     expect(fake.sent().some((m) => m.type === "chat")).toBe(false);
     await user.click(field.ownerDocument.querySelector(".chat-input") as HTMLElement);
