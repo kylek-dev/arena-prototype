@@ -1,4 +1,5 @@
 import { SPELLS } from "../../domain/abilities/catalog";
+import { SpellIcon } from "../abilities/SpellIcon";
 import { spellDragPreview } from "../../state/session";
 import { useStore } from "../../state/store";
 
@@ -12,7 +13,7 @@ export function SpellDragPreview() {
       aria-hidden="true"
       style={{ left: preview.x + 12, top: preview.y + 12 }}
     >
-      <span className="spell-symbol">{spell.symbol}</span>
+      <SpellIcon spell={spell} />
       <small>{spell.name}</small>
     </div>
   );

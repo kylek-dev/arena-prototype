@@ -10,6 +10,7 @@ import { SpellDetails } from "../abilities/SpellDetails";
 import { beginSpellPress } from "../../runtime/spell-drag";
 import { useRef } from "react";
 import { Cooldown } from "./Cooldown";
+import { SpellIcon } from "../abilities/SpellIcon";
 export function ActionSlot({ slot, number }: { slot: Slot; number: number }) {
   const state = useStore(engine, (s) => s),
     mode = useStore(interaction, (s) => s);
@@ -77,9 +78,13 @@ export function ActionSlot({ slot, number }: { slot: Slot; number: number }) {
         onDragStart={(event) => event.preventDefault()}
       >
         <kbd>{pair?.filter(Boolean).map(label).join(" / ")}</kbd>
-        <span className="spell-symbol" aria-hidden="true">
-          {meta ? meta.symbol : "·"}
-        </span>
+        {meta ? (
+          <SpellIcon spell={meta} />
+        ) : (
+          <span className="spell-symbol" aria-hidden="true">
+            ·
+          </span>
+        )}
         {ability && cooling && <Cooldown ability={ability} />}
       </button>
     </Hint>

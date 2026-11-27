@@ -1,10 +1,23 @@
 import type { Snapshot } from "../../bridge/snapshot";
 import type { AbilityId } from "../action-bars/model";
+// Prepared by scripts/prepare_icons.py; Vite fingerprints the URLs.
+import pulseIcon1x from "../../../../assets/icons/spells/pulse-128.webp";
+import pulseIcon2x from "../../../../assets/icons/spells/pulse-256.webp";
+import riftBoltIcon1x from "../../../../assets/icons/spells/rift-bolt-128.webp";
+import riftBoltIcon2x from "../../../../assets/icons/spells/rift-bolt-256.webp";
+import quellIcon1x from "../../../../assets/icons/spells/quell-128.webp";
+import quellIcon2x from "../../../../assets/icons/spells/quell-256.webp";
+import mendIcon1x from "../../../../assets/icons/spells/mend-128.webp";
+import mendIcon2x from "../../../../assets/icons/spells/mend-256.webp";
+
+/** A painted icon at 1x and 2x for the 64 px slot. Spells without one fall back to `symbol`. */
+export type SpellIconImage = { x1: string; x2: string };
 
 export type SpellMeta = {
   id: AbilityId;
   name: string;
   symbol: string;
+  icon?: SpellIconImage;
   description: string;
   friendly?: boolean;
 };
@@ -14,6 +27,7 @@ export const SPELLS: Record<AbilityId, SpellMeta> = {
     id: "pulse",
     name: "Pulse",
     symbol: "ϟ",
+    icon: { x1: pulseIcon1x, x2: pulseIcon2x },
     description:
       "Release a focused burst at your selected opponent. Instant, usable while moving, requires range and line of sight.",
   },
@@ -21,6 +35,7 @@ export const SPELLS: Record<AbilityId, SpellMeta> = {
     id: "rift_bolt",
     name: "Rift Bolt",
     symbol: "✦",
+    icon: { x1: riftBoltIcon1x, x2: riftBoltIcon2x },
     description:
       "Channel a heavy arcane bolt at your selected opponent. Stand still while casting; moving cancels the cast.",
   },
@@ -28,6 +43,7 @@ export const SPELLS: Record<AbilityId, SpellMeta> = {
     id: "quell",
     name: "Quell",
     symbol: "⊘",
+    icon: { x1: quellIcon1x, x2: quellIcon2x },
     description:
       "Off-GCD interrupt against a casting opponent. Cancels their cast and locks out casting for 2 seconds.",
   },
@@ -35,6 +51,7 @@ export const SPELLS: Record<AbilityId, SpellMeta> = {
     id: "mend",
     name: "Mend",
     symbol: "✚",
+    icon: { x1: mendIcon1x, x2: mendIcon2x },
     description:
       "Channel a restorative heal on your friendly target, or yourself when no ally is targeted. Stand still while casting.",
     friendly: true,

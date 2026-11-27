@@ -65,6 +65,31 @@
   font-size: 33px;
   color: var(--indigo-11);
 }
+/* Painted icons fill the slot inside its padding; the slot's own background
+   shows only as the frame. */
+.spell-icon {
+  position: absolute;
+  inset: 2px;
+  width: calc(100% - 4px);
+  height: calc(100% - 4px);
+  border-radius: max(0px, calc(var(--radius-2) - 2px));
+  pointer-events: none;
+}
+.action-slot[data-unusable="unavailable"] .spell-icon {
+  filter: grayscale(1) brightness(0.55);
+}
+.action-slot[data-unusable="target"] .spell-icon {
+  filter: grayscale(0.6) brightness(0.75);
+}
+.action-slot[data-unusable="target"]:has(.spell-icon)::before {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  z-index: 1;
+  border-radius: max(0px, calc(var(--radius-2) - 2px));
+  background: color-mix(in srgb, var(--red-9) 30%, transparent);
+  pointer-events: none;
+}
 .cooldown {
   position: absolute;
   inset: 0;
@@ -117,4 +142,8 @@
   pointer-events: none !important;
   text-align: center;
   opacity: 0.85;
+}
+.spell-drag-preview small {
+  position: relative;
+  text-shadow: 0 0 3px var(--pal-night-1);
 }

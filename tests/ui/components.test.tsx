@@ -115,7 +115,11 @@ it("shows keybindings without spell names or slot-number labels", () => {
   );
   const assigned = screen.getByRole("button", { name: "Slot 1 Pulse" });
   const empty = screen.getByRole("button", { name: "Slot 5 empty" });
-  expect(assigned.textContent).toBe("1ϟ");
+  expect(assigned.textContent).toBe("1");
+  const icon = assigned.querySelector("img.spell-icon");
+  expect(icon?.getAttribute("alt")).toBe("");
+  expect(icon?.getAttribute("src")).toContain("pulse-128");
+  expect(icon?.getAttribute("srcset")).toContain("pulse-256");
   expect(assigned.querySelector("kbd")?.textContent).toBe("1");
   expect(assigned.querySelector("small")).toBeNull();
   expect(empty.textContent).toBe("·");
