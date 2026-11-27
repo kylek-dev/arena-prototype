@@ -423,3 +423,34 @@ certificate authority. Observed:
 
 Not observed: a public host and certificate, a browser playing through the
 proxy, latency over real networks, or a remote playtest.
+
+### Trusting the local certificate
+
+Caddy's local authority signs 12-hour certificates and renews them every
+few hours. A browser that only clicked through the warning for one
+certificate keeps the page open on its old connection, but every new match
+connection gets the renewed certificate and fails (`WebSocket connection …
+failed`, "Connection lost · reconnecting"), with nothing in Caddy's log
+(seen 2026-11-27). Trust the authority's root once instead; it is valid for
+ten years. On WSL2 with Windows browsers (current Windows user only):
+
+```sh
+docker compose -f deploy/compose.yaml --env-file deploy/.env exec -T caddy \
+  cat /data/caddy/pki/authorities/local/root.crt > /tmp/caddy-local-root.crt
+certutil.exe -user -addstore Root "$(wslpath -w /tmp/caddy-local-root.crt)"
+```
+
+Then quit the browser completely so it drops its old connections. The root
+lives in the `caddy-data` volume and survives restarts; recreating the volume
+makes a new one to trust.
+
+- **No HSTS on local hosts.** The Caddyfile sends `Strict-Transport-Security`
+  only when the request host is not `localhost`, `127.0.0.1` or `::1`: under
+  HSTS a browser offers no way past a certificate warning. A browser that
+  saw the header before this change keeps it for a year; remove `localhost`
+  at `chrome://net-internals/#hsts` (Delete domain security policies) if it
+  still blocks.
+- **Restart, do not reload, after editing the Caddyfile.** Compose mounts
+  the single file, and an editor or `git switch` that replaces it leaves the
+  container on the old copy, so `caddy reload` reloads the old
+  configuration. `docker compose restart caddy` mounts the new file.
