@@ -6,11 +6,17 @@
 	encode zstd gzip
 
 	header {
-		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options nosniff
 		Referrer-Policy no-referrer
 		-Server
 	}
+
+	# HSTS only for a real host. A local trial gets certificates from Caddy's
+	# own CA, renewed every few hours; under HSTS a browser that does not
+	# trust that CA cannot click through the warning for the new one, and
+	# its open match connections cannot reconnect (local trial, 2026-11-27).
+	@public not host localhost 127.0.0.1 ::1
+	header @public Strict-Transport-Security "max-age=31536000"
 
 	@door path /api/* /lobby /lobby/*
 	handle @door {
