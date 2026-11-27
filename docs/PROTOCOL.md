@@ -411,6 +411,28 @@ Rules:
 - `/metrics`: `arena_door_hub_players`, `arena_door_hub_instances`,
   `arena_door_hub_ticks_total`, `arena_door_hub_tick_microseconds_total`.
 
+## News
+
+The launcher page's news (`door/news.rs`): plain text, never rendered as
+HTML.
+
+- `GET /api/news`: `{news: [{id, title, body, posted, author?}]}`, newest
+  first, at most 50; public, `Cache-Control: no-store`.
+- `POST /api/admin/news` `{title, body}`: admins only (the role is checked
+  on every request, as for the other admin tools; an allowed `Origin` is
+  required). Text is cleaned (control and bidi-override characters dropped,
+  line breaks kept in the body, trimmed); titles hold 1–80 characters and
+  bodies 1–2000. 201 with the item, 422 `{error: "invalid_news", problem}`
+  (`empty_title`, `long_title`, `empty_body`, `long_body`), 400 `bad_request` for a body over
+  16 KiB or not of this shape, 401/403 as for admin tools.
+- `DELETE /api/admin/news/<id>` (16 hexadecimal digits): 204, or 404.
+- Posts and deletes share the door's per-address limit for login routes.
+- `news.json` items that fail these checks (a hand-edited file) are dropped
+  when the door starts; a file that cannot be read is set aside
+  (`news.json.unreadable-<time>`) and logged, never overwritten.
+- Kept in `news.json` in the `--news-dir` directory, written atomically (in
+  memory without one); the oldest beyond 50 go.
+
 ## Browser telemetry
 
 The game page reports a few scrubbed facts to the front door's

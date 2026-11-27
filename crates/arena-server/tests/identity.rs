@@ -1257,6 +1257,124 @@ async fn admins_come_from_configuration_and_alone_may_store_maps() {
     let claims = |ticket: &str| ticket_key.verify(&from_hex(ticket).unwrap(), 0).unwrap();
     assert!(claims(&alice_ticket).admin);
     assert!(!claims(&bob_ticket).admin);
+
+    // News for the launcher page: anyone reads it, only the admin posts
+    // and deletes, and it is checked as plain bounded text.
+    let send = |method: &'static str, path: String, session: Option<String>, body: String| async move {
+        let cookie = session.map_or(String::new(), |s| {
+            format!("Cookie: __Host-arena_session={s}\r\n")
+        });
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: test\r\n{cookie}{ORIGIN}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        let status: u16 = response[9..12].parse().unwrap();
+        let json = response.split_once("\r\n\r\n").unwrap().1;
+        (
+            status,
+            serde_json::from_str::<serde_json::Value>(json).unwrap_or(serde_json::Value::Null),
+        )
+    };
+    let news = || send("GET", "/api/news".into(), None, String::new());
+    assert_eq!(news().await, (200, serde_json::json!({ "news": [] })));
+    let post = r#"{"title":"Spring update","body":"The hub is open.\nCome and see."}"#;
+    assert_eq!(
+        send(
+            "POST",
+            "/api/admin/news".into(),
+            Some(bob.clone()),
+            post.into()
+        )
+        .await,
+        (403, serde_json::json!({ "error": "not_admin" }))
+    );
+    assert_eq!(
+        send("POST", "/api/admin/news".into(), None, post.into())
+            .await
+            .0,
+        401
+    );
+    assert_eq!(
+        send(
+            "POST",
+            "/api/admin/news".into(),
+            Some(alice.clone()),
+            r#"{"title":"  ","body":"x"}"#.into()
+        )
+        .await,
+        (
+            422,
+            serde_json::json!({ "error": "invalid_news", "problem": "empty_title" })
+        )
+    );
+    let long = format!(r#"{{"title":"t","body":"{}"}}"#, "y".repeat(2001));
+    assert_eq!(
+        send("POST", "/api/admin/news".into(), Some(alice.clone()), long).await,
+        (
+            422,
+            serde_json::json!({ "error": "invalid_news", "problem": "long_body" })
+        )
+    );
+    // Past the 16 KiB body limit, the door refuses it unread, as any body
+    // it cannot read.
+    let huge = format!(r#"{{"title":"t","body":"{}"}}"#, "y".repeat(17 * 1024));
+    assert_eq!(
+        send("POST", "/api/admin/news".into(), Some(alice.clone()), huge).await,
+        (400, serde_json::json!({ "error": "bad_request" }))
+    );
+    let (status, item) = send(
+        "POST",
+        "/api/admin/news".into(),
+        Some(alice.clone()),
+        post.into(),
+    )
+    .await;
+    assert_eq!(status, 201);
+    assert_eq!(item["body"], "The hub is open.\nCome and see.");
+    let (_, listed) = news().await;
+    assert_eq!(listed["news"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["news"][0]["title"], "Spring update");
+    // Alice has not picked a name here: no author is shown.
+    assert!(listed["news"][0].get("author").is_none());
+    let id = item["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        send(
+            "DELETE",
+            format!("/api/admin/news/{id}"),
+            Some(bob.clone()),
+            String::new()
+        )
+        .await
+        .0,
+        403
+    );
+    assert_eq!(
+        send(
+            "DELETE",
+            format!("/api/admin/news/{id}"),
+            Some(alice.clone()),
+            String::new()
+        )
+        .await
+        .0,
+        204
+    );
+    assert_eq!(
+        send(
+            "DELETE",
+            format!("/api/admin/news/{id}"),
+            Some(alice.clone()),
+            String::new()
+        )
+        .await
+        .0,
+        404
+    );
+    assert_eq!(news().await, (200, serde_json::json!({ "news": [] })));
     door.stop().await.unwrap();
     let _ = std::fs::remove_dir_all(directory);
 }
