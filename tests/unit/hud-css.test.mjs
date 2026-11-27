@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 
 test('the live player cast bar never blocks pointer input over the arena', () => {
   const css = readFileSync(new URL('../../web/src/features/cast-bar/cast-bar.css', import.meta.url), 'utf8');
@@ -56,3 +56,31 @@ test('the notification panel stacks its cards from the top center, without a tra
   assert.match(panel, /align-items:\s*center/);
   assert.doesNotMatch(panel, /transform:/);
 });
+
+test('no stylesheet styles a bare chat channel class, which every chat line carries', () => {
+  // Chat lines are `chat-line <channel>`: a rule for a bare `.hub` (or any
+  // other channel name) elsewhere restyles every line of that channel, as
+  // the hub window's `.hub { display: grid }` once did.
+  
+  const channels = ['public', 'match', 'team', 'spectator', 'whisper', 'hub', 'system'];
+  const root = new URL('../../web/src/', import.meta.url);
+  const files = [];
+  const walk = (dir) => {
+    for (const name of readdirSync(dir)) {
+      const path = new URL(name, dir);
+      if (statSync(path).isDirectory()) walk(new URL(`${name}/`, dir));
+      else if (name.endsWith('.css')) files.push(path);
+    }
+  };
+  walk(root);
+  for (const file of files) {
+    const css = readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const channel of channels) {
+      // `.hub` not preceded by another class on the same compound selector
+      // (`.chat-line.hub` is fine) and not part of a longer name (`.hub-panel`).
+      const bare = new RegExp(`(^|[\\s,>+~])\\.${channel}(?![\\w-])`, 'm');
+      assert.doesNotMatch(css, bare, `${file.pathname} styles a bare .${channel}`);
+    }
+  }
+});
+

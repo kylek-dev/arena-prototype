@@ -98,7 +98,7 @@ it("opens Spells from the launcher's S without taking gameplay focus", async () 
     within(launcher)
       .getAllByRole("button")
       .map((b) => b.textContent),
-  ).toEqual(["P", "F", "S", "C"]);
+  ).toEqual(["P", "F", "H", "S", "C"]);
   await user.click(within(launcher).getByRole("button", { name: "Spells" }));
   await waitFor(() => expect(document.activeElement?.id).toBe("arena"));
   expect(screen.getByRole("dialog", { name: "Spells" })).toBeTruthy();

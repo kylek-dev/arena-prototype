@@ -100,12 +100,17 @@ export function enterArena(reset: () => void) {
   preview.set({ yaw: 0, zoom: 0 });
   reset();
 }
-/** Returns to the launcher page (outside the game). */
-export function returnToLauncher() {
+/** Closes the panels and overlays a return (to the launcher page or the
+ * hub) leaves behind. */
+export function closeOverlays() {
   setPanel(null);
   pendingBinding.set(null);
   customizing.set(false);
   customLobbyVisible.set(false);
   preview.set({ yaw: 0, zoom: 0 });
+}
+/** Returns to the launcher page (outside the game). */
+export function returnToLauncher() {
+  closeOverlays();
   prematch.set(true);
 }

@@ -127,6 +127,23 @@ impl Combatant {
         }
     }
 
+    /// Position, height and momentum: the part `crate::motion` moves.
+    pub const fn motion(&self) -> crate::motion::Motion {
+        crate::motion::Motion {
+            position: self.position,
+            height: self.height,
+            vertical: self.vertical_velocity,
+            momentum: self.momentum,
+        }
+    }
+
+    pub const fn set_motion(&mut self, motion: crate::motion::Motion) {
+        self.position = motion.position;
+        self.height = motion.height;
+        self.vertical_velocity = motion.vertical;
+        self.momentum = motion.momentum;
+    }
+
     pub const fn cooldown_remaining(&self, spell: SpellId) -> u32 {
         self.cooldowns[spell.index()]
     }
@@ -672,13 +689,14 @@ impl Arena {
 
         // 1. Existing airborne momentum resolves first. Ground momentum
         // expires without a Move, preventing stale running jumps.
+        // The motion itself is shared with the hub (`crate::motion`).
+        let layout = &self.layout;
         for (actor, fighter) in self.fighters.iter_mut().enumerate() {
-            if fighter.height > 0 {
-                fighter.position = self.layout.slide(fighter.position, fighter.momentum);
+            let mut motion = fighter.motion();
+            if motion.carry(|at, by| layout.slide(at, by)) {
                 moving[actor] = true;
-            } else {
-                fighter.momentum = Position { x: 0, z: 0 };
             }
+            fighter.set_motion(motion);
         }
 
         // 2. Movement and facing.
@@ -692,21 +710,13 @@ impl Arena {
                 {
                     reject(&mut events, actor, Rejection::InvalidMovement);
                 } else if self.fighters[actor].height == 0 {
-                    let length = ((i64::from(x).pow(2) + i64::from(z).pow(2)) as u64)
-                        .isqrt()
-                        .max(1000) as i32;
-                    let dx = i32::from(x) * MOVE_PER_TICK / length;
-                    let dz = i32::from(z) * MOVE_PER_TICK / length;
+                    let layout = &self.layout;
                     let fighter = &mut self.fighters[actor];
-                    let before = fighter.position;
-                    fighter.position = self.layout.slide(before, Position { x: dx, z: dz });
-                    fighter.momentum = Position {
-                        x: fighter.position.x - before.x,
-                        z: fighter.position.z - before.z,
-                    };
-                    if x != 0 || z != 0 || fighter.position != before {
+                    let mut motion = fighter.motion();
+                    if motion.walk(Axes { x, z }, |at, by| layout.slide(at, by)) {
                         moving[actor] = true;
                     }
+                    fighter.set_motion(motion);
                     events.push(ArenaEvent::Moved { actor });
                 }
             }
@@ -727,12 +737,15 @@ impl Arena {
             let fighter = &mut self.fighters[actor];
             if fighter.health == 0 {
                 reject(&mut events, actor, Rejection::InvalidActor);
-            } else if fighter.height > 0 || fighter.vertical_velocity > 0 {
-                reject(&mut events, actor, Rejection::Airborne);
             } else {
-                fighter.vertical_velocity = JUMP_SPEED;
-                moving[actor] = true;
-                events.push(ArenaEvent::Jumped { actor });
+                let mut motion = fighter.motion();
+                if motion.jump() {
+                    fighter.set_motion(motion);
+                    moving[actor] = true;
+                    events.push(ArenaEvent::Jumped { actor });
+                } else {
+                    reject(&mut events, actor, Rejection::Airborne);
+                }
             }
         }
 
@@ -1005,14 +1018,9 @@ impl Arena {
 
         // 5. Vertical motion.
         for fighter in &mut self.fighters {
-            if fighter.height > 0 || fighter.vertical_velocity > 0 {
-                fighter.height = (fighter.height + fighter.vertical_velocity).max(0);
-                fighter.vertical_velocity -= GRAVITY;
-                if fighter.height == 0 {
-                    fighter.vertical_velocity = 0;
-                    fighter.momentum = Position { x: 0, z: 0 };
-                }
-            }
+            let mut motion = fighter.motion();
+            motion.fall();
+            fighter.set_motion(motion);
         }
 
         // 6. End-of-tick timer decay and passive resource regeneration.

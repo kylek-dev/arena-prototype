@@ -21,8 +21,9 @@ export function LayoutSettings() {
     updateConfig((c) => ({
       ...c,
       chatSize: clampChatSize(next),
-      // Only a width change is the player's width.
+      // A changed width or height is the player's own.
       chatSizeCustom: c.chatSizeCustom || next.width !== c.chatSize.width,
+      chatHeightCustom: c.chatHeightCustom || next.height !== c.chatSize.height,
     }));
   const bars = useConfigSelector((c) => c.bars);
   const selected = useStore(selectedLayout, (s) => s);
@@ -119,6 +120,7 @@ export function LayoutSettings() {
                   ...c,
                   chatAttached: true,
                   chatSizeCustom: false,
+                  chatHeightCustom: false,
                   chatSize: { ...CHAT_SIZE.initial },
                 }));
             }}

@@ -7,8 +7,8 @@ import { Friends } from "../friends/Friends";
 
 const NO_ACCOUNT = createStore(LOADING_ACCOUNT);
 
-/** F: the friends list, without party invitations (decided 2026-11-26:
- * parties form outside the game). Logging in stays on the launcher page. */
+/** F: the friends list, with Invite to group (restored 2026-11-26).
+ * Logging in stays on the launcher page. */
 export function FriendsWindow() {
   const account = useStore(accountService, (a) => a);
   const state = useStore(account?.state ?? NO_ACCOUNT, (s) => s);
@@ -21,7 +21,7 @@ export function FriendsWindow() {
       className="friends-window"
     >
       {loggedIn ? (
-        <Friends invites={false} />
+        <Friends />
       ) : (
         <p className="friends-empty">
           {state.status === "loading"
