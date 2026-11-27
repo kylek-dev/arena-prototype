@@ -468,6 +468,7 @@ impl Session {
                 ServerMessage::Snapshot(snapshot) => {
                     if (self.seat.is_none() && !self.spectator)
                         || snapshot.fighters.len() != self.order.len()
+                        || snapshot.roster.is_some()
                     {
                         continue;
                     }
@@ -632,6 +633,9 @@ impl Session {
                     }
                     self.tags = self.order.iter().map(|&actor| server_tags[actor]).collect();
                 }
+                // Hub worlds (ADR 0057) are not played by this client yet:
+                // a hub `Welcome` (team size 0) closes the link above.
+                ServerMessage::Member(_) | ServerMessage::MemberLeft { .. } => {}
             }
         }
         self.tick_rate

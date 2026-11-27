@@ -2515,6 +2515,7 @@ mod tests {
                 rules: arena_protocol::RULES_VERSION,
                 map: network::fnv1a(arena_map::COLOSSEUM_JSON.as_bytes()),
                 spectator: false,
+                hub: false,
             })
             .encode(),
         ];

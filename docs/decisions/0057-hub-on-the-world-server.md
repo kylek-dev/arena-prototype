@@ -97,4 +97,22 @@ They asked for the better architecture over patching the current one.
   snapshot state with the roster checks the wire decoder will reuse. A
   match's rules, events and hashes are unchanged (a seeded 50-match 3v3
   headless run gives the same combined state hash before and after).
+- **Slice 2 (protocol), 2026-11-27, `auto/hub-world-protocol`:**
+  `PROTOCOL_VERSION` 12. `Welcome.hub` (the player's slot in `actor`, team
+  size 0, no clock); `Snapshot.roster` (`WireRoster`: each slot's occupant,
+  fighter id, home and respawn tick, and the next id), validated with the
+  rules' own `valid_hub_roster` so a decoded world always restores
+  (`Snapshot::hub_arena`); worlds hold 1 to 16 fighters, no result,
+  scoreboard or `Finished`. Instead of the per-seat `Appearances`,
+  `Handles` and `Tags`, a world relays `Member` (id, handle, tags, look) for
+  everyone present on arrival and for each newcomer, and `MemberLeft` when
+  someone goes, keyed by fighter id so a reused slot never shows the
+  leaver. `Predictor::reconcile_hub` predicts a player's movement in a
+  world. Deltas are not used for worlds yet (slice 6). `RULES_VERSION` stays
+  8: match outcomes are unchanged; later changes to hub rules bump it, as
+  clients predict with them. For slice 3: blocked players are shown to each
+  other as vacant slots, so the world server rewrites each such view (aims
+  at the hidden slot dropped, events naming it withheld, the hash
+  recomputed). For slice 5: the page's outbox must never evict or merge
+  `Member`/`MemberLeft` (variants 7 and 8), which are additive.
 

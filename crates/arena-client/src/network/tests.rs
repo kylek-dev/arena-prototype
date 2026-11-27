@@ -21,6 +21,7 @@ fn welcome_with_limit(actor: u8, team_size: u8, round_ticks: u64) -> Vec<u8> {
         rules: arena_protocol::RULES_VERSION,
         map: 7,
         spectator: false,
+        hub: false,
     })
     .encode()
 }
@@ -1029,6 +1030,7 @@ fn finished_scoreboard_is_renumbered_into_local_order_and_cleared_on_rematch() {
         rules: arena_protocol::RULES_VERSION,
         map: 7,
         spectator: false,
+        hub: false,
     })
     .encode();
     session.receive(&feed(2, vec![rematch_welcome]), 2.0, &layout());
@@ -1117,6 +1119,7 @@ fn spectator_session_keeps_server_order_never_sends_inputs_and_reports_spectator
         rules: arena_protocol::RULES_VERSION,
         map: 7,
         spectator: true,
+        hub: false,
     })
     .encode();
     let arena = Arena::practice(layout(), 2).unwrap();

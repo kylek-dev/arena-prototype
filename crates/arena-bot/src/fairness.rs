@@ -536,6 +536,7 @@ mod tests {
             result: None,
             fighters,
             scoreboard: None,
+            roster: None,
             events,
         }
     }

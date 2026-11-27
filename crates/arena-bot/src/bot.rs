@@ -450,7 +450,9 @@ async fn session(
                         }
                         ServerMessage::Appearances(_)
                         | ServerMessage::Handles(_)
-                        | ServerMessage::Tags(_) => {}
+                        | ServerMessage::Tags(_)
+                        | ServerMessage::Member(_)
+                        | ServerMessage::MemberLeft { .. } => {}
                     }
                 }
                 if !frame_ticks.is_empty() {
@@ -680,6 +682,7 @@ mod tests {
             result: None,
             fighters,
             scoreboard: None,
+            roster: None,
             events: Vec::new(),
         }
     }
