@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { MAX_BARS, MAX_SLOTS, newBar } from "../../domain/action-bars/model";
 import { actionList } from "../../domain/bindings/model";
+import { CAST_BUFFER_MS } from "../../domain/preferences/schema";
 import { useConfigSelector, updateConfig } from "../../state/config";
 export function BarSettings() {
   const bars = useConfigSelector((c) => c.bars),
-    locked = useConfigSelector((c) => c.assignmentsLocked);
+    locked = useConfigSelector((c) => c.assignmentsLocked),
+    castBufferMs = useConfigSelector((c) => c.castBufferMs);
   const [message, setMessage] = useState("");
   return (
     <div className="stack">
@@ -20,6 +22,22 @@ export function BarSettings() {
         />{" "}
         Lock spell assignments
       </label>
+      <label>
+        Cast buffer: {castBufferMs > 0 ? `${castBufferMs} ms` : "Off"}
+        <input
+          type="range"
+          min={CAST_BUFFER_MS.min}
+          max={CAST_BUFFER_MS.max}
+          step={CAST_BUFFER_MS.step}
+          value={castBufferMs}
+          aria-valuetext={castBufferMs > 0 ? `${castBufferMs} milliseconds` : "Off"}
+          onChange={(e) => updateConfig((c) => ({ ...c, castBufferMs: Number(e.target.value) }))}
+        />
+      </label>
+      <p>
+        Press your next spell up to this long before the global cooldown or your current cast ends,
+        and it casts the moment it ends, with no gap from your connection's delay.
+      </p>
       {bars.map((bar, i) => (
         <fieldset key={bar.id}>
           <legend>

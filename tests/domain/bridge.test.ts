@@ -217,6 +217,12 @@ describe("engine snapshot boundary", () => {
       remainingTicks: 44,
       totalTicks: 45,
     });
+    // The cast buffer's held spell: a known spell key or null.
+    const held = (buffered: unknown) =>
+      adaptSnapshot({ ...base, player: { ...base.player, buffered } });
+    expect(held("pulse").player.buffered).toBe("pulse");
+    expect(held(null).player.buffered).toBeNull();
+    expect(() => held("fireball")).toThrow("Invalid buffered spell");
     expect(needsImmediateDelivery(idle, casting)).toBe(true);
     const enemyLocked = adaptSnapshot({
       ...base,

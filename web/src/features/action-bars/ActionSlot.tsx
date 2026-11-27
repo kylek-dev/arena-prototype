@@ -61,6 +61,7 @@ export function ActionSlot({ slot, number }: { slot: Slot; number: number }) {
         className={`action-slot ${mode.quick && mode.hovered === slot.id ? "binding-hover" : ""} ${dropTarget ? "drop-target" : ""} ${ability ? "" : "empty"} ${keyHeld ? "key-held" : ""}`}
         data-spell-drop-slot={slot.id}
         data-unusable={ability ? actionTint(state, ability) : undefined}
+        data-buffered={!!ability && state?.player.buffered === ability ? "true" : undefined}
         data-spell-draggable={!locked && !!ability && !mode.quick && !mode.layout}
         aria-label={`Slot ${number} ${meta ? meta.name : "empty"}`}
         aria-disabled={!ability || status !== "Ready"}

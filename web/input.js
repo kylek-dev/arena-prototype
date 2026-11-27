@@ -7,6 +7,7 @@ export class InputState {
   constructor() {
     this.held = new Set();
     this.pointerWasLocked = false;
+    this.castBufferMs = 0;
     this.cancel();
   }
 
@@ -36,6 +37,10 @@ export class InputState {
     if (!code) return;
     this.castSpell = code;
     if (spell === 'pulse') this.attack = true;
+  }
+  /** The cast buffer setting in ms, sent every frame (ABI field 22, ADR 0058). */
+  setCastBuffer(ms) {
+    this.castBufferMs = Number.isFinite(ms) && ms >= 0 ? ms : 0;
   }
   /** Cancels the local player's active cast on the next tick (ABI field 21). */
   requestStopCast() { this.stopCast = true; }
@@ -123,6 +128,7 @@ export class InputState {
     input.push(this.castSpell);
     input.push(this.spectatorCmd);
     input.push(Number(this.stopCast));
+    input.push(this.castBufferMs ?? 0);
     this.stopCast = false;
     this.spectatorCmd = -2;
     this.castSpell = 0;

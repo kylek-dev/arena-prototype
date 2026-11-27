@@ -29,7 +29,7 @@ use arena_map::MapFile;
 use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::{
     ARENA_HASTE_PERCENTAGE, ATTACK_COOLDOWN, ATTACK_DAMAGE, ATTACK_RANGE, ActiveCastState,
-    ActorInput, Arena, ArenaEvent, Axes, CastAction, Combatant, Position,
+    ActorInput, Arena, ArenaEvent, Axes, BufferedCast, CastAction, Combatant, Position,
 };
 use arena_sim::spells::{
     MAX_RESOURCE, MEND_CAST_TICKS, MEND_COOLDOWN_TICKS, MEND_COST, MEND_HEAL, MEND_RANGE,
@@ -51,6 +51,8 @@ struct Practice {
     cast: Option<SpellId>,
     /// "Stop casting" was pressed: cancel the active cast on the next tick.
     stop_cast: bool,
+    /// The player's cast buffer in ticks (ADR 0058), from the settings.
+    cast_buffer_ticks: u8,
     jump: bool,
     feedback: &'static str,
     /// Active spell lightning bolts currently on screen.
@@ -88,6 +90,7 @@ impl Practice {
             selected: None,
             cast: None,
             stop_cast: false,
+            cast_buffer_ticks: 0,
             jump: false,
             feedback: "Select the opponent to begin",
             zaps: Vec::new(),
@@ -691,6 +694,9 @@ fn read_controls(
     }
     practice.stop_cast |= input.stop_cast;
     practice.jump |= input.jump;
+    if let Some(ticks) = input.cast_buffer_ticks {
+        practice.cast_buffer_ticks = ticks;
+    }
 }
 // Both buttons use the same rendered-unit/pillar picker. Focus is browser-owned
 // identity state, independent of selection; a right-click miss leaves it alone.
@@ -778,6 +784,7 @@ fn simulate(mut practice: ResMut<Practice>, mut net: ResMut<Net>) {
             (practice.movement.x * 1000.0) as i16,
             (practice.movement.y * 1000.0) as i16,
         ];
+        session.set_cast_buffer(practice.cast_buffer_ticks);
         if let Some(frame) =
             session.input_action(movement, binary_angle(practice.facing), jump, action, now)
         {
@@ -797,6 +804,7 @@ fn simulate(mut practice: ResMut<Practice>, mut net: ResMut<Net>) {
         jump: std::mem::take(&mut practice.jump),
         action: take_stop_cast(&mut practice),
         rewind_ticks: 0,
+        cast_buffer_ticks: practice.cast_buffer_ticks,
     };
     if let Some(spell) = std::mem::take(&mut practice.cast) {
         if let Some(target) = resolve_cast_target(spell, practice.selected) {
@@ -1550,6 +1558,8 @@ fn publish(
         player.lockout_remaining,
     );
     write_active_cast_json(&mut json, player.active_cast);
+    json.push_str(r#","buffered":"#);
+    write_buffered_cast_json(&mut json, player.buffered_cast);
     let _ = write!(
         json,
         r#","yaw":{}}},"target":{{"x":{},"z":{},"health":{},"resource":{},"gcdRemaining":{},"lockoutRemaining":{},"cast":"#,
@@ -1808,6 +1818,26 @@ fn write_active_cast_json(json: &mut String, cast: Option<ActiveCastState>) {
     }
 }
 
+fn write_buffered_cast_json(json: &mut String, buffered: Option<BufferedCast>) {
+    match buffered {
+        None => json.push_str("null"),
+        Some(buffered) => {
+            json.push('"');
+            json.push_str(spell_key_str(buffered.spell));
+            json.push('"');
+        }
+    }
+}
+
+/// The cast buffer a shell sends in milliseconds, as whole ticks within the
+/// rules' cap (ADR 0058). `None` for a missing or invalid value.
+#[cfg(any(target_arch = "wasm32", test))]
+fn cast_buffer_ticks(ms: Option<f64>) -> Option<u8> {
+    let ms = ms.filter(|ms| ms.is_finite() && *ms >= 0.0)?;
+    let ticks = (ms * TICKS_PER_SECOND as f64 / 1000.0).round();
+    Some(ticks.min(f64::from(arena_sim::arena::MAX_CAST_BUFFER_TICKS)) as u8)
+}
+
 fn unit_tag_str(actor: usize) -> &'static str {
     match actor {
         0 => "Player",
@@ -1854,6 +1884,8 @@ struct Input {
     spectator_cmd: Option<i8>,
     /// "Stop casting" pressed (Esc while casting, or its own binding).
     stop_cast: bool,
+    /// The cast buffer setting in ticks; `None` from shells without field 22.
+    cast_buffer_ticks: Option<u8>,
 }
 #[cfg(target_arch = "wasm32")]
 mod platform {
@@ -2035,6 +2067,8 @@ mod platform {
                 .map(|n| n as i8),
             // Older shells have no field 21: never a stop.
             stop_cast: a.get(21).as_f64() == Some(1.0),
+            // Field 22: the cast buffer in milliseconds (ADR 0058).
+            cast_buffer_ticks: super::cast_buffer_ticks(a.get(22).as_f64()),
         }
     }
     pub fn focus_unit(unit: usize) {
@@ -2080,6 +2114,65 @@ mod tests {
         assert_eq!(
             effective_cooldown(&player, SpellId::Mend, MEND_COOLDOWN_TICKS, true),
             (MEND_COOLDOWN_TICKS - 1, MEND_COOLDOWN_TICKS)
+        );
+    }
+
+    #[test]
+    fn the_cast_buffer_setting_becomes_capped_ticks_and_holds_a_practice_cast() {
+        assert_eq!(cast_buffer_ticks(Some(400.0)), Some(12));
+        assert_eq!(
+            cast_buffer_ticks(Some(150.0)),
+            Some(5),
+            "4.5 ticks round up"
+        );
+        assert_eq!(cast_buffer_ticks(Some(0.0)), Some(0));
+        assert_eq!(
+            cast_buffer_ticks(Some(5_000.0)),
+            Some(arena_sim::arena::MAX_CAST_BUFFER_TICKS)
+        );
+        for bad in [None, Some(-1.0), Some(f64::NAN), Some(f64::INFINITY)] {
+            assert_eq!(cast_buffer_ticks(bad), None);
+        }
+        let mut json = String::new();
+        write_buffered_cast_json(&mut json, None);
+        write_buffered_cast_json(
+            &mut json,
+            Some(BufferedCast {
+                spell: SpellId::RiftBolt,
+                target: Some(1),
+            }),
+        );
+        assert_eq!(json, r#"null"rift_bolt""#);
+
+        // Practice: a second Mend on self pressed 12 ticks before the first
+        // lands is held, not rejected.
+        let mut app = App::new();
+        app.init_resource::<Practice>()
+            .init_resource::<Net>()
+            .add_systems(FixedUpdate, simulate);
+        {
+            let mut practice = app.world_mut().resource_mut::<Practice>();
+            practice.cast_buffer_ticks = 12;
+            practice.cast = Some(SpellId::Mend);
+        }
+        app.world_mut().run_schedule(FixedUpdate);
+        while app.world().resource::<Practice>().arena.fighters()[0]
+            .active_cast
+            .unwrap()
+            .remaining_ticks
+            > 13
+        {
+            app.world_mut().run_schedule(FixedUpdate);
+        }
+        app.world_mut().resource_mut::<Practice>().cast = Some(SpellId::Mend);
+        app.world_mut().run_schedule(FixedUpdate);
+        let practice = app.world().resource::<Practice>();
+        assert_eq!(
+            practice.arena.fighters()[0].buffered_cast,
+            Some(BufferedCast {
+                spell: SpellId::Mend,
+                target: Some(0),
+            })
         );
     }
 

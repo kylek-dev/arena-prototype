@@ -150,6 +150,63 @@ it("reports authoritative rejections only for submitted casts, not passive feedb
   expect(castError.get()).toBeNull();
 });
 
+it("sends a press blocked by the GCD to the cast buffer and watches it until it fires", () => {
+  const cast = vi.spyOn(input, "requestCast");
+  const onGcd = snapshot({
+    cooldown: 0.3,
+    player: { ...snapshot().player, gcdRemaining: 9 },
+  });
+  engine.set(onGcd);
+  activateSlot("bar-1-s1");
+  expect(cast).toHaveBeenCalledWith("pulse");
+  expect(input.castBufferMs).toBe(400);
+  expect(castError.get()).toBeNull();
+  // Held by the server: no error while it waits, then a fire-time rejection shows.
+  observeCastResult({ ...onGcd, tick: 31, player: { ...onGcd.player, buffered: "pulse" } });
+  expect(castError.get()).toBeNull();
+  observeCastResult(snapshot({ tick: 32, feedback: "Stand still to cast" }));
+  expect(castError.get()?.message).toBe("Stand still to cast");
+  // A cast in progress also counts; a recharge alone never does.
+  cast.mockClear();
+  engine.set(
+    snapshot({
+      cooldown: 0.3,
+      player: {
+        ...snapshot().player,
+        cast: { spell: "rift_bolt", remainingTicks: 5, totalTicks: 45 },
+      },
+    }),
+  );
+  activateSlot("bar-1-s1");
+  expect(cast).toHaveBeenCalledTimes(1);
+  cast.mockClear();
+  engine.set(snapshot({ cooldown: 0.3 }));
+  activateSlot("bar-1-s1");
+  expect(cast).not.toHaveBeenCalled();
+  // With the buffer off, a press during the GCD is rejected locally as before.
+  updateConfig((c) => ({ ...c, castBufferMs: 0 }));
+  engine.set(onGcd);
+  activateSlot("bar-1-s1");
+  expect(cast).not.toHaveBeenCalled();
+  expect(castError.get()?.message).toContain("Recharging");
+});
+
+it("marks the slot whose spell the cast buffer holds", () => {
+  engine.set(snapshot({ player: { ...snapshot().player, buffered: "pulse" } }));
+  render(
+    <Tooltip.Provider>
+      <ActionSlot slot={{ id: "bar-1-s1", ability: "pulse" }} number={1} />
+      <ActionSlot slot={{ id: "bar-1-s2", ability: "mend" }} number={2} />
+    </Tooltip.Provider>,
+  );
+  expect(screen.getByRole("button", { name: "Slot 1 Pulse" }).getAttribute("data-buffered")).toBe(
+    "true",
+  );
+  expect(
+    screen.getByRole("button", { name: "Slot 2 Mend" }).getAttribute("data-buffered"),
+  ).toBeNull();
+});
+
 it("shares attempted-cast errors for clicks and keys, excluding empty slots and editing", () => {
   engine.set(snapshot({ attackStatus: "Line of sight blocked" }));
   render(

@@ -30,6 +30,11 @@ export function observeCastResult(next: Snapshot) {
   }
   if (next.tick === pending.snapshot.tick) return;
   const { snapshot: previous, ability } = pending;
+  // Held by the cast buffer: keep watching until it fires or fails.
+  if (next.player.buffered === ability) {
+    pending = { snapshot: next, ability };
+    return;
+  }
   pending = null;
   if (
     spellCooldown(next, ability) > spellCooldown(previous, ability) ||

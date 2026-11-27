@@ -142,6 +142,7 @@ fn inputs_apply_one_per_tick_in_order_and_only_to_their_seat() {
         jump: true,
         action: arena_protocol::WireAction::None,
         view_tick: 0,
+        cast_buffer: 0,
     };
     session.receive(0, conn(0), frame(1));
     session.receive(0, conn(0), second);

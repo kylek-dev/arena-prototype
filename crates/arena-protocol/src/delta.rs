@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     DecodeError, FighterScore, FighterState, MAX_EVENTS, MAX_FIGHTERS, MAX_SERVER_FRAME, Snapshot,
-    TickEvent, WireCast, WireResult, valid_snapshot,
+    TickEvent, WireBufferedCast, WireCast, WireResult, valid_snapshot,
 };
 
 /// Bitmask flags for [`FighterDelta`]. Most frequently changing fields occupy
@@ -29,6 +29,7 @@ pub const MASK_DVEL: u16 = 1 << 9;
 pub const MASK_DMOMENTUM: u16 = 1 << 10;
 pub const MASK_LOCKOUT: u16 = 1 << 11;
 pub const MASK_CONNECTED_FLIP: u16 = 1 << 12;
+pub const MASK_BUFFERED_CAST: u16 = 1 << 13;
 
 /// Per-field change counters accumulated across consecutive snapshots.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,6 +96,7 @@ pub struct FighterDelta {
     pub dvel: i32,
     pub dmomentum: [i32; 2],
     pub lockout_remaining: u32,
+    pub buffered_cast: Option<WireBufferedCast>,
 }
 
 /// Lossless delta for one [`Snapshot`] relative to a prior snapshot.
@@ -272,6 +274,10 @@ impl SnapshotDelta {
             if vert_or_mom {
                 counts.vertical_or_momentum_changed += 1;
             }
+            if c.buffered_cast != p.buffered_cast {
+                d.mask |= MASK_BUFFERED_CAST;
+                d.buffered_cast = c.buffered_cast;
+            }
             if c.connected != p.connected {
                 d.mask |= MASK_CONNECTED_FLIP;
                 counts.connected_changed += 1;
@@ -356,6 +362,9 @@ impl SnapshotDelta {
             if f.mask & MASK_LOCKOUT != 0 {
                 out = postcard::to_extend(&f.lockout_remaining, out).expect("lockout encodes");
             }
+            if f.mask & MASK_BUFFERED_CAST != 0 {
+                out = postcard::to_extend(&f.buffered_cast, out).expect("buffered cast encodes");
+            }
         }
         postcard::to_extend(&self.events, out).expect("events encode")
     }
@@ -415,6 +424,9 @@ impl SnapshotDelta {
             }
             if f.mask & MASK_LOCKOUT != 0 {
                 total += postcard_len(&f.lockout_remaining);
+            }
+            if f.mask & MASK_BUFFERED_CAST != 0 {
+                total += postcard_len(&f.buffered_cast);
             }
         }
         let events_bytes = postcard_len(&self.events);
@@ -479,7 +491,7 @@ impl SnapshotDelta {
                 postcard::take_from_bytes::<u16>(rest).map_err(|_| DecodeError::Malformed)?;
             rest = next;
             // Reject unknown reserved mask bits.
-            if mask & !((1u16 << 13) - 1) != 0 {
+            if mask & !((1u16 << 14) - 1) != 0 {
                 return Err(DecodeError::Malformed);
             }
             let mut f = FighterState {
@@ -577,6 +589,12 @@ impl SnapshotDelta {
                 rest = next;
                 f.lockout_remaining = lockout;
             }
+            if mask & MASK_BUFFERED_CAST != 0 {
+                let (buffered, next) = postcard::take_from_bytes::<Option<WireBufferedCast>>(rest)
+                    .map_err(|_| DecodeError::Malformed)?;
+                rest = next;
+                f.buffered_cast = buffered;
+            }
             if mask & MASK_CONNECTED_FLIP != 0 {
                 f.connected = !f.connected;
             }
@@ -631,6 +649,7 @@ mod tests {
         let mut total_full = 0usize;
         let mut total_delta = 0usize;
         let mut total_counts = FieldChangeCounts::default();
+        let mut buffered_ticks = 0;
 
         for step in 1u32..=120 {
             let mut slots = [ActorInput::default(); MAX_FIGHTERS];
@@ -662,6 +681,22 @@ mod tests {
                 if step == 80 && actor == 2 {
                     slot.action = ActorInput::pulse(3);
                 }
+                // Actor 2 stands to channel Mend on itself from step 70 and
+                // presses Pulse 12 ticks before Mend lands: Pulse is held for
+                // 12 snapshots, then fires on Mend's completion tick.
+                if (69..=120).contains(&step) && actor == 2 {
+                    slot.movement = Some(Axes { x: 0, z: 0 });
+                }
+                if step == 70 && actor == 2 {
+                    slot.action = Some(CastAction::Cast {
+                        spell: SpellId::Mend,
+                        target: Some(2),
+                    });
+                }
+                if step == 103 && actor == 2 {
+                    slot.action = ActorInput::pulse(3);
+                    slot.cast_buffer_ticks = 12;
+                }
             }
             let tick = arena.tick();
             let raw_events = arena.advance(&slots);
@@ -675,6 +710,7 @@ mod tests {
                 conn[4] = true;
             }
             let curr = Snapshot::capture(&arena, step, events, &conn);
+            buffered_ticks += usize::from(curr.fighters[2].buffered_cast.is_some());
 
             // Verify zero-alloc full size helper equals `ServerMessage::encode`.
             let full_frame = ServerMessage::Snapshot(curr.clone()).encode();
@@ -707,6 +743,7 @@ mod tests {
             prev = curr;
         }
         assert!(total_delta < total_full, "{total_delta} vs {total_full}");
+        assert_eq!(buffered_ticks, 12, "the held Mend rode 12 snapshots");
         assert!(total_counts.fighter_ticks == 120 * 6);
         assert!(total_counts.connected_changed == 1);
     }

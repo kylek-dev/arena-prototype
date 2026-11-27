@@ -227,6 +227,8 @@ pub struct Session {
     interp_delay: InterpDelay,
     /// Monotonic server tick of remote fighters last rendered in [`Self::view`].
     last_view_tick: u64,
+    /// The player's cast buffer in ticks, sent with each cast (ADR 0058).
+    cast_buffer: u8,
     /// The frame (its `now`) of the latest input, and inputs sent in it.
     frame_inputs: (f64, u32),
     /// When recent fixed steps ran and inputs were sent (the last second).
@@ -832,6 +834,11 @@ impl Session {
         )
     }
 
+    /// Sets the cast buffer (in ticks) sent with later casts.
+    pub fn set_cast_buffer(&mut self, ticks: u8) {
+        self.cast_buffer = ticks;
+    }
+
     /// The input frame for this tick with any spell or cast-cancel action.
     /// Target indices inside `action` are local indices (0 = local player).
     pub fn input_action(
@@ -885,6 +892,7 @@ impl Session {
                     jump,
                     action: None,
                     rewind_ticks: 0,
+                    cast_buffer_ticks: 0,
                 },
             );
             if let (Some(predicted), Some(own)) = (predicted, self.own.as_mut()) {
@@ -919,6 +927,11 @@ impl Session {
                 jump,
                 action: wire_action,
                 view_tick: self.last_view_tick,
+                cast_buffer: if matches!(wire_action, WireAction::Cast { .. }) {
+                    self.cast_buffer
+                } else {
+                    0
+                },
             })
             .encode(),
         )

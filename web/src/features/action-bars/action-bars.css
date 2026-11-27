@@ -48,6 +48,11 @@
   background: color-mix(in srgb, var(--pal-night-12) 13%, transparent);
   pointer-events: none;
 }
+/* Held by the cast buffer: it casts the moment the GCD or current cast ends. */
+.action-slot[data-buffered="true"] {
+  outline: 2px solid var(--accent-9);
+  outline-offset: 1px;
+}
 .action-slot.binding-hover {
   outline: 2px solid var(--accent-9);
   outline-offset: 2px;

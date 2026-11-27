@@ -101,6 +101,19 @@ export function canActivate(state: Snapshot | null, ability: AbilityId = "pulse"
   return availability(state, ability) === "Ready";
 }
 
+/** Whether a press the HUD cannot cast now should still go to the server for
+ * its cast buffer (ADR 0058): the buffer is on and the player's GCD or a cast
+ * is running. The server judges the window against its own, newer timers
+ * and validates the spell when it fires. */
+export function canBuffer(state: Snapshot | null, bufferMs: number) {
+  return (
+    bufferMs > 0 &&
+    isEngineReady(state) &&
+    !state.won &&
+    (!!state.player.cast || (state.player.gcdRemaining ?? 0) > 0)
+  );
+}
+
 export function actionTint(
   state: Snapshot | null,
   ability: AbilityId = "pulse",

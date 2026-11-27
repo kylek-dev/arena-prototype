@@ -556,6 +556,7 @@ mod tests {
                 jump: seq == 3,
                 action: ActorInput::pulse(1),
                 rewind_ticks: 0,
+                cast_buffer_ticks: 0,
             },
         )
     }

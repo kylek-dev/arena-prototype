@@ -1,4 +1,9 @@
-import { isValidActiveCast, type ActiveCast, type SpellKey } from "../domain/casting";
+import {
+  isValidActiveCast,
+  isValidSpellKey,
+  type ActiveCast,
+  type SpellKey,
+} from "../domain/casting";
 import { snapshotRemainingSeconds } from "../domain/round-clock";
 import {
   expectedActorTag,
@@ -24,7 +29,9 @@ export type SpellSnapshot = {
 export type Snapshot = {
   tick: number;
   frames: number;
-  player: Entity & { x: number; z: number };
+  /** `buffered`: the spell the cast buffer holds until the GCD or the
+   * current cast ends (ADR 0058); `null` when none. */
+  player: Entity & { x: number; z: number; buffered?: SpellKey | null };
   target: Entity & { x: number; z: number };
   selected: boolean;
   selectedPlayer?: boolean;
@@ -445,6 +452,9 @@ export function adaptSnapshot(raw: unknown): Snapshot {
     }
   }
   const playerCombat = validateCombatFields(r.player, maxResource);
+  const buffered: unknown = (r.player as { buffered?: unknown }).buffered;
+  if (buffered !== undefined && buffered !== null && !isValidSpellKey(buffered))
+    throw new Error("Invalid buffered spell");
   const targetCombat = validateCombatFields(r.target, maxResource);
   const spells = r.spells !== undefined ? validateSpells(r.spells) : undefined;
   const opponent = roster?.[1];

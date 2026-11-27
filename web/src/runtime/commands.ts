@@ -1,5 +1,5 @@
 import { InputState } from "../../input.js";
-import { availability, canActivate, isEngineReady } from "../domain/abilities/catalog";
+import { availability, canActivate, canBuffer, isEngineReady } from "../domain/abilities/catalog";
 import { isAbilityId } from "../domain/action-bars/model";
 import { beginCast, clearCastFeedback, rejectCast } from "./cast-feedback";
 import { nameplateNotice, setNameplates } from "./nameplate-feedback";
@@ -87,12 +87,14 @@ export function activateSlot(id: string) {
   const state = engine.get();
   if (!slot?.ability || !isAbilityId(slot.ability) || !isEngineReady(state) || state?.spectating)
     return;
-  if (!canActivate(state, slot.ability)) {
+  const { castBufferMs } = config();
+  if (!canActivate(state, slot.ability) && !canBuffer(state, castBufferMs)) {
     rejectCast(availability(state, slot.ability));
     return;
   }
   drawWeapon(); // fighting draws the sword from the back
   beginCast(state, slot.ability);
+  input.setCastBuffer(castBufferMs);
   input.requestCast(slot.ability);
 }
 /** Whether the local player has an active cast (never while spectating). */
