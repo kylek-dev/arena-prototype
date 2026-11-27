@@ -46,11 +46,12 @@ post-movement snapshot (`pre_combat`):
   moving for stationary casts) and, on the completion tick (`remaining_ticks == 1`),
   re-validate target life, team, range, line of sight and costs. Completed casts
   pay their costs, queue effects and start their personal cooldown; failed casts
-  emit `CastInterrupted` without starting personal cooldown, spending any cost or
-  refunding GCD (see the 2026-11-22 amendment).
+  emit `CastInterrupted` without starting personal cooldown or spending any cost,
+  and refund the GCD they started (see the 2026-11-22 and 2026-11-26
+  amendments).
 - **4b. New cast intents:** Each actor's `CastAction::Cast` validates through
-  `CastingState::try_cast`. GCD is consumed at cast start and never refunded on
-  interrupt. Costs are checked at start; instants pay them at once and timed casts
+  `CastingState::try_cast`. GCD starts at cast start; a timed cast that does
+  not complete refunds it (2026-11-26 amendment). Costs are checked at start; instants pay them at once and timed casts
   pay them only on completion. Instant interrupts (`Quell`) only affect targets
   that remained actively casting after 4a, so cancelling via movement or
   `CancelCast` on the same tick successfully fake-casts (baits the interrupt
@@ -113,7 +114,7 @@ double penalty on top of the lost GCD and (for interrupts) the lockout.
   the completion tick, after the target, range and line-of-sight re-check, and
   charges them only if the cast resolves. A cast that is interrupted, cancelled,
   moved out of, or fails any completion re-check spends nothing. The GCD it
-  consumed is still not refunded.
+  consumed was not refunded until the 2026-11-26 amendment.
 - **Health costs follow the same rule.** They are checked at start, re-checked at
   completion (still leaving at least 1 HP), and charged on completion. Keeping one
   rule for every cost means a cast never takes something the player cannot get
@@ -137,3 +138,32 @@ Balance consequences to expect in playtests:
   pool is slightly worse; casting from a part-spent pool is unchanged.
 - Fake-casting (section 2) now costs only the GCD, not the spell's resource, so
   baiting interrupts is cheaper.
+
+## Amendment (2026-11-26): only completed casts keep their GCD
+
+**Status: proposed (implemented in `arena-sim`, `RULES_VERSION = 7`)**, at the
+user's request: the GCD is for spells that finish successfully.
+
+- The GCD still starts when a cast begins, so instants and casts that complete
+  behave exactly as before. Nothing else can be cast during a timed cast, and
+  the normal 29-tick GCD is shorter than the 45-tick Rift Bolt and Mend casts,
+  so a completed cast's GCD has already run out when it lands.
+- A timed cast that ends any other way refunds the GCD it started: an explicit
+  `CancelCast`, moving during a stationary cast, a failed completion re-check
+  (target, range, line of sight, costs), an interrupt and its lockout, and
+  caster death. `Combatant::end_cast_early` is the single path for all of them,
+  mirrored by `CombatState::interrupt_cast`.
+- A GCD-triggering cast can only start when the GCD is zero and blocks every
+  other spell while it runs, so the whole running GCD is the cast's, and the
+  refund sets it to zero. An off-GCD timed cast (none exists yet) leaves an
+  earlier spell's GCD running.
+- `RULES_VERSION` moves from 6 to 7: replays with a cancelled or interrupted
+  cast reach the next spell sooner.
+
+Balance consequence to watch in playtests: with the 2026-11-22 amendment a
+cancelled cast already spent no resource, so **fake-casting is now free**. A
+player can start and cancel casts back to back to bait an interrupt without
+losing anything. Interrupts still cost the interrupter its cooldown and
+resource. If juking proves too strong, options include a short cast-start
+lockout after a cancel or keeping a partial GCD for casts cancelled by the
+caster while refunding it for interrupts.

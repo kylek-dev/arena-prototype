@@ -31,8 +31,8 @@ use crate::effects;
 use crate::map::{Layout, MAX_TEAM};
 use crate::specs::Specialisation;
 use crate::spells::{
-    ARENA_CLASS, ARENA_RESOURCE, MAX_RESOURCE, PULSE_COOLDOWN_TICKS, PULSE_DAMAGE, PULSE_RANGE,
-    RESOURCE_REGEN_AMOUNT, RESOURCE_REGEN_INTERVAL, SpellEffect, SpellId,
+    ARENA_CLASS, ARENA_RESOURCE, GcdType, MAX_RESOURCE, PULSE_COOLDOWN_TICKS, PULSE_DAMAGE,
+    PULSE_RANGE, RESOURCE_REGEN_AMOUNT, RESOURCE_REGEN_INTERVAL, SpellEffect, SpellId,
 };
 
 /// 7.2 m/s at 30 Hz.
@@ -154,6 +154,19 @@ impl Combatant {
 
     pub const fn is_locked_out(&self) -> bool {
         self.lockout_remaining > 0
+    }
+
+    /// Ends a timed cast that will not complete (cancelled, moved out of,
+    /// failed a re-check, interrupted or killed). Only completed casts keep
+    /// their GCD, so a cast that started one refunds it (ADR 0048, 2026-11-26
+    /// amendment). Casting blocks every other spell, so the whole running GCD
+    /// is the cast's; an off-GCD cast leaves an earlier spell's GCD alone.
+    pub fn end_cast_early(&mut self) -> Option<ActiveCastState> {
+        let cast = self.active_cast.take()?;
+        if !matches!(cast.spell.definition().gcd, GcdType::OffGcd) {
+            self.gcd_remaining = 0;
+        }
+        Some(cast)
     }
 
     /// Canonical combatant state invariant check shared by `Arena::restore`
@@ -772,7 +785,7 @@ impl Arena {
             {
                 if self.fighters[actor].health == 0 {
                     reject(&mut events, actor, Rejection::InvalidActor);
-                } else if let Some(active) = self.fighters[actor].active_cast.take() {
+                } else if let Some(active) = self.fighters[actor].end_cast_early() {
                     events.push(ArenaEvent::CastInterrupted {
                         actor,
                         spell: active.spell,
@@ -836,7 +849,7 @@ impl Arena {
                     }
                 }
                 Err(error) => {
-                    self.fighters[actor].active_cast = None;
+                    self.fighters[actor].end_cast_early();
                     events.push(ArenaEvent::CastInterrupted {
                         actor,
                         spell: active.spell,
@@ -955,7 +968,7 @@ impl Arena {
         // 4c. Apply interrupts, damage, healing, death interrupts, and check round end.
         for (target, pending) in interrupts[..count].iter().enumerate() {
             if let Some((by, lockout_ticks)) = *pending
-                && let Some(active) = self.fighters[target].active_cast.take()
+                && let Some(active) = self.fighters[target].end_cast_early()
             {
                 let fighter = &mut self.fighters[target];
                 fighter.lockout_remaining = fighter.lockout_remaining.max(lockout_ticks);
@@ -983,7 +996,7 @@ impl Arena {
         }
         for (actor, fighter) in self.fighters.iter_mut().enumerate() {
             if fighter.health == 0
-                && let Some(active) = fighter.active_cast.take()
+                && let Some(active) = fighter.end_cast_early()
             {
                 events.push(ArenaEvent::CastInterrupted {
                     actor,
@@ -1120,6 +1133,7 @@ fn hydrate_casting(fighter: &Combatant, actor: usize) -> (CombatState, CastingSt
                     cast.remaining_ticks,
                     cast.total_ticks,
                     def.cooldown_ticks,
+                    !matches!(def.gcd, GcdType::OffGcd),
                 )),
                 Some(PreparedCast {
                     spell: def,
@@ -2639,6 +2653,66 @@ mod tests {
     }
 
     #[test]
+    fn only_completed_casts_keep_their_gcd() {
+        use crate::spells::RIFT_BOLT_CAST_TICKS;
+
+        let cast_bolt = ArenaCommand::Cast {
+            actor: 0,
+            spell: SpellId::RiftBolt,
+            target: Some(1),
+        };
+        let pulse = ArenaCommand::Cast {
+            actor: 0,
+            spell: SpellId::Pulse,
+            target: Some(1),
+        };
+
+        // Cancelled and moved-out-of casts refund the GCD, so Pulse fires on the next tick.
+        for cancel in [ArenaCommand::CancelCast { actor: 0 }, forward()] {
+            let mut arena = close_quarters(1, 5_000);
+            arena.step(&[cast_bolt]);
+            for _ in 0..5 {
+                arena.step(&[]);
+            }
+            assert_eq!(arena.fighters()[0].gcd_remaining, 23);
+            assert_eq!(
+                arena.can_cast(0, SpellId::Pulse, Some(1)),
+                Err(Rejection::AlreadyCasting)
+            );
+            let events = arena.step(&[cancel]);
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, ArenaEvent::CastInterrupted { actor: 0, .. }))
+            );
+            assert_eq!(arena.fighters()[0].gcd_remaining, 0);
+            assert_eq!(arena.can_cast(0, SpellId::Pulse, Some(1)), Ok(()));
+            let events = arena.step(&[pulse]);
+            assert!(events.contains(&ArenaEvent::Hit {
+                actor: 0,
+                target: 1,
+                damage: PULSE_DAMAGE,
+            }));
+        }
+
+        // A completed cast keeps its GCD: it ran out during the 45-tick cast,
+        // exactly as before, and an instant keeps its full GCD.
+        let mut arena = close_quarters(1, 5_000);
+        arena.step(&[cast_bolt]);
+        for _ in 1..RIFT_BOLT_CAST_TICKS {
+            arena.step(&[]);
+        }
+        assert!(arena.step(&[]).contains(&ArenaEvent::CastCompleted {
+            actor: 0,
+            spell: SpellId::RiftBolt,
+            target: Some(1),
+        }));
+        assert_eq!(arena.fighters()[0].gcd_remaining, 0);
+        arena.step(&[pulse]);
+        assert_eq!(arena.fighters()[0].gcd_remaining, 28);
+    }
+
+    #[test]
     fn interrupts_off_gcd_lockout_movement_cancel_and_fake_casting_work_authoritatively() {
         use crate::spells::{INTERRUPT_LOCKOUT_TICKS, QUELL_COOLDOWN_TICKS, QUELL_COST};
 
@@ -2699,8 +2773,10 @@ mod tests {
             arena.fighters()[0].lockout_remaining,
             INTERRUPT_LOCKOUT_TICKS - 1
         );
-        // The interrupted cast spent no resource and its personal cooldown did NOT start.
+        // The interrupted cast spent no resource, refunded its GCD, and its
+        // personal cooldown did NOT start.
         assert_eq!(arena.fighters()[0].resource, MAX_RESOURCE);
+        assert_eq!(arena.fighters()[0].gcd_remaining, 0);
         assert_eq!(arena.fighters()[0].cooldown_remaining(SpellId::RiftBolt), 0);
         // Quell spent its cost and started its 6 s cooldown without resetting Actor 1's GCD.
         assert_eq!(
@@ -2751,6 +2827,11 @@ mod tests {
                 juke.fighters()[0].resource,
                 MAX_RESOURCE,
                 "a cancelled or moved-out-of cast spends nothing"
+            );
+            assert_eq!(
+                juke.fighters()[0].gcd_remaining,
+                0,
+                "a cast that does not complete refunds its GCD"
             );
             assert_eq!(
                 juke.fighters()[1].cooldown_remaining(SpellId::Quell),

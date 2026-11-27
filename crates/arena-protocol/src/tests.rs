@@ -264,8 +264,8 @@ fn the_wire_layout_is_pinned() {
         })
         .encode(),
         // variant 0, protocol 7, actor 0, team_size 2, tick 10, tick_rate 30,
-        // round_ticks 600 (0xD8 0x04), rules 6, map 1, spectator true (1).
-        [0, 7, 0, 2, 10, 30, 0xD8, 0x04, 6, 1, 1]
+        // round_ticks 600 (0xD8 0x04), rules 7, map 1, spectator true (1).
+        [0, 7, 0, 2, 10, 30, 0xD8, 0x04, 7, 1, 1]
     );
     assert_eq!(
         ClientMessage::Input(InputFrame {

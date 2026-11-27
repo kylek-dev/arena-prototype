@@ -37,7 +37,8 @@ pub const PROTOCOL_VERSION: u16 = 10;
 /// 4: server-authoritative casting, GCD, per-spell cooldowns, resources, and interrupts.
 /// 5: bounded server-side target-position history rewind for cast starts (ADR 0049).
 /// 6: timed casts charge resource and health costs on completion, not at start (ADR 0048).
-pub const RULES_VERSION: u32 = 6;
+/// 7: a timed cast that does not complete refunds the GCD it started (ADR 0048).
+pub const RULES_VERSION: u32 = 7;
 /// Largest frame a client may send.
 pub const MAX_CLIENT_FRAME: usize = 1024;
 /// Largest frame the server sends; a full 3v3 snapshot is far smaller.
