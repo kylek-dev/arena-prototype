@@ -271,7 +271,7 @@ pub fn run() {
                     .chain(),
             ),
         )
-        .add_systems(FixedUpdate, simulate)
+        .add_systems(FixedUpdate, (simulate, hub::fixed_step))
         .add_systems(
             Update,
             (
@@ -1258,9 +1258,11 @@ fn present(
     let mut positions = [Vec3::ZERO; arena_protocol::MAX_FIGHTERS];
     // In the hub the local player walks the plaza alone; the arena's other
     // fighters are not drawn (ADR 0056).
-    let walk = hub
-        .as_ref()
-        .and_then(|hub| hub.walk.as_ref().map(hub::Walk::shown));
+    let walk = hub.as_ref().and_then(|hub| {
+        hub.walk
+            .as_ref()
+            .map(|walk| walk.shown(fixed.overstep_fraction()))
+    });
     let count = match &practice.remote {
         _ if walk.is_some() && !spectating => {
             positions[0] = walk.expect("checked");
@@ -3123,7 +3125,14 @@ mod tests {
             ))
             .add_systems(
                 Update,
-                (hub::read, hub::steer, hub::spawn_kits, hub::advance).chain(),
+                (
+                    hub::read,
+                    hub::steer,
+                    hub::fixed_step,
+                    hub::spawn_kits,
+                    hub::advance,
+                )
+                    .chain(),
             );
         let venue = app
             .world_mut()
@@ -3132,7 +3141,7 @@ mod tests {
         platform::HUB_INTENTS.lock().unwrap().clear();
         *platform::HUB.lock().unwrap() = Some((
             1.0,
-            r#"{"x":-5250,"z":24000,"y":0,"vy":0,"mx":0,"mz":0,"tick":1,"ack":0,"players":[{"id":7,"x":0,"z":30000,"facing":0,"height":0,"admin":false,"spec":null}]}"#.into(),
+            r#"{"x":-5250,"z":24000,"y":0,"vy":0,"mx":0,"mz":0,"tick":1,"ack":0,"players":[{"id":7,"x":0,"z":30000,"facing":0,"height":0,"vy":0,"admin":false,"spec":null}]}"#.into(),
         ));
         app.update();
         app.update();

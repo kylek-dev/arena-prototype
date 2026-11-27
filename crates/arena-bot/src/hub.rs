@@ -86,7 +86,7 @@ enum FromDoor {
         instance: u32,
     },
     HubState {
-        players: Vec<(u32, i32, i32, u16, i32)>,
+        players: Vec<(u32, i32, i32, u16, i32, i32)>,
     },
     Refused {
         code: String,
@@ -145,7 +145,8 @@ async fn wander(door: String, guest: u128, seed: u64, until: Instant) -> One {
             heading = (axis(&mut rng), axis(&mut rng), rng.next_u64() % 65_536);
         }
         if now >= step {
-            step = now + Duration::from_millis(100);
+            // One move per hub tick (30 a second), as the client sends.
+            step = now + Duration::from_nanos(1_000_000_000 / arena_sim::hub::HUB_TICKS_PER_SECOND);
             seq += 1;
             let (x, z, facing) = heading;
             let message =

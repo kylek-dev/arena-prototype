@@ -49,6 +49,7 @@ export function readHub(): unknown[] {
               z: player.z,
               facing: player.facing,
               height: player.height,
+              vy: player.vy,
               admin: player.admin,
               spec: specFor(player.appearance),
             })),

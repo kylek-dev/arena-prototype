@@ -114,6 +114,8 @@ export type HubPlayer = {
   z: number;
   facing: number;
   height: number;
+  /** Upward speed (mm per tick): with the height, their jump's arc. */
+  vy: number;
 };
 
 /** This player's body as the door last sent it: with `x`, `z`, enough for
@@ -162,7 +164,7 @@ export type HubMessage =
       x: number;
       z: number;
       body: HubBody;
-      players: [number, number, number, number, number][];
+      players: [number, number, number, number, number, number][];
       enter: Entered[];
       exit: number[];
     }
@@ -212,12 +214,13 @@ export function parseHubMessage(raw: unknown): HubMessage | null {
         !players.every(
           (p) =>
             Array.isArray(p) &&
-            p.length === 5 &&
+            p.length === 6 &&
             int(p[0], 1, U32) &&
             int(p[1], -COORD, COORD) &&
             int(p[2], -COORD, COORD) &&
             int(p[3], 0, 65535) &&
-            int(p[4], 0, COORD),
+            int(p[4], 0, COORD) &&
+            int(p[5], -COORD, COORD),
         )
       )
         return null;
@@ -246,7 +249,7 @@ export function parseHubMessage(raw: unknown): HubMessage | null {
         x: v.x,
         z: v.z,
         body: { y: v.y, vy: v.vy, mx: v.mx, mz: v.mz },
-        players: players as [number, number, number, number, number][],
+        players: players as [number, number, number, number, number, number][],
         enter,
         exit: exit as number[],
       };
@@ -280,7 +283,7 @@ export function applyHubMessage(state: HubState, message: HubMessage): HubState 
       for (const id of message.exit) known.delete(id);
       const entered = new Map(message.enter.map((entry) => [entry.id, entry]));
       const players = new Map<number, HubPlayer>();
-      for (const [id, x, z, facing, height] of message.players) {
+      for (const [id, x, z, facing, height, vy] of message.players) {
         const who = entered.get(id) ?? known.get(id);
         // A player whose name and look never arrived waits for them.
         if (who)
@@ -293,6 +296,7 @@ export function applyHubMessage(state: HubState, message: HubMessage): HubState 
             z,
             facing,
             height,
+            vy,
           });
       }
       return {

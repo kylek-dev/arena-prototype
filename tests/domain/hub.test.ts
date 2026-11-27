@@ -53,7 +53,7 @@ describe("hub messages", () => {
     });
     const entered = parseHubMessage(
       state({
-        players: [[3, 10, 20, 900, 0]],
+        players: [[3, 10, 20, 900, 0, 0]],
         enter: [{ id: 3, handle: "Ash#1000", admin: true, appearance: LOOK }],
         exit: [4],
       }),
@@ -63,7 +63,7 @@ describe("hub messages", () => {
       '{"type":"hub","instance":0,"you":1,"x":0,"z":0}',
       '{"type":"hub_left","reason":"kicked"}',
       state({ players: [[3, 1.5, 0, 0]] }),
-      state({ players: [[3, 0, 0, 70000, 0]] }),
+      state({ players: [[3, 0, 0, 70000, 0, 0]] }),
       state({ players: Array.from({ length: 40 }, (_, i) => [i + 1, 0, 0, 0]) }),
       state({ enter: [{ id: 3, handle: "nobody", admin: false, appearance: LOOK }] }),
       state({
@@ -75,8 +75,8 @@ describe("hub messages", () => {
       state({ exit: [0] }),
       state({
         players: [
-          [3, 0, 0, 0, 0],
-          [3, 1, 1, 0, 0],
+          [3, 0, 0, 0, 0, 0],
+          [3, 1, 1, 0, 0, 0],
         ],
       }),
       state({ enter: 5 }),
@@ -95,12 +95,12 @@ describe("hub messages", () => {
     expect(hub.status).toBe("in");
     apply(
       state({
-        players: [[2, 1000, 24000, 0, 0]],
+        players: [[2, 1000, 24000, 0, 0, 0]],
         enter: [{ id: 2, handle: "Ash#1000", admin: false, appearance: LOOK }],
       }),
     );
     expect(hub.players.get(2)?.handle).toBe("Ash#1000");
-    apply(state({ tick: 2, ack: 3, x: 720, players: [[2, 1720, 24000, 16384, 0]] }));
+    apply(state({ tick: 2, ack: 3, x: 720, players: [[2, 1720, 24000, 16384, 0, 0]] }));
     expect(hub.players.get(2)).toMatchObject({ x: 1720, facing: 16384 });
     expect([hub.x, hub.ack]).toEqual([720, 3]);
     // Someone never introduced waits; an exit forgets.
@@ -108,8 +108,8 @@ describe("hub messages", () => {
       state({
         tick: 3,
         players: [
-          [2, 1720, 24000, 0, 0],
-          [9, 0, 0, 0, 0],
+          [2, 1720, 24000, 0, 0, 0],
+          [9, 0, 0, 0, 0, 0],
         ],
       }),
     );
@@ -118,7 +118,7 @@ describe("hub messages", () => {
     apply(
       state({
         tick: 4,
-        players: [[2, 1720, 24000, 0, 0]],
+        players: [[2, 1720, 24000, 0, 0, 0]],
         enter: [{ id: 2, handle: "Ash#2000", admin: true, appearance: LOOK }],
       }),
     );
@@ -127,7 +127,7 @@ describe("hub messages", () => {
     apply(
       state({
         tick: 5,
-        players: [[5, 0, 0, 0, 0]],
+        players: [[5, 0, 0, 0, 0, 0]],
         enter: [
           { id: 5, handle: "Ash#2000", admin: true, appearance: { ...LOOK, body: "female" } },
         ],
@@ -175,7 +175,7 @@ describe("hub looks and intents", () => {
           vy: 160,
           mx: 720,
           mz: 0,
-          players: [[2, 0, 0, 0, 640]],
+          players: [[2, 0, 0, 0, 640, 0]],
           enter: [{ id: 2, handle: "Ash#1000", admin: false, appearance: LOOK }],
         }),
       )!,

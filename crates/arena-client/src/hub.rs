@@ -9,14 +9,15 @@
 use std::collections::{HashMap, VecDeque};
 
 use arena_sim::arena::{AXIS_LIMIT, Axes, Position};
-use arena_sim::hub::{self as rules, Body, HUB_TICKS_PER_SECOND, Intent, MAX_HUB_PLAYERS};
+use arena_sim::hub::{self as rules, Body, Intent, MAX_HUB_PLAYERS};
 use bevy::prelude::*;
 
 /// Kit instances for hub players use actors from here up, one per slot, so
 /// they never collide with the arena's fighters (`0..MAX_FIGHTERS`).
 pub const HUB_ACTOR_BASE: usize = 1000;
-/// Seconds per hub tick.
-const STEP: f32 = 1.0 / HUB_TICKS_PER_SECOND as f32;
+/// Seconds between the door's states for others: they are drawn moving
+/// between the last two over this long.
+const STATE_INTERVAL: f32 = 1.0 / rules::HUB_STATES_PER_SECOND as f32;
 /// A correction larger than this is a jump, not drawn as a blend.
 const SNAP_METRES: f32 = 3.0;
 /// Corrections fade at this rate per second (about 150 ms to settle).
@@ -31,8 +32,9 @@ pub struct Seen {
     pub x: i32,
     pub z: i32,
     pub facing: u16,
-    /// Millimetres above the plaza (jumping).
+    /// Millimetres above the plaza and upward speed per tick (jumping).
     pub height: i32,
+    pub vy: i32,
     pub admin: bool,
     /// The render spec for their look (as the arena's roster specs), or
     /// `None` when the page could not build one (a kit not installed).
@@ -79,6 +81,7 @@ pub fn parse_view(json: &str) -> Option<View> {
                 .as_u64()
                 .and_then(|n| u16::try_from(n).ok())?,
             height: int(p.get("height")?)?.max(0),
+            vy: int(p.get("vy")?)?,
             admin: p.get("admin")?.as_bool()?,
             spec: p.get("spec").filter(|spec| spec.is_object()).cloned(),
         });
@@ -111,7 +114,7 @@ pub fn world(at: Position) -> Vec3 {
 
 /// A body in world metres, its height included.
 pub fn body_world(body: Body) -> Vec3 {
-    world(body.at) + Vec3::Y * body.height as f32 / 1000.0
+    world(body.position) + Vec3::Y * body.height as f32 / 1000.0
 }
 
 /// The local player's walk, predicted with the door's rules: one numbered
@@ -128,8 +131,6 @@ pub struct Walk {
     /// for the next step.
     pub intent: Intent,
     pub jump: bool,
-    /// Seconds into the current hub tick.
-    pub elapsed: f32,
     /// The last move's number, and the moves the door has not applied.
     seq: u32,
     pending: VecDeque<(u32, Intent)>,
@@ -141,13 +142,12 @@ pub struct Walk {
 
 impl Walk {
     pub fn at(start: Position) -> Self {
-        let body = Body::standing(start);
+        let body = rules::standing(start);
         Self {
             previous: body,
             current: body,
             intent: Intent::default(),
             jump: false,
-            elapsed: 0.0,
             seq: 0,
             pending: VecDeque::new(),
             sent: Intent::default(),
@@ -155,46 +155,47 @@ impl Walk {
         }
     }
 
-    /// Advances by `dt` seconds of the current intent; returns the moves to
-    /// send: one per step that walks, turns, jumps or is in the air (so the
-    /// door's replay of a jump matches tick for tick).
-    pub fn advance(&mut self, dt: f32) -> Vec<(u32, Intent)> {
-        let dt = dt.clamp(0.0, 1.0);
-        self.error *= (-BLEND_PER_SECOND * dt).exp();
-        self.elapsed += dt;
-        let mut moves = Vec::new();
-        while self.elapsed >= STEP {
-            self.elapsed -= STEP;
-            let intent = Intent {
-                jump: std::mem::take(&mut self.jump),
-                ..self.intent
-            };
-            let flying = self.current.airborne();
-            self.previous = self.current;
-            self.current = rules::step_body(self.current, intent);
-            let walking = intent.movement != Axes::default();
-            if walking || flying || intent.jump || intent != self.sent {
-                self.seq = self.seq.wrapping_add(1).max(1);
-                self.sent = intent;
-                self.pending.push_back((self.seq, intent));
-                if self.pending.len() > MAX_PENDING {
-                    self.pending.pop_front();
-                }
-                moves.push((self.seq, intent));
-            }
+    /// One tick of the arena's clock (`FixedUpdate`): steps the body with
+    /// the current intent (and a waiting jump) and returns the move to send,
+    /// if this tick walks, turns, jumps or is in the air (so the door's
+    /// replay of a jump matches tick for tick).
+    pub fn tick(&mut self) -> Option<(u32, Intent)> {
+        let intent = Intent {
+            jump: std::mem::take(&mut self.jump),
+            ..self.intent
+        };
+        let flying = self.current.airborne();
+        self.previous = self.current;
+        self.current = rules::step_body(self.current, intent);
+        let walking = intent.movement != Axes::default();
+        if !(walking || flying || intent.jump || intent != self.sent) {
+            return None;
         }
-        moves
+        self.seq = self.seq.wrapping_add(1).max(1);
+        self.sent = intent;
+        self.pending.push_back((self.seq, intent));
+        if self.pending.len() > MAX_PENDING {
+            self.pending.pop_front();
+        }
+        Some((self.seq, intent))
     }
 
-    /// Where to draw the player now.
-    pub fn shown(&self) -> Vec3 {
-        body_world(self.previous).lerp(body_world(self.current), self.elapsed / STEP) + self.error
+    /// Fades a correction's leftover offset over `dt` seconds.
+    pub fn fade(&mut self, dt: f32) {
+        self.error *= (-BLEND_PER_SECOND * dt.clamp(0.0, 1.0)).exp();
+    }
+
+    /// Where to draw the player, `overstep` into the current tick (as the
+    /// arena's fighters are drawn).
+    pub fn shown(&self, overstep: f32) -> Vec3 {
+        body_world(self.previous).lerp(body_world(self.current), overstep.clamp(0.0, 1.0))
+            + self.error
     }
 
     /// The door's body for this player after its move `ack`: replays the
     /// moves after it from there.
-    pub fn reconcile(&mut self, door: Body, ack: u32) {
-        let before = self.shown();
+    pub fn reconcile(&mut self, door: Body, ack: u32, overstep: f32) {
+        let before = self.shown(overstep);
         while self.pending.front().is_some_and(|(seq, _)| *seq <= ack) {
             self.pending.pop_front();
         }
@@ -208,7 +209,7 @@ impl Walk {
         self.previous = if self.pending.is_empty() { at } else { last };
         self.current = at;
         self.error = Vec3::ZERO;
-        let gap = before - self.shown();
+        let gap = before - self.shown(overstep);
         // A small difference fades out; a jump is a jump.
         if gap.length() <= SNAP_METRES {
             self.error = gap;
@@ -247,11 +248,16 @@ pub struct PlazaObstacle;
 struct Remote {
     slot: usize,
     entity: Entity,
+    /// Their ground place: drawn moving from the last to the newest.
     from: Vec3,
     to: Vec3,
     /// Seconds since the newest place arrived.
     since: f32,
     facing: f32,
+    /// Their height, carried on each tick with the arena's gravity from the
+    /// door's height and upward speed, so a jump is drawn as the same arc.
+    air: Body,
+    previous_height: i32,
     spec: Option<serde_json::Value>,
 }
 
@@ -283,11 +289,7 @@ impl Hub {
                 .remotes
                 .values()
                 .find(|remote| remote.slot == slot)
-                .map_or((0, 0), |remote| {
-                    let height = (remote.to.y * 1000.0) as i32;
-                    let rising = ((remote.to.y - remote.from.y) * 1000.0) as i32;
-                    (height, rising / 3)
-                }),
+                .map_or((0, 0), |remote| (remote.air.height, remote.air.vertical)),
         }
     }
 }
@@ -309,6 +311,7 @@ pub(crate) fn read(
     plaza: Query<Entity, With<Plaza>>,
     avatars: Query<(&HubAvatar, &Transform)>,
     mut orbit: Option<ResMut<crate::Orbit>>,
+    fixed: Res<Time<Fixed>>,
 ) {
     let Some((revision, json)) = crate::platform::read_hub() else {
         return;
@@ -328,7 +331,7 @@ pub(crate) fn read(
         return;
     };
     let door = Body {
-        at: Position {
+        position: Position {
             x: view.x,
             z: view.z,
         },
@@ -345,19 +348,20 @@ pub(crate) fn read(
             *visibility = Visibility::Hidden;
         }
         spawn_plaza(&mut commands, &mut meshes, &mut materials);
-        hub.walk = Some(Walk::at(door.at));
+        hub.walk = Some(Walk::at(door.position));
         if let Some(orbit) = orbit.as_mut() {
             orbit.eye = None;
         }
     } else if view.tick != hub.tick
         && let Some(walk) = hub.walk.as_mut()
     {
-        walk.reconcile(door, view.ack);
+        walk.reconcile(door, view.ack, fixed.overstep_fraction());
     }
     hub.tick = view.tick;
+    // Where each is drawn on the ground now: the start of the next glide.
     let shown: HashMap<u32, Vec3> = avatars
         .iter()
-        .map(|(avatar, transform)| (avatar.id, transform.translation))
+        .map(|(avatar, transform)| (avatar.id, transform.translation.with_y(0.0)))
         .collect();
     // Those who left go first, so their slots are free for arrivals: two
     // players never share a kit actor.
@@ -377,13 +381,19 @@ pub(crate) fn read(
         let to = world(Position {
             x: seen.x,
             z: seen.z,
-        }) + Vec3::Y * seen.height as f32 / 1000.0;
+        });
+        let air = Body {
+            height: seen.height,
+            vertical: seen.vy,
+            ..rules::standing(Position { x: 0, z: 0 })
+        };
         let facing = yaw(seen.facing);
         if let Some(remote) = hub.remotes.get_mut(&seen.id) {
             remote.from = shown.get(&seen.id).copied().unwrap_or(remote.to);
             remote.to = to;
             remote.since = 0.0;
             remote.facing = facing;
+            remote.air = air;
             if remote.spec != seen.spec {
                 remote.spec = seen.spec.clone();
                 desired.set_hub(HUB_ACTOR_BASE + remote.slot, spec_of(&seen.spec));
@@ -413,6 +423,8 @@ pub(crate) fn read(
                 to,
                 since: 0.0,
                 facing,
+                air,
+                previous_height: seen.height,
                 spec: seen.spec,
             },
         );
@@ -509,11 +521,33 @@ pub(crate) fn steer(mut hub: ResMut<Hub>, mut practice: ResMut<crate::Practice>)
     practice.selected = None;
 }
 
-/// Walks the local player and moves everyone else between the door's
-/// places.
+/// One tick of the arena's clock (`FixedUpdate`): the local walk steps (its
+/// move goes to the door, numbered) and everyone else's jump falls with the
+/// arena's gravity, so all of it moves as in a match.
+pub(crate) fn fixed_step(mut hub: ResMut<Hub>) {
+    if let Some(walk) = hub.walk.as_mut()
+        && let Some((seq, step)) = walk.tick()
+    {
+        crate::platform::hub_intent(
+            seq,
+            step.movement.x,
+            step.movement.z,
+            step.facing,
+            step.jump,
+        );
+    }
+    for remote in hub.remotes.values_mut() {
+        remote.previous_height = remote.air.height;
+        remote.air.fall();
+    }
+}
+
+/// Draws everyone else between the door's places, at their falling
+/// height, and fades the local player's last correction.
 pub(crate) fn advance(
     mut hub: ResMut<Hub>,
     time: Res<Time>,
+    fixed: Res<Time<Fixed>>,
     mut avatars: Query<(&HubAvatar, &mut Transform)>,
     mut rebuilt: Query<&mut Visibility, Added<crate::venue::VenueEntity>>,
 ) {
@@ -524,24 +558,21 @@ pub(crate) fn advance(
         }
     }
     let dt = time.delta_secs();
+    let overstep = fixed.overstep_fraction();
     if let Some(walk) = hub.walk.as_mut() {
-        // Each step that walks or turns goes to the door, numbered.
-        for (seq, step) in walk.advance(dt) {
-            crate::platform::hub_intent(
-                seq,
-                step.movement.x,
-                step.movement.z,
-                step.facing,
-                step.jump,
-            );
-        }
+        walk.fade(dt);
     }
     for remote in hub.remotes.values_mut() {
         remote.since += dt;
     }
     for (avatar, mut transform) in &mut avatars {
         if let Some(remote) = hub.remotes.get(&avatar.id) {
-            transform.translation = remote.from.lerp(remote.to, (remote.since / STEP).min(1.0));
+            let ground = remote
+                .from
+                .lerp(remote.to, (remote.since / STATE_INTERVAL).min(1.0));
+            let height = remote.previous_height as f32
+                + (remote.air.height - remote.previous_height) as f32 * overstep;
+            transform.translation = ground + Vec3::Y * height / 1000.0;
             transform.rotation = Quat::from_rotation_y(remote.facing);
         }
     }
@@ -670,7 +701,7 @@ mod tests {
     fn reads_the_pages_hub_strictly() {
         assert_eq!(parse_view("null"), None);
         let view = parse_view(
-            r#"{"x":-5250,"z":24000,"y":0,"vy":0,"mx":0,"mz":0,"tick":7,"ack":3,"players":[{"id":3,"x":10,"z":-20,"facing":16384,"height":400,"admin":true,"spec":{"kit":{}}},{"id":4,"x":0,"z":0,"facing":0,"height":0,"admin":false,"spec":null}]}"#,
+            r#"{"x":-5250,"z":24000,"y":0,"vy":0,"mx":0,"mz":0,"tick":7,"ack":3,"players":[{"id":3,"x":10,"z":-20,"facing":16384,"height":400,"vy":0,"admin":true,"spec":{"kit":{}}},{"id":4,"x":0,"z":0,"facing":0,"height":0,"vy":0,"admin":false,"spec":null}]}"#,
         )
         .unwrap();
         assert_eq!((view.x, view.z, view.tick, view.ack), (-5250, 24000, 7, 3));
@@ -687,7 +718,9 @@ mod tests {
             assert_eq!(parse_view(bad), None, "{bad}");
         }
         let crowd: Vec<String> = (1..=MAX_HUB_PLAYERS)
-            .map(|id| format!(r#"{{"id":{id},"x":0,"z":0,"facing":0,"height":0,"admin":false}}"#))
+            .map(|id| {
+                format!(r#"{{"id":{id},"x":0,"z":0,"facing":0,"height":0,"vy":0,"admin":false}}"#)
+            })
             .collect();
         let crowd = format!(
             r#"{{"x":0,"z":0,"y":0,"vy":0,"mx":0,"mz":0,"tick":1,"ack":0,"players":[{}]}}"#,
@@ -701,71 +734,73 @@ mod tests {
         let start = rules::spawn_point(0);
         let mut walk = Walk::at(start);
         walk.intent = intent(Vec2::new(1.0, 0.0), 0);
-        assert!(walk.advance(STEP * 0.5).is_empty(), "half a tick: no step");
-        assert!(walk.shown().abs_diff_eq(world(start), 1e-4));
-        let mut sent = walk.advance(STEP * 0.5 + 1e-4);
-        sent.extend(walk.advance(STEP));
-        sent.extend(walk.advance(STEP));
-        assert_eq!(
-            sent.iter().map(|(seq, _)| *seq).collect::<Vec<_>>(),
-            [1, 2, 3]
-        );
-        let mut door = Body::standing(start);
+        let sent: Vec<u32> = (0..3)
+            .filter_map(|_| walk.tick())
+            .map(|(seq, _)| seq)
+            .collect();
+        assert_eq!(sent, [1, 2, 3]);
+        let mut door = rules::standing(start);
         for _ in 0..3 {
             door = rules::step_body(door, walk.intent);
         }
         assert_eq!(walk.current, door);
+        // Drawn between the last two ticks, as the arena's fighters are.
+        assert!(walk.shown(0.5).abs_diff_eq(
+            body_world(walk.previous).lerp(body_world(walk.current), 0.5),
+            1e-4
+        ));
         // The door has applied the first move only: replaying the other two
         // lands exactly where the prediction stood, so nothing moves.
-        let shown = walk.shown();
-        walk.reconcile(rules::step_body(Body::standing(start), walk.intent), 1);
+        let shown = walk.shown(0.0);
+        walk.reconcile(
+            rules::step_body(rules::standing(start), walk.intent),
+            1,
+            0.0,
+        );
         assert_eq!(walk.current, door);
-        assert!(walk.shown().abs_diff_eq(shown, 1e-4));
+        assert!(walk.shown(0.0).abs_diff_eq(shown, 1e-4));
         // Stopping sends one standing move, then nothing.
         walk.intent = intent(Vec2::ZERO, 0);
-        assert_eq!(walk.advance(STEP).len(), 1);
-        assert!(walk.advance(STEP * 3.0).is_empty());
+        assert!(walk.tick().is_some());
+        assert!((0..3).all(|_| walk.tick().is_none()));
         // Turning in place is a move.
         walk.intent = intent(Vec2::ZERO, 9000);
-        assert_eq!(walk.advance(STEP).len(), 1);
+        assert!(walk.tick().is_some());
         // A small disagreement fades out instead of jumping.
-        let before = walk.shown();
-        walk.reconcile(
-            Body::standing(Position {
-                x: door.at.x - 500,
-                z: door.at.z,
-            }),
-            u32::MAX,
+        let before = walk.shown(0.0);
+        let near = rules::standing(Position {
+            x: door.position.x - 500,
+            z: door.position.z,
+        });
+        walk.reconcile(near, u32::MAX, 0.0);
+        assert!(
+            walk.shown(0.0).abs_diff_eq(before, 1e-4),
+            "drawn where it was"
         );
-        assert!(walk.shown().abs_diff_eq(before, 1e-4), "drawn where it was");
         for _ in 0..30 {
-            walk.advance(1.0 / 60.0);
+            walk.fade(1.0 / 60.0);
         }
         assert!(
-            walk.shown().abs_diff_eq(body_world(walk.current), 0.01),
+            walk.shown(0.0).abs_diff_eq(body_world(walk.current), 0.01),
             "faded out"
         );
         // A large one is a jump.
-        let far = Position {
+        let far = rules::standing(Position {
             x: start.x,
             z: start.z - 10_000,
-        };
-        walk.reconcile(Body::standing(far), u32::MAX);
-        assert!(walk.shown().abs_diff_eq(world(far), 1e-4));
-        // A jump rises, is sent every airborne tick, and lands.
-        walk.intent = intent(Vec2::ZERO, 9000);
+        });
+        walk.reconcile(far, u32::MAX, 0.0);
+        assert!(walk.shown(0.0).abs_diff_eq(body_world(far), 1e-4));
+        // A jump is the arena's: it rises, is sent every airborne tick, lands.
         walk.jump = true;
-        let first = walk.advance(STEP);
-        assert!(first[0].1.jump && walk.current.height > 0);
+        let first = walk.tick().unwrap();
+        assert!(first.1.jump && walk.current.height > 0);
         let mut airborne_moves = 0;
         while walk.current.airborne() {
-            airborne_moves += walk.advance(STEP).len();
+            airborne_moves += usize::from(walk.tick().is_some());
         }
-        assert_eq!(airborne_moves, 7, "one per airborne tick");
-        assert!(walk.advance(STEP).is_empty(), "landed and standing");
-        // A frame hitch never runs away: at most a second of steps.
-        walk.intent = intent(Vec2::new(0.0, -1.0), 0);
-        assert_eq!(walk.advance(60.0).len(), 10);
+        assert_eq!(airborne_moves, 22, "one per airborne tick");
+        assert!(walk.tick().is_none(), "landed and standing");
     }
 
     #[test]

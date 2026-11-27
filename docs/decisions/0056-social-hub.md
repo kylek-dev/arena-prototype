@@ -53,16 +53,19 @@ lives in the front door's queue task, reached over the queue WebSocket.
 
 - **Intent only.** A client sends its movement intent (a direction on the
   ground, each axis −1000..1000 as in the arena, and its facing), never a position. The door
-  integrates every player at 10 hub ticks per second with the same speed as
-  the arena (7.2 m/s), keeps them inside the plaza and outside its
+  integrates every player at 30 hub ticks per second (the arena's), sending
+  states 10 times a second, keeps them inside the plaza and outside its
   obstacles, and sends the results. Speed, teleport and wall hacks have
   nothing to send.
 - **No combat.** Nothing in the hub damages, casts or collides with other
   players (bodies pass through each other, so nobody can block a doorway).
-- **Jumping** (added 2026-11-26 after a playtest) is the arena's jump: from
-  the ground only, the same take-off speed and gravity (the arena's three
-  30 Hz steps per hub tick), the take-off step carried through the air
-  without steering. The door owns it; others see each player's height.
+- **Walking and jumping are the arena's own code** (amended 2026-11-26
+  after two playtests: a 10 Hz re-derivation made jumps coarse and the
+  animation stutter). `arena_sim::motion` is the per-tick movement both
+  the arena and the hub run, at the arena's 30 ticks a second; only what
+  stops a body differs (pillars and rooms, or the plaza's edge and
+  columns). The door owns jumps; others see each player's height and
+  upward speed and draw the arc with the same gravity.
   Duels and training dummies are later work.
 - **Prediction.** The client sends one numbered move per hub tick while
   walking or turning; the door applies each once, in order (a player with
@@ -73,8 +76,8 @@ lives in the front door's queue task, reached over the queue WebSocket.
   2026-11-26 after a playtest: the first version applied the newest intent
   every tick, and client and door drifted apart on starts, stops and
   turns, which showed as rubber-banding.)
-- **Rules.** `arena_sim::hub` (implemented with this proposal): 10 hub
-  ticks per second, 720 mm per tick (the arena's speed, within 2 mm), an
+- **Rules.** `arena_sim::hub` (implemented with this proposal): the
+  arena's motion at 30 hub ticks per second (240 mm a tick), an
   80 m plaza, a fountain and four columns that bodies are pushed out of,
   one spawn place per player of a full instance south of the fountain, and
   the 40 m interest radius.

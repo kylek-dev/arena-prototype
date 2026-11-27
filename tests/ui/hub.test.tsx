@@ -68,8 +68,8 @@ function inHub() {
     mx: 0,
     mz: 0,
     players: [
-      [2, 0, 30000, 0, 0],
-      [3, 3000, 24000, 0, 0],
+      [2, 0, 30000, 0, 0, 0],
+      [3, 3000, 24000, 0, 0, 0],
     ],
     enter: [
       { id: 2, handle: "Ash#1000", admin: false, appearance: LOOK },

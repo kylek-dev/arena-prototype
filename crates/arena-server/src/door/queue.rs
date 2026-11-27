@@ -70,10 +70,10 @@ const MAX_MESSAGE: usize = 4096;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 const MESSAGES_PER_SECOND: u32 = 10;
 /// `hub_move` has a budget of its own (ADR 0056, amending ADR 0046): the
-/// client sends at most 10 a second; moves over this are dropped, not
+/// client sends at most one per tick (30 a second); moves over this are dropped, not
 /// answered by closing the connection.
-const HUB_MOVES_PER_SECOND: u32 = 20;
-const HUB_TICK_EVERY: Duration = Duration::from_millis(1000 / HUB_TICKS_PER_SECOND);
+const HUB_MOVES_PER_SECOND: u32 = 40;
+const HUB_TICK_EVERY: Duration = Duration::from_nanos(1_000_000_000 / HUB_TICKS_PER_SECOND);
 /// Moves past this many a second (four times the budget) close the
 /// connection: a flood is not only dropped.
 const HUB_MOVE_FLOOD: u32 = 4 * HUB_MOVES_PER_SECOND;
