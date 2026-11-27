@@ -36,3 +36,14 @@
   max-height: calc(100vh - 48px);
   overflow-y: auto;
 }
+/* Custom lobby lines in the Play window's Host tab. */
+.party-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.party-code {
+  font-family: ui-monospace, monospace;
+  letter-spacing: 0.08em;
+}

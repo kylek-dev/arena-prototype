@@ -28,8 +28,11 @@ mod auth;
 mod browser;
 mod chat;
 mod friends;
+mod hub;
+mod news;
 mod queue;
 pub use auth::Me;
+pub use hub::{Entered as HubEntered, Joined as HubJoined, State as HubState};
 pub use queue::ToClient as QueueMessage;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -86,6 +89,9 @@ pub struct DoorConfig {
     /// Where admins' saved maps go (`--maps-dir`); `None` keeps them in
     /// memory.
     pub maps: Option<std::path::PathBuf>,
+    /// Where the launcher page's news is kept (`--news-dir`); `None` keeps
+    /// it in memory.
+    pub news: Option<std::path::PathBuf>,
 }
 impl DoorConfig {
     pub fn new(key: TicketKey, match_server: String, page: String) -> Self {
@@ -105,6 +111,7 @@ impl DoorConfig {
             queue_per_address: 12,
             identity: None,
             maps: None,
+            news: None,
             auth_burst: 20,
         }
     }
@@ -140,6 +147,12 @@ struct DoorMetrics {
     /// Parties with an invite code, and private custom lobbies.
     parties: AtomicU64,
     lobbies: AtomicU64,
+    /// Players in the hub and its open instances (ADR 0056), and hub ticks
+    /// with their total compute time in microseconds.
+    hub_players: AtomicU64,
+    hub_instances: AtomicU64,
+    hub_ticks: AtomicU64,
+    hub_tick_us: AtomicU64,
     queue_matches: AtomicU64,
     custom_matches: AtomicU64,
     /// Copied from the matchmaker's running totals.
@@ -178,6 +191,8 @@ struct Door {
     friend_reads: RatePerAccount,
     /// Admin-saved maps (social-identity step 5).
     maps: Arc<admin::MapStore>,
+    /// The launcher page's news.
+    news: news::News,
     /// Words masked in chat (and refused in names).
     words: crate::identity::names::Blocklist,
     /// Accounts an admin muted, until when.
@@ -373,6 +388,16 @@ fn render_door_metrics(metrics: &DoorMetrics) -> String {
             "Open private custom lobbies.",
             &metrics.lobbies,
         ),
+        (
+            "door_hub_players",
+            "Players in the hub.",
+            &metrics.hub_players,
+        ),
+        (
+            "door_hub_instances",
+            "Open hub instances.",
+            &metrics.hub_instances,
+        ),
     ] {
         write_metric(
             &mut text,
@@ -387,6 +412,16 @@ fn render_door_metrics(metrics: &DoorMetrics) -> String {
             "door_queue_matches_total",
             "Matches formed from the queues.",
             &metrics.queue_matches,
+        ),
+        (
+            "door_hub_ticks_total",
+            "Hub ticks run while anyone was in the hub.",
+            &metrics.hub_ticks,
+        ),
+        (
+            "door_hub_tick_microseconds_total",
+            "Compute time of those hub ticks, microseconds.",
+            &metrics.hub_tick_us,
         ),
         (
             "door_custom_matches_total",
@@ -591,6 +626,7 @@ async fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
             .unwrap_or_else(|| crate::identity::names::Blocklist::new("")),
         muted: std::sync::Mutex::default(),
         maps: Arc::new(admin::MapStore::at(config.maps.as_deref())),
+        news: news::News::at(config.news.as_deref()),
         creations: RatePerAddress::new(config.creation_burst, config.creation_every),
         // A visit sends a handful (startup, a summary per match, a few errors).
         reports: RatePerAddress::new(30, Duration::from_secs(10)),
@@ -658,6 +694,12 @@ async fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
             "/api/admin/handles/clear",
             post(admin::clear_handle).layer(DefaultBodyLimit::max(256)),
         )
+        .route("/api/news", get(news::list))
+        .route(
+            "/api/admin/news",
+            post(news::post).layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route("/api/admin/news/{id}", axum::routing::delete(news::delete))
         .route("/api/friends", get(friends::list))
         .route(
             "/api/friends/{action}",

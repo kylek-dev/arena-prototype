@@ -15,6 +15,7 @@
 pub mod bandwidth;
 pub mod bot;
 pub mod fairness;
+pub mod hub;
 pub mod link;
 pub mod queue;
 pub mod stats;

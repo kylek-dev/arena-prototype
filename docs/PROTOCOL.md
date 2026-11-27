@@ -239,7 +239,13 @@ How the cookies behave:
   an allowed `Origin`, and never when the door runs with `--any-origin`.
 - The queue signs the session's account and handle into the player's seat
   or spectator ticket. A player without a handle, and every guest, gets a
-  temporary `Guest#NNNN` (not unique). Links from `POST /api/matches` carry
+  temporary `Guest#NNNN` (not unique): `NNNN` is the hello's guest id
+  modulo 9999, plus one, so a browser keeps its guest name across
+  connections (and after an admin clears its account's name) and its
+  launcher page shows it before connecting (`guestHandle` in
+  `web/src/domain/matchmaking.ts`). Guest names carry no rights. Because
+  the name lasts as long as the browser's guest id, others can loosely link
+  one guest's sessions; it reveals about 13 of the id's 128 bits. Links from `POST /api/matches` carry
   neither. A new handle or a revoked account reaches open queue connections
   at once.
 - **Handles.** The player picks the name: 3–16 ASCII letters and digits,
@@ -322,6 +328,7 @@ hears it:
 | `team` | The sender's team in that match; outside one, their custom lobby or else their party, except members now playing a match. |
 | `spectator` | The spectators of the sender's match. Players never hear it, and a spectator can post (or whisper) nowhere else. |
 | `whisper` | One friend, on every open tab of theirs not playing a live match (logged-in players only). |
+| `hub` | Everyone in the sender's hub instance ([ADR 0056](decisions/0056-social-hub.md)). Logged-in players only. |
 
 One rule keeps spectators from feeding players hidden information
 (ghosting), even from a second tab or account: **a player in a live match
@@ -358,6 +365,73 @@ Rules:
 - A player stops hearing someone they ignore (per connection, by account or
   guest id) or blocked (per account). An admin can mute an account; the
   mute holds on tabs that log out.
+
+## Hub
+
+The hub ([ADR 0056](decisions/0056-social-hub.md), proposed; `door/hub.rs`,
+rules in `arena_sim::hub`) also rides on the queue WebSocket:
+
+| Direction | Message | Meaning |
+| --- | --- | --- |
+| client → door | `hub_join {appearance, friend?}` | Enter an instance with this look (a `WireAppearance` as JSON, checked as in the match protocol), beside a friend or party-mate (`Name#number`) when given. |
+| client → door | `hub_move {seq, x, z, facing, jump?}` | One hub tick of walking (and a jump when `jump` is true): `x`, `z` in −1000..1000 (normalized as arena movement), `facing` a binary angle, `seq` increasing. Sent once per tick while walking or turning. |
+| client → door | `hub_leave {}` | Leave the hub. |
+| door → client | `hub {instance, you, x, z}` | Joined: the instance number, this player's hub id and place (millimetres). |
+| door → client | `hub_state {tick, ack, x, z, y, vy, mx, mz, players, enter?, exit?}` | Every third hub tick (10 a second): the last move applied (`ack`), this player's body (place, height `y`, upward speed `vy` per arena tick, jump momentum `mx`, `mz`), `[id, x, z, facing, height, vy]` per player in view (40 m), `enter` (`{id, handle, admin, appearance}` for players new in view or renamed) and `exit` (ids gone from view). |
+| door → client | `hub_left {reason}` | Out of the hub: `left`, or `match` when a seat or spectator ticket was issued. |
+
+Rules:
+- The door integrates moves; clients never send positions. It applies the
+  waiting moves one per hub tick (30 a second, the arena's), each once and in order (at most 24 wait;
+  older ones are dropped, as are repeated or older `seq`), and a player
+  without one stands (or keeps flying through a jump). Walking and jumping are the arena's own code (`arena_sim::motion`), tick for tick: only the walls differ. Clients send a move every tick while airborne. Clients predict with the same rules and, on each
+  state, start from the door's place and replay their moves after `ack`.
+  Bodies pass through each other; the plaza edge, fountain and columns are
+  solid.
+- An instance holds 40 players. Joining picks a followed friend's instance
+  (refused `not_in_hub`, `hub_full`, or `not_friends` for anyone who is not
+  an accepted friend or party-mate), else a party-mate's, else the
+  connection's last one, else the fullest with room, else a new one.
+  `in_hub` refuses a second join, `not_in_hub` a move outside the hub, and
+  `no_name` a connection without a handle.
+- One `hub_state` per player per tick. A view change (including a player
+  back under a new id, or renamed) counts as delivered only when the
+  connection's outbox accepted that state; otherwise the next state carries
+  it again. States never take the outbox's last 12 slots, kept for
+  tickets, ready checks and chat.
+- `hub_move` has its own budget of 40 a second (this amends the single
+  10-a-second budget above): moves over it are dropped without closing the
+  connection, up to 160 a second, past which it closes (`rate_limited`).
+  Clients send at most one per tick (30 a second). Following a friend shares the
+  per-account invite budget.
+- A player never sees, nor is seen by, nor hears in `hub` chat, a player
+  either of them blocked; a block made meanwhile takes effect on the next
+  tick. Blocks are between accounts, so guests are never hidden. A friend
+  who is not on gets `not_in_hub`; anyone else not followable, `not_friends`.
+- `/metrics`: `arena_door_hub_players`, `arena_door_hub_instances`,
+  `arena_door_hub_ticks_total`, `arena_door_hub_tick_microseconds_total`.
+
+## News
+
+The launcher page's news (`door/news.rs`): plain text, never rendered as
+HTML.
+
+- `GET /api/news`: `{news: [{id, title, body, posted, author?}]}`, newest
+  first, at most 50; public, `Cache-Control: no-store`.
+- `POST /api/admin/news` `{title, body}`: admins only (the role is checked
+  on every request, as for the other admin tools; an allowed `Origin` is
+  required). Text is cleaned (control and bidi-override characters dropped,
+  line breaks kept in the body, trimmed); titles hold 1–80 characters and
+  bodies 1–2000. 201 with the item, 422 `{error: "invalid_news", problem}`
+  (`empty_title`, `long_title`, `empty_body`, `long_body`), 400 `bad_request` for a body over
+  16 KiB or not of this shape, 401/403 as for admin tools.
+- `DELETE /api/admin/news/<id>` (16 hexadecimal digits): 204, or 404.
+- Posts and deletes share the door's per-address limit for login routes.
+- `news.json` items that fail these checks (a hand-edited file) are dropped
+  when the door starts; a file that cannot be read is set aside
+  (`news.json.unreadable-<time>`) and logged, never overwritten.
+- Kept in `news.json` in the `--news-dir` directory, written atomically (in
+  memory without one); the oldest beyond 50 go.
 
 ## Browser telemetry
 

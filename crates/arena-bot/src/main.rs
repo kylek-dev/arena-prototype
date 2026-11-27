@@ -15,14 +15,40 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use arena_bot::fairness::DEFAULT_INTERP_DELAY_MS;
+use arena_bot::hub::HubScenario;
 use arena_bot::link::Link;
 use arena_bot::queue::QueueScenario;
 use arena_bot::{Scenario, run};
 
-const USAGE: &str = "usage: arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3] [--spectators N] [--seconds S] [--rtt MS] [--jitter MS] [--loss-pct PCT] [--clump-ms MS] [--interp-delay-ms MS] [--adaptive-interp] [--unpaced] [--reconnect-every S] [--away-ms MS] [--seed N] [--server-pid PID] [--json] [--queue MODE --door HOST:PORT [--bots N]]";
+const USAGE: &str = "usage: arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3] [--spectators N] [--seconds S] [--rtt MS] [--jitter MS] [--loss-pct PCT] [--clump-ms MS] [--interp-delay-ms MS] [--adaptive-interp] [--unpaced] [--reconnect-every S] [--away-ms MS] [--seed N] [--server-pid PID] [--json] [--queue MODE --door HOST:PORT [--bots N]] [--hub --door HOST:PORT [--bots N]]";
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--hub") {
+        return match parse_hub(args) {
+            Err(message) => {
+                eprintln!("arena-bot: {message}");
+                ExitCode::FAILURE
+            }
+            Ok((scenario, json)) => {
+                let report = arena_bot::hub::run(scenario).await;
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&report).expect("reports serialize")
+                    );
+                } else {
+                    print!("{report}");
+                }
+                if report.healthy() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                }
+            }
+        };
+    }
     match parse() {
         Err(message) => {
             eprintln!("arena-bot: {message}");
@@ -57,6 +83,43 @@ async fn main() -> ExitCode {
             }
         },
     }
+}
+
+/// `--hub --door HOST:PORT [--bots N] [--seconds S] [--seed N] [--json]`:
+/// bots wander the door's hub (ADR 0056).
+fn parse_hub(args: Vec<String>) -> Result<(HubScenario, bool), String> {
+    let mut scenario = HubScenario {
+        door: String::new(),
+        bots: 40,
+        duration: Duration::from_secs(10),
+        seed: 1,
+    };
+    let mut json = false;
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        let mut value = |name: &str| -> Result<String, String> {
+            args.next()
+                .ok_or_else(|| format!("{name} needs a value\n{USAGE}"))
+        };
+        let number = |name: &str, text: String| -> Result<u64, String> {
+            text.parse().map_err(|_| format!("invalid {name} {text}"))
+        };
+        match arg.as_str() {
+            "--hub" => {}
+            "--door" => scenario.door = value("--door")?,
+            "--bots" => scenario.bots = number("--bots", value("--bots")?)? as usize,
+            "--seconds" => {
+                scenario.duration = Duration::from_secs(number("--seconds", value("--seconds")?)?);
+            }
+            "--seed" => scenario.seed = number("--seed", value("--seed")?)?,
+            "--json" => json = true,
+            other => return Err(format!("unknown argument {other} with --hub\n{USAGE}")),
+        }
+    }
+    if scenario.door.is_empty() {
+        return Err(format!("--hub needs --door HOST:PORT\n{USAGE}"));
+    }
+    Ok((scenario, json))
 }
 
 fn parse() -> Result<(Option<Scenario>, bool), String> {

@@ -204,15 +204,43 @@ pub struct Desired {
     specs: [Option<Spec>; MAX_FIGHTERS],
     /// Bumped per actor whenever that actor's spec changes, so only that fighter re-applies.
     generations: [u64; MAX_FIGHTERS],
+    /// Hub players' specs by actor (`hub::HUB_ACTOR_BASE` and up), with
+    /// their generation.
+    hub: HashMap<usize, (Spec, u64)>,
+    hub_generation: u64,
 }
 
 impl Desired {
     pub fn spec_for(&self, actor: usize) -> Option<&Spec> {
+        if actor >= crate::hub::HUB_ACTOR_BASE {
+            return self.hub.get(&actor).map(|(spec, _)| spec);
+        }
         self.specs.get(actor).and_then(Option::as_ref)
     }
 
     pub fn generation_for(&self, actor: usize) -> u64 {
+        if actor >= crate::hub::HUB_ACTOR_BASE {
+            return self
+                .hub
+                .get(&actor)
+                .map_or(0, |(_, generation)| *generation);
+        }
         self.generations.get(actor).copied().unwrap_or(0)
+    }
+
+    /// A hub player's spec (`None` once they are gone or have none).
+    pub fn set_hub(&mut self, actor: usize, spec: Option<Spec>) {
+        match spec {
+            Some(spec) => {
+                if self.hub.get(&actor).map(|(known, _)| known) != Some(&spec) {
+                    self.hub_generation += 1;
+                    self.hub.insert(actor, (spec, self.hub_generation));
+                }
+            }
+            None => {
+                self.hub.remove(&actor);
+            }
+        }
     }
 
     pub fn set_roster(&mut self, next: [Option<Spec>; MAX_FIGHTERS]) {

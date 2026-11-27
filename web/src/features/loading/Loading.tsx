@@ -1,18 +1,24 @@
+import type { Snapshot } from "../../bridge/snapshot";
 import { engine, error } from "../../state/session";
 import { useStore } from "../../state/store";
+
+/** Whether the arena has started and settled. The client keeps rendering
+ * behind the loading overlay until its GPU warmup settles, so play does not
+ * begin with shader-compile and upload hitches. */
+export function arenaReady(state: Snapshot | null): boolean {
+  if (!state) return false;
+  return state.startup
+    ? state.startup.ready
+    : state.frames > 10 &&
+        ["ready", "failed", "placeholder"].includes(state.character.status ?? "");
+}
 
 export function Loading() {
   const state = useStore(engine, (s) => s);
   const failure = useStore(error, (s) => s);
   const characterStatus = state?.character.status;
   const startup = state?.startup;
-  // The client keeps rendering behind this overlay until its GPU warmup
-  // settles, so play does not begin with shader-compile and upload hitches.
-  const ready =
-    state &&
-    (startup
-      ? startup.ready
-      : state.frames > 10 && ["ready", "failed", "placeholder"].includes(characterStatus ?? ""));
+  const ready = arenaReady(state);
 
   if (ready && !failure) {
     return characterStatus === "failed" ? (
