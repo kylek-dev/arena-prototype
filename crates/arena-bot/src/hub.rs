@@ -86,7 +86,7 @@ enum FromDoor {
         instance: u32,
     },
     HubState {
-        players: Vec<(u32, i32, i32, u16)>,
+        players: Vec<(u32, i32, i32, u16, i32, i32)>,
     },
     Refused {
         code: String,
@@ -129,7 +129,11 @@ async fn wander(door: String, guest: u128, seed: u64, until: Instant) -> One {
     }
     let mut rng = Rng::new(seed);
     let mut seq = 0u32;
+    // A new direction now and then; one move per hub tick, as the page's
+    // renderer sends them (the door applies each once).
+    let mut heading = (0i32, 0i32, 0u64);
     let mut turn = Instant::now();
+    let mut step = Instant::now();
     loop {
         let now = Instant::now();
         if now >= until {
@@ -137,10 +141,14 @@ async fn wander(door: String, guest: u128, seed: u64, until: Instant) -> One {
         }
         if now >= turn {
             turn = now + Duration::from_millis(300) + rng.below(Duration::from_millis(700));
-            seq += 1;
             let axis = |rng: &mut Rng| (rng.next_u64() % 2001) as i32 - 1000;
-            let (x, z) = (axis(&mut rng), axis(&mut rng));
-            let facing = rng.next_u64() % 65_536;
+            heading = (axis(&mut rng), axis(&mut rng), rng.next_u64() % 65_536);
+        }
+        if now >= step {
+            // One move per hub tick (30 a second), as the client sends.
+            step = now + Duration::from_nanos(1_000_000_000 / arena_sim::hub::HUB_TICKS_PER_SECOND);
+            seq += 1;
+            let (x, z, facing) = heading;
             let message =
                 format!(r#"{{"type":"hub_move","seq":{seq},"x":{x},"z":{z},"facing":{facing}}}"#);
             if socket.send(Message::text(message)).await.is_err() {
@@ -148,7 +156,7 @@ async fn wander(door: String, guest: u128, seed: u64, until: Instant) -> One {
                 break;
             }
         }
-        let wait = turn.min(until).saturating_duration_since(now);
+        let wait = step.min(until).saturating_duration_since(now);
         match tokio::time::timeout(wait, socket.next()).await {
             Err(_) => {}
             Ok(Some(Ok(Message::Text(text)))) => {

@@ -6,6 +6,7 @@ import { debugEnabled, diagnosticsVisible } from "../../runtime/diagnostics";
 import { mapEditorVisible } from "../../state/map-editor";
 import { useMapEditorAllowed } from "../map-editor/access";
 import { returnToLauncher } from "../../state/appearance";
+import { leaveHub } from "../../runtime/hub";
 import { networkLink } from "../../state/network";
 import { createStore } from "../../state/store";
 import type { LinkState } from "../../domain/network";
@@ -58,7 +59,14 @@ export function GameMenu() {
       )}
       {/* The account, friends and party invitations live outside the game. */}
       {!inMatch && (
-        <Button variant="surface" onClick={() => returnToLauncher()}>
+        <Button
+          variant="surface"
+          onClick={() => {
+            // Out of the hub too: the launcher page is outside the game.
+            leaveHub();
+            returnToLauncher();
+          }}
+        >
           Launcher page
         </Button>
       )}

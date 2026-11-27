@@ -70,10 +70,10 @@ const MAX_MESSAGE: usize = 4096;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 const MESSAGES_PER_SECOND: u32 = 10;
 /// `hub_move` has a budget of its own (ADR 0056, amending ADR 0046): the
-/// client sends at most 10 a second; moves over this are dropped, not
+/// client sends at most one per tick (30 a second); moves over this are dropped, not
 /// answered by closing the connection.
-const HUB_MOVES_PER_SECOND: u32 = 20;
-const HUB_TICK_EVERY: Duration = Duration::from_millis(1000 / HUB_TICKS_PER_SECOND);
+const HUB_MOVES_PER_SECOND: u32 = 40;
+const HUB_TICK_EVERY: Duration = Duration::from_nanos(1_000_000_000 / HUB_TICKS_PER_SECOND);
 /// Moves past this many a second (four times the budget) close the
 /// connection: a flood is not only dropped.
 const HUB_MOVE_FLOOD: u32 = 4 * HUB_MOVES_PER_SECOND;
@@ -160,12 +160,14 @@ enum FromClient {
         #[serde(default)]
         friend: Option<String>,
     },
-    /// The current movement intent in the hub and its sequence number.
+    /// One hub tick of walking (and jumping) and its sequence number.
     HubMove {
         seq: u32,
         x: i16,
         z: i16,
         facing: u16,
+        #[serde(default)]
+        jump: bool,
     },
     HubLeave {},
 }
@@ -2023,12 +2025,19 @@ fn command(conn: QueueConn, message: FromClient) -> Result<Command, &'static str
         },
         // Needs the store to find a friend; checked by the connection first.
         FromClient::HubJoin { .. } => return Err("Join the hub through the connection."),
-        FromClient::HubMove { seq, x, z, facing } => Command::HubMove {
+        FromClient::HubMove {
+            seq,
+            x,
+            z,
+            facing,
+            jump,
+        } => Command::HubMove {
             conn,
             seq,
             intent: Intent {
                 movement: Axes { x, z },
                 facing,
+                jump,
             },
         },
         FromClient::HubLeave {} => Command::HubLeave { conn },

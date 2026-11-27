@@ -5,7 +5,7 @@
 //! connection's outbox took it. The movement rules are `arena_sim::hub`,
 //! which the browser predicts with.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 
 use arena_protocol::{Handle, WireAppearance};
@@ -14,6 +14,10 @@ use arena_sim::hub::{self, Intent, MAX_HUB_PLAYERS};
 use serde::{Deserialize, Serialize};
 
 use crate::matchmaker::QueueConn;
+
+/// Moves that may wait for their tick: most of a second's worth (30 ticks
+/// a second), room for a clump of network jitter.
+pub const MAX_MOVES: usize = 24;
 
 /// Why a player is no longer in the hub, as `hub_left` says it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,12 +77,20 @@ pub struct Joined {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
     pub tick: u64,
-    /// The sequence number of the last intent applied.
+    /// The sequence number of the last move applied.
     pub ack: u32,
     pub x: i32,
     pub z: i32,
-    /// `[id, x, z, facing]` for each player in view.
-    pub players: Vec<(u32, i32, i32, u16)>,
+    /// This player's height, upward speed (per arena tick) and the
+    /// momentum carried through a jump: with `x`, `z` the whole body, so
+    /// the client can replay its moves after `ack` exactly.
+    pub y: i32,
+    pub vy: i32,
+    pub mx: i32,
+    pub mz: i32,
+    /// `[id, x, z, facing, height, vy]` for each player in view: with the
+    /// upward speed, the client draws their jump's arc with the same rules.
+    pub players: Vec<(u32, i32, i32, u16, i32, i32)>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enter: Vec<Entered>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -93,9 +105,12 @@ struct Player {
     instance: u32,
     who: Who,
     appearance: Arc<WireAppearance>,
-    at: Position,
+    body: hub::Body,
+    /// The last move applied (its facing is shown while standing).
     intent: Intent,
     ack: u32,
+    /// Moves waiting, one applied per hub tick in order.
+    moves: VecDeque<(u32, Intent)>,
     /// Those this player's client knows are in view, by connection, with
     /// the hub id and version it knows them by (kept after they leave, to
     /// send their `exit`).
@@ -204,7 +219,7 @@ impl Hubs {
         // The first free spawn place (players leave from anywhere).
         let taken: Vec<Position> = members
             .iter()
-            .filter_map(|member| self.players.get(member).map(|player| player.at))
+            .filter_map(|member| self.players.get(member).map(|player| player.body.position))
             .collect();
         let at = (0..MAX_HUB_PLAYERS as u32)
             .map(hub::spawn_point)
@@ -230,9 +245,10 @@ impl Hubs {
                 instance,
                 who,
                 appearance: Arc::new(appearance),
-                at,
+                body: hub::standing(at),
                 intent: Intent::default(),
                 ack: 0,
+                moves: VecDeque::new(),
                 sees: HashMap::new(),
                 version: 0,
             },
@@ -268,7 +284,10 @@ impl Hubs {
         self.leave(conn);
     }
 
-    /// Records `conn`'s intent, applied from the next tick on.
+    /// Queues one move of `conn`'s: each is one hub tick of walking,
+    /// applied once, in order, so the client's prediction replays exactly
+    /// what the door did. An old or repeated sequence number is ignored;
+    /// past [`MAX_MOVES`] waiting, the oldest is dropped.
     pub fn intent(
         &mut self,
         conn: QueueConn,
@@ -279,8 +298,14 @@ impl Hubs {
             return Err("bad_request");
         }
         let player = self.players.get_mut(&conn).ok_or("not_in_hub")?;
-        player.intent = intent;
-        player.ack = seq;
+        let newest = player.moves.back().map_or(player.ack, |(last, _)| *last);
+        if seq <= newest {
+            return Ok(());
+        }
+        player.moves.push_back((seq, intent));
+        if player.moves.len() > MAX_MOVES {
+            player.moves.pop_front();
+        }
         Ok(())
     }
 
@@ -305,8 +330,25 @@ impl Hubs {
         mut deliver: impl FnMut(QueueConn, State) -> bool,
     ) {
         self.tick += 1;
+        // One waiting move per player per tick; without one, they stand.
         for player in self.players.values_mut() {
-            player.at = hub::step(player.at, player.intent);
+            // Without a move they stand (or keep flying through a jump).
+            let intent = match player.moves.pop_front() {
+                Some((seq, intent)) => {
+                    player.ack = seq;
+                    player.intent = intent;
+                    intent
+                }
+                None => Intent {
+                    facing: player.intent.facing,
+                    ..Intent::default()
+                },
+            };
+            player.body = hub::step_body(player.body, intent);
+        }
+        // Everyone moves every tick; states go out every few ticks.
+        if !self.tick.is_multiple_of(hub::TICKS_PER_STATE) {
+            return;
         }
         let mut accepted: Vec<(QueueConn, View)> = Vec::new();
         for members in self.instances.values() {
@@ -317,7 +359,7 @@ impl Hubs {
                     .copied()
                     .filter(|other| {
                         *other != conn
-                            && hub::in_interest(me.at, self.players[other].at)
+                            && hub::in_interest(me.body.position, self.players[other].body.position)
                             && !hidden(conn, *other)
                     })
                     .map(|other| {
@@ -328,8 +370,12 @@ impl Hubs {
                 let mut state = State {
                     tick: self.tick,
                     ack: me.ack,
-                    x: me.at.x,
-                    z: me.at.z,
+                    x: me.body.position.x,
+                    z: me.body.position.z,
+                    y: me.body.height,
+                    vy: me.body.vertical,
+                    mx: me.body.momentum.x,
+                    mz: me.body.momentum.z,
                     players: Vec::with_capacity(visible.len()),
                     enter: Vec::new(),
                     // Gone from view, or back under a new id (left and
@@ -354,9 +400,14 @@ impl Hubs {
                             appearance: (*them.appearance).clone(),
                         });
                     }
-                    state
-                        .players
-                        .push((them.id, them.at.x, them.at.z, them.intent.facing));
+                    state.players.push((
+                        them.id,
+                        them.body.position.x,
+                        them.body.position.z,
+                        them.intent.facing,
+                        them.body.height,
+                        them.body.vertical,
+                    ));
                 }
                 if deliver(conn, state) {
                     accepted.push((conn, visible));
@@ -410,11 +461,14 @@ mod tests {
         refuse: &[QueueConn],
         hidden: impl Fn(QueueConn, QueueConn) -> bool,
     ) -> HashMap<QueueConn, State> {
+        // States go out every few ticks: run up to the next one.
         let mut out = HashMap::new();
-        hubs.tick(hidden, |conn, state| {
-            out.insert(conn, state);
-            !refuse.contains(&conn)
-        });
+        for _ in 0..hub::TICKS_PER_STATE {
+            hubs.tick(&hidden, |conn, state| {
+                out.insert(conn, state);
+                !refuse.contains(&conn)
+            });
+        }
         out
     }
 
@@ -434,7 +488,7 @@ mod tests {
         let seen_by_a = &states[&1];
         assert_eq!(seen_by_a.enter.len(), 1);
         assert_eq!(seen_by_a.enter[0].handle, "Rook#0002");
-        assert_eq!(seen_by_a.players, vec![(b.you, b.x, b.z, 0)]);
+        assert_eq!(seen_by_a.players, vec![(b.you, b.x, b.z, 0, 0, 0)]);
         // The look and name come once; then only positions.
         hubs.intent(
             2,
@@ -445,13 +499,14 @@ mod tests {
                     z: 0,
                 },
                 facing: 900,
+                jump: false,
             },
         )
         .unwrap();
         let states = tick(&mut hubs, &[]);
         assert!(states[&1].enter.is_empty());
-        assert_eq!(states[&1].players, vec![(b.you, b.x + 720, b.z, 900)]);
-        assert_eq!((states[&2].ack, states[&2].x), (7, b.x + 720));
+        assert_eq!(states[&1].players, vec![(b.you, b.x + 240, b.z, 900, 0, 0)]);
+        assert_eq!((states[&2].ack, states[&2].x), (7, b.x + 240));
         // Leaving: the other sees it go on the next tick.
         assert!(hubs.leave(2));
         let states = tick(&mut hubs, &[]);
@@ -657,6 +712,59 @@ mod tests {
     }
 
     #[test]
+    fn moves_apply_once_each_in_order_then_the_player_stands() {
+        let mut hubs = Hubs::default();
+        let a = join(&mut hubs, 1);
+        let east = Intent {
+            movement: Axes {
+                x: AXIS_LIMIT,
+                z: 0,
+            },
+            facing: 16384,
+            jump: false,
+        };
+        for seq in 1..=3 {
+            hubs.intent(1, seq, east).unwrap();
+        }
+        // A repeat or an older number is ignored.
+        hubs.intent(1, 2, east).unwrap();
+        // One per tick: three moves walk three ticks, then the player stands.
+        for _ in 0..2 {
+            let state = &tick_hidden(&mut hubs, &[], NOBODY)[&1];
+            assert_eq!((state.x - a.x, state.ack), (3 * 240, 3));
+        }
+        // A clump past the backlog keeps the newest moves.
+        for seq in 10..10 + MAX_MOVES as u32 + 3 {
+            hubs.intent(1, seq, east).unwrap();
+        }
+        let applied = 13 + hub::TICKS_PER_STATE as u32 - 1;
+        assert_eq!(tick(&mut hubs, &[])[&1].ack, applied);
+    }
+
+    #[test]
+    fn jumps_are_the_doors_and_others_see_the_height() {
+        let mut hubs = Hubs::default();
+        join(&mut hubs, 1);
+        join(&mut hubs, 2);
+        tick(&mut hubs, &[]);
+        let jump = Intent {
+            jump: true,
+            ..Intent::default()
+        };
+        hubs.intent(2, 1, jump).unwrap();
+        let states = tick(&mut hubs, &[]);
+        let (own, seen) = (&states[&2], &states[&1]);
+        assert!(own.y > 0 && own.vy > 0, "{own:?}");
+        assert_eq!(seen.players[0].4, own.y);
+        // Without moves the body keeps flying, then lands.
+        for _ in 0..10 {
+            tick(&mut hubs, &[]);
+        }
+        let states = tick(&mut hubs, &[]);
+        assert_eq!((states[&2].y, states[&2].vy), (0, 0));
+    }
+
+    #[test]
     fn intents_are_checked_and_only_for_hub_players() {
         let mut hubs = Hubs::default();
         let bad = Intent {
@@ -665,6 +773,7 @@ mod tests {
                 z: 0,
             },
             facing: 0,
+            jump: false,
         };
         assert_eq!(hubs.intent(1, 1, Intent::default()), Err("not_in_hub"));
         join(&mut hubs, 1);
@@ -679,13 +788,17 @@ mod tests {
             ack: 2,
             x: -1,
             z: 2,
-            players: vec![(4, 5, -6, 7)],
+            y: 8,
+            vy: -9,
+            mx: 10,
+            mz: 11,
+            players: vec![(4, 5, -6, 7, 12, 13)],
             enter: vec![],
             exit: vec![],
         };
         assert_eq!(
             serde_json::to_string(&state).unwrap(),
-            r#"{"tick":3,"ack":2,"x":-1,"z":2,"players":[[4,5,-6,7]]}"#
+            r#"{"tick":3,"ack":2,"x":-1,"z":2,"y":8,"vy":-9,"mx":10,"mz":11,"players":[[4,5,-6,7,12,13]]}"#
         );
     }
 }
