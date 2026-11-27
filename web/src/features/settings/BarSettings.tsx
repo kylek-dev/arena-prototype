@@ -35,8 +35,9 @@ export function BarSettings() {
         />
       </label>
       <p>
-        Press your next spell up to this long before the global cooldown or your current cast ends,
-        and it casts the moment it ends, with no gap from your connection's delay.
+        Press your next spell up to this long before it is ready (your current cast, the global
+        cooldown or its own cooldown), and it casts the moment it is, with no gap from your
+        connection's delay.
       </p>
       {bars.map((bar, i) => (
         <fieldset key={bar.id}>

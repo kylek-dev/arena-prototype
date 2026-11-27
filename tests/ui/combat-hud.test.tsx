@@ -119,7 +119,8 @@ it("shows errors only after an attempted cast, refreshes repeated errors and exp
   expect(area.textContent).toBe("Select a target");
   act(() => vi.advanceTimersByTime(1500));
   expect(area.textContent).toBe("");
-  act(() => engine.set(snapshot({ cooldown: 0.5 })));
+  // Longer than the cast buffer can reach: rejected at once.
+  act(() => engine.set(snapshot({ cooldown: 2 })));
   expect(area.textContent).toBe("");
   act(() => activateSlot("bar-1-s1"));
   expect(area.textContent).toContain("Recharging");
@@ -166,7 +167,8 @@ it("sends a press blocked by the GCD to the cast buffer and watches it until it 
   expect(castError.get()).toBeNull();
   observeCastResult(snapshot({ tick: 32, feedback: "Stand still to cast" }));
   expect(castError.get()?.message).toBe("Stand still to cast");
-  // A cast in progress also counts; a recharge alone never does.
+  // A cast in progress also counts, and so does the spell's own cooldown when
+  // it ends within reach of the window; a long recharge is rejected at once.
   cast.mockClear();
   engine.set(
     snapshot({
@@ -179,10 +181,14 @@ it("sends a press blocked by the GCD to the cast buffer and watches it until it 
   );
   activateSlot("bar-1-s1");
   expect(cast).toHaveBeenCalledTimes(1);
-  cast.mockClear();
   engine.set(snapshot({ cooldown: 0.3 }));
   activateSlot("bar-1-s1");
+  expect(cast).toHaveBeenCalledTimes(2);
+  cast.mockClear();
+  engine.set(snapshot({ cooldown: 5 }));
+  activateSlot("bar-1-s1");
   expect(cast).not.toHaveBeenCalled();
+  expect(castError.get()?.message).toContain("Recharging");
   // With the buffer off, a press during the GCD is rejected locally as before.
   updateConfig((c) => ({ ...c, castBufferMs: 0 }));
   engine.set(onGcd);

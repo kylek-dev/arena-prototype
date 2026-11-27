@@ -28,18 +28,21 @@ The feature is called the **cast buffer**.
   wait for the server's snapshot and then send, paying the full round trip.
   The server holds the press and fires it on the exact tick the wait ends,
   so a buffered spell starts with no gap at any latency inside the window.
-- **Rule.** In phase 4b, a `Cast` intent from a living fighter whose GCD
-  (for on-GCD spells) or active cast still blocks it, and whose wait ends
-  within the sender's buffer, is stored as `Combatant::buffered_cast`
-  instead of being validated. `Combatant::ticks_until_free` measures the
-  wait from 4b: an active cast with `r` remaining ticks completes `r` ticks
-  later and frees that tick's intents; a GCD of `g` reaches zero `g` ticks
-  later. Off-GCD spells wait only for an active cast.
+- **Rule.** In phase 4b, a `Cast` intent from a living fighter whose active
+  cast, GCD (for on-GCD spells) or the spell's own cooldown still blocks it,
+  and whose wait ends within the sender's buffer, is stored as
+  `Combatant::buffered_cast` instead of being validated.
+  `Combatant::ticks_until_free` measures the wait from 4b: an active cast
+  with `r` remaining ticks completes `r` ticks later and frees that tick's
+  intents; a GCD or cooldown of `g` reaches zero `g` ticks later. The own
+  cooldown matters because it can outlast the GCD: Pulse's is 30 ticks
+  against a 29-tick GCD, so a Pulse held only for the GCD failed as
+  "Recharging" one tick early (found in the first playtest).
 - **Firing.** On a tick with no new `Cast` from that fighter, a held spell
   whose wait is over goes through `try_cast` exactly like a fresh press with
   no lag compensation (it is aimed at the present). Every check (target,
-  range, line of sight, movement, lockout, costs, its own cooldown) happens
-  then; a failure is an ordinary `Rejected` event. A spell held while
+  range, line of sight, movement, lockout, costs) happens then; a failure is
+  an ordinary `Rejected` event. A spell held while
   Rift Bolt or Mend is casting starts on that cast's completion tick.
 - **Latest press wins.** Any new `Cast` replaces the held spell: it is then
   held itself, cast at once, or rejected. One combat action per tick still
@@ -60,10 +63,10 @@ The feature is called the **cast buffer**.
   steps, default 400 ms, saved per profile (`castBufferMs`). The shell sends
   it in milliseconds as input ABI field 22; the client rounds it to ticks.
 - **HUD.** A press the HUD cannot cast now still goes to the server when the
-  buffer is on and the player's GCD or a cast is running. The server judges
-  the window against its own, newer timers, which the client cannot see.
-  A press made too early is rejected by the server as before, one round trip
-  later. The slot of a held spell is outlined; the cast-error area keeps
+  buffer is on and the wait it sees (cast, GCD or the spell's cooldown) is
+  within the window plus 500 ms of slack for its older view. The server
+  judges the window against its own, newer timers; a press it finds too
+  early is rejected as before, one round trip later. The slot of a held spell is outlined; the cast-error area keeps
   watching a held spell and shows a fire-time rejection when it fails.
 
 ## Consequences

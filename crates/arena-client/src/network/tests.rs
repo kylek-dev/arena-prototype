@@ -788,6 +788,10 @@ fn cast_and_interrupt_events_and_active_cast_targets_translate_to_local_numberin
         remaining_ticks: 20,
         total_ticks: 45,
     });
+    fighters[0].buffered_cast = Some(arena_sim::arena::BufferedCast {
+        spell: SpellId::Pulse,
+        target: Some(1),
+    });
     server = Arena::restore(layout(), 1, fighters, None).unwrap();
     // Join as seat 1: server actor 1 -> local 0, server actor 0 -> local 1.
     let mut session = joined(1, 1);
@@ -819,6 +823,8 @@ fn cast_and_interrupt_events_and_active_cast_targets_translate_to_local_numberin
     let view = session.view(0.1, 0.1).unwrap();
     // Server actor 0 is local 1; its active cast targeted server actor 1 (local 0).
     assert_eq!(view.fighters[1].active_cast.unwrap().target, Some(0));
+    // So did the spell its cast buffer holds.
+    assert_eq!(view.fighters[1].buffered_cast.unwrap().target, Some(0));
     assert_eq!(
         view.shown,
         vec![

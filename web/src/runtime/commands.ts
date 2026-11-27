@@ -88,7 +88,7 @@ export function activateSlot(id: string) {
   if (!slot?.ability || !isAbilityId(slot.ability) || !isEngineReady(state) || state?.spectating)
     return;
   const { castBufferMs } = config();
-  if (!canActivate(state, slot.ability) && !canBuffer(state, castBufferMs)) {
+  if (!canActivate(state, slot.ability) && !canBuffer(state, slot.ability, castBufferMs)) {
     rejectCast(availability(state, slot.ability));
     return;
   }

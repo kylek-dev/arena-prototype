@@ -101,17 +101,24 @@ export function canActivate(state: Snapshot | null, ability: AbilityId = "pulse"
   return availability(state, ability) === "Ready";
 }
 
+/** How far behind the server the HUD's timers may be (snapshot age and
+ * interpolation), so presses near the window's edge still reach it. */
+export const CAST_BUFFER_SLACK_MS = 500;
+
 /** Whether a press the HUD cannot cast now should still go to the server for
- * its cast buffer (ADR 0058): the buffer is on and the player's GCD or a cast
- * is running. The server judges the window against its own, newer timers
- * and validates the spell when it fires. */
-export function canBuffer(state: Snapshot | null, bufferMs: number) {
-  return (
-    bufferMs > 0 &&
-    isEngineReady(state) &&
-    !state.won &&
-    (!!state.player.cast || (state.player.gcdRemaining ?? 0) > 0)
+ * its cast buffer (ADR 0058): the buffer is on, and the player's cast, the
+ * GCD or the spell's own cooldown is running and looks close enough to its
+ * end. The server judges the window against its own, newer timers and
+ * validates the spell when it fires. */
+export function canBuffer(state: Snapshot | null, ability: AbilityId, bufferMs: number) {
+  if (bufferMs <= 0 || !isEngineReady(state) || state.won) return false;
+  const tps = state.tickRate ?? 30;
+  const waitSeconds = Math.max(
+    (state.player.cast?.remainingTicks ?? 0) / tps,
+    (state.player.gcdRemaining ?? 0) / tps,
+    spellCooldown(state, ability),
   );
+  return waitSeconds > 0 && waitSeconds * 1000 <= bufferMs + CAST_BUFFER_SLACK_MS;
 }
 
 export function actionTint(

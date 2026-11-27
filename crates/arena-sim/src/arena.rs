@@ -185,11 +185,11 @@ impl Combatant {
         Some(cast)
     }
 
-    /// Ticks until `spell` is no longer blocked by the GCD or the active
-    /// cast, counted from the new-intent phase: an active cast with `r`
-    /// remaining ticks completes `r` ticks later, freeing that tick's intents,
-    /// and a GCD of `g` reaches zero `g` ticks later. Off-GCD spells wait
-    /// only for the cast.
+    /// Ticks until `spell` is no longer blocked by the active cast, the GCD
+    /// or its own cooldown, counted from the new-intent phase: an active cast
+    /// with `r` remaining ticks completes `r` ticks later, freeing that tick's
+    /// intents, and a GCD or cooldown of `g` reaches zero `g` ticks later.
+    /// Off-GCD spells ignore the GCD.
     pub fn ticks_until_free(&self, spell: SpellId) -> u32 {
         let cast = self.active_cast.map_or(0, |cast| cast.remaining_ticks);
         let gcd = if matches!(spell.definition().gcd, GcdType::OffGcd) {
@@ -197,7 +197,7 @@ impl Combatant {
         } else {
             self.gcd_remaining
         };
-        cast.max(gcd)
+        cast.max(gcd).max(self.cooldown_remaining(spell))
     }
 
     /// Canonical combatant state invariant check shared by `Arena::restore`
@@ -258,9 +258,9 @@ pub struct ActorInput {
     /// inside [`Arena::advance`]). Never carries client coordinates.
     pub rewind_ticks: u8,
     /// The sender's cast buffer for this tick's `Cast`, in ticks (capped at
-    /// [`MAX_CAST_BUFFER_TICKS`]; `0` = off). A cast pressed while the GCD or
-    /// an active cast still blocks it, ending within this many ticks, is held
-    /// and validated on the tick it fires (ADR 0058).
+    /// [`MAX_CAST_BUFFER_TICKS`]; `0` = off). A cast pressed while an active
+    /// cast, the GCD or its own cooldown still blocks it, ending within this
+    /// many ticks, is held and validated on the tick it fires (ADR 0058).
     pub cast_buffer_ticks: u8,
 }
 impl ActorInput {
@@ -2847,6 +2847,37 @@ mod tests {
         let mut restored = arena.clone();
         assert!(restored.restore_in_place(held.tick(), held.fighters(), held.result()));
         assert_eq!(restored.state_hash(), held.state_hash());
+    }
+
+    #[test]
+    fn cast_buffer_waits_out_the_spells_own_cooldown_too() {
+        // Pulse's 30-tick cooldown outlasts its 29-tick GCD by one tick: a
+        // second Pulse held during the GCD fires when the cooldown ends.
+        let mut arena = close_quarters(1, 5_000);
+        arena.advance(&[press(SpellId::Pulse, 0)]);
+        idle_until_gcd(&mut arena, 9);
+        assert_eq!(arena.fighters()[0].ticks_until_free(SpellId::Pulse), 10);
+        assert_eq!(arena.advance(&[press(SpellId::Pulse, 12)]), vec![]);
+        let mut fired = None;
+        for tick in 1..=MAX_CAST_BUFFER_TICKS {
+            let events = arena.advance(&[]);
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, ArenaEvent::Rejected { .. })),
+                "{events:?}"
+            );
+            if events.contains(&ArenaEvent::Hit {
+                actor: 0,
+                target: 1,
+                damage: ATTACK_DAMAGE,
+            }) {
+                fired = Some(tick);
+                break;
+            }
+        }
+        assert_eq!(fired, Some(10), "fires 10 ticks after the press read 10");
+        assert_eq!(arena.fighters()[0].buffered_cast, None);
     }
 
     #[test]

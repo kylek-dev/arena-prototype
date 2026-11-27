@@ -274,9 +274,9 @@ Proposed ability execution flow:
 
 Rejected ability requests must not consume resources.
 
-A request blocked only by the GCD or an active cast that ends within the
-player's **cast buffer** (at most 400 ms) is held and runs through this flow
-on the tick that wait ends; see [ADR 0058](decisions/0058-cast-buffer.md).
+A request blocked by an active cast, the GCD or the ability's own cooldown
+that ends within the player's **cast buffer** (at most 400 ms) is held and
+runs through this flow on the tick that wait ends; see [ADR 0058](decisions/0058-cast-buffer.md).
 
 The client never decides authoritative damage, healing, CC duration, or resource changes.
 

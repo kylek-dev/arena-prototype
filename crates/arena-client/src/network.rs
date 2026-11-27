@@ -513,6 +513,11 @@ impl Session {
                                     self.order.iter().position(|&a| a == server_target)
                                 });
                             }
+                            if let Some(buffered) = fighter.buffered_cast.as_mut() {
+                                buffered.target = buffered.target.and_then(|server_target| {
+                                    self.order.iter().position(|&a| a == server_target)
+                                });
+                            }
                             fighter
                         })
                         .collect();
