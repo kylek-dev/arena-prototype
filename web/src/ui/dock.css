@@ -10,7 +10,8 @@
   top: 0;
   bottom: 0;
   left: 16px;
-  /* Above the home screen (15) so Spells works there, below scrims (20). */
+  /* Above the loading screen and customizer (15), below the launcher page
+     (17) and scrims (20). */
   z-index: 16;
   display: flex;
   align-items: center;

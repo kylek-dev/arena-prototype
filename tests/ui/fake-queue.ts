@@ -14,7 +14,7 @@ type Fake = {
 };
 
 /** A real queue over fake sockets, clock and storage, for social tests. */
-export function fakeQueue() {
+export function fakeQueue(clock: () => number = () => 1000) {
   const sockets: Fake[] = [];
   const queue = createQueue({
     url: "ws://door.test/api/queue",
@@ -37,7 +37,7 @@ export function fakeQueue() {
       sockets.push(socket);
       return socket;
     },
-    now: () => 1000,
+    now: clock,
     storage: null,
     randomBytes: (count) => new Uint8Array(count).fill(7),
     onMatch: () => {},

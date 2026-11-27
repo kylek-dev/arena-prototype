@@ -1,7 +1,7 @@
 import { TooltipProvider } from "../../web/src/ui/Tooltip";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
-import { AccountPanel } from "../../web/src/features/account/AccountPanel";
+import { AccountBar } from "../../web/src/features/launcher-page/AccountBar";
 import { createAccount } from "../../web/src/runtime/account";
 import { accountService } from "../../web/src/state/account";
 
@@ -50,30 +50,42 @@ afterEach(() => {
   accountService.set(null);
 });
 
-it("offers login and sign-up to a guest, with the privacy notice", async () => {
+const bar = () => render(<AccountBar />, { wrapper: TooltipProvider });
+/** Opens the menu on the player's name and picks `item`. */
+async function pick(item: string) {
+  fireEvent.click(screen.getByRole("button", { name: /^Account menu for / }));
+  await act(async () =>
+    fireEvent.click(
+      within(screen.getByRole("menu", { name: "Account" })).getByRole("menuitem", { name: item }),
+    ),
+  );
+}
+
+it("offers login and sign-up to a guest", async () => {
   const { account } = fakeAccount({ "/api/auth/me": { status: 200, body: GUEST } });
   await account.refresh();
-  render(<AccountPanel />, { wrapper: TooltipProvider });
+  bar();
   expect(screen.getByText(/playing as a guest/i)).toBeTruthy();
   expect(screen.getByRole("link", { name: "Log in" }).getAttribute("href")).toBe("/api/auth/login");
   expect(screen.getByRole("link", { name: "Sign up" }).getAttribute("href")).toBe(
     "/api/auth/login?sign_up",
   );
-  expect(screen.getByRole("link", { name: "Privacy notice" }).getAttribute("href")).toBe(
-    "privacy.html",
-  );
+  // The launcher page links the privacy notice (launcher-page.test.tsx).
 });
 
-it("shows nothing where the door has no login or cannot be reached", async () => {
+it("says when the door has no login or cannot be reached", async () => {
   const off = fakeAccount({ "/api/auth/me": { status: 200, body: { ...GUEST, login: false } } });
   await off.account.refresh();
-  const { container, rerender } = render(<AccountPanel />, { wrapper: TooltipProvider });
-  expect(container.textContent).toBe("");
+  const { rerender } = bar();
+  expect(screen.getByRole("group", { name: "Account" }).textContent).toMatch(
+    /does not offer accounts/,
+  );
+  expect(screen.queryByRole("link", { name: "Log in" })).toBeNull();
   const offline = fakeAccount({ "/api/auth/me": "offline" });
   await offline.account.refresh();
-  rerender(<AccountPanel />);
+  rerender(<AccountBar />);
   expect(offline.account.state.get().status).toBe("unavailable");
-  expect(container.textContent).toBe("");
+  expect(screen.getByRole("group", { name: "Account" }).textContent).toMatch(/cannot be reached/);
 });
 
 it("logs out through WorkOS's page, and everywhere through its own route", async () => {
@@ -83,19 +95,53 @@ it("logs out through WorkOS's page, and everywhere through its own route", async
     "/api/auth/logout_everywhere": { status: 200, body: { logout_url: "https://auth.test/out" } },
   });
   await account.refresh();
-  render(<AccountPanel />, { wrapper: TooltipProvider });
+  bar();
   expect(screen.getByText("Rook#0042")).toBeTruthy();
-  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Log out" })));
+  // The menu offers everything account management needs.
+  fireEvent.click(screen.getByRole("button", { name: "Account menu for Rook#0042" }));
+  expect(
+    within(screen.getByRole("menu", { name: "Account" }))
+      .getAllByRole("menuitem")
+      .map((item) => item.textContent),
+  ).toEqual(["Change name…", "Log out", "Log out everywhere", "Delete account…"]);
+  // Escape closes it.
+  fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+  expect(screen.queryByRole("menu")).toBeNull();
+  await pick("Log out");
   expect(calls.at(-1)).toEqual({ url: "/api/auth/logout", method: "POST" });
   expect(visited).toEqual(["https://auth.test/logout?s=1"]);
   // The page is leaving; a second logout waits.
   expect(account.state.get().busy).toBe("logout");
   act(() => account.state.set({ ...account.state.get(), busy: null }));
-  await act(async () =>
-    fireEvent.click(screen.getByRole("button", { name: "Log out everywhere" })),
-  );
+  await pick("Log out everywhere");
   expect(calls.at(-1)).toEqual({ url: "/api/auth/logout_everywhere", method: "POST" });
   expect(visited.at(-1)).toBe("https://auth.test/out");
+});
+
+it("moves the keyboard into the menu and closes it on a click or tab away", async () => {
+  const { account } = fakeAccount({ "/api/auth/me": { status: 200, body: ROOK } });
+  await account.refresh();
+  bar();
+  const trigger = screen.getByRole("button", { name: "Account menu for Rook#0042" });
+  fireEvent.click(trigger);
+  expect(document.activeElement?.textContent).toBe("Change name…");
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowDown" });
+  expect(document.activeElement?.textContent).toBe("Log out");
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
+  fireEvent.keyDown(document.activeElement!, { key: "ArrowUp" });
+  expect(document.activeElement?.textContent).toBe("Delete account…");
+  // Escape closes it and gives the keyboard back to the name.
+  fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+  expect(screen.queryByRole("menu")).toBeNull();
+  expect(document.activeElement).toBe(trigger);
+  // A click elsewhere closes it.
+  fireEvent.click(trigger);
+  fireEvent.pointerDown(document.body);
+  expect(screen.queryByRole("menu")).toBeNull();
+  // So does tabbing out of it.
+  fireEvent.click(trigger);
+  fireEvent.blur(document.activeElement!, { relatedTarget: document.body });
+  expect(screen.queryByRole("menu")).toBeNull();
 });
 
 it("refreshes in place when there is no WorkOS session to end", async () => {
@@ -107,8 +153,8 @@ it("refreshes in place when there is no WorkOS session to end", async () => {
     "/api/auth/logout": { status: 204 },
   });
   await account.refresh();
-  render(<AccountPanel />, { wrapper: TooltipProvider });
-  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Log out" })));
+  bar();
+  await pick("Log out");
   expect(screen.getByText(/playing as a guest/i)).toBeTruthy();
 });
 
@@ -121,12 +167,12 @@ it("asks before deleting, and explains a retry when WorkOS is unreachable", asyn
     "/api/auth/delete": [{ status: 502, body: { error: "unavailable" } }, { status: 204 }],
   });
   await account.refresh();
-  render(<AccountPanel />, { wrapper: TooltipProvider });
-  fireEvent.click(screen.getByRole("button", { name: "Delete account…" }));
+  bar();
+  await pick("Delete account…");
   expect(calls.some((call) => call.url === "/api/auth/delete")).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: "Keep account" }));
   expect(screen.queryByRole("alertdialog")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Delete account…" }));
+  await pick("Delete account…");
   expect(screen.getByRole("alertdialog", { name: "Delete account" })).toBeTruthy();
   await act(async () => fireEvent.click(screen.getByRole("button", { name: "Delete account" })));
   expect(screen.getByRole("alert").textContent).toMatch(/nothing was deleted/i);
@@ -136,6 +182,7 @@ it("asks before deleting, and explains a retry when WorkOS is unreachable", asyn
   await act(async () => fireEvent.click(screen.getByRole("button", { name: "Delete account" })));
   expect(calls.filter((call) => call.url === "/api/auth/delete")).toHaveLength(2);
   expect(screen.getByText(/playing as a guest/i)).toBeTruthy();
+  expect(screen.queryByRole("alertdialog")).toBeNull();
 });
 
 it("tells the player when the door refuses without a reason", async () => {
@@ -144,28 +191,35 @@ it("tells the player when the door refuses without a reason", async () => {
     "/api/auth/logout": { status: 429 },
   });
   await account.refresh();
-  render(<AccountPanel />, { wrapper: TooltipProvider });
-  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Log out" })));
+  bar();
+  await pick("Log out");
   expect(screen.getByRole("alert").textContent).toMatch(/too many requests/i);
   fireEvent.click(screen.getByRole("button", { name: "OK" }));
   expect(screen.queryByRole("alert")).toBeNull();
 });
 
-it("shows a logged-in player without a name as such", async () => {
+it("asks a logged-in player without a name to choose one", async () => {
   const { account } = fakeAccount({
     "/api/auth/me": { status: 200, body: { ...ROOK, handle: null } },
   });
   await account.refresh();
-  render(<AccountPanel />, { wrapper: TooltipProvider });
+  bar();
   expect(screen.getByText("You are logged in without a player name.")).toBeTruthy();
+  expect(screen.getByRole("dialog", { name: "Choose your name" })).toBeTruthy();
+  // No Cancel without a name; closing the dialog leaves a way back.
+  expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+  fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+  expect(screen.queryByRole("dialog")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Choose your name" }));
+  expect(screen.getByRole("dialog", { name: "Choose your name" })).toBeTruthy();
 });
 
-it("hides the panel when the door answers me with an error", async () => {
+it("says accounts cannot be reached when the door answers me with an error", async () => {
   const { account } = fakeAccount({ "/api/auth/me": { status: 500 } });
   await account.refresh();
-  const { container } = render(<AccountPanel />, { wrapper: TooltipProvider });
+  bar();
   expect(account.state.get().status).toBe("unavailable");
-  expect(container.textContent).toBe("");
+  expect(screen.getByRole("group", { name: "Account" }).textContent).toMatch(/cannot be reached/);
 });
 
 it("explains offline actions and plain-text refusals", async () => {
@@ -175,12 +229,10 @@ it("explains offline actions and plain-text refusals", async () => {
     "/api/auth/logout_everywhere": { status: 403 },
   });
   await account.refresh();
-  render(<AccountPanel />, { wrapper: TooltipProvider });
-  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Log out" })));
+  bar();
+  await pick("Log out");
   expect(screen.getByRole("alert").textContent).toMatch(/could not reach the server/i);
-  await act(async () =>
-    fireEvent.click(screen.getByRole("button", { name: "Log out everywhere" })),
-  );
+  await pick("Log out everywhere");
   expect(screen.getByRole("alert").textContent).toMatch(/not allowed/i);
 });
 
@@ -193,8 +245,8 @@ it("never opens a non-web logout link, and refreshes instead", async () => {
     "/api/auth/logout": { status: 200, body: { logout_url: "javascript:alert(1)" } },
   });
   await account.refresh();
-  render(<AccountPanel />, { wrapper: TooltipProvider });
-  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Log out" })));
+  bar();
+  await pick("Log out");
   expect(visited).toEqual([]);
   expect(screen.getByText(/playing as a guest/i)).toBeTruthy();
 });
@@ -219,9 +271,11 @@ it("re-checks login when the door no longer offers it, and after the page return
     "/api/auth/logout": { status: 404 },
   });
   await account.refresh();
-  const { container } = render(<AccountPanel />, { wrapper: TooltipProvider });
-  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Log out" })));
-  expect(container.textContent).toBe("");
+  bar();
+  await pick("Log out");
+  expect(screen.getByRole("group", { name: "Account" }).textContent).toMatch(
+    /does not offer accounts/,
+  );
   // Back from WorkOS's page through the back/forward cache: nothing waits.
   act(() => account.state.set({ ...account.state.get(), busy: "logout" }));
   await act(async () => account.resume());
@@ -230,15 +284,16 @@ it("re-checks login when the door no longer offers it, and after the page return
   expect(screen.getByText("Rook#0042")).toBeTruthy();
 });
 
-it("keeps the panel when a refresh after an action fails", async () => {
+it("keeps the account shown when a refresh after an action fails", async () => {
   const { account } = fakeAccount({
     "/api/auth/me": [{ status: 200, body: ROOK }, "offline"],
     "/api/auth/logout": { status: 204 },
   });
   await account.refresh();
-  render(<AccountPanel />, { wrapper: TooltipProvider });
-  await act(async () => fireEvent.click(screen.getByRole("button", { name: "Log out" })));
+  bar();
+  await pick("Log out");
   expect(screen.getByRole("alert").textContent).toMatch(/could not reach the server/i);
+  expect(screen.getByText("Rook#0042")).toBeTruthy();
 });
 
 it("lets a player without a name choose one, and shows the door's number", async () => {
@@ -253,9 +308,10 @@ it("lets a player without a name choose one, and shows the door's number", async
     ],
   });
   await account.refresh();
-  render(<AccountPanel />, { wrapper: TooltipProvider });
-  const field = screen.getByRole("textbox");
-  const save = screen.getByRole("button", { name: "Save name" });
+  bar();
+  const dialog = within(screen.getByRole("dialog", { name: "Choose your name" }));
+  const field = dialog.getByRole("textbox");
+  const save = dialog.getByRole("button", { name: "Save name" });
   fireEvent.change(field, { target: { value: "7up" } });
   expect((save as HTMLButtonElement).disabled).toBe(true);
   fireEvent.change(field, { target: { value: "Badword" } });
@@ -269,8 +325,9 @@ it("lets a player without a name choose one, and shows the door's number", async
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "Ash" } });
   await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save name" })));
   expect(screen.getByText("Ash#1000")).toBeTruthy();
-  expect(screen.queryByRole("textbox")).toBeNull();
-  expect(screen.getByRole("button", { name: "Change name" })).toBeTruthy();
+  expect(screen.queryByRole("dialog")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Account menu for Ash#1000" }));
+  expect(screen.getByRole("menuitem", { name: "Change name…" })).toBeTruthy();
 });
 
 it("explains full names and the rename wait", async () => {
@@ -283,8 +340,9 @@ it("explains full names and the rename wait", async () => {
     ],
   });
   await account.refresh();
-  render(<AccountPanel />, { wrapper: TooltipProvider });
-  fireEvent.click(screen.getByRole("button", { name: "Change name" }));
+  bar();
+  await pick("Change name…");
+  expect(screen.getByRole("dialog", { name: "Change name" })).toBeTruthy();
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "Popular" } });
   await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save name" })));
   expect(screen.getByRole("alert").textContent).toMatch(/too many players have that name/i);
@@ -304,8 +362,8 @@ it("handles name answers without a reason, offline, and after logging out elsewh
     "/api/auth/handle": ["offline", { status: 429 }, { status: 401 }],
   });
   await account.refresh();
-  render(<AccountPanel />, { wrapper: TooltipProvider });
-  fireEvent.click(screen.getByRole("button", { name: "Change name" }));
+  bar();
+  await pick("Change name…");
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "Ash" } });
   await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save name" })));
   expect(screen.getByRole("alert").textContent).toMatch(/could not reach the server/i);
@@ -314,7 +372,7 @@ it("handles name answers without a reason, offline, and after logging out elsewh
   // Cancel clears the old refusal.
   fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(screen.queryByRole("alert")).toBeNull();
-  fireEvent.click(screen.getByRole("button", { name: "Change name" }));
+  await pick("Change name…");
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "Ash" } });
   await act(async () => fireEvent.click(screen.getByRole("button", { name: "Save name" })));
   expect(calls.filter((call) => call.url === "/api/auth/me")).toHaveLength(2);

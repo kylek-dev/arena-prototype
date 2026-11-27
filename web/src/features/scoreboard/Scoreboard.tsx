@@ -17,7 +17,7 @@ import {
   type ScoreboardSort,
   type TeamTotals,
 } from "../../domain/scoreboard";
-import { returnToHome } from "../../state/appearance";
+import { returnToHub } from "../../runtime/hub";
 import { matchQueue, networkLink } from "../../state/network";
 import {
   dismissPostMatchScoreboard,
@@ -285,7 +285,7 @@ export function Scoreboard() {
   const onLeave = () => {
     dismissPostMatchScoreboard();
     if (link && linkState.phase !== "idle") link.leave();
-    returnToHome();
+    returnToHub();
   };
 
   const onQueueAgain = () => {

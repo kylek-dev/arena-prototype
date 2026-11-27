@@ -88,21 +88,29 @@ export function readAppearance(): unknown[] {
 }
 export function readPreview(): number[] {
   const view = preview.get();
-  return [customizerVisible.get() || prematch.get() ? 1 : 0, view.yaw, view.zoom];
+  // The launcher page covers the arena; behind it the saved character waits
+  // in its close-up, as it did on the old home screen, when there is one.
+  const closeUp = customizerVisible.get() || (prematch.get() && characterKits.get().length > 0);
+  return [closeUp ? 1 : 0, view.yaw, view.zoom];
 }
-/** Leaves the start screen: a fresh round with the saved look. */
+/** Leaves the launcher page: a fresh round with the saved look. */
 export function enterArena(reset: () => void) {
   customizing.set(false);
   prematch.set(false);
   preview.set({ yaw: 0, zoom: 0 });
   reset();
 }
-/** Returns to the home screen when character kits are loaded; otherwise stays in local practice. */
-export function returnToHome() {
+/** Closes the panels and overlays a return (to the launcher page or the
+ * hub) leaves behind. */
+export function closeOverlays() {
   setPanel(null);
   pendingBinding.set(null);
   customizing.set(false);
   customLobbyVisible.set(false);
   preview.set({ yaw: 0, zoom: 0 });
-  if (characterKits.get().length > 0) prematch.set(true);
+}
+/** Returns to the launcher page (outside the game). */
+export function returnToLauncher() {
+  closeOverlays();
+  prematch.set(true);
 }
