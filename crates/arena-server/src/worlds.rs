@@ -161,21 +161,26 @@ impl App {
 /// (unlike snapshots), so a connection too slow to take one is closed: its
 /// page reconnects and is sent the whole member list again.
 fn deliver_world(app: &App, id: u64, conns: &mut Conns, out: Vec<Out>) {
-    let mut rest = Vec::with_capacity(out.len());
+    // In order: a run of ordinary output goes out together, and each
+    // member frame in its place.
+    let mut run = Vec::with_capacity(out.len());
     for item in out {
-        let Out::Send { conn, message } = &item else {
-            rest.push(item);
-            continue;
-        };
-        if !matches!(
-            message,
-            arena_protocol::ServerMessage::Member(_)
-                | arena_protocol::ServerMessage::MemberLeft { .. }
-        ) {
-            rest.push(item);
+        let member = matches!(
+            &item,
+            Out::Send {
+                message: arena_protocol::ServerMessage::Member(_)
+                    | arena_protocol::ServerMessage::MemberLeft { .. },
+                ..
+            }
+        );
+        if !member {
+            run.push(item);
             continue;
         }
-        let conn = *conn;
+        deliver(app, id, conns, std::mem::take(&mut run));
+        let Out::Send { conn, message } = item else {
+            continue;
+        };
         let Some(sender) = crate::get_conn(conns, conn) else {
             continue;
         };
@@ -187,7 +192,7 @@ fn deliver_world(app: &App, id: u64, conns: &mut Conns, out: Vec<Out>) {
             remove_conn(conns, conn);
         }
     }
-    deliver(app, id, conns, rest);
+    deliver(app, id, conns, run);
 }
 
 fn apply(world: &mut World, conns: &mut Conns, command: WorldCommand) -> Vec<Out> {
