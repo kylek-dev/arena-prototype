@@ -6,15 +6,15 @@
 icons of the four current spells, shown in action slots, the spellbook and the
 drag preview.
 
-- **Generated** by the user with Google Gemini on 2026-11-26, one icon per
-  image, from the briefs: Pulse, an electric-blue sphere bursting outward with
+- **Generated** by the user with Google Gemini, model Neon 4 on a Gemini Pro
+  plan, on 2026-11-26, one icon per image, from the briefs: Pulse, an electric-blue sphere bursting outward with
   jagged lightning spikes; Rift Bolt, a violet arcane bolt tearing out of a
   rift in space; Quell, a glowing pale-cyan spell sigil shattered by a steel
   blade; Mend, cupped hands holding a swirling orb of green-gold healing
-  light. The Gemini model and plan are not yet recorded; add them, and confirm
-  Google's terms for commercial use before release. Gemini output carries
-  Google's invisible SynthID watermark. AI assistance does not establish
-  exclusive rights.
+  light. The user states that the Pro plan licenses this output for
+  commercial use (recorded 2026-11-27). Gemini output carries Google's
+  invisible SynthID watermark. AI assistance does not establish exclusive
+  rights.
 - **Masters** (2048² JPEG, kept out of Git in the gitignored
   `assets/icons/source/`), SHA-256:
   `spell-pulse.jpg` `393355f52f45d406878155788fd8e8938cd214f91b06fa77474ef53e04e5d56e`,
@@ -28,7 +28,8 @@ drag preview.
 - **Status:** placeholders until the user accepts them in the browser
   ([ADR 0052](../docs/decisions/0052-art-scope-and-quality-bar.md)).
 - Also in `assets/icons/source/` and unused: `icons1.jpg` and `icons2.jpg`,
-  two 10 × 10 Gemini sheets of generic fantasy icons (2026-11-26).
+  two 10 × 10 sheets of generic fantasy icons from the same model and plan
+  (2026-11-26).
 
 ## Human male kit rebuilt from a Meshy model (2026-11-24)
 
