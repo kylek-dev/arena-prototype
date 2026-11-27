@@ -21,6 +21,9 @@
 # Raw third-party texture downloads; prepared outputs in assets/textures are tracked.
 /assets/textures/source/
 
+# Generated icon masters (multi-MB JPEGs); prepared WebPs in assets/icons/spells are tracked.
+/assets/icons/source/
+
 # Quaternius packs: track only the CC0 sources scripts/quaternius_character.py
 # reads, plus provenance and licenses. Other downloaded files stay local until
 # the game uses them; add an exception here when integrating a new source.

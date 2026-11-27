@@ -6,6 +6,7 @@ import { ABILITY_IDS } from "../../domain/action-bars/model";
 import { SPELLS } from "../../domain/abilities/catalog";
 import { Hint } from "../../ui/Tooltip";
 import { SpellDetails } from "../abilities/SpellDetails";
+import { SpellIcon } from "../abilities/SpellIcon";
 import { Button } from "@radix-ui/themes";
 
 export function Spellbook() {
@@ -48,9 +49,7 @@ export function Spellbook() {
                 onPointerDown={(event) => beginSpellPress(event, { ability })}
                 onDragStart={(event) => event.preventDefault()}
               >
-                <span className="spell-symbol" aria-hidden="true">
-                  {spell.symbol}
-                </span>
+                <SpellIcon spell={spell} />
               </button>
             </Hint>
           );

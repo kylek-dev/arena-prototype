@@ -1,5 +1,35 @@
 # Asset provenance
 
+## Spell icons: Pulse, Rift Bolt, Quell and Mend (2026-11-26)
+
+`assets/icons/spells/{pulse,rift-bolt,quell,mend}-{128,256}.webp`: the action
+icons of the four current spells, shown in action slots, the spellbook and the
+drag preview.
+
+- **Generated** by the user with Google Gemini on 2026-11-26, one icon per
+  image, from the briefs: Pulse, an electric-blue sphere bursting outward with
+  jagged lightning spikes; Rift Bolt, a violet arcane bolt tearing out of a
+  rift in space; Quell, a glowing pale-cyan spell sigil shattered by a steel
+  blade; Mend, cupped hands holding a swirling orb of green-gold healing
+  light. The Gemini model and plan are not yet recorded; add them, and confirm
+  Google's terms for commercial use before release. Gemini output carries
+  Google's invisible SynthID watermark. AI assistance does not establish
+  exclusive rights.
+- **Masters** (2048² JPEG, kept out of Git in the gitignored
+  `assets/icons/source/`), SHA-256:
+  `spell-pulse.jpg` `393355f52f45d406878155788fd8e8938cd214f91b06fa77474ef53e04e5d56e`,
+  `spell-riftbolt.jpg` `34c90035104874293d947b261ce05c8c7ed08c7af965ec631af84a23713fd937`,
+  `spell-quell.jpg` `344182bf1f160f2411a1c256d28d5ed1643651114c5b40ba32f16473b2add5d2`,
+  `spell-mend.jpg` `c451f73ddd53007f4a2aaa973498de5aef392a77e80165248ef0462c1a9196e2`.
+- **Prepared** by `scripts/prepare_icons.py`: square crop around the bright
+  core (Mend: a hand-picked 1500 px crop centred on the orb), black ground
+  lifted to palette `night-1`, Lanczos downscale in linear light to 128 px and
+  256 px, WebP quality 90.
+- **Status:** placeholders until the user accepts them in the browser
+  ([ADR 0052](../docs/decisions/0052-art-scope-and-quality-bar.md)).
+- Also in `assets/icons/source/` and unused: `icons1.jpg` and `icons2.jpg`,
+  two 10 × 10 Gemini sheets of generic fantasy icons (2026-11-26).
+
 ## Human male kit rebuilt from a Meshy model (2026-11-24)
 
 `assets/characters/kits/meshy-human-male/` (`meshy-human-male.glb`, `kit.json`):
