@@ -1372,3 +1372,47 @@ fn a_reused_slot_is_drawn_where_its_new_holder_stands() {
         }
     }
 }
+
+#[test]
+fn world_deltas_apply_to_the_last_snapshot_and_wait_for_a_full_one_otherwise() {
+    use arena_protocol::delta::SnapshotDelta;
+    let mut world = Arena::hub();
+    let me = world.join().unwrap();
+    world.advance(&[]);
+    let first = Snapshot::capture(&world, 0, Vec::new(), &[true; 16]);
+    let mut session = Session::default();
+    session.receive(
+        &feed(
+            1,
+            vec![
+                hub_welcome(me as u8),
+                ServerMessage::Snapshot(first.clone()).encode(),
+            ],
+        ),
+        0.0,
+        &layout(),
+    );
+    let mut inputs = vec![ActorInput::default(); world.fighters().len()];
+    inputs[me].movement = Some(Axes { x: 1_000, z: 0 });
+    world.advance(&inputs);
+    let second = Snapshot::capture(&world, 1, Vec::new(), &[true; 16]);
+    let (delta, _) = SnapshotDelta::from_pair(&first, &second).unwrap();
+    let frame = |base: u64, body: Vec<u8>| {
+        ServerMessage::WorldDelta(Box::new(arena_protocol::WorldDelta { base, body })).encode()
+    };
+    session.receive(
+        &feed(1, vec![frame(first.tick, delta.encode())]),
+        0.1,
+        &layout(),
+    );
+    assert_eq!(session.stats.skipped_deltas, 0);
+    assert_eq!(session.stats.hash_mismatches, 0);
+    assert_eq!(session.snapshots.back().unwrap().tick, second.tick);
+    // A delta whose base this client never had waits for a full one.
+    session.receive(
+        &feed(1, vec![frame(first.tick, delta.encode())]),
+        0.2,
+        &layout(),
+    );
+    assert_eq!(session.stats.skipped_deltas, 1);
+}

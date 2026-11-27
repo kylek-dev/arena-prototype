@@ -65,7 +65,7 @@ pub const MAX_CAST_BUFFER_TICKS: u8 = 12;
 /// Most fighters one arena holds: a match's two teams of [`MAX_TEAM`], or a
 /// hub world's players and training enemies (ADR 0057). Per-tick scratch
 /// arrays are this long, so the rules never allocate per fighter.
-pub const MAX_ROSTER: usize = 16;
+pub const MAX_ROSTER: usize = 44;
 const _: () = assert!(MAX_ROSTER >= MAX_TEAM * 2);
 const POSITION_HISTORY_LEN: usize = MAX_LAG_COMP_TICKS as usize;
 
@@ -126,13 +126,16 @@ impl Slot {
     }
 }
 
-/// Players one hub world holds at once (ADR 0057's first step; 40 waits for
-/// interest filtering and delta snapshots).
-pub const HUB_PLAYER_CAP: usize = 12;
+/// Players one hub world holds at once (ADR 0057): 40, as ADR 0056 planned,
+/// since interest filtering and delta snapshots carry it (measured with
+/// `arena-bot --hub`).
+pub const HUB_PLAYER_CAP: usize = 40;
 /// Ticks a fallen fighter in a hub world stays down before standing up again
 /// at home with full health and resources (5 s).
 pub const HUB_RESPAWN_TICKS: u64 = 5 * TICKS_PER_SECOND;
 const _: () = assert!(HUB_PLAYER_CAP + crate::hub::TRAINING_POSTS.len() <= MAX_ROSTER);
+// Every player of a full world has an arrival place of their own.
+const _: () = assert!(HUB_PLAYER_CAP <= crate::hub::MAX_HUB_PLAYERS);
 pub use crate::spells::{
     INTERRUPT_LOCKOUT_TICKS as LOCKOUT_TICKS, MAX_RESOURCE as ARENA_MAX_RESOURCE,
 };

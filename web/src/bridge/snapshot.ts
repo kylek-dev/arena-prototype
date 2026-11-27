@@ -88,10 +88,10 @@ const CHARACTER_STATUSES = new Set(["ready", "failed", "placeholder", "loading"]
 const HOVERED_UNIT_RE = /^(Player|Opponent[1-3]|Team[1-2])$/;
 const NAMEPLATE_TAG_RE = /^(Opponent|Team)[1-3]$/;
 const SPECTATOR_NAMEPLATE_TAG_RE = /^(Player|(Opponent|Team)[1-3])$/;
-/** A hub world (ADR 0057) holds up to 16 fighters: 12 players and the
+/** A hub world (ADR 0057) holds up to 44 fighters: 40 players and the
  * training enemies, tagged by team in the engine's order. */
-const MAX_WORLD_FIGHTERS = 16;
-const WORLD_TAG_RE = /^(Opponent|Team)([1-9]|1[0-5])$/;
+const MAX_WORLD_FIGHTERS = 44;
+const WORLD_TAG_RE = /^(Opponent|Team)([1-9]|[1-3]\d|4[0-3])$/;
 
 function isNonNegativeFinite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;

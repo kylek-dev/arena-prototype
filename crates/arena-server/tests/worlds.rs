@@ -327,6 +327,7 @@ async fn an_empty_world_ends_and_the_same_id_starts_a_fresh_one() {
         queue: 32,
         grace: 2,
         idle: 5,
+        keyframe_every: 30,
     };
     let server = start(config).await.unwrap();
     let mut first = Client::join(server.addr, ticket(&server, 50, 1)).await;

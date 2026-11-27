@@ -253,6 +253,10 @@ fn server_samples() -> Vec<ServerMessage> {
             appearance: None,
         })),
         ServerMessage::MemberLeft { id: 7 },
+        ServerMessage::WorldDelta(Box::new(WorldDelta {
+            base: u64::MAX,
+            body: vec![1, 0, 0, 0, 0, 0, 0, 0, 0],
+        })),
     ]
 }
 
@@ -287,15 +291,15 @@ fn ordinary_traffic_is_small() {
 #[test]
 fn the_wire_layout_is_pinned() {
     // Golden frames: changing them requires a PROTOCOL_VERSION bump.
-    assert_eq!(PROTOCOL_VERSION, 12);
+    assert_eq!(PROTOCOL_VERSION, 13);
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 12,
+            protocol: 13,
             ticket: vec![0xAB, 0xCD],
             appearance: None,
         }
         .encode(),
-        [0, 12, 2, 0xAB, 0xCD, 0]
+        [0, 13, 2, 0xAB, 0xCD, 0]
     );
     let compact = WireAppearance {
         ancestry: "elf".into(),
@@ -310,13 +314,13 @@ fn the_wire_layout_is_pinned() {
     };
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 12,
+            protocol: 13,
             ticket: vec![0xAB, 0xCD],
             appearance: Some(Box::new(compact)),
         }
         .encode(),
         [
-            0, 12, 2, 0xAB, 0xCD, 1, // Hello variant 0, protocol 12, ticket, Some
+            0, 13, 2, 0xAB, 0xCD, 1, // Hello variant 0, protocol 13, ticket, Some
             3, b'e', b'l', b'f', // ancestry
             4, b'm', b'a', b'l', b'e', // body
             4, b'f', b'a', b'i', b'r', // skin_tone
@@ -362,6 +366,15 @@ fn the_wire_layout_is_pinned() {
         [7, 0xAC, 0x02, 0, 1, 0]
     );
     assert_eq!(ServerMessage::MemberLeft { id: 7 }.encode(), [8, 7]);
+    // 13: a world delta is variant 9, its base tick, then the delta bytes.
+    assert_eq!(
+        ServerMessage::WorldDelta(Box::new(WorldDelta {
+            base: 300,
+            body: vec![1, 2],
+        }))
+        .encode(),
+        [9, 0xAC, 0x02, 2, 1, 2]
+    );
     assert_eq!(
         ClientMessage::Input(InputFrame {
             view_tick: 120,
@@ -1690,6 +1703,7 @@ fn fuzz_client_and_server_frames_preserve_all_wire_invariants() {
                 }
                 ServerMessage::Member(member) => assert!(member.is_valid()),
                 ServerMessage::MemberLeft { id } => assert_ne!(*id, 0),
+                ServerMessage::WorldDelta(delta) => assert!(!delta.body.is_empty()),
                 ServerMessage::Handles(handles) => {
                     let count = handles.len();
                     assert!((2..=MAX_FIGHTERS).contains(&count) && count.is_multiple_of(2));

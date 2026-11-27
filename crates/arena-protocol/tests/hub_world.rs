@@ -59,10 +59,11 @@ fn a_world_snapshot_round_trips_and_rebuilds_the_world() {
 
 #[test]
 fn world_snapshots_stay_small() {
-    // A full world without events: 16 fighters and their slots.
+    // A full world without events: 44 fighters and their slots, sent in
+    // full once a second (deltas between).
     let (arena, _) = world(HUB_PLAYER_CAP);
     let size = ServerMessage::Snapshot(snapshot(&arena)).encode().len();
-    assert!(size <= 1_200, "{size}");
+    assert!(size <= 2_400, "{size}");
 }
 
 #[test]
@@ -243,16 +244,6 @@ fn the_member_relay_is_checked() {
 }
 
 #[test]
-fn deltas_are_not_used_for_worlds() {
-    let (mut arena, _) = world(2);
-    let first = snapshot(&arena);
-    arena.advance(&[]);
-    let second = snapshot(&arena);
-    assert!(SnapshotDelta::from_pair(&first, &second).is_none());
-    assert!(SnapshotDelta::apply(&first, &[1]).is_err());
-}
-
-#[test]
 fn prediction_in_a_world_replays_unacknowledged_movement_exactly() {
     let (mut server, players) = world(2);
     let me = players[1];
@@ -378,4 +369,73 @@ fn a_corrected_world_prediction_counts_the_correction() {
     assert!(moved > 0);
     assert_eq!(predictor.corrections(), 1);
     assert_eq!(predictor.predicted(), Some(server.fighters()[me]));
+}
+
+// Deltas for worlds (ADR 0057's last step).
+
+#[test]
+fn world_deltas_rebuild_the_next_snapshot_exactly() {
+    use arena_protocol::WorldDelta;
+    let (mut arena, players) = world(HUB_PLAYER_CAP);
+    let walk = ActorInput {
+        movement: Some(Axes { x: 700, z: -700 }),
+        ..ActorInput::default()
+    };
+    let mut prev = snapshot(&arena);
+    for tick in 0..60 {
+        let mut inputs = vec![ActorInput::default(); arena.fighters().len()];
+        for &slot in &players {
+            inputs[slot] = walk;
+        }
+        // Someone leaves and someone comes: the roster changes in a delta.
+        if tick == 20 {
+            arena.leave(players[3]).unwrap();
+        }
+        if tick == 40 {
+            assert_eq!(arena.join(), Some(players[3]));
+        }
+        arena.advance(&inputs);
+        let next = snapshot(&arena);
+        let (delta, _) = SnapshotDelta::from_pair(&prev, &next).expect("same fighter count");
+        let message = ServerMessage::WorldDelta(Box::new(WorldDelta {
+            base: prev.tick,
+            body: delta.encode(),
+        }));
+        let frame = message.encode();
+        // Smaller than the full snapshot.
+        assert!(frame.len() < ServerMessage::Snapshot(next.clone()).encode().len());
+        let Ok(ServerMessage::WorldDelta(received)) = ServerMessage::decode(&frame) else {
+            panic!("decodes");
+        };
+        assert_eq!(received.apply(&prev), Ok(next.clone()));
+        // Never against another base.
+        assert!(received.apply(&next).is_err());
+        prev = next;
+    }
+    // A grown roster is not a delta: a full snapshot is sent instead.
+    let (mut bigger, _) = world(1);
+    let small = snapshot(&bigger);
+    bigger.join().unwrap();
+    assert!(SnapshotDelta::from_pair(&small, &snapshot(&bigger)).is_none());
+    // A match's snapshot never takes a world's delta, nor the other way.
+    let practice = Arena::practice(arena_map::colosseum().layout, 1).unwrap();
+    assert!(SnapshotDelta::from_pair(&snapshot(&practice), &small).is_none());
+    assert_eq!(
+        ServerMessage::decode(
+            &ServerMessage::WorldDelta(Box::new(WorldDelta {
+                base: 0,
+                body: Vec::new(),
+            }))
+            .encode()
+        ),
+        Err(DecodeError::OverLimit)
+    );
+}
+
+#[test]
+fn a_world_of_forty_fits_in_a_frame() {
+    let (arena, _) = world(HUB_PLAYER_CAP);
+    assert_eq!(HUB_PLAYER_CAP, 40);
+    let full = ServerMessage::Snapshot(snapshot(&arena)).encode();
+    assert!(full.len() < MAX_SERVER_FRAME / 4, "{}", full.len());
 }

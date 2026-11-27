@@ -172,26 +172,31 @@ impl App {
     }
 }
 
-/// Delivers a world's output. `Member` and `MemberLeft` are never repeated
-/// (unlike snapshots), so a connection too slow to take one is closed: its
-/// page reconnects and is sent the whole member list again.
-fn deliver_world(app: &App, id: u64, conns: &mut Conns, out: Vec<Out>) {
-    // In order: a run of ordinary output goes out together, and each
-    // member frame in its place.
+/// Delivers a world's output in order. `Member` and `MemberLeft` are never
+/// repeated (unlike snapshots), so a connection too slow to take one is
+/// closed: its page reconnects and is sent the whole member list again. A
+/// snapshot or delta it cannot take is dropped, and its next one goes in
+/// full (a delta needs the one before it): the connections returned.
+fn deliver_world(app: &App, id: u64, conns: &mut Conns, out: Vec<Out>) -> Vec<ConnId> {
+    use arena_protocol::ServerMessage;
     let mut run = Vec::with_capacity(out.len());
+    let mut stale = Vec::new();
     for item in out {
-        let member = matches!(
-            &item,
+        let kind = match &item {
             Out::Send {
-                message: arena_protocol::ServerMessage::Member(_)
-                    | arena_protocol::ServerMessage::MemberLeft { .. },
+                message: ServerMessage::Member(_) | ServerMessage::MemberLeft { .. },
                 ..
-            }
-        );
-        if !member {
+            } => Some(true),
+            Out::Send {
+                message: ServerMessage::Snapshot(_) | ServerMessage::WorldDelta(_),
+                ..
+            } => Some(false),
+            _ => None,
+        };
+        let Some(member) = kind else {
             run.push(item);
             continue;
-        }
+        };
         deliver(app, id, conns, std::mem::take(&mut run));
         let Out::Send { conn, message } = item else {
             continue;
@@ -203,11 +208,16 @@ fn deliver_world(app: &App, id: u64, conns: &mut Conns, out: Vec<Out>) {
         Metrics::add(&app.metrics.bytes_out, frame.len() as u64);
         if sender.try_send(Outbound::Frame(frame)).is_err() {
             Metrics::add(&app.metrics.frames_dropped, 1);
-            // Dropping the sender closes the connection once it drains.
-            remove_conn(conns, conn);
+            if member {
+                // Dropping the sender closes the connection once it drains.
+                remove_conn(conns, conn);
+            } else {
+                stale.push(conn);
+            }
         }
     }
     deliver(app, id, conns, run);
+    stale
 }
 
 fn apply(world: &mut World, conns: &mut Conns, command: WorldCommand) -> Vec<Out> {
@@ -263,19 +273,25 @@ async fn run_world(
             _ = interval.tick() => {
                 let started = tokio::time::Instant::now();
                 let out = world.tick();
-                deliver_world(&app, id, &mut conns, out);
-                app.metrics.record_tick(started.elapsed().as_micros() as u64, interval_us);
+                for conn in deliver_world(&app, id, &mut conns, out) {
+                    world.resend_full(conn);
+                }
+                app.metrics.record_running_tick(started.elapsed().as_micros() as u64, interval_us);
                 *report.lock().expect("world report") = world.report();
             }
             command = commands.recv() => {
                 let Some(command) = command else { break };
                 let out = apply(&mut world, &mut conns, command);
-                deliver_world(&app, id, &mut conns, out);
+                for conn in deliver_world(&app, id, &mut conns, out) {
+                    world.resend_full(conn);
+                }
                 for _ in 0..64 {
                     match commands.try_recv() {
                         Ok(next) => {
                             let out = apply(&mut world, &mut conns, next);
-                            deliver_world(&app, id, &mut conns, out);
+                            for conn in deliver_world(&app, id, &mut conns, out) {
+                                world.resend_full(conn);
+                            }
                         }
                         Err(_) => break,
                     }

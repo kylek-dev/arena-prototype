@@ -262,10 +262,10 @@ describe("character appearance", () => {
     expect(parsed).toHaveLength(4);
     expect(parsed?.[2]).toBeNull();
     expect(parsed?.[3]).toBeNull();
-    // A hub world's relay has one look per engine actor, any count up to 16.
+    // A hub world's relay has one look per engine actor, any count up to 44.
     expect(parseNetworkAppearances([quaterniusLook])).toHaveLength(1);
-    expect(parseNetworkAppearances(Array(16).fill(null))).toHaveLength(16);
-    expect(parseNetworkAppearances(Array(17).fill(null))).toBeNull();
+    expect(parseNetworkAppearances(Array(44).fill(null))).toHaveLength(44);
+    expect(parseNetworkAppearances(Array(45).fill(null))).toBeNull();
     expect(parseNetworkAppearances([])).toBeNull();
 
     const netSpecs = resolveRosterSpecs(kits, quaterniusLook, p1, parsed);

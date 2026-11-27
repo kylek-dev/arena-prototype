@@ -199,12 +199,22 @@ pub fn kit_profile(kit: &KitRef) -> &'static Profile {
 }
 
 /// The last per-fighter specs received from the browser.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct Desired {
     revision: Option<f64>,
     specs: [Option<Spec>; MAX_FIGHTERS],
     /// Bumped per actor whenever that actor's spec changes, so only that fighter re-applies.
     generations: [u64; MAX_FIGHTERS],
+}
+
+impl Default for Desired {
+    fn default() -> Self {
+        Self {
+            revision: None,
+            specs: std::array::from_fn(|_| None),
+            generations: [0; MAX_FIGHTERS],
+        }
+    }
 }
 
 impl Desired {

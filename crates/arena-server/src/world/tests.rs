@@ -3,10 +3,13 @@ use arena_protocol::{Handle, WireAction, WireOccupant};
 
 const TRAINING_ENEMIES: usize = arena_sim::hub::TRAINING_POSTS.len();
 
+/// Every snapshot in full, so tests read each tick's alone; deltas have
+/// tests of their own.
 const LIMITS: WorldLimits = WorldLimits {
     queue: 32,
     grace: 5,
     idle: 20,
+    keyframe_every: 1,
 };
 
 fn world() -> World {
@@ -424,4 +427,189 @@ fn only_players_the_door_placed_may_be_in_a_world() {
         closed(&join(&mut world, 1, 11), 11).is_none(),
         "the placed one may reconnect"
     );
+}
+
+#[test]
+fn snapshots_go_as_deltas_between_keyframes_and_in_full_after_a_drop() {
+    let mut world = World::new(
+        1,
+        Arc::default(),
+        None,
+        WorldLimits {
+            keyframe_every: 4,
+            ..LIMITS
+        },
+        Arc::default(),
+    );
+    let out = join(&mut world, 1, 10);
+    let mut client = snapshot_for(&out, 10);
+    let mut kinds = Vec::new();
+    for seq in 1..=9 {
+        world.receive(10, input(seq, 1_000));
+        let out = world.tick();
+        match sent(&out, 10).pop().unwrap() {
+            ServerMessage::Snapshot(snapshot) => {
+                kinds.push('F');
+                client = snapshot;
+            }
+            ServerMessage::WorldDelta(delta) => {
+                kinds.push('d');
+                // A client rebuilds exactly what the server holds.
+                client = delta.apply(&client).unwrap();
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(Some(&client), world.players[0].sent.as_ref());
+        assert_eq!(client.hash, client.hub_arena().unwrap().state_hash());
+        if seq == 6 {
+            // The connection could not take a frame: the next goes in full.
+            world.resend_full(10);
+        }
+    }
+    // The join sent a full one; then three deltas a keyframe, and a full
+    // one right after the drop.
+    assert_eq!(kinds.iter().collect::<String>(), "dddFddFdd");
+}
+
+/// Moves the fighter in `slot` to `at` (as walking there would).
+fn place(world: &mut World, slot: usize, at: arena_sim::arena::Position) {
+    let mut fighters = world.arena.fighters().to_vec();
+    fighters[slot].position = at;
+    world.arena = Arena::restore_hub(
+        world.arena.tick(),
+        world.arena.slots().to_vec(),
+        fighters,
+        world.arena.next_id(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn players_far_apart_are_out_of_view_and_training_enemies_never() {
+    use arena_sim::arena::Position;
+    use arena_sim::hub::INTEREST_RADIUS;
+    let mut world = world();
+    join(&mut world, 1, 10);
+    join(&mut world, 2, 20);
+    let (a, b) = (world.players[0].slot, world.players[1].slot);
+    let seen = |world: &mut World| {
+        let out = world.tick();
+        let roster = snapshot_for(&out, 10).roster.unwrap();
+        (
+            roster.slots[b].occupant != WireOccupant::Vacant,
+            roster.slots[0].occupant == WireOccupant::TrainingEnemy,
+            sent(&out, 10)
+                .iter()
+                .any(|m| matches!(m, ServerMessage::MemberLeft { .. })),
+        )
+    };
+    place(&mut world, a, Position { x: 0, z: 30_000 });
+    // Just inside the radius: seen.
+    place(
+        &mut world,
+        b,
+        Position {
+            x: 0,
+            z: 30_000 - INTEREST_RADIUS + 100,
+        },
+    );
+    assert_eq!(seen(&mut world), (true, true, false));
+    // A little past it: still seen (the margin).
+    place(
+        &mut world,
+        b,
+        Position {
+            x: 0,
+            z: 30_000 - INTEREST_RADIUS - 2_000,
+        },
+    );
+    assert_eq!(seen(&mut world), (true, true, false));
+    // Past the margin: out of view, but still a member (no MemberLeft);
+    // the training enemies, much farther, are always shown.
+    place(
+        &mut world,
+        b,
+        Position {
+            x: 0,
+            z: 30_000 - INTEREST_RADIUS - INTEREST_MARGIN - 1_000,
+        },
+    );
+    assert_eq!(seen(&mut world), (false, true, false));
+    // Back a little past the radius: not yet (the margin only keeps).
+    place(
+        &mut world,
+        b,
+        Position {
+            x: 0,
+            z: 30_000 - INTEREST_RADIUS - 2_000,
+        },
+    );
+    assert_eq!(seen(&mut world), (false, true, false));
+    place(
+        &mut world,
+        b,
+        Position {
+            x: 0,
+            z: 30_000 - INTEREST_RADIUS + 100,
+        },
+    );
+    assert_eq!(seen(&mut world), (true, true, false));
+}
+
+#[test]
+fn a_delta_chain_follows_someone_out_of_view_and_back() {
+    use arena_sim::arena::Position;
+    use arena_sim::hub::INTEREST_RADIUS;
+    let mut world = World::new(
+        1,
+        Arc::default(),
+        None,
+        WorldLimits {
+            keyframe_every: 100,
+            ..LIMITS
+        },
+        Arc::default(),
+    );
+    join(&mut world, 1, 10);
+    join(&mut world, 2, 20);
+    let out = world.tick();
+    let ServerMessage::Snapshot(first) = sent(&out, 10).pop().unwrap() else {
+        panic!("full after the second arrival changed the roster");
+    };
+    let mut client_a = first;
+    let (a, b) = (world.players[0].slot, world.players[1].slot);
+    place(&mut world, a, Position { x: 0, z: 30_000 });
+    let far = 30_000 - INTEREST_RADIUS - INTEREST_MARGIN - 1_000;
+    let mut seen = Vec::new();
+    for step in 0..6 {
+        let z = if (2..4).contains(&step) { far } else { 25_000 };
+        place(&mut world, b, Position { x: 0, z });
+        // B jumps every tick: an event A must not hear while B is away.
+        world.receive(
+            20,
+            InputFrame {
+                jump: true,
+                ..input(step + 1, 0)
+            },
+        );
+        let out = world.tick();
+        match sent(&out, 10).pop().unwrap() {
+            ServerMessage::WorldDelta(delta) => client_a = delta.apply(&client_a).unwrap(),
+            ServerMessage::Snapshot(snapshot) => client_a = snapshot,
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(client_a.hash, client_a.hub_arena().unwrap().state_hash());
+        let shown = client_a.roster.as_ref().unwrap().slots[b].occupant != WireOccupant::Vacant;
+        if !shown {
+            assert!(
+                !client_a
+                    .events
+                    .iter()
+                    .any(|item| matches!(item.event, WireEvent::Jumped { actor } if usize::from(actor) == b)),
+                "no event about someone out of view"
+            );
+        }
+        seen.push(shown);
+    }
+    assert_eq!(seen, [true, true, false, false, true, true]);
 }
