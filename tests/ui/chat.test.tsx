@@ -268,10 +268,11 @@ it("resizes by its grip down to a minimum, keeping its top-left corner, and by k
       x: 20,
       y: 300,
     }) as DOMRect;
-  placed.getBoundingClientRect = () => rect(360, 210);
-  box.getBoundingClientRect = () => rect(360, 210);
-  const grip = screen.getByRole("button", { name: /Resize chat \(360 × 210\)/ });
-  fireEvent.pointerDown(grip, { button: 0, clientX: 380, clientY: 510, pointerId: 1 });
+  placed.getBoundingClientRect = () => rect(432, 210);
+  box.getBoundingClientRect = () => rect(432, 210);
+  // The default is 432 px wide (20% wider than the first 360).
+  const grip = screen.getByRole("button", { name: /Resize chat \(432 × 210\)/ });
+  fireEvent.pointerDown(grip, { button: 0, clientX: 452, clientY: 510, pointerId: 1 });
   fireEvent.pointerMove(grip, { clientX: 520, clientY: 610, pointerId: 1 });
   expect(box.style.width).toBe("500px");
   expect(box.style.height).toBe("310px");
@@ -311,7 +312,7 @@ it("sets width and height in the layout editor when the chat box is selected", a
   expect(screen.getByRole("region", { name: "Chat" }).style.width).toBe("500px");
   expect(screen.getByRole("region", { name: "Chat" }).style.height).toBe("320px");
   fireEvent.click(screen.getByRole("button", { name: "Reset selected" }));
-  expect(screen.getByRole("region", { name: "Chat" }).style.width).toBe("360px");
+  expect(screen.getByRole("region", { name: "Chat" }).style.width).toBe("432px");
 });
 
 it("keeps a drag within the screen, cancels a lost drag, and hides the grip while editing", () => {
@@ -325,9 +326,9 @@ it("keeps a drag within the screen, cancels a lost drag, and hides the grip whil
     const rect = {
       left: 20,
       top: 300,
-      width: 360,
+      width: 432,
       height: 210,
-      right: 380,
+      right: 452,
       bottom: 510,
       x: 20,
       y: 300,
@@ -335,13 +336,13 @@ it("keeps a drag within the screen, cancels a lost drag, and hides the grip whil
     placed.getBoundingClientRect = () => rect;
     box.getBoundingClientRect = () => rect;
     const grip = screen.getByRole("button", { name: /Resize chat/ });
-    fireEvent.pointerDown(grip, { button: 0, clientX: 380, clientY: 510, pointerId: 1 });
+    fireEvent.pointerDown(grip, { button: 0, clientX: 452, clientY: 510, pointerId: 1 });
     fireEvent.pointerMove(grip, { clientX: 2000, clientY: 2000, pointerId: 1 });
     // 800×600 leaves 776×576 to use.
     expect(box.style.width).toBe("776px");
     expect(box.style.height).toBe("576px");
     fireEvent.lostPointerCapture(grip, { pointerId: 1 });
-    expect(box.style.width).toBe("360px");
+    expect(box.style.width).toBe("432px");
     act(() => interaction.set({ ...interaction.get(), layout: true }));
     expect(screen.queryByRole("button", { name: /Resize chat/ })).toBeNull();
   } finally {
@@ -365,7 +366,7 @@ it("sits beside the launcher by default, filling the width to the action bar, un
     }) as DOMRect;
   const original = Element.prototype.getBoundingClientRect;
   Element.prototype.getBoundingClientRect = function (this: Element) {
-    if (this.querySelector?.(".launcher")) return rect(12, innerHeight - 162, 34, 150);
+    if (this.querySelector?.(".launcher")) return rect(12, innerHeight - 192, 34, 180);
     if (this.querySelector?.(".action-bar") || this.classList?.contains("action-bar"))
       return rect(520, innerHeight - 80, 824, 64);
     return original.call(this);
@@ -378,6 +379,8 @@ it("sits beside the launcher by default, filling the width to the action bar, un
     const box = screen.getByRole("region", { name: "Chat" });
     // From 8 px right of the launcher (46) to 8 px left of the bar (520).
     expect(box.style.width).toBe(`${520 - 8 - 54}px`);
+    // As tall as the launcher (the micro menu) beside it.
+    expect(box.style.height).toBe("180px");
     // Layout editing moves it: it detaches.
     act(() => interaction.set({ ...interaction.get(), layout: true }));
     const edit = screen.getByRole("button", { name: "Edit chat" });
@@ -386,8 +389,8 @@ it("sits beside the launcher by default, filling the width to the action bar, un
     fireEvent.pointerUp(edit, { pointerId: 1 });
     const saved = preferences.get().profiles.find((p) => p.id === preferences.get().active)!.config;
     expect(saved.chatAttached).toBe(false);
-    // It keeps the width it showed beside the launcher.
-    expect(saved.chatSize.width).toBe(520 - 8 - 54);
+    // It keeps the size it showed beside the launcher.
+    expect(saved.chatSize).toEqual({ width: 520 - 8 - 54, height: 180 });
   } finally {
     Element.prototype.getBoundingClientRect = original;
     act(() => interaction.set({ ...interaction.get(), layout: false }));

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { resolveUnit } from "../../web/src/domain/units/tags";
 import { Frames } from "../../web/src/features/unit-frames/Frames";
+import { UnitMenu } from "../../web/src/features/unit-frames/UnitMenu";
 import {
   activateSlot,
   dispatch,
@@ -36,14 +37,22 @@ it("resolves unit tags and leaves unpopulated future slots empty", () => {
 });
 
 it("targets and focuses through every live frame, including the player", () => {
-  render(<Frames />);
+  render(
+    <>
+      <Frames />
+      <UnitMenu />
+    </>,
+  );
   for (const role of ["player", "target", "opponent"] as const) {
     input.cancel();
+    focus.set(null);
     const region = screen.getByRole("region", { name: `${role} status` });
     fireEvent.click(within(region).getByRole("meter", { name: `${role} health` }));
     const sample = input.readInput();
     expect(sample[role === "player" ? 13 : 3]).toBe(1);
     expect(fireEvent.contextMenu(region)).toBe(false);
+    // The arena frame focuses at once; the others through their menu.
+    if (role !== "opponent") fireEvent.click(screen.getByRole("menuitem", { name: "Focus" }));
     expect(focus.get()).toBe(role === "player" ? snapshot().player.id : snapshot().target.id);
     expect(input.select).toBe(false);
   }

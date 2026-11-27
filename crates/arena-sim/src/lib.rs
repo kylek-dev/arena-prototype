@@ -202,6 +202,7 @@ pub mod effects;
 pub mod formulas;
 pub mod hub;
 pub mod map;
+pub mod motion;
 pub mod specs;
 pub mod spells;
 pub mod stat_templates;

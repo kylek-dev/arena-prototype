@@ -1,10 +1,81 @@
-/* Login and account status on the launcher page. */
-.account {
+/* The account on the launcher page's top bar, its menu and dialogs. */
+.account-bar {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.account-bar-who {
   display: grid;
-  gap: 6px;
-  padding: 8px;
+  justify-items: end;
+}
+.account-bar-notice {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  color: var(--pal-gold-5);
+  background: var(--pal-night-2);
   border: 1px solid var(--gray-6);
   border-radius: var(--radius-3);
+  max-width: min(360px, calc(100vw - 32px));
+}
+.account-menu {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.account-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  color: var(--gray-12);
+  background: none;
+  border: 1px solid var(--gray-6);
+  border-radius: var(--radius-3);
+  font: inherit;
+  cursor: pointer;
+}
+.account-menu-trigger:hover,
+.account-menu-trigger[aria-expanded="true"] {
+  background: var(--gray-3);
+}
+.account-menu-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 2;
+  display: grid;
+  min-width: 200px;
+  padding: 4px;
+  background: var(--pal-night-2);
+  border: 1px solid var(--gray-6);
+  border-radius: var(--radius-3);
+  box-shadow: var(--shadow-5);
+}
+.account-menu-list button {
+  padding: 8px 10px;
+  color: var(--gray-12);
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-2);
+  font: inherit;
+  cursor: pointer;
+}
+.account-menu-list button:hover,
+.account-menu-list button:focus-visible {
+  background: var(--gray-4);
+}
+.account-menu-list button.danger {
+  color: var(--red-11);
 }
 .account-actions {
   display: flex;
@@ -27,7 +98,7 @@
 }
 .account-name {
   display: grid;
-  gap: 4px;
+  gap: 8px;
 }
 .account-name-field {
   display: flex;

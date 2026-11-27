@@ -29,6 +29,7 @@ mod browser;
 mod chat;
 mod friends;
 mod hub;
+mod news;
 mod queue;
 pub use auth::Me;
 pub use hub::{Entered as HubEntered, Joined as HubJoined, State as HubState};
@@ -88,6 +89,9 @@ pub struct DoorConfig {
     /// Where admins' saved maps go (`--maps-dir`); `None` keeps them in
     /// memory.
     pub maps: Option<std::path::PathBuf>,
+    /// Where the launcher page's news is kept (`--news-dir`); `None` keeps
+    /// it in memory.
+    pub news: Option<std::path::PathBuf>,
 }
 impl DoorConfig {
     pub fn new(key: TicketKey, match_server: String, page: String) -> Self {
@@ -107,6 +111,7 @@ impl DoorConfig {
             queue_per_address: 12,
             identity: None,
             maps: None,
+            news: None,
             auth_burst: 20,
         }
     }
@@ -186,6 +191,8 @@ struct Door {
     friend_reads: RatePerAccount,
     /// Admin-saved maps (social-identity step 5).
     maps: Arc<admin::MapStore>,
+    /// The launcher page's news.
+    news: news::News,
     /// Words masked in chat (and refused in names).
     words: crate::identity::names::Blocklist,
     /// Accounts an admin muted, until when.
@@ -619,6 +626,7 @@ async fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
             .unwrap_or_else(|| crate::identity::names::Blocklist::new("")),
         muted: std::sync::Mutex::default(),
         maps: Arc::new(admin::MapStore::at(config.maps.as_deref())),
+        news: news::News::at(config.news.as_deref()),
         creations: RatePerAddress::new(config.creation_burst, config.creation_every),
         // A visit sends a handful (startup, a summary per match, a few errors).
         reports: RatePerAddress::new(30, Duration::from_secs(10)),
@@ -686,6 +694,12 @@ async fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
             "/api/admin/handles/clear",
             post(admin::clear_handle).layer(DefaultBodyLimit::max(256)),
         )
+        .route("/api/news", get(news::list))
+        .route(
+            "/api/admin/news",
+            post(news::post).layer(DefaultBodyLimit::max(16 * 1024)),
+        )
+        .route("/api/admin/news/{id}", axum::routing::delete(news::delete))
         .route("/api/friends", get(friends::list))
         .route(
             "/api/friends/{action}",

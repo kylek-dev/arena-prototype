@@ -5,6 +5,8 @@ export const playWindowVisible = createStore(false);
 export const friendsWindowVisible = createStore(false);
 /** H: the hub's players around you (ADR 0056). */
 export const hubWindowVisible = createStore(false);
+/** A hub player picked by their nameplate: the H window opens their menu. */
+export const hubFocus = createStore<{ handle: string; at: number } | null>(null);
 export type PlayTab = "practice" | "queue" | "host";
 /** The Play window's tab, kept while it is closed. */
 export const playTab = createStore<PlayTab>("queue");

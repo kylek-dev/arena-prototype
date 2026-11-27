@@ -2,7 +2,10 @@
 
 Date: 2026-11-26. **Status: proposed** (requested by the user 2026-11-26;
 the open questions in [social-hub](../../planning/issues/social-hub.md) are
-answered provisionally below, for the user to confirm).
+answered provisionally below, for the user to confirm). **Partly
+superseded by [ADR 0057](0057-hub-on-the-world-server.md)** (2026-11-26):
+the hub moves to the world server with the arena's rules and full HUD;
+where it runs, movement and the movement messages below give way to it.
 
 Builds on [ADR 0046](0046-queues-parties-and-home-screen.md) (the queue
 connection, parties), [ADR 0050](0050-spectating-and-anti-ghosting-delay.md)
@@ -53,18 +56,31 @@ lives in the front door's queue task, reached over the queue WebSocket.
 
 - **Intent only.** A client sends its movement intent (a direction on the
   ground, each axis −1000..1000 as in the arena, and its facing), never a position. The door
-  integrates every player at 10 hub ticks per second with the same speed as
-  the arena (7.2 m/s), keeps them inside the plaza and outside its
+  integrates every player at 30 hub ticks per second (the arena's), sending
+  states 10 times a second, keeps them inside the plaza and outside its
   obstacles, and sends the results. Speed, teleport and wall hacks have
   nothing to send.
 - **No combat.** Nothing in the hub damages, casts or collides with other
   players (bodies pass through each other, so nobody can block a doorway).
+- **Walking and jumping are the arena's own code** (amended 2026-11-26
+  after two playtests: a 10 Hz re-derivation made jumps coarse and the
+  animation stutter). `arena_sim::motion` is the per-tick movement both
+  the arena and the hub run, at the arena's 30 ticks a second; only what
+  stops a body differs (pillars and rooms, or the plaza's edge and
+  columns). The door owns jumps; others see each player's height and
+  upward speed and draw the arc with the same gravity.
   Duels and training dummies are later work.
-- **Prediction.** The client predicts its own movement with
-  `arena_sim::hub` and reconciles to the door's position using the intent
-  sequence number the door acknowledges.
-- **Rules.** `arena_sim::hub` (implemented with this proposal): 10 hub
-  ticks per second, 720 mm per tick (the arena's speed, within 2 mm), an
+- **Prediction.** The client sends one numbered move per hub tick while
+  walking or turning; the door applies each once, in order (a player with
+  none waiting stands), and acknowledges the last one applied. The client
+  predicts with `arena_sim::hub` and, on each state, starts from the
+  door's place and replays its moves after the acknowledged one, so both
+  agree exactly; a small correction fades out on screen. (Amended
+  2026-11-26 after a playtest: the first version applied the newest intent
+  every tick, and client and door drifted apart on starts, stops and
+  turns, which showed as rubber-banding.)
+- **Rules.** `arena_sim::hub` (implemented with this proposal): the
+  arena's motion at 30 hub ticks per second (240 mm a tick), an
   80 m plaza, a fountain and four columns that bodies are pushed out of,
   one spawn place per player of a full instance south of the fountain, and
   the 40 m interest radius.
@@ -77,7 +93,7 @@ at decode; anything malformed is refused like any queue message):
 | Direction | Message | Meaning |
 | --- | --- | --- |
 | client → door | `hub_join {appearance, friend?}` | Enter a hub instance with this look (identifier-only and bounded, as `WireAppearance`), optionally beside a friend (`Name#number`). |
-| client → door | `hub_move {seq, x, z, facing}` | The current intent (`x`, `z` in −1000..1000, `facing` a binary angle) and its sequence number. |
+| client → door | `hub_move {seq, x, z, facing}` | One hub tick of walking (`x`, `z` in −1000..1000, `facing` a binary angle) and its increasing sequence number. |
 | client → door | `hub_leave` | Leave the hub. |
 | door → client | `hub {instance, you, x, z}` | Joined: the instance number, this player's hub id and place. |
 | door → client | `hub_state {tick, ack, x, z, players, enter, exit}` | Each hub tick: the last intent applied (`ack`), this player's place, `[id, x, z, facing]` for each player in view, `enter` (players who came into view, or whose name or look changed: `{id, handle, admin, appearance}`) and `exit` (ids that left view or the hub). |
@@ -95,7 +111,7 @@ at decode; anything malformed is refused like any queue message):
   10 messages per second per queue connection, counted before decoding: a
   `hub_move` counts against a separate budget of 20 per second, and moves
   over it are dropped rather than closing the connection. The client
-  merges its intent changes and sends at most 10 per second; every other
+  sends at most one move per hub tick (10 per second); every other
   message keeps the old budget.
 - **Following is for friends.** `hub_join {friend}` only works for an
   accepted friend (or a party-mate), so nobody can follow a stranger into

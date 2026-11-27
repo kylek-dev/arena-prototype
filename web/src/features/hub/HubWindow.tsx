@@ -1,5 +1,5 @@
 import { Button } from "@radix-ui/themes";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { invitable } from "../../domain/friends";
 import { OUT_OF_HUB, hubNoticeText, type HubPlayer } from "../../domain/hub";
 import { IDLE_QUEUE } from "../../domain/matchmaking";
@@ -11,7 +11,7 @@ import { requestChat } from "../../state/chat";
 import { matchQueue, networkLink } from "../../state/network";
 import type { LinkState } from "../../domain/network";
 import { createStore, useStore } from "../../state/store";
-import { hubWindowVisible } from "../../state/windows";
+import { hubFocus, hubWindowVisible } from "../../state/windows";
 import { AdminTag } from "../../ui/AdminTag";
 import { DockWindow } from "../../ui/DockWindow";
 import { Hint } from "../../ui/Tooltip";
@@ -43,6 +43,21 @@ export function HubWindow() {
   const friends = useStore(friendsService, (f) => f);
   const list = useStore(friends?.state ?? NO_LIST, (s) => s.list);
   const loggedIn = !!me?.account && !!me.handle;
+  // A nameplate picked in the world opens that player's menu here.
+  const focus = useStore(hubFocus, (f) => f);
+  const body = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!focus) return;
+    const trigger = [...(body.current?.querySelectorAll("button") ?? [])].find(
+      (button) => button.getAttribute("aria-label") === `Actions for ${focus.handle}`,
+    );
+    // The player may still be arriving in the list: try again when it
+    // changes, and give up once they are gone from the hub.
+    if (trigger) trigger.click();
+    else if (![...hub.players.values()].some((p) => p.handle === focus.handle)) hubFocus.set(null);
+    else return;
+    hubFocus.set(null);
+  }, [focus, hub]);
   // Friends decide what the menus offer: read the list when the window opens.
   useEffect(() => {
     if (loggedIn && friends) void friends.refresh();
@@ -90,7 +105,7 @@ export function HubWindow() {
       className="hub-window"
     >
       {hub.status === "in" ? (
-        <div className="hub" role="group" aria-label="Hub">
+        <div className="hub-panel" role="group" aria-label="Hub" ref={body}>
           <p className="hub-status" role="status">
             Hub {hub.instance}.{" "}
             {players.length === 0
@@ -130,7 +145,7 @@ export function HubWindow() {
           </div>
         </div>
       ) : (
-        <div className="hub" role="group" aria-label="Hub">
+        <div className="hub-panel" role="group" aria-label="Hub">
           <p className="hub-status" role="status">
             {hub.status === "joining"
               ? "Entering the hub."
