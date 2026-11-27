@@ -8,7 +8,8 @@
 //! a doorway); the plaza's edge and its columns are solid.
 
 use crate::TICKS_PER_SECOND;
-use crate::arena::{AXIS_LIMIT, Axes, BODY_RADIUS, MOVE_PER_TICK, Position};
+use crate::arena::{AXIS_LIMIT, Axes, BODY_RADIUS, HALF_TURN, MOVE_PER_TICK, Position};
+use crate::map::{Layout, Pillar};
 use crate::motion::Motion;
 
 /// Hub ticks per second: the arena's, so walking and jumping are the
@@ -70,6 +71,61 @@ pub const COLUMNS: [Column; 5] = [
         },
         radius: 1_500,
     },
+];
+
+/// The plaza as an arena map, for hub worlds on the world server (ADR 0057):
+/// the same square floor, each column a regular hexagonal pillar inscribed
+/// in the round column (corners on its circle, so it stands inside the
+/// column and nobody is pushed out of a place the door's hub allowed), and
+/// no rooms.
+pub fn plaza() -> Layout {
+    Layout {
+        half_x: PLAZA_HALF,
+        half_z: PLAZA_HALF,
+        pillars: COLUMNS
+            .iter()
+            .map(|column| Pillar {
+                center: column.center,
+                half_x: column.radius,
+                // A regular hexagon's flat faces: radius × √3 / 2.
+                half_z: column.radius * 866 / 1000,
+            })
+            .collect(),
+        rooms: Vec::new(),
+    }
+}
+
+/// Where a hub world's training enemies stand, and their facing: a row
+/// north of the fountain, facing the arrivals in the south.
+pub const TRAINING_POSTS: [(Position, u16); 4] = [
+    (
+        Position {
+            x: -9_000,
+            z: -24_000,
+        },
+        HALF_TURN,
+    ),
+    (
+        Position {
+            x: -3_000,
+            z: -24_000,
+        },
+        HALF_TURN,
+    ),
+    (
+        Position {
+            x: 3_000,
+            z: -24_000,
+        },
+        HALF_TURN,
+    ),
+    (
+        Position {
+            x: 9_000,
+            z: -24_000,
+        },
+        HALF_TURN,
+    ),
 ];
 
 /// Where arrivals appear: rows south of the fountain, one place per player

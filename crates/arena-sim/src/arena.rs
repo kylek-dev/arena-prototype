@@ -62,7 +62,77 @@ pub const MAX_LAG_COMP_TICKS: u8 = 6;
 /// close to the end of the sender's GCD or active cast is held and fires on
 /// the tick they end (ADR 0058).
 pub const MAX_CAST_BUFFER_TICKS: u8 = 12;
+/// Most fighters one arena holds: a match's two teams of [`MAX_TEAM`], or a
+/// hub world's players and training enemies (ADR 0057). Per-tick scratch
+/// arrays are this long, so the rules never allocate per fighter.
+pub const MAX_ROSTER: usize = 16;
+const _: () = assert!(MAX_ROSTER >= MAX_TEAM * 2);
 const POSITION_HISTORY_LEN: usize = MAX_LAG_COMP_TICKS as usize;
+
+/// Which rules an arena runs (ADR 0057). A match is two teams of equal size
+/// (even actors against odd), a fixed roster and a round that ends; a hub
+/// world has no rounds and no end, players join and leave by slot, every
+/// player is on one friendly team and the only enemies are training enemies
+/// that never act.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Rules {
+    Match,
+    Hub,
+}
+
+/// Who holds a hub world's slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Occupant {
+    /// Nobody: the slot's fighter is a fallen placeholder that nothing can
+    /// target, and inputs for it are refused.
+    Vacant,
+    /// A connected player, on the friendly team (team 0).
+    Player,
+    /// A training enemy (team 1): takes harmful spells and never acts.
+    TrainingEnemy,
+}
+
+/// A hub world's slot: who holds it and where they return when they fall.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Slot {
+    pub occupant: Occupant,
+    /// The occupant's fighter id, stable while they stay and never given to
+    /// anyone else in this world, so a client can tell a newcomer in a
+    /// reused slot from whoever held it before. `0` for a vacant slot.
+    pub id: u32,
+    /// Where the occupant stands up again after falling, facing `home_facing`.
+    pub home: Position,
+    pub home_facing: u16,
+    /// The tick a fallen occupant stands up again, if they are down.
+    pub respawn_at: Option<u64>,
+}
+impl Slot {
+    /// An empty slot, as the rules leave it.
+    pub const VACANT: Self = Self {
+        occupant: Occupant::Vacant,
+        id: 0,
+        home: Position { x: 0, z: 0 },
+        home_facing: 0,
+        respawn_at: None,
+    };
+
+    /// The team this slot's occupant fights for, `None` when vacant.
+    pub const fn team(&self) -> Option<usize> {
+        match self.occupant {
+            Occupant::Vacant => None,
+            Occupant::Player => Some(0),
+            Occupant::TrainingEnemy => Some(1),
+        }
+    }
+}
+
+/// Players one hub world holds at once (ADR 0057's first step; 40 waits for
+/// interest filtering and delta snapshots).
+pub const HUB_PLAYER_CAP: usize = 12;
+/// Ticks a fallen fighter in a hub world stays down before standing up again
+/// at home with full health and resources (5 s).
+pub const HUB_RESPAWN_TICKS: u64 = 5 * TICKS_PER_SECOND;
+const _: () = assert!(HUB_PLAYER_CAP + crate::hub::TRAINING_POSTS.len() <= MAX_ROSTER);
 pub use crate::spells::{
     INTERRUPT_LOCKOUT_TICKS as LOCKOUT_TICKS, MAX_RESOURCE as ARENA_MAX_RESOURCE,
 };
@@ -268,6 +338,14 @@ impl ActorInput {
         self.movement.is_none() && self.facing.is_none() && !self.jump && self.action.is_none()
     }
 
+    /// Commands this input carries (movement, facing, jump, action).
+    pub fn command_count(&self) -> usize {
+        usize::from(self.movement.is_some())
+            + usize::from(self.facing.is_some())
+            + usize::from(self.jump)
+            + usize::from(self.action.is_some())
+    }
+
     /// Convenience helper for the default Pulse attack against `target`.
     pub const fn pulse(target: usize) -> Option<CastAction> {
         Some(CastAction::Cast {
@@ -416,14 +494,14 @@ pub enum ArenaEvent {
 /// allocations and strictly deterministic across replays.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PositionHistory {
-    entries: [[Position; MAX_TEAM * 2]; POSITION_HISTORY_LEN],
+    entries: [[Position; MAX_ROSTER]; POSITION_HISTORY_LEN],
     next: usize,
     len: usize,
 }
 impl Default for PositionHistory {
     fn default() -> Self {
         Self {
-            entries: [[Position { x: 0, z: 0 }; MAX_TEAM * 2]; POSITION_HISTORY_LEN],
+            entries: [[Position { x: 0, z: 0 }; MAX_ROSTER]; POSITION_HISTORY_LEN],
             next: 0,
             len: 0,
         }
@@ -436,7 +514,7 @@ impl PositionHistory {
 
     fn push(&mut self, fighters: &[Combatant]) {
         let slot = &mut self.entries[self.next];
-        *slot = [Position { x: 0, z: 0 }; MAX_TEAM * 2];
+        *slot = [Position { x: 0, z: 0 }; MAX_ROSTER];
         for (dst, fighter) in slot.iter_mut().zip(fighters) {
             *dst = fighter.position;
         }
@@ -446,11 +524,22 @@ impl PositionHistory {
         }
     }
 
+    /// Forgets where `actor` was: every recorded position becomes `at`, so a
+    /// fighter who just arrived in a reused slot or stood up at home can never
+    /// be hit where someone else stood (or where they fell).
+    fn reset_actor(&mut self, actor: usize, at: Position) {
+        if actor < MAX_ROSTER {
+            for entry in &mut self.entries {
+                entry[actor] = at;
+            }
+        }
+    }
+
     /// Returns `actor`'s authoritative position from `ticks_ago` completed ticks
     /// prior (`1..=MAX_LAG_COMP_TICKS`), or `None` if unavailable.
     fn position(&self, ticks_ago: u8, actor: usize) -> Option<Position> {
         let back = usize::from(ticks_ago);
-        if back == 0 || back > self.len || actor >= MAX_TEAM * 2 {
+        if back == 0 || back > self.len || actor >= MAX_ROSTER {
             return None;
         }
         let index = (self.next + POSITION_HISTORY_LEN - back) % POSITION_HISTORY_LEN;
@@ -466,6 +555,12 @@ pub struct Arena {
     fighters: Vec<Combatant>,
     result: Option<RoundResult>,
     position_history: PositionHistory,
+    rules: Rules,
+    /// One per fighter under [`Rules::Hub`]; empty for a match, whose teams
+    /// are actor parity.
+    slots: Vec<Slot>,
+    /// The next fighter id a hub world hands out (ids start at 1).
+    next_id: u32,
 }
 impl PartialEq for Arena {
     fn eq(&self, other: &Self) -> bool {
@@ -474,6 +569,9 @@ impl PartialEq for Arena {
             && self.layout == other.layout
             && self.fighters == other.fighters
             && self.result == other.result
+            && self.rules == other.rules
+            && self.slots == other.slots
+            && self.next_id == other.next_id
     }
 }
 impl Eq for Arena {}
@@ -506,9 +604,263 @@ impl Arena {
             fighters,
             result: None,
             position_history,
+            rules: Rules::Match,
+            slots: Vec::new(),
+            next_id: 1,
         })
     }
 }
+/// A hub world (ADR 0057): [`Rules::Hub`] on the plaza.
+impl Arena {
+    /// A fresh hub world on [`crate::hub::plaza`]: no players yet and a
+    /// training enemy on each of [`crate::hub::TRAINING_POSTS`].
+    pub fn hub() -> Self {
+        let mut arena = Self {
+            tick: 0,
+            max_round_ticks: MAX_ROUND_TICKS,
+            layout: crate::hub::plaza(),
+            fighters: Vec::with_capacity(MAX_ROSTER),
+            result: None,
+            position_history: PositionHistory::default(),
+            rules: Rules::Hub,
+            slots: Vec::with_capacity(MAX_ROSTER),
+            next_id: 1,
+        };
+        for (home, facing) in crate::hub::TRAINING_POSTS {
+            arena.occupy(Occupant::TrainingEnemy, home, facing);
+        }
+        arena.position_history.push(&arena.fighters);
+        arena
+    }
+
+    /// Rebuilds a hub world from authoritative state, as a client presenting
+    /// a world server's snapshot does. `None` unless there is one slot per
+    /// fighter and the roster passes [`valid_hub_roster`].
+    pub fn restore_hub(
+        tick: u64,
+        slots: Vec<Slot>,
+        fighters: Vec<Combatant>,
+        next_id: u32,
+    ) -> Option<Self> {
+        if !valid_hub_roster(&slots, &fighters, next_id) {
+            return None;
+        }
+        Some(Self {
+            tick,
+            max_round_ticks: MAX_ROUND_TICKS,
+            layout: crate::hub::plaza(),
+            fighters,
+            result: None,
+            position_history: PositionHistory::default(),
+            rules: Rules::Hub,
+            slots,
+            next_id,
+        })
+    }
+
+    pub fn rules(&self) -> Rules {
+        self.rules
+    }
+
+    /// One slot per fighter in a hub world; empty for a match.
+    pub fn slots(&self) -> &[Slot] {
+        &self.slots
+    }
+
+    /// The fighter id the next arrival in this hub world gets.
+    pub fn next_id(&self) -> u32 {
+        self.next_id
+    }
+
+    /// The team `actor` fights for: actor parity in a match, the occupant's
+    /// team in a hub world (`None` for a vacant slot or a missing actor).
+    pub fn team(&self, actor: usize) -> Option<usize> {
+        if actor >= self.fighters.len() {
+            return None;
+        }
+        match self.rules {
+            Rules::Match => Some(actor % 2),
+            Rules::Hub => self.slots[actor].team(),
+        }
+    }
+
+    /// Players in this hub world (0 for a match).
+    pub fn players(&self) -> usize {
+        count_players(&self.slots)
+    }
+
+    /// A player arrives in this hub world: the first vacant slot (or a new
+    /// one), a fresh fighter id, full health at the next arrival place,
+    /// facing the fountain. `None` for a match, a full world
+    /// ([`HUB_PLAYER_CAP`]), a full roster or exhausted ids. Call between
+    /// ticks; the arrival acts from the next one.
+    pub fn join(&mut self) -> Option<usize> {
+        if self.rules != Rules::Hub || self.players() >= HUB_PLAYER_CAP {
+            return None;
+        }
+        let home = crate::hub::spawn_point(self.next_id.wrapping_sub(1));
+        self.occupy(Occupant::Player, home, 0)
+    }
+
+    /// The player in `actor`'s slot leaves this hub world. Their slot falls
+    /// vacant, and every cast aimed at them ends as if they fell: the
+    /// returned events interrupt casts in progress (reason `TargetDead`) and
+    /// held casts are dropped, so nothing aimed at the leaver can land on
+    /// whoever takes the slot next. `None` (and no change) unless `actor`
+    /// holds a player.
+    pub fn leave(&mut self, actor: usize) -> Option<Vec<ArenaEvent>> {
+        if self.rules != Rules::Hub
+            || self.slots.get(actor).map(|slot| slot.occupant) != Some(Occupant::Player)
+        {
+            return None;
+        }
+        self.slots[actor] = Slot::VACANT;
+        self.fighters[actor] = vacant_fighter();
+        let mut events = Vec::new();
+        for (caster, fighter) in self.fighters.iter_mut().enumerate() {
+            if fighter
+                .buffered_cast
+                .is_some_and(|held| held.target == Some(actor))
+            {
+                fighter.buffered_cast = None;
+            }
+            if let Some(cast) = fighter.active_cast
+                && cast.target == Some(actor)
+            {
+                fighter.end_cast_early();
+                events.push(ArenaEvent::CastInterrupted {
+                    actor: caster,
+                    spell: cast.spell,
+                    reason: InterruptReason::TargetDead,
+                    by: None,
+                });
+            }
+        }
+        Some(events)
+    }
+
+    /// Puts a new occupant in the first vacant slot, or a new slot.
+    fn occupy(&mut self, occupant: Occupant, home: Position, facing: u16) -> Option<usize> {
+        // Ids first, so a world out of ids changes nothing.
+        let id = self.next_id;
+        let next_id = id.checked_add(1)?;
+        let index = match self
+            .slots
+            .iter()
+            .position(|slot| slot.occupant == Occupant::Vacant)
+        {
+            Some(index) => index,
+            None if self.slots.len() < MAX_ROSTER => {
+                self.slots.push(Slot::VACANT);
+                self.fighters.push(vacant_fighter());
+                self.slots.len() - 1
+            }
+            None => return None,
+        };
+        self.next_id = next_id;
+        self.slots[index] = Slot {
+            occupant,
+            id,
+            home,
+            home_facing: facing,
+            respawn_at: None,
+        };
+        self.fighters[index] = Combatant::new(home, facing);
+        self.position_history.reset_actor(index, home);
+        Some(index)
+    }
+
+    /// Hub worlds only: fallen occupants whose time is up stand up at home.
+    fn stand_up_the_fallen(&mut self) {
+        for (actor, slot) in self.slots.iter_mut().enumerate() {
+            if slot.respawn_at.is_some_and(|at| self.tick >= at) {
+                slot.respawn_at = None;
+                self.fighters[actor] = Combatant::new(slot.home, slot.home_facing);
+                self.position_history.reset_actor(actor, slot.home);
+            }
+        }
+    }
+
+    /// Hub worlds only: occupants who fell this tick start their wait.
+    fn count_the_fallen(&mut self) {
+        let back = self.tick.saturating_add(HUB_RESPAWN_TICKS);
+        for (slot, fighter) in self.slots.iter_mut().zip(&self.fighters) {
+            if slot.occupant != Occupant::Vacant && fighter.health == 0 && slot.respawn_at.is_none()
+            {
+                slot.respawn_at = Some(back);
+            }
+        }
+    }
+}
+
+/// A vacant hub slot's fighter: fallen, so nothing acts for it, and never
+/// targeted because its slot is vacant.
+pub const fn vacant_fighter() -> Combatant {
+    let mut fighter = Combatant::new(Position { x: 0, z: 0 }, 0);
+    fighter.health = 0;
+    fighter.resource = 0;
+    fighter
+}
+
+fn count_players(slots: &[Slot]) -> usize {
+    slots
+        .iter()
+        .filter(|slot| slot.occupant == Occupant::Player)
+        .count()
+}
+
+/// Whether a hub world's roster is one the rules could have produced, so a
+/// restored world (a client's, from a snapshot) obeys the rules: one slot
+/// per fighter, at most [`MAX_ROSTER`] and [`HUB_PLAYER_CAP`] players,
+/// distinct ids in `1..next_id`, vacant slots exactly as the rules leave
+/// them, training enemies standing still with no cast, and nothing aimed at
+/// a vacant slot. Shared with the wire decoder.
+pub fn valid_hub_roster(slots: &[Slot], fighters: &[Combatant], next_id: u32) -> bool {
+    if next_id == 0
+        || slots.len() != fighters.len()
+        || slots.len() > MAX_ROSTER
+        || count_players(slots) > HUB_PLAYER_CAP
+    {
+        return false;
+    }
+    let mut ids: Vec<u32> = Vec::with_capacity(slots.len());
+    for (slot, fighter) in slots.iter().zip(fighters) {
+        if !fighter.is_valid(fighters.len()) {
+            return false;
+        }
+        if slot.occupant == Occupant::Vacant {
+            if *slot != Slot::VACANT || *fighter != vacant_fighter() {
+                return false;
+            }
+            continue;
+        }
+        // Training enemies never act: no cast, no held spell, no jump.
+        if slot.occupant == Occupant::TrainingEnemy
+            && (fighter.active_cast.is_some()
+                || fighter.buffered_cast.is_some()
+                || fighter.height != 0
+                || fighter.vertical_velocity != 0
+                || fighter.momentum != (Position { x: 0, z: 0 }))
+        {
+            return false;
+        }
+        if slot.id == 0 || slot.id >= next_id || ids.contains(&slot.id) {
+            return false;
+        }
+        ids.push(slot.id);
+    }
+    // Nothing may aim at a vacant slot.
+    fighters.iter().all(|fighter| {
+        let aims = [
+            fighter.active_cast.and_then(|cast| cast.target),
+            fighter.buffered_cast.and_then(|held| held.target),
+        ];
+        aims.into_iter()
+            .flatten()
+            .all(|target| slots[target].occupant != Occupant::Vacant)
+    })
+}
+
 impl Arena {
     /// Rebuilds an arena from authoritative state, as a client presenting a
     /// server's snapshot does. `None` unless there are 2–6 fighters in
@@ -529,6 +881,9 @@ impl Arena {
             fighters,
             result,
             position_history: PositionHistory::default(),
+            rules: Rules::Match,
+            slots: Vec::new(),
+            next_id: 1,
         })
     }
     /// Sets this round's tick limit (`1..=MAX_ROUND_TICKS`), returning `None`
@@ -545,16 +900,17 @@ impl Arena {
         self.max_round_ticks = max_round_ticks;
         true
     }
-    /// Updates an arena's state without reallocating its layout or fighter
-    /// buffer. Returns `false` and leaves the arena unchanged unless there
-    /// are 2–6 fighters in teams of equal size with valid invariants.
+    /// Updates a match's state without reallocating its layout or fighter
+    /// buffer. Returns `false` and leaves the arena unchanged unless this is
+    /// a match and there are 2–6 fighters in teams of equal size with valid
+    /// invariants.
     pub fn restore_in_place(
         &mut self,
         tick: u64,
         fighters: &[Combatant],
         result: Option<RoundResult>,
     ) -> bool {
-        if !valid_fighters(fighters) {
+        if self.rules != Rules::Match || !valid_fighters(fighters) {
             return false;
         }
         self.tick = tick;
@@ -571,9 +927,13 @@ impl Arena {
     pub fn max_round_ticks(&self) -> u64 {
         self.max_round_ticks
     }
-    /// Authoritative ticks remaining before the round clock expires.
+    /// Authoritative ticks remaining before the round clock expires. A hub
+    /// world has no clock: always the whole limit.
     pub fn remaining_ticks(&self) -> u64 {
-        self.max_round_ticks.saturating_sub(self.tick)
+        match self.rules {
+            Rules::Match => self.max_round_ticks.saturating_sub(self.tick),
+            Rules::Hub => self.max_round_ticks,
+        }
     }
     pub fn fighters(&self) -> &[Combatant] {
         &self.fighters
@@ -585,7 +945,12 @@ impl Arena {
     /// editor's live preview does. Succeeds only when every fighter still
     /// stands in walkable space; otherwise nothing changes and the caller
     /// should start a fresh round. Health, cooldowns and the tick carry over.
+    /// Hub worlds keep the plaza (always `false`).
     pub fn relayout(&mut self, layout: Layout) -> bool {
+        // A hub world's map is the plaza.
+        if self.rules != Rules::Match {
+            return false;
+        }
         if !self
             .fighters
             .iter()
@@ -613,6 +978,9 @@ impl Arena {
         let Some(&fighter) = self.fighters.get(actor) else {
             return Err(Rejection::InvalidActor);
         };
+        if self.rules == Rules::Hub && self.slots[actor].occupant != Occupant::Player {
+            return Err(Rejection::InvalidActor);
+        }
         let def = spell.definition();
         let (combat, casting) = hydrate_casting(&fighter, actor);
         let mut health = fighter.health;
@@ -629,8 +997,8 @@ impl Arena {
             silence_blocks_spell: fighter.lockout_remaining > 0,
             is_moving: fighter.height > 0,
         };
-        let target_ctx =
-            target.and_then(|t| target_context(&self.fighters, &self.layout, actor, t));
+        let target_ctx = target
+            .and_then(|t| target_context(&self.fighters, &self.slots, &self.layout, actor, t));
         casting
             .can_cast(&combat, &caster, &def, target_ctx.as_ref())
             .map(|_| ())
@@ -647,7 +1015,7 @@ impl Arena {
     pub fn step(&mut self, commands: &[ArenaCommand]) -> Vec<ArenaEvent> {
         let mut events = Vec::new();
         let count = self.fighters.len();
-        let mut inputs = [ActorInput::default(); MAX_TEAM * 2];
+        let mut inputs = [ActorInput::default(); MAX_ROSTER];
         let inputs = &mut inputs[..count];
         for &command in commands {
             let actor = command.actor();
@@ -727,19 +1095,33 @@ impl Arena {
         };
         if self.result.is_some() {
             for (actor, input) in inputs.iter().enumerate() {
-                let commands = usize::from(input.movement.is_some())
-                    + usize::from(input.facing.is_some())
-                    + usize::from(input.jump)
-                    + usize::from(input.action.is_some());
-                for _ in 0..commands {
+                for _ in 0..input.command_count() {
                     reject(&mut events, actor, Rejection::MatchOver);
                 }
             }
             self.tick = self.tick.saturating_add(1);
             return events;
         }
+        // In a hub world only players act: inputs for training enemies and
+        // vacant slots are refused, command by command.
+        let mut accepted = [ActorInput::default(); MAX_ROSTER];
+        let inputs = if self.rules == Rules::Hub {
+            self.stand_up_the_fallen();
+            for (actor, input) in inputs.iter().enumerate() {
+                if self.slots[actor].occupant == Occupant::Player {
+                    accepted[actor] = *input;
+                } else {
+                    for _ in 0..input.command_count() {
+                        reject(&mut events, actor, Rejection::InvalidActor);
+                    }
+                }
+            }
+            &accepted[..inputs.len()]
+        } else {
+            inputs
+        };
 
-        let mut moving = [false; MAX_TEAM * 2];
+        let mut moving = [false; MAX_ROSTER];
 
         // 1. Existing airborne momentum resolves first. Ground momentum
         // expires without a Move, preventing stale running jumps.
@@ -805,15 +1187,15 @@ impl Arena {
 
         // 4. Combat, validated against one shared post-movement state and
         // applied together so actor order never breaks ties.
-        let mut pre_combat = [Combatant::new(Position { x: 0, z: 0 }, 0); MAX_TEAM * 2];
+        let mut pre_combat = [Combatant::new(Position { x: 0, z: 0 }, 0); MAX_ROSTER];
         pre_combat[..count].copy_from_slice(&self.fighters);
         let pre_combat = &pre_combat[..count];
 
-        let mut incoming_damage = [0u16; MAX_TEAM * 2];
-        let mut heals = [(0usize, 0usize, 0u16); MAX_TEAM * 4];
+        let mut incoming_damage = [0u16; MAX_ROSTER];
+        let mut heals = [(0usize, 0usize, 0u16); MAX_ROSTER * 2];
         let mut heal_count = 0usize;
-        let mut still_casting_after_4a = [false; MAX_TEAM * 2];
-        let mut interrupts = [None::<(usize, u32)>; MAX_TEAM * 2];
+        let mut still_casting_after_4a = [false; MAX_ROSTER];
+        let mut interrupts = [None::<(usize, u32)>; MAX_ROSTER];
 
         // 4a. Explicit cancellations and in-progress timed casts.
         // Collect completed casts first so `still_casting_after_4a` is finalized
@@ -861,7 +1243,7 @@ impl Arena {
             };
             let target_ctx = active
                 .target
-                .and_then(|t| target_context(pre_combat, &self.layout, actor, t));
+                .and_then(|t| target_context(pre_combat, &self.slots, &self.layout, actor, t));
             match casting.tick(&mut combat, &mut caster, target_ctx.as_ref()) {
                 Ok(Some(prepared)) => {
                     // Timed casts pay their costs only when they complete.
@@ -966,6 +1348,7 @@ impl Arena {
             let target_ctx = target.and_then(|t| {
                 target_context_with_lag_comp(
                     pre_combat,
+                    &self.slots,
                     &self.position_history,
                     &self.layout,
                     actor,
@@ -1079,26 +1462,15 @@ impl Arena {
             }
         }
 
-        let standing = |team: usize| {
-            self.fighters
-                .iter()
-                .enumerate()
-                .any(|(index, fighter)| index % 2 == team && fighter.health > 0)
-        };
-        self.result = match (standing(0), standing(1)) {
-            // Time is up after this tick: nobody won.
-            (true, true) if self.tick.saturating_add(1) >= self.max_round_ticks => {
-                Some(RoundResult::TimeLimitDraw)
+        if self.rules == Rules::Hub {
+            // A hub world never ends; the fallen stand up again later.
+            self.count_the_fallen();
+        } else {
+            self.finish_round_if_over(&mut events);
+            if self.result.is_some() {
+                self.tick = self.tick.saturating_add(1);
+                return events;
             }
-            (true, true) => None,
-            (true, false) => Some(RoundResult::Won { team: 0 }),
-            (false, true) => Some(RoundResult::Won { team: 1 }),
-            (false, false) => Some(RoundResult::Draw),
-        };
-        if let Some(result) = self.result {
-            events.push(ArenaEvent::Finished(result));
-            self.tick = self.tick.saturating_add(1);
-            return events;
         }
 
         // 5. Vertical motion.
@@ -1125,11 +1497,58 @@ impl Arena {
         events
     }
 
+    /// A match's round ends when a team is down or the clock runs out.
+    fn finish_round_if_over(&mut self, events: &mut Vec<ArenaEvent>) {
+        let standing = |team: usize| {
+            self.fighters
+                .iter()
+                .enumerate()
+                .any(|(index, fighter)| index % 2 == team && fighter.health > 0)
+        };
+        self.result = match (standing(0), standing(1)) {
+            // Time is up after this tick: nobody won.
+            (true, true) if self.tick.saturating_add(1) >= self.max_round_ticks => {
+                Some(RoundResult::TimeLimitDraw)
+            }
+            (true, true) => None,
+            (true, false) => Some(RoundResult::Won { team: 0 }),
+            (false, true) => Some(RoundResult::Won { team: 1 }),
+            (false, false) => Some(RoundResult::Draw),
+        };
+        if let Some(result) = self.result {
+            events.push(ArenaEvent::Finished(result));
+        }
+    }
+
     /// Deterministic 64-bit FNV-1a digest of the tick, result and every
     /// fighter, for comparing a server's state with a replay or a client's
     /// prediction. The layout is fixed per match and versioned separately.
+    ///
+    /// A hub world's digest also covers its slots and next fighter id; a
+    /// match's is exactly [`Self::hash_state`].
     pub fn state_hash(&self) -> u64 {
-        Self::hash_state(self.tick, &self.fighters, self.result)
+        let digest = Self::hash_state(self.tick, &self.fighters, self.result);
+        if self.rules == Rules::Match {
+            return digest;
+        }
+        let mut hash = Fnv(digest);
+        hash.write(&[0x48]);
+        for slot in &self.slots {
+            hash.write(&[slot.occupant as u8]);
+            hash.write(&slot.id.to_le_bytes());
+            hash.write(&slot.home.x.to_le_bytes());
+            hash.write(&slot.home.z.to_le_bytes());
+            hash.write(&slot.home_facing.to_le_bytes());
+            match slot.respawn_at {
+                None => hash.write(&[0]),
+                Some(at) => {
+                    hash.write(&[1]);
+                    hash.write(&at.to_le_bytes());
+                }
+            }
+        }
+        hash.write(&self.next_id.to_le_bytes());
+        hash.0
     }
 
     /// Computes [`Self::state_hash`] directly from components without needing
@@ -1236,17 +1655,26 @@ fn hydrate_casting(fighter: &Combatant, actor: usize) -> (CombatState, CastingSt
     (combat, CastingState::from_pending(pending))
 }
 
+/// What `actor` sees of `target`. `slots` are a hub world's (empty for a
+/// match, whose teams are actor parity); a vacant slot cannot be targeted.
 fn target_context(
     fighters: &[Combatant],
+    slots: &[Slot],
     layout: &Layout,
     actor: usize,
     target: usize,
 ) -> Option<TargetContext<'static>> {
     let attacker = fighters.get(actor)?;
     let defender = fighters.get(target)?;
+    let is_friendly = if slots.is_empty() {
+        actor % 2 == target % 2
+    } else {
+        let team = slots.get(target)?.team()?;
+        slots.get(actor)?.team() == Some(team)
+    };
     Some(TargetContext {
         id: target,
-        is_friendly: actor % 2 == target % 2,
+        is_friendly,
         health: defender.health,
         max_health: MAX_HEALTH,
         distance_squared: attacker.position.distance_squared(defender.position) as u64,
@@ -1265,8 +1693,10 @@ fn target_context(
 /// Both range and line of sight must hold simultaneously at the same historical
 /// tick from the caster's present authoritative position; target health/liveness
 /// and team identity always stay strictly present-tick.
+#[allow(clippy::too_many_arguments)]
 fn target_context_with_lag_comp(
     fighters: &[Combatant],
+    slots: &[Slot],
     history: &PositionHistory,
     layout: &Layout,
     actor: usize,
@@ -1274,7 +1704,7 @@ fn target_context_with_lag_comp(
     spell_range: u16,
     rewind_ticks: u8,
 ) -> Option<TargetContext<'static>> {
-    let present = target_context(fighters, layout, actor, target)?;
+    let present = target_context(fighters, slots, layout, actor, target)?;
     if rewind_ticks == 0 || actor == target || present.health == 0 {
         return Some(present);
     }
@@ -1310,11 +1740,11 @@ fn queue_spell_effects(
     actor: usize,
     prepared: &PreparedCast,
     pre_combat: &[Combatant],
-    incoming_damage: &mut [u16; MAX_TEAM * 2],
-    heals: &mut [(usize, usize, u16); MAX_TEAM * 4],
+    incoming_damage: &mut [u16; MAX_ROSTER],
+    heals: &mut [(usize, usize, u16); MAX_ROSTER * 2],
     heal_count: &mut usize,
-    interrupts: &mut [Option<(usize, u32)>; MAX_TEAM * 2],
-    still_casting_after_4a: &[bool; MAX_TEAM * 2],
+    interrupts: &mut [Option<(usize, u32)>; MAX_ROSTER],
+    still_casting_after_4a: &[bool; MAX_ROSTER],
     events: &mut Vec<ArenaEvent>,
 ) {
     let Some(target) = prepared.target_id else {
@@ -2328,6 +2758,9 @@ mod tests {
             max_round_ticks: MAX_ROUND_TICKS,
             layout: fixture(),
             position_history: PositionHistory::default(),
+            rules: Rules::Match,
+            slots: Vec::new(),
+            next_id: 1,
             fighters: vec![
                 Combatant {
                     position: Position {

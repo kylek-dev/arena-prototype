@@ -76,3 +76,25 @@ They asked for the better architecture over patching the current one.
   replays and hashes keep their current form (a match's roster is fixed).
 - Work done for ADR 0056 that stays: placement, interest radius, blocks
   both ways, hub chat, the player menu, the plaza, `arena_sim::motion`.
+
+## Progress
+
+- **Slice 1 (rules), 2026-11-27, `auto/hub-world-rules`:** `Rules::{Match,
+  Hub}` on `arena_sim::Arena`. `Arena::hub()` builds a world on
+  `hub::plaza()` (the plaza as an arena layout: the columns as hexagonal
+  pillars inscribed in them, no rooms) with a training enemy on each of the
+  four `hub::TRAINING_POSTS`. `join()` puts a player in the first vacant
+  slot (or a new one) with a fresh fighter id that is never reused;
+  `leave(slot)` vacates it and interrupts casts aimed at the leaver so
+  nothing lands on the next occupant; the slot's lag-compensation history is
+  reset on arrival and on standing up. Players are team 0 and training
+  enemies team 1, so helpful spells work on players and harmful ones only on
+  training enemies; inputs for training enemies and vacant slots are
+  refused. A world has no round end and no clock; anyone who falls stands
+  up at home with full health after `HUB_RESPAWN_TICKS` (5 s). The roster
+  holds `MAX_ROSTER` = 16 fighters: `HUB_PLAYER_CAP` = 12 players and the
+  four training enemies. `Arena::restore_hub` rebuilds a world from
+  snapshot state with the roster checks the wire decoder will reuse. A
+  match's rules, events and hashes are unchanged (a seeded 50-match 3v3
+  headless run gives the same combined state hash before and after).
+
