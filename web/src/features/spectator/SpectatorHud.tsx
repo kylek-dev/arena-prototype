@@ -1,7 +1,7 @@
 import { Button } from "@radix-ui/themes";
 import type { RosterEntry } from "../../bridge/snapshot";
 import { cycleSpectatorCamera, setSpectatorCamera } from "../../runtime/commands";
-import { returnToLauncher } from "../../state/appearance";
+import { returnToHub } from "../../runtime/hub";
 import { matchQueue, networkLink } from "../../state/network";
 import {
   customLobbyVisible,
@@ -78,7 +78,7 @@ export function SpectatorHud() {
     const hasLobby = Boolean(queue?.state.get().lobby);
     if (link) link.leave();
     if (hasLobby) customLobbyVisible.set(true);
-    else returnToLauncher();
+    else returnToHub();
   };
 
   return (

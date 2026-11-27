@@ -1,0 +1,50 @@
+/* The right-click menu on a unit: at the pointer, above the HUD and the
+   window dock, below dialogs. Colors are palette swatches or the Radix
+   scales the palette drives. */
+.unit-menu {
+  position: fixed;
+  z-index: 18;
+  display: grid;
+  min-width: 200px;
+  max-width: 260px;
+  padding: 4px;
+  color: var(--gray-12);
+  background: var(--pal-night-2);
+  border: 1px solid var(--gray-6);
+  border-radius: var(--radius-3);
+  box-shadow: var(--shadow-5);
+  pointer-events: auto;
+}
+.unit-menu-title {
+  padding: 6px 10px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gray-11);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.unit-menu button {
+  display: grid;
+  padding: 7px 10px;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-2);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.unit-menu button:hover:not(.unavailable),
+.unit-menu button:focus-visible {
+  background: var(--gray-4);
+}
+.unit-menu button.unavailable {
+  color: var(--gray-9);
+  cursor: default;
+}
+.unit-menu-why {
+  font-size: 11px;
+  color: var(--gray-9);
+}

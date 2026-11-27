@@ -50,6 +50,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 use tracing::Span;
 
 use super::chat::{self as chat_rules, Channel, ChatBudget, ChatSeat};
+use super::hub::{self, Hubs, Placement, Who};
 use super::{Door, unix_now};
 use crate::RateWindow;
 use crate::ingress;
@@ -59,13 +60,26 @@ use crate::matchmaker::{
 };
 use crate::metrics::Metrics;
 use crate::ticket::{self, Holder, MatchSettings};
-use arena_protocol::Handle;
+use arena_protocol::{Handle, WireAppearance};
+use arena_sim::arena::Axes;
+use arena_sim::hub::{HUB_TICKS_PER_SECOND, Intent};
 
 /// Largest message a queue client may send: room for 200 characters of chat
 /// even when each is a 4-byte character escaped by the client.
 const MAX_MESSAGE: usize = 4096;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 const MESSAGES_PER_SECOND: u32 = 10;
+/// `hub_move` has a budget of its own (ADR 0056, amending ADR 0046): the
+/// client sends at most one per tick (30 a second); moves over this are dropped, not
+/// answered by closing the connection.
+const HUB_MOVES_PER_SECOND: u32 = 40;
+const HUB_TICK_EVERY: Duration = Duration::from_nanos(1_000_000_000 / HUB_TICKS_PER_SECOND);
+/// Moves past this many a second (four times the budget) close the
+/// connection: a flood is not only dropped.
+const HUB_MOVE_FLOOD: u32 = 4 * HUB_MOVES_PER_SECOND;
+/// Outbox slots beyond the chat reserve that hub states never take, so a
+/// ticket or ready check always has room.
+const HUB_RESERVE: usize = 4;
 const STATUS_EVERY: Duration = Duration::from_secs(2);
 const TICK_EVERY: Duration = Duration::from_millis(250);
 /// Messages buffered per connection; status updates are skipped when full.
@@ -139,6 +153,23 @@ enum FromClient {
     Unignore {
         handle: String,
     },
+    /// Enter the hub (ADR 0056) with this look, beside a friend or
+    /// party-mate (`Name#1234`) when given.
+    HubJoin {
+        appearance: WireAppearance,
+        #[serde(default)]
+        friend: Option<String>,
+    },
+    /// One hub tick of walking (and jumping) and its sequence number.
+    HubMove {
+        seq: u32,
+        x: i16,
+        z: i16,
+        facing: u16,
+        #[serde(default)]
+        jump: bool,
+    },
+    HubLeave {},
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -219,6 +250,15 @@ pub enum ToClient {
     /// The invite reached `to` (on at least one open connection).
     InviteSent {
         to: String,
+    },
+    /// Joined the hub: the instance, this player's hub id and place.
+    Hub(hub::Joined),
+    /// Each hub tick: this player's place, the players in view and what
+    /// changed (ADR 0056).
+    HubState(hub::State),
+    /// No longer in the hub: `left`, or `match` when a ticket took them.
+    HubLeft {
+        reason: String,
     },
     /// Friend requests or friendships changed: fetch `/api/friends`.
     FriendsChanged {},
@@ -324,6 +364,23 @@ pub(super) enum Command {
         conn: QueueConn,
     },
     Gone {
+        conn: QueueConn,
+    },
+    HubJoin {
+        conn: QueueConn,
+        appearance: WireAppearance,
+        /// Asked to follow: the handle, and the friend's account when it is
+        /// an accepted friend of `account`'s.
+        follow: Option<(String, Option<u64>)>,
+        /// The account the friend was looked up for (logging out drops it).
+        account: Option<u64>,
+    },
+    HubMove {
+        conn: QueueConn,
+        seq: u32,
+        intent: Intent,
+    },
+    HubLeave {
         conn: QueueConn,
     },
     /// The match server reports these matches ended: their players and
@@ -491,6 +548,9 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
     let mut by_account: HashMap<u64, Vec<QueueConn>> = HashMap::new();
     let mut chat = ChatState::default();
     let mut searches = Searches::default();
+    let mut hubs = Hubs::default();
+    let mut hub_tick = tokio::time::interval(HUB_TICK_EVERY);
+    hub_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut tick = tokio::time::interval(TICK_EVERY);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut status_at = Instant::now() + STATUS_EVERY;
@@ -507,6 +567,28 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
         let out = tokio::select! {
             _ = stop.wait_for(|stop| *stop) => break,
             _ = tick.tick() => mm.tick(now),
+            _ = hub_tick.tick(), if hubs.counts().0 > 0 => {
+                let started = std::time::Instant::now();
+                // A state the outbox cannot take is sent again, changes
+                // included, next tick (`Hubs::tick`).
+                hubs.tick(
+                    |a, b| hidden(&chat, &holders, a, b),
+                    |conn, state| {
+                        // Leave room for tickets, ready checks and chat: a
+                        // state over the reserve waits for the next tick.
+                        conns.get(&conn).is_some_and(|out| {
+                            out.capacity() > CHAT_RESERVE + HUB_RESERVE
+                                && out.try_send(ToClient::HubState(state)).is_ok()
+                        })
+                    },
+                );
+                let metrics = &door.metrics;
+                metrics.hub_ticks.fetch_add(1, Ordering::Relaxed);
+                metrics
+                    .hub_tick_us
+                    .fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+                Vec::new()
+            }
             _ = check.tick(), if door.match_status.is_some() => {
                 // Past the in-match window a seat counts for nothing: forget
                 // it rather than ask about its match forever.
@@ -606,6 +688,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                             renamed.push(*conn);
                         }
                     }
+                    rename_in_hub(&mut hubs, &holders, &renamed);
                     // Lobby- and party-mates see the new (guest) name at once.
                     let mut out = mm.announce_lobbies_of(renamed.iter().copied());
                     out.extend(mm.announce_parties_of(renamed));
@@ -624,6 +707,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                             renamed.push(*conn);
                         }
                     }
+                    rename_in_hub(&mut hubs, &holders, &renamed);
                     let mut out = mm.announce_lobbies_of(renamed.iter().copied());
                     out.extend(mm.announce_parties_of(renamed));
                     out
@@ -653,6 +737,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     } else {
                         Chat {
                             mm: &mm,
+                            hubs: &hubs,
                             conns: &conns,
                             holders: &holders,
                             state: &chat,
@@ -666,6 +751,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 Some(Command::Whisper { conn, from, to, to_handle, text }) => {
                     Chat {
                         mm: &mm,
+                        hubs: &hubs,
                         conns: &conns,
                         holders: &holders,
                         state: &chat,
@@ -710,7 +796,73 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     let _ = reply.send(presence);
                     Vec::new()
                 }
+                Some(Command::HubJoin { conn, appearance, follow, account }) => {
+                    let party: Vec<QueueConn> = mm.party_mates(conn);
+                    let Some(holder) = holders.get(&conn).copied() else {
+                        continue;
+                    };
+                    let Some(handle) = holder.handle else {
+                        send(&conns, conn, ToClient::Refused { code: "no_name".into() });
+                        continue;
+                    };
+                    // Following: the friend's connections, or a party-mate
+                    // by name; nobody else (no following strangers).
+                    // A friend found for an account this tab has since
+                    // logged out of no longer counts.
+                    let friend = follow
+                        .as_ref()
+                        .and_then(|(_, friend)| *friend)
+                        .filter(|_| account.is_some() && holder.account == account);
+                    let followed: Option<Vec<QueueConn>> = follow.map(|(name, _)| {
+                        let mut found: Vec<QueueConn> = friend
+                            .and_then(|account| by_account.get(&account))
+                            .cloned()
+                            .unwrap_or_default();
+                        found.extend(party.iter().copied().filter(|mate| {
+                            holders.get(mate).and_then(|h| h.handle).is_some_and(|h| {
+                                h.to_string().eq_ignore_ascii_case(&name)
+                            })
+                        }));
+                        found
+                    });
+                    let answer = match &followed {
+                        // A friend who is not on is simply not in the hub.
+                        Some(found) if found.is_empty() && friend.is_none() => Err("not_friends"),
+                        _ => hubs.join(
+                            conn,
+                            Who {
+                                handle,
+                                admin: holder.admin,
+                            },
+                            appearance,
+                            Placement {
+                                follow: followed.as_deref().unwrap_or(&[]),
+                                following: followed.is_some(),
+                                party: &party,
+                            },
+                            |a, b| hidden(&chat, &holders, a, b),
+                        ),
+                    };
+                    match answer {
+                        Ok(joined) => send(&conns, conn, ToClient::Hub(joined)),
+                        Err(code) => send(&conns, conn, ToClient::Refused { code: code.into() }),
+                    }
+                    Vec::new()
+                }
+                Some(Command::HubMove { conn, seq, intent }) => {
+                    if let Err(code) = hubs.intent(conn, seq, intent) {
+                        send(&conns, conn, ToClient::Refused { code: code.into() });
+                    }
+                    Vec::new()
+                }
+                Some(Command::HubLeave { conn }) => {
+                    if hubs.leave(conn) {
+                        send(&conns, conn, ToClient::HubLeft { reason: hub::Left::Left.id().into() });
+                    }
+                    Vec::new()
+                }
                 Some(Command::Gone { conn }) => {
+                    hubs.gone(conn);
                     searches.end(conn, "left");
                     conns.remove(&conn);
                     addresses.remove(&conn);
@@ -790,6 +942,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     holders.remove(&conn);
                     matched_at.remove(&conn);
                     chat.forget(conn);
+                    hubs.gone(conn);
                 }
                 Out::Start { mode, seats } => {
                     let match_id = start_match(&door, &conns, &holders, mode, &seats);
@@ -806,6 +959,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     }
                     for conn in seats {
                         searches.matched(conn, match_id);
+                        leave_hub_for_match(&mut hubs, &conns, conn);
                     }
                 }
                 Out::Lobby { conn, mut view } => {
@@ -847,6 +1001,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                         spectators,
                     ) {
                         for (conn, team) in players.into_iter().zip(teams) {
+                            leave_hub_for_match(&mut hubs, &conns, conn);
                             matched_at.insert(conn, now);
                             chat.seat(
                                 conn,
@@ -896,7 +1051,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 );
             }
         }
-        publish_metrics(&door, &mut mm, conns.len());
+        publish_metrics(&door, &mut mm, conns.len(), hubs.counts());
         debug_assert!(
             searches.0.len() <= conns.len(),
             "a search outlived its connection"
@@ -911,8 +1066,10 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
 }
 
 /// Copies the matchmaker's gauges and totals into the door's `/metrics`.
-fn publish_metrics(door: &Door, mm: &mut Matchmaker, connections: usize) {
+fn publish_metrics(door: &Door, mm: &mut Matchmaker, connections: usize, hub: (usize, usize)) {
     let metrics = &door.metrics;
+    metrics.hub_players.store(hub.0 as u64, Ordering::Relaxed);
+    metrics.hub_instances.store(hub.1 as u64, Ordering::Relaxed);
     let waiting = mm.waiting();
     metrics
         .queued
@@ -1189,6 +1346,7 @@ impl ChatState {
 /// hears only `match` and `team`, and only players of that match post there.
 struct Chat<'a> {
     mm: &'a Matchmaker,
+    hubs: &'a Hubs,
     conns: &'a Senders,
     holders: &'a HashMap<QueueConn, Holder>,
     state: &'a ChatState,
@@ -1343,6 +1501,26 @@ impl Chat<'_> {
             (Channel::Spectator, _) => {
                 self.refuse(conn, "not_spectating");
                 return None;
+            }
+            // Everyone in the speaker's hub instance (ADR 0056); blocks
+            // and ignores apply as everywhere. Like `public`, only
+            // logged-in players speak, since guests cannot be muted or
+            // blocked.
+            (Channel::Hub, _) => {
+                if from.account.is_none() {
+                    self.refuse(conn, "log_in");
+                    return None;
+                }
+                let members = self.hubs.instance_members(conn);
+                if members.is_empty() {
+                    self.refuse(conn, "not_in_hub");
+                    return None;
+                }
+                // Blocks hide players both ways in the hub, chat included.
+                members
+                    .into_iter()
+                    .filter(|member| !hidden(self.state, self.holders, conn, *member))
+                    .collect()
             }
         };
         let message = ToClient::Chat {
@@ -1522,6 +1700,49 @@ fn invite(
     }
     send(conns, conn, ToClient::InviteSent { to: to_handle });
     out
+}
+
+/// Whether either of two connections' accounts blocked the other's: such
+/// players never see each other in the hub (ADR 0056).
+fn hidden(
+    chat: &ChatState,
+    holders: &HashMap<QueueConn, Holder>,
+    a: QueueConn,
+    b: QueueConn,
+) -> bool {
+    let account = |conn: QueueConn| holders.get(&conn).and_then(|holder| holder.account);
+    let blocks = |by: QueueConn, of: QueueConn| {
+        account(of)
+            .is_some_and(|other| chat.blocks.get(&by).is_some_and(|set| set.contains(&other)))
+    };
+    blocks(a, b) || blocks(b, a)
+}
+
+/// Hub viewers get renamed players' new names (and admin roles) next tick.
+fn rename_in_hub(hubs: &mut Hubs, holders: &HashMap<QueueConn, Holder>, renamed: &[QueueConn]) {
+    for conn in renamed {
+        if let Some(Holder {
+            handle: Some(handle),
+            admin,
+            ..
+        }) = holders.get(conn).copied()
+        {
+            hubs.rename(*conn, Who { handle, admin });
+        }
+    }
+}
+
+/// A ticket takes its player out of the hub; others see them go next tick.
+fn leave_hub_for_match(hubs: &mut Hubs, conns: &Senders, conn: QueueConn) {
+    if hubs.leave(conn) {
+        send(
+            conns,
+            conn,
+            ToClient::HubLeft {
+                reason: hub::Left::Match.id().into(),
+            },
+        );
+    }
 }
 
 /// Issues a queue match's tickets; returns its id.
@@ -1802,6 +2023,24 @@ fn command(conn: QueueConn, message: FromClient) -> Result<Command, &'static str
             handle: handle.to_ascii_lowercase(),
             on: false,
         },
+        // Needs the store to find a friend; checked by the connection first.
+        FromClient::HubJoin { .. } => return Err("Join the hub through the connection."),
+        FromClient::HubMove {
+            seq,
+            x,
+            z,
+            facing,
+            jump,
+        } => Command::HubMove {
+            conn,
+            seq,
+            intent: Intent {
+                movement: Axes { x, z },
+                facing,
+                jump,
+            },
+        },
+        FromClient::HubLeave {} => Command::HubLeave { conn },
     })
 }
 
@@ -1905,6 +2144,8 @@ async fn check_whisper(
 async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr, holder: Holder) {
     let conn = door.next_conn.fetch_add(1, Ordering::Relaxed);
     let mut rate = RateWindow::new(MESSAGES_PER_SECOND, Instant::now());
+    let mut hub_rate = RateWindow::new(HUB_MOVES_PER_SECOND, Instant::now());
+    let mut hub_flood = RateWindow::new(HUB_MOVE_FLOOD, Instant::now());
     let mut stop = door.shutdown.subscribe();
     let mut chat_budget = ChatBudget::new(Instant::now());
     enum FirstError {
@@ -1972,11 +2213,23 @@ async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr, ho
                 let message = match incoming {
                     Some(Ok(Message::Close(_))) => break,
                     Some(Ok(message)) => {
-                        if !rate.allow(Instant::now()) {
+                        let decoded = decode(message);
+                        // Hub moves spend their own budget and are dropped
+                        // over it (ADR 0056); everything else, control
+                        // frames included, spends the connection's.
+                        if matches!(decoded, Some(Ok(FromClient::HubMove { .. }))) {
+                            if !hub_flood.allow(Instant::now()) {
+                                refuse(socket, "rate_limited", "Too many messages.").await;
+                                break;
+                            }
+                            if !hub_rate.allow(Instant::now()) {
+                                continue;
+                            }
+                        } else if !rate.allow(Instant::now()) {
                             refuse(socket, "rate_limited", "Too many messages.").await;
                             break;
                         }
-                        match decode(message) {
+                        match decoded {
                             None => continue,
                             Some(message) => message,
                         }
@@ -2010,6 +2263,39 @@ async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr, ho
                 };
                 // Invites need the store, so they are checked here.
                 let message = match message {
+                    Ok(FromClient::HubJoin { appearance, friend }) => {
+                        let follow = match friend {
+                            None => None,
+                            Some(name) => {
+                                // Looking a friend up reads the store: it
+                                // shares the per-account invite budget.
+                                let account = match (door.identity.as_ref(), holder.account) {
+                                    (Some(identity), Some(account))
+                                        if name.len() <= 32
+                                            && door.invites.take(account, Instant::now()).is_ok() =>
+                                    {
+                                        friend_by_handle(identity, account, &name).await.ok().flatten()
+                                    }
+                                    _ => None,
+                                };
+                                Some((name, account))
+                            }
+                        };
+                        if door
+                            .queue
+                            .send(Command::HubJoin {
+                                conn,
+                                appearance,
+                                follow,
+                                account: holder.account,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        continue;
+                    }
                     Ok(FromClient::Invite { handle }) => {
                         match check_invite(&door, conn, holder.account, handle).await {
                             Ok(command) => {

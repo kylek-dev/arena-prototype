@@ -6,8 +6,8 @@
 
 import { isHandle } from "./handles";
 
-export type ChatChannel = "public" | "match" | "team" | "spectator" | "whisper";
-const CHANNELS = new Set<ChatChannel>(["public", "match", "team", "spectator", "whisper"]);
+export type ChatChannel = "public" | "match" | "team" | "spectator" | "whisper" | "hub";
+const CHANNELS = new Set<ChatChannel>(["public", "match", "team", "spectator", "whisper", "hub"]);
 export function isChatChannel(value: unknown): value is ChatChannel {
   return CHANNELS.has(value as ChatChannel);
 }
@@ -58,11 +58,20 @@ export function tabPartner(tab: ChatTab) {
 }
 
 /** The chat box's tabs: All, the channels this player can use (a
- * spectator's first), then one per whisper conversation. */
-export function chatTabs(spectating: boolean, conversations: readonly string[] = []): ChatTab[] {
+ * spectator's first; Hub while in the hub), then one per whisper
+ * conversation. */
+export function chatTabs(
+  spectating: boolean,
+  conversations: readonly string[] = [],
+  inHub = false,
+): ChatTab[] {
   return [
     "all",
-    ...(spectating ? (["spectator", "public"] as const) : (["public", "team", "match"] as const)),
+    ...(spectating
+      ? (["spectator", "public"] as const)
+      : inHub
+        ? (["hub", "public", "team"] as const)
+        : (["public", "team", "match"] as const)),
     ...conversations.map(conversationTab),
   ];
 }
@@ -72,6 +81,7 @@ const TAB_LABELS: Record<ChatChannel, string> = {
   match: "Match",
   spectator: "Spectators",
   whisper: "Whisper",
+  hub: "Hub",
 };
 export function chatTabLabel(tab: ChatTab) {
   if (tab === "all") return "All";
@@ -80,9 +90,10 @@ export function chatTabLabel(tab: ChatTab) {
 }
 
 /** Where text typed in the All tab goes: the team when seated in a match,
- * the spectators when watching, otherwise the public channel. */
-export function defaultChannel(place: { seated: boolean; spectating: boolean }) {
-  return place.spectating ? "spectator" : place.seated ? "team" : "public";
+ * the spectators when watching, the hub while in it, otherwise the public
+ * channel. */
+export function defaultChannel(place: { seated: boolean; spectating: boolean; inHub?: boolean }) {
+  return place.spectating ? "spectator" : place.seated ? "team" : place.inHub ? "hub" : "public";
 }
 
 /** A draft that whispers: `/w Name#0000 ` (or `/whisper`) and the message
@@ -128,13 +139,14 @@ export const CHAT_ONLY_REFUSALS: ReadonlySet<string> = new Set([
   "in_match",
   "no_such_player",
   "too_many",
+  "not_in_hub",
 ]);
 const CHAT_ERRORS: Record<string, string> = {
   rate_limited: "You are sending messages too fast. Wait a moment.",
   too_long: `Messages hold up to ${MAX_CHAT_CHARS} characters.`,
   empty: "Type a message first.",
   no_such_channel: "That channel is not available.",
-  log_in: "Log in to chat in Public.",
+  log_in: "Log in to chat in Public or the hub.",
   muted: "An admin has muted your chat for now.",
   no_name: "Choose your name before chatting.",
   not_in_match: "You are not in a match, so there is no match or team chat.",
@@ -147,6 +159,7 @@ const CHAT_ERRORS: Record<string, string> = {
   no_such_player: "Nobody by that name is connected.",
   unavailable: "The server could not check that right now. Try again in a minute.",
   too_many: "You are ignoring too many players. Unignore some first.",
+  not_in_hub: "You are not in the hub, so there is no hub chat.",
 };
 /** Words for a refused chat request. */
 export function chatErrorText(code: string) {
