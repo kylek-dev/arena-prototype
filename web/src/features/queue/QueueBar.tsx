@@ -1,3 +1,4 @@
+import { inMatch as inMatchOf } from "../../domain/network";
 import { Button } from "@radix-ui/themes";
 import {
   IDLE_QUEUE,
@@ -45,8 +46,8 @@ function Bar({ queue, centered }: { queue: Queue; centered: boolean }) {
   const lobbyOpen = useStore(customLobbyVisible, (v) => v);
   const scoreboardOpen = useStore(scoreboardVisible, (v) => v);
   const link = useStore(networkLink, (l) => l);
-  const linkPhase = useStore(link?.state ?? NO_LINK, (s) => s.phase);
-  const inMatch = linkPhase !== "idle" && linkPhase !== "ended";
+  const inMatch = useStore(link?.state ?? NO_LINK, inMatchOf);
+
   const now = useClock(state.phase === "queued", queue.now);
   const status = queueStatus(state, now);
   if (state.connection === "ended")

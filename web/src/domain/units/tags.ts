@@ -1,6 +1,9 @@
 import type { Entity } from "./selection";
 
-export type UnitTag = "Player" | "Target" | "Focus" | `Opponent${1 | 2 | 3}` | `Team${1 | 2 | 3}`;
+/** Units by role: in a match `Team1`–`Team2` and `Opponent1`–`Opponent3`;
+ * in a hub world (ADR 0057) up to `Team11` (the other players) and the
+ * training enemies as `Opponent1`… */
+export type UnitTag = "Player" | "Target" | "Focus" | `Opponent${number}` | `Team${number}`;
 
 export type UnitRoster = {
   player: Entity;
@@ -19,6 +22,6 @@ export function resolveUnit(tag: UnitTag, roster: UnitRoster): Entity | null {
         (unit) => unit.id === roster.focus,
       ) ?? null
     );
-  const index = Number(tag.at(-1)) - 1;
+  const index = Number(tag.replace(/^\D+/, "")) - 1;
   return (tag.startsWith("Opponent") ? roster.opponents : roster.team)[index] ?? null;
 }

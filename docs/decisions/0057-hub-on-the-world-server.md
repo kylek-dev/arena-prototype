@@ -145,4 +145,22 @@ They asked for the better architecture over patching the current one.
   a clock that only rises; `hub_left` when the directory stops showing a
   player or a match ticket takes them; `hub` chat by world; the door's own
   hub stays until slice 5 removes it.
+- **Slice 5 (client and page), 2026-11-27, `auto/hub-world-client`:** the
+  client plays a hub world as a network session: `network::Session` takes
+  the hub `Welcome`, orders the world's slots with this player first (stable
+  as the world grows), relays handles, tags and looks per slot from
+  `Member`/`MemberLeft`, predicts with `reconcile_hub`, checks the world's
+  hash, and draws a reused slot where its new holder stands; the renderer
+  restores a hub arena (teams from slots, vacant slots hidden), draws up to
+  16 fighters, tags units by team (`Team1`…, `Opponent1`… for training
+  enemies), and swaps the venue for the plaza while in a world. The page
+  asks the door with `world_join` and joins the `world` ticket like a match
+  (never resumed after a reload); the whole HUD shows there without the
+  round clock; team frames show only the party; the **H** window lists the
+  world's players; the outbox keeps `Member`/`MemberLeft`. Removed: the
+  door's own hub (`hub_join`, `hub_move`, `hub_leave`, `hub`,
+  `hub_state`, its movement loop and metrics), the page's hub mode and the
+  renderer's hub bridge, and the sim's door-only walking. `arena-bot --hub`
+  now fills hub worlds through the door and the world server (13 bots: two
+  worlds, about 14 KB/s per bot, largest frame 563 B, no hash mismatches).
 

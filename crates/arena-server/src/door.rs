@@ -33,7 +33,6 @@ mod news;
 mod queue;
 mod worlds;
 pub use auth::Me;
-pub use hub::{Entered as HubEntered, Joined as HubJoined, State as HubState};
 pub use queue::ToClient as QueueMessage;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -148,12 +147,10 @@ struct DoorMetrics {
     /// Parties with an invite code, and private custom lobbies.
     parties: AtomicU64,
     lobbies: AtomicU64,
-    /// Players in the hub and its open instances (ADR 0056), and hub ticks
-    /// with their total compute time in microseconds.
+    /// Players the door has placed in hub worlds, and the worlds they are
+    /// in (ADR 0057).
     hub_players: AtomicU64,
     hub_instances: AtomicU64,
-    hub_ticks: AtomicU64,
-    hub_tick_us: AtomicU64,
     queue_matches: AtomicU64,
     custom_matches: AtomicU64,
     /// Copied from the matchmaker's running totals.
@@ -413,16 +410,6 @@ fn render_door_metrics(metrics: &DoorMetrics) -> String {
             "door_queue_matches_total",
             "Matches formed from the queues.",
             &metrics.queue_matches,
-        ),
-        (
-            "door_hub_ticks_total",
-            "Hub ticks run while anyone was in the hub.",
-            &metrics.hub_ticks,
-        ),
-        (
-            "door_hub_tick_microseconds_total",
-            "Compute time of those hub ticks, microseconds.",
-            &metrics.hub_tick_us,
         ),
         (
             "door_custom_matches_total",

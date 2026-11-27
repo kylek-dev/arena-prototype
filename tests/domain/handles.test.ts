@@ -32,12 +32,15 @@ it("accepts only server-shaped handles", () => {
   expect(handleName("Rook#0042")).toBe("Rook");
 });
 
-it("parses the relay strictly: even seat counts, handles or null", () => {
+it("parses the relay strictly: one per actor, handles or null", () => {
   expect(parseHandles(["Rook#0042", null])).toEqual(["Rook#0042", null]);
   expect(parseHandles([null, null, "Guest#0007", "Ash#1000"])).toHaveLength(4);
   expect(parseHandles(null)).toBeNull();
-  expect(parseHandles(["Rook#0042"])).toBeNull();
-  expect(parseHandles(Array(8).fill(null))).toBeNull();
+  // A hub world (ADR 0057) relays one per engine actor, up to 16.
+  expect(parseHandles(["Rook#0042"])).toEqual(["Rook#0042"]);
+  expect(parseHandles(Array(16).fill(null))).toHaveLength(16);
+  expect(parseHandles(Array(17).fill(null))).toBeNull();
+  expect(parseHandles([])).toBeNull();
   expect(parseHandles(["Rook#0042", "nope"])).toBeNull();
 });
 
@@ -53,7 +56,8 @@ it("parses the tags relay strictly", () => {
     { admin: false },
   ]);
   expect(parseTags(null)).toBeNull();
-  expect(parseTags([{ admin: true }])).toBeNull();
+  expect(parseTags([{ admin: true }])).toEqual([{ admin: true }]);
+  expect(parseTags(Array(17).fill({ admin: false }))).toBeNull();
   expect(parseTags([{ admin: "yes" }, { admin: false }])).toBeNull();
   expect(parseTags([{ admin: true, owner: true }, { admin: false }])).toBeNull();
   expect(parseTags([null, { admin: false }])).toBeNull();

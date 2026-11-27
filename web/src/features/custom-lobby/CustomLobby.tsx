@@ -1,3 +1,4 @@
+import { inMatch as inMatchOf } from "../../domain/network";
 import { Button, Text } from "@radix-ui/themes";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -273,8 +274,8 @@ export function CustomLobby() {
   const queue = useStore(matchQueue, (q) => q);
   const state = useStore(queue?.state ?? NO_QUEUE, (s) => s);
   const link = useStore(networkLink, (l) => l);
-  const linkPhase = useStore(link?.state ?? NO_LINK, (s) => s.phase);
-  const inMatch = linkPhase !== "idle" && linkPhase !== "ended";
+  const inMatch = useStore(link?.state ?? NO_LINK, inMatchOf);
+
   const scoreboardOpen = useStore(scoreboardVisible, (v) => v);
   const visible = useStore(customLobbyVisible, (v) => v);
   const fatalError = useStore(error, Boolean);

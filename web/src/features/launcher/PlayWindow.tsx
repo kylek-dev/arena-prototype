@@ -1,3 +1,4 @@
+import { inMatch as inMatchOf } from "../../domain/network";
 import { Button, Tabs } from "@radix-ui/themes";
 import { useState } from "react";
 import {
@@ -251,9 +252,9 @@ export function PlayWindow() {
   const tab = useStore(playTab, (t) => t);
   const queue = useStore(matchQueue, (q) => q);
   const link = useStore(networkLink, (l) => l);
-  const phase = useStore(link?.state ?? NO_LINK, (s) => s.phase);
+  const inMatch = useStore(link?.state ?? NO_LINK, inMatchOf);
   useStore(queue?.state ?? NO_QUEUE, (s) => s.phase);
-  const inMatch = phase !== "idle" && phase !== "ended";
+
   return (
     // Clicking tabs and buttons leaves the keys with the game; only its text
     // field (the lobby code) takes them, as every text field does.

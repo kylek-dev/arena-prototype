@@ -120,6 +120,16 @@ function usePartyAway(state: ReturnType<typeof engine.get>) {
   }, [mates, roster]);
 }
 
+/** A frame's unit tag: the unit's own when it has one (in a hub world the
+ * frames are a filtered list, so the position is not the tag), else by
+ * position (layout samples). */
+function frameTag(unit: object, side: "team" | "opponents", index: number): UnitTag {
+  const own = (unit as { tag?: unknown }).tag;
+  return typeof own === "string"
+    ? (own as UnitTag)
+    : (`${side === "team" ? "Team" : "Opponent"}${index + 1}` as UnitTag);
+}
+
 export function Frames() {
   const state = useStore(engine, (s) => s),
     focused = useStore(focus, (s) => s),
@@ -128,6 +138,12 @@ export function Frames() {
   const castBarAttached = useConfigSelector((c) => c.castBarAttached);
   const selectedId = state ? unitRoster(state, focused).target?.id : null;
   const partyAway = usePartyAway(state);
+  // In a hub world (ADR 0057) everyone is friendly: team frames show only
+  // the party, and the training enemies take the opponent frames.
+  const queue = useStore(matchQueue, (q) => q);
+  const mates = useStore(queue?.state ?? NO_QUEUE, (s) => s.party?.mates ?? NONE);
+  const inParty = (handle: string | undefined) =>
+    !!handle && mates.some((mate) => mate?.toLowerCase() === handle.toLowerCase());
   return (
     <>
       {(["player", "target", "focus"] as const).map((role) => {
@@ -176,7 +192,11 @@ export function Frames() {
               maxResource: 100,
             }))
           : state
-            ? unitRoster(state, focused)[side].filter((unit) => unit.id !== state.player.id)
+            ? unitRoster(state, focused)[side].filter(
+                (unit) =>
+                  unit.id !== state.player.id &&
+                  (!state.hub || side !== "team" || inParty(unit.handle)),
+              )
             : [];
         const away = side === "team" && !editing ? partyAway : NONE;
         if (!editing && !units.length && !away.length) return null;
@@ -195,7 +215,7 @@ export function Frames() {
               {units.map((unit, index) => (
                 <TaggedFrame
                   key={unit.id}
-                  tag={`${side === "team" ? "Team" : "Opponent"}${index + 1}` as UnitTag}
+                  tag={frameTag(unit, side, index)}
                   role={side === "team" ? "teammate" : "opponent"}
                   unit={unit}
                   editing={editing}

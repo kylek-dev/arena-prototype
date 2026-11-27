@@ -50,7 +50,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 use tracing::Span;
 
 use super::chat::{self as chat_rules, Channel, ChatBudget, ChatSeat};
-use super::hub::{self, Hubs, Placement, Who};
+use super::hub;
 use super::worlds::{Placement as WorldPlacement, Worlds};
 use super::{Door, unix_now};
 use crate::RateWindow;
@@ -61,26 +61,13 @@ use crate::matchmaker::{
 };
 use crate::metrics::Metrics;
 use crate::ticket::{self, Holder, MatchSettings};
-use arena_protocol::{Handle, WireAppearance};
-use arena_sim::arena::Axes;
-use arena_sim::hub::{HUB_TICKS_PER_SECOND, Intent};
+use arena_protocol::Handle;
 
 /// Largest message a queue client may send: room for 200 characters of chat
 /// even when each is a 4-byte character escaped by the client.
 const MAX_MESSAGE: usize = 4096;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 const MESSAGES_PER_SECOND: u32 = 10;
-/// `hub_move` has a budget of its own (ADR 0056, amending ADR 0046): the
-/// client sends at most one per tick (30 a second); moves over this are dropped, not
-/// answered by closing the connection.
-const HUB_MOVES_PER_SECOND: u32 = 40;
-const HUB_TICK_EVERY: Duration = Duration::from_nanos(1_000_000_000 / HUB_TICKS_PER_SECOND);
-/// Moves past this many a second (four times the budget) close the
-/// connection: a flood is not only dropped.
-const HUB_MOVE_FLOOD: u32 = 4 * HUB_MOVES_PER_SECOND;
-/// Outbox slots beyond the chat reserve that hub states never take, so a
-/// ticket or ready check always has room.
-const HUB_RESERVE: usize = 4;
 const STATUS_EVERY: Duration = Duration::from_secs(2);
 const TICK_EVERY: Duration = Duration::from_millis(250);
 /// Messages buffered per connection; status updates are skipped when full.
@@ -154,23 +141,6 @@ enum FromClient {
     Unignore {
         handle: String,
     },
-    /// Enter the hub (ADR 0056) with this look, beside a friend or
-    /// party-mate (`Name#1234`) when given.
-    HubJoin {
-        appearance: WireAppearance,
-        #[serde(default)]
-        friend: Option<String>,
-    },
-    /// One hub tick of walking (and jumping) and its sequence number.
-    HubMove {
-        seq: u32,
-        x: i16,
-        z: i16,
-        facing: u16,
-        #[serde(default)]
-        jump: bool,
-    },
-    HubLeave {},
     /// Enter a hub world on the world server (ADR 0057), beside a friend or
     /// party-mate (`Name#1234`) when given: answered with a `world` ticket.
     WorldJoin {
@@ -260,12 +230,8 @@ pub enum ToClient {
     InviteSent {
         to: String,
     },
-    /// Joined the hub: the instance, this player's hub id and place.
-    Hub(hub::Joined),
-    /// Each hub tick: this player's place, the players in view and what
-    /// changed (ADR 0056).
-    HubState(hub::State),
-    /// No longer in the hub: `left`, or `match` when a ticket took them.
+    /// No longer in the hub: `left`, `match` when a ticket took them, or
+    /// `renamed` (the page asks again for a place under the new name).
     HubLeft {
         reason: String,
     },
@@ -381,23 +347,6 @@ pub(super) enum Command {
         conn: QueueConn,
     },
     Gone {
-        conn: QueueConn,
-    },
-    HubJoin {
-        conn: QueueConn,
-        appearance: WireAppearance,
-        /// Asked to follow: the handle, and the friend's account when it is
-        /// an accepted friend of `account`'s.
-        follow: Option<(String, Option<u64>)>,
-        /// The account the friend was looked up for (logging out drops it).
-        account: Option<u64>,
-    },
-    HubMove {
-        conn: QueueConn,
-        seq: u32,
-        intent: Intent,
-    },
-    HubLeave {
         conn: QueueConn,
     },
     WorldJoin {
@@ -579,7 +528,6 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
     let mut by_account: HashMap<u64, Vec<QueueConn>> = HashMap::new();
     let mut chat = ChatState::default();
     let mut searches = Searches::default();
-    let mut hubs = Hubs::default();
     // Hub worlds on the world server (ADR 0057): placements, the directory
     // exchange (one at a time) and tickets held until the exchange after
     // their placement has told the world server about blocks.
@@ -587,8 +535,6 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
     let mut directory_tick = tokio::time::interval(crate::worlds::DIRECTORY_EVERY);
     directory_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut directory = DirectoryState::default();
-    let mut hub_tick = tokio::time::interval(HUB_TICK_EVERY);
-    hub_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut tick = tokio::time::interval(TICK_EVERY);
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut status_at = Instant::now() + STATUS_EVERY;
@@ -605,28 +551,6 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
         let out = tokio::select! {
             _ = stop.wait_for(|stop| *stop) => break,
             _ = tick.tick() => mm.tick(now),
-            _ = hub_tick.tick(), if hubs.counts().0 > 0 => {
-                let started = std::time::Instant::now();
-                // A state the outbox cannot take is sent again, changes
-                // included, next tick (`Hubs::tick`).
-                hubs.tick(
-                    |a, b| hidden(&chat, &holders, a, b),
-                    |conn, state| {
-                        // Leave room for tickets, ready checks and chat: a
-                        // state over the reserve waits for the next tick.
-                        conns.get(&conn).is_some_and(|out| {
-                            out.capacity() > CHAT_RESERVE + HUB_RESERVE
-                                && out.try_send(ToClient::HubState(state)).is_ok()
-                        })
-                    },
-                );
-                let metrics = &door.metrics;
-                metrics.hub_ticks.fetch_add(1, Ordering::Relaxed);
-                metrics
-                    .hub_tick_us
-                    .fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
-                Vec::new()
-            }
             _ = directory_tick.tick(), if door.match_status.is_some() => {
                 if worlds.is_empty()
                     && directory.held.is_empty()
@@ -750,7 +674,6 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                             renamed.push(*conn);
                         }
                     }
-                    rename_in_hub(&mut hubs, &holders, &renamed);
                     // A world shows the name its ticket carried: leave it,
                     // and the page asks again with the new one.
                     for conn in &renamed {
@@ -777,7 +700,6 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                             renamed.push(*conn);
                         }
                     }
-                    rename_in_hub(&mut hubs, &holders, &renamed);
                     // A world shows the name its ticket carried: leave it,
                     // and the page asks again with the new one.
                     for conn in &renamed {
@@ -815,7 +737,6 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     } else {
                         Chat {
                             mm: &mm,
-                            hubs: &hubs,
                             worlds: &worlds,
                             conns: &conns,
                             holders: &holders,
@@ -830,7 +751,6 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 Some(Command::Whisper { conn, from, to, to_handle, text }) => {
                     Chat {
                         mm: &mm,
-                        hubs: &hubs,
                         worlds: &worlds,
                         conns: &conns,
                         holders: &holders,
@@ -876,47 +796,6 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     let _ = reply.send(presence);
                     Vec::new()
                 }
-                Some(Command::HubJoin { conn, appearance, follow, account }) => {
-                    let party: Vec<QueueConn> = mm.party_mates(conn);
-                    let Some(holder) = holders.get(&conn).copied() else {
-                        continue;
-                    };
-                    let Some(handle) = holder.handle else {
-                        send(&conns, conn, ToClient::Refused { code: "no_name".into() });
-                        continue;
-                    };
-                    if worlds.instance_of(conn).is_some() {
-                        send(&conns, conn, ToClient::Refused { code: "in_hub".into() });
-                        continue;
-                    }
-                    let followed =
-                        followed_conns(follow, account, &holder, &by_account, &party, &holders);
-                    let answer = match &followed {
-                        // A friend who is not on is simply not in the hub.
-                        Some((found, friend)) if found.is_empty() && friend.is_none() => {
-                            Err("not_friends")
-                        }
-                        _ => hubs.join(
-                            conn,
-                            Who {
-                                handle,
-                                admin: holder.admin,
-                            },
-                            appearance,
-                            Placement {
-                                follow: followed.as_ref().map_or(&[][..], |(found, _)| found),
-                                following: followed.is_some(),
-                                party: &party,
-                            },
-                            |a, b| hidden(&chat, &holders, a, b),
-                        ),
-                    };
-                    match answer {
-                        Ok(joined) => send(&conns, conn, ToClient::Hub(joined)),
-                        Err(code) => send(&conns, conn, ToClient::Refused { code: code.into() }),
-                    }
-                    Vec::new()
-                }
                 Some(Command::WorldJoin { conn, follow, account }) => {
                     let party: Vec<QueueConn> = mm.party_mates(conn);
                     let Some(holder) = holders.get(&conn).copied() else {
@@ -924,10 +803,6 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     };
                     if holder.handle.is_none() {
                         send(&conns, conn, ToClient::Refused { code: "no_name".into() });
-                        continue;
-                    }
-                    if hubs.instance_of(conn).is_some() {
-                        send(&conns, conn, ToClient::Refused { code: "in_hub".into() });
                         continue;
                     }
                     if directory.draining {
@@ -1007,20 +882,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     }
                     Vec::new()
                 }
-                Some(Command::HubMove { conn, seq, intent }) => {
-                    if let Err(code) = hubs.intent(conn, seq, intent) {
-                        send(&conns, conn, ToClient::Refused { code: code.into() });
-                    }
-                    Vec::new()
-                }
-                Some(Command::HubLeave { conn }) => {
-                    if hubs.leave(conn) {
-                        send(&conns, conn, ToClient::HubLeft { reason: hub::Left::Left.id().into() });
-                    }
-                    Vec::new()
-                }
                 Some(Command::Gone { conn }) => {
-                    hubs.gone(conn);
                     worlds.gone(conn);
                     directory.drop_held(conn);
                     searches.end(conn, "left");
@@ -1102,7 +964,6 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     holders.remove(&conn);
                     matched_at.remove(&conn);
                     chat.forget(conn);
-                    hubs.gone(conn);
                     worlds.gone(conn);
                     directory.drop_held(conn);
                 }
@@ -1121,7 +982,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     }
                     for conn in seats {
                         searches.matched(conn, match_id);
-                        leave_hub_for_match(&mut hubs, &mut worlds, &mut directory, &conns, conn);
+                        leave_hub_for_match(&mut worlds, &mut directory, &conns, conn);
                     }
                 }
                 Out::Lobby { conn, mut view } => {
@@ -1163,13 +1024,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                         spectators,
                     ) {
                         for (conn, team) in players.into_iter().zip(teams) {
-                            leave_hub_for_match(
-                                &mut hubs,
-                                &mut worlds,
-                                &mut directory,
-                                &conns,
-                                conn,
-                            );
+                            leave_hub_for_match(&mut worlds, &mut directory, &conns, conn);
                             matched_at.insert(conn, now);
                             chat.seat(
                                 conn,
@@ -1219,15 +1074,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 );
             }
         }
-        // The door's hub and hub worlds count together (ADR 0057).
-        let ((door_players, door_hubs), (world_players, world_count)) =
-            (hubs.counts(), worlds.counts());
-        publish_metrics(
-            &door,
-            &mut mm,
-            conns.len(),
-            (door_players + world_players, door_hubs + world_count),
-        );
+        publish_metrics(&door, &mut mm, conns.len(), worlds.counts());
         debug_assert!(
             searches.0.len() <= conns.len(),
             "a search outlived its connection"
@@ -1522,7 +1369,6 @@ impl ChatState {
 /// hears only `match` and `team`, and only players of that match post there.
 struct Chat<'a> {
     mm: &'a Matchmaker,
-    hubs: &'a Hubs,
     worlds: &'a Worlds,
     conns: &'a Senders,
     holders: &'a HashMap<QueueConn, Holder>,
@@ -1688,12 +1534,8 @@ impl Chat<'_> {
                     self.refuse(conn, "log_in");
                     return None;
                 }
-                // In a hub world (ADR 0057), or the door's own hub.
-                let members = if self.worlds.instance_of(conn).is_some() {
-                    self.worlds.members(conn)
-                } else {
-                    self.hubs.instance_members(conn)
-                };
+                // Everyone in the speaker's hub world (ADR 0057).
+                let members = self.worlds.members(conn);
                 if members.is_empty() {
                     self.refuse(conn, "not_in_hub");
                     return None;
@@ -1898,20 +1740,6 @@ fn hidden(
             .is_some_and(|other| chat.blocks.get(&by).is_some_and(|set| set.contains(&other)))
     };
     blocks(a, b) || blocks(b, a)
-}
-
-/// Hub viewers get renamed players' new names (and admin roles) next tick.
-fn rename_in_hub(hubs: &mut Hubs, holders: &HashMap<QueueConn, Holder>, renamed: &[QueueConn]) {
-    for conn in renamed {
-        if let Some(Holder {
-            handle: Some(handle),
-            admin,
-            ..
-        }) = holders.get(conn).copied()
-        {
-            hubs.rename(*conn, Who { handle, admin });
-        }
-    }
 }
 
 /// The instance directory exchange with the world server (ADR 0057): at
@@ -2142,15 +1970,13 @@ fn followed_conns(
 /// A ticket takes its player out of the hub (the door's or a world); others
 /// see them go next tick.
 fn leave_hub_for_match(
-    hubs: &mut Hubs,
     worlds: &mut Worlds,
     directory: &mut DirectoryState,
     conns: &Senders,
     conn: QueueConn,
 ) {
     directory.drop_held(conn);
-    let in_world = worlds.leave(conn);
-    if hubs.leave(conn) || in_world {
+    if worlds.leave(conn) {
         send(
             conns,
             conn,
@@ -2440,23 +2266,6 @@ fn command(conn: QueueConn, message: FromClient) -> Result<Command, &'static str
             on: false,
         },
         // Needs the store to find a friend; checked by the connection first.
-        FromClient::HubJoin { .. } => return Err("Join the hub through the connection."),
-        FromClient::HubMove {
-            seq,
-            x,
-            z,
-            facing,
-            jump,
-        } => Command::HubMove {
-            conn,
-            seq,
-            intent: Intent {
-                movement: Axes { x, z },
-                facing,
-                jump,
-            },
-        },
-        FromClient::HubLeave {} => Command::HubLeave { conn },
         FromClient::WorldJoin { .. } => return Err("Join the hub through the connection."),
         FromClient::WorldLeave {} => Command::WorldLeave { conn },
     })
@@ -2585,8 +2394,6 @@ async fn check_whisper(
 async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr, holder: Holder) {
     let conn = door.next_conn.fetch_add(1, Ordering::Relaxed);
     let mut rate = RateWindow::new(MESSAGES_PER_SECOND, Instant::now());
-    let mut hub_rate = RateWindow::new(HUB_MOVES_PER_SECOND, Instant::now());
-    let mut hub_flood = RateWindow::new(HUB_MOVE_FLOOD, Instant::now());
     let mut stop = door.shutdown.subscribe();
     let mut chat_budget = ChatBudget::new(Instant::now());
     enum FirstError {
@@ -2655,18 +2462,9 @@ async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr, ho
                     Some(Ok(Message::Close(_))) => break,
                     Some(Ok(message)) => {
                         let decoded = decode(message);
-                        // Hub moves spend their own budget and are dropped
-                        // over it (ADR 0056); everything else, control
-                        // frames included, spends the connection's.
-                        if matches!(decoded, Some(Ok(FromClient::HubMove { .. }))) {
-                            if !hub_flood.allow(Instant::now()) {
-                                refuse(socket, "rate_limited", "Too many messages.").await;
-                                break;
-                            }
-                            if !hub_rate.allow(Instant::now()) {
-                                continue;
-                            }
-                        } else if !rate.allow(Instant::now()) {
+                        // Every message, control frames included, spends
+                        // the connection's budget.
+                        if !rate.allow(Instant::now()) {
                             refuse(socket, "rate_limited", "Too many messages.").await;
                             break;
                         }
@@ -2710,23 +2508,6 @@ async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr, ho
                             .queue
                             .send(Command::WorldJoin {
                                 conn,
-                                follow,
-                                account: holder.account,
-                            })
-                            .await
-                            .is_err()
-                        {
-                            break;
-                        }
-                        continue;
-                    }
-                    Ok(FromClient::HubJoin { appearance, friend }) => {
-                        let follow = follow_of(&door, holder.account, friend).await;
-                        if door
-                            .queue
-                            .send(Command::HubJoin {
-                                conn,
-                                appearance,
                                 follow,
                                 account: holder.account,
                             })

@@ -20,7 +20,7 @@ use arena_bot::link::Link;
 use arena_bot::queue::QueueScenario;
 use arena_bot::{Scenario, run};
 
-const USAGE: &str = "usage: arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3] [--spectators N] [--seconds S] [--rtt MS] [--jitter MS] [--loss-pct PCT] [--clump-ms MS] [--interp-delay-ms MS] [--adaptive-interp] [--unpaced] [--reconnect-every S] [--away-ms MS] [--seed N] [--server-pid PID] [--json] [--queue MODE --door HOST:PORT [--bots N]] [--hub --door HOST:PORT [--bots N]]";
+const USAGE: &str = "usage: arena-bot [--server HOST:PORT] [--matches N] [--team-size 1|2|3] [--spectators N] [--seconds S] [--rtt MS] [--jitter MS] [--loss-pct PCT] [--clump-ms MS] [--interp-delay-ms MS] [--adaptive-interp] [--unpaced] [--reconnect-every S] [--away-ms MS] [--seed N] [--server-pid PID] [--json] [--queue MODE --door HOST:PORT [--bots N]] [--hub --door HOST:PORT [--bots N]] (hub worlds, ADR 0057)";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -86,11 +86,11 @@ async fn main() -> ExitCode {
 }
 
 /// `--hub --door HOST:PORT [--bots N] [--seconds S] [--seed N] [--json]`:
-/// bots wander the door's hub (ADR 0056).
+/// bots wander hub worlds the door places them in (ADR 0057).
 fn parse_hub(args: Vec<String>) -> Result<(HubScenario, bool), String> {
     let mut scenario = HubScenario {
         door: String::new(),
-        bots: 40,
+        bots: arena_sim::arena::HUB_PLAYER_CAP,
         duration: Duration::from_secs(10),
         seed: 1,
     };

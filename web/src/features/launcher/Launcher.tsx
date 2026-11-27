@@ -1,3 +1,4 @@
+import { inMatch as inMatchOf } from "../../domain/network";
 import { Hint } from "../../ui/Tooltip";
 import { Placed } from "../../ui/Placed";
 import { updateConfig, useConfigSelector } from "../../state/config";
@@ -40,11 +41,11 @@ export function Launcher() {
   const customizing = useStore(customizerVisible, (v) => v);
   const kits = useStore(characterKits, (k) => k.length > 0);
   const link = useStore(networkLink, (l) => l);
-  const phase = useStore(link?.state ?? NO_LINK, (s) => s.phase);
+  const inMatch = useStore(link?.state ?? NO_LINK, inMatchOf);
   const statusSpectator = useStore(link?.state ?? NO_LINK, (s) => Boolean(s.status?.spectator));
   const engineSpectating = useStore(engine, (s) => Boolean(s?.spectating));
   const spectating = statusSpectator || engineSpectating;
-  const inMatch = phase !== "idle" && phase !== "ended";
+
   const entries: Entry[] = [
     {
       letter: "P",

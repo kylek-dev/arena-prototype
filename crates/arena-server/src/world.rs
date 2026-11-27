@@ -22,31 +22,11 @@ use arena_sim::arena::{
     ActorInput, Arena, ArenaEvent, CastAction, HUB_PLAYER_CAP, Slot, vacant_fighter,
 };
 
-use crate::fnv1a;
 use crate::metrics::Metrics;
 use crate::session::ConnId;
 use crate::session::{FOLD_AFTER, MAX_BACKLOG, Out, apply_frame};
 
-/// `Welcome.map` for hub worlds: a digest of the plaza's layout (its floor
-/// and pillars), so a client with another plaza notices.
-pub fn plaza_digest() -> u64 {
-    let layout = arena_sim::hub::plaza();
-    let mut bytes = Vec::new();
-    for value in [layout.half_x, layout.half_z] {
-        bytes.extend_from_slice(&value.to_le_bytes());
-    }
-    for pillar in &layout.pillars {
-        for value in [
-            pillar.center.x,
-            pillar.center.z,
-            pillar.half_x,
-            pillar.half_z,
-        ] {
-            bytes.extend_from_slice(&value.to_le_bytes());
-        }
-    }
-    fnv1a(&bytes)
-}
+pub use arena_sim::hub::plaza_digest;
 
 /// Blocked pairs of the door's player ids, smaller first, shared by every
 /// world on the server.

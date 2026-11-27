@@ -1,11 +1,14 @@
-//! Hub load test ([ADR 0056](../../../docs/decisions/0056-social-hub.md)):
-//! bots that join the front door's hub and wander, measuring what the door
-//! sends each of them. `arena-bot --hub --door HOST:PORT --bots 40` fills
-//! one instance.
+//! Hub load test ([ADR 0057](../../../docs/decisions/0057-hub-on-the-world-server.md)):
+//! bots ask the front door for a hub world, join the world server with the
+//! ticket it hands them, and wander, measuring what the world server sends
+//! each of them. `arena-bot --hub --door HOST:PORT --bots 12` fills one
+//! world. Each bot keeps its queue connection open: the door forgets the
+//! placement of a connection that closes.
 
 use std::fmt;
 use std::time::Duration;
 
+use arena_protocol::{ClientMessage, InputFrame, PROTOCOL_VERSION, ServerMessage, WireAction};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio::time::Instant;
@@ -13,9 +16,6 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::link::Rng;
-
-/// A valid look for every bot: the door checks only its shape.
-const LOOK: &str = r#"{"ancestry":"human","body":"male","skin_tone":"s1","hair_color":"h1","facial_hair_color":"h1","eyes":"e1","build":0,"groups":[],"variants":[]}"#;
 
 #[derive(Clone, Debug)]
 pub struct HubScenario {
@@ -26,25 +26,28 @@ pub struct HubScenario {
     pub seed: u64,
 }
 
-/// What the door sent, per bot and in total.
+/// What the world server sent, per bot and in total.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct HubReport {
     pub bots: usize,
     pub seconds: f64,
-    /// Bots that got into the hub.
+    /// Bots that got into a world (welcomed by the world server).
     pub joined: usize,
-    /// Distinct instances they were put in.
+    /// Distinct worlds they were put in.
     pub instances: usize,
+    /// Snapshots received in all.
     pub states: u64,
     /// Received bytes per second per bot: mean and largest.
     pub bytes_per_second_mean: f64,
     pub bytes_per_second_max: f64,
-    /// `hub_state` messages per second per bot (10 expected).
+    /// Snapshots per second per bot (30 expected).
     pub states_per_second_mean: f64,
-    /// Most players one bot saw at once.
+    /// Most other players one bot saw at once.
     pub largest_view: usize,
-    /// The largest single message, bytes.
+    /// The largest single frame, bytes.
     pub largest_message: usize,
+    /// Snapshots whose hash did not match the world they describe.
+    pub hash_mismatches: u64,
     pub refusals: Vec<String>,
     pub unexpected_closes: usize,
 }
@@ -53,17 +56,18 @@ impl fmt::Display for HubReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,
-            "hub: {} bots, {} joined, {} instance(s), {:.1} s",
+            "hub: {} bots, {} joined, {} world(s), {:.1} s",
             self.bots, self.joined, self.instances, self.seconds
         )?;
         writeln!(
             f,
-            "  per bot: {:.0} B/s mean, {:.0} B/s max, {:.1} states/s; largest view {}, largest message {} B",
+            "  per bot: {:.0} B/s mean, {:.0} B/s max, {:.1} snapshots/s; largest view {}, largest frame {} B, {} hash mismatches",
             self.bytes_per_second_mean,
             self.bytes_per_second_max,
             self.states_per_second_mean,
             self.largest_view,
-            self.largest_message
+            self.largest_message,
+            self.hash_mismatches
         )?;
         writeln!(
             f,
@@ -75,18 +79,20 @@ impl fmt::Display for HubReport {
 
 impl HubReport {
     pub fn healthy(&self) -> bool {
-        self.refusals.is_empty() && self.unexpected_closes == 0 && self.joined == self.bots
+        self.refusals.is_empty()
+            && self.unexpected_closes == 0
+            && self.joined == self.bots
+            && self.hash_mismatches == 0
     }
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum FromDoor {
-    Hub {
-        instance: u32,
-    },
-    HubState {
-        players: Vec<(u32, i32, i32, u16, i32, i32)>,
+    World {
+        instance: String,
+        server: String,
+        ticket: String,
     },
     Refused {
         code: String,
@@ -100,40 +106,99 @@ enum FromDoor {
 
 #[derive(Default)]
 struct One {
-    instance: Option<u32>,
+    instance: Option<String>,
+    welcomed: bool,
     bytes: u64,
     states: u64,
     largest_view: usize,
     largest_message: usize,
+    hash_mismatches: u64,
     refusals: Vec<String>,
     closed: bool,
 }
 
-/// One bot: hello, join, then a new random direction every half second or
-/// so, until `until`.
-async fn wander(door: String, guest: u128, seed: u64, until: Instant) -> One {
-    let mut one = One::default();
+type Socket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// The door's answer to `world_join`: the world's instance, server and ticket.
+async fn place(door: &str, guest: u128, one: &mut One) -> Option<(Socket, String, Vec<u8>)> {
     let url = format!("ws://{door}/api/queue");
-    let Ok((mut socket, _)) = connect_async(&url).await else {
+    let Ok((mut queue, _)) = connect_async(&url).await else {
         one.refusals.push(format!("cannot reach {url}"));
-        return one;
+        return None;
     };
     for message in [
         format!(r#"{{"type":"hello","guest":"{guest:032x}"}}"#),
-        format!(r#"{{"type":"hub_join","appearance":{LOOK}}}"#),
+        r#"{"type":"world_join"}"#.to_owned(),
     ] {
-        if socket.send(Message::text(message)).await.is_err() {
+        if queue.send(Message::text(message)).await.is_err() {
             one.closed = true;
-            return one;
+            return None;
         }
+    }
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), queue.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str(&text) {
+                Ok(FromDoor::World {
+                    instance,
+                    server,
+                    ticket,
+                }) => {
+                    one.instance = Some(instance);
+                    let ticket = arena_protocol_hex(&ticket)?;
+                    return Some((queue, server, ticket));
+                }
+                Ok(FromDoor::Refused { code } | FromDoor::Error { code }) => {
+                    one.refusals.push(code);
+                    return None;
+                }
+                _ => {}
+            },
+            Ok(Some(Ok(_))) => {}
+            _ => {
+                one.closed = true;
+                return None;
+            }
+        }
+    }
+}
+
+fn arena_protocol_hex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(text.get(at..at + 2)?, 16).ok())
+        .collect()
+}
+
+/// One bot: placed by the door, then in its world sending one input a tick
+/// with a new random direction now and then, until `until`.
+async fn wander(door: String, guest: u128, seed: u64, until: Instant) -> One {
+    let mut one = One::default();
+    let Some((mut queue, server, ticket)) = place(&door, guest, &mut one).await else {
+        return one;
+    };
+    let Ok((mut world, _)) = connect_async(&server).await else {
+        one.refusals.push(format!("cannot reach {server}"));
+        return one;
+    };
+    let hello = ClientMessage::Hello {
+        protocol: PROTOCOL_VERSION,
+        ticket,
+        appearance: None,
+    };
+    if world.send(Message::binary(hello.encode())).await.is_err() {
+        one.closed = true;
+        return one;
     }
     let mut rng = Rng::new(seed);
     let mut seq = 0u32;
-    // A new direction now and then; one move per hub tick, as the page's
-    // renderer sends them (the door applies each once).
-    let mut heading = (0i32, 0i32, 0u64);
+    let mut heading = ([0i16, 0i16], 0u16);
     let mut turn = Instant::now();
     let mut step = Instant::now();
+    let tick = Duration::from_nanos(1_000_000_000 / arena_sim::TICKS_PER_SECOND);
     loop {
         let now = Instant::now();
         if now >= until {
@@ -141,51 +206,82 @@ async fn wander(door: String, guest: u128, seed: u64, until: Instant) -> One {
         }
         if now >= turn {
             turn = now + Duration::from_millis(300) + rng.below(Duration::from_millis(700));
-            let axis = |rng: &mut Rng| (rng.next_u64() % 2001) as i32 - 1000;
-            heading = (axis(&mut rng), axis(&mut rng), rng.next_u64() % 65_536);
+            let axis = |rng: &mut Rng| (rng.next_u64() % 2001) as i16 - 1000;
+            heading = (
+                [axis(&mut rng), axis(&mut rng)],
+                (rng.next_u64() % 65_536) as u16,
+            );
         }
-        if now >= step {
-            // One move per hub tick (30 a second), as the client sends.
-            step = now + Duration::from_nanos(1_000_000_000 / arena_sim::hub::HUB_TICKS_PER_SECOND);
+        if now >= step && one.welcomed {
+            step = now + tick;
             seq += 1;
-            let (x, z, facing) = heading;
-            let message =
-                format!(r#"{{"type":"hub_move","seq":{seq},"x":{x},"z":{z},"facing":{facing}}}"#);
-            if socket.send(Message::text(message)).await.is_err() {
+            let input = ClientMessage::Input(InputFrame {
+                seq,
+                movement: heading.0,
+                facing: heading.1,
+                jump: false,
+                action: WireAction::None,
+                view_tick: 0,
+                cast_buffer: 0,
+            });
+            if world.send(Message::binary(input.encode())).await.is_err() {
                 one.closed = true;
                 break;
             }
         }
-        let wait = step.min(until).saturating_duration_since(now);
-        match tokio::time::timeout(wait, socket.next()).await {
-            Err(_) => {}
-            Ok(Some(Ok(Message::Text(text)))) => {
-                one.bytes += text.len() as u64;
-                one.largest_message = one.largest_message.max(text.len());
-                match serde_json::from_str(&text) {
-                    Ok(FromDoor::Hub { instance }) => one.instance = Some(instance),
-                    Ok(FromDoor::HubState { players }) => {
-                        one.states += 1;
-                        one.largest_view = one.largest_view.max(players.len());
+        let wait = step
+            .max(now + Duration::from_millis(1))
+            .min(until)
+            .saturating_duration_since(now);
+        tokio::select! {
+            frame = tokio::time::timeout(wait, world.next()) => match frame {
+                Err(_) => {}
+                Ok(Some(Ok(Message::Binary(frame)))) => {
+                    one.bytes += frame.len() as u64;
+                    one.largest_message = one.largest_message.max(frame.len());
+                    match ServerMessage::decode(&frame) {
+                        Ok(ServerMessage::Welcome(_)) => one.welcomed = true,
+                        Ok(ServerMessage::Snapshot(snapshot)) => {
+                            one.states += 1;
+                            match snapshot.hub_arena() {
+                                Some(arena) => {
+                                    if arena.state_hash() != snapshot.hash {
+                                        one.hash_mismatches += 1;
+                                    }
+                                    one.largest_view =
+                                        one.largest_view.max(arena.players().saturating_sub(1));
+                                }
+                                None => one.hash_mismatches += 1,
+                            }
+                        }
+                        Ok(ServerMessage::Error(code)) => {
+                            one.refusals.push(format!("{code:?}"));
+                        }
+                        Ok(_) => {}
+                        Err(_) => one.refusals.push("undecodable frame".into()),
                     }
-                    Ok(FromDoor::Refused { code } | FromDoor::Error { code }) => {
-                        one.refusals.push(code);
-                    }
-                    _ => {}
                 }
-            }
-            Ok(Some(Ok(_))) => {}
-            Ok(_) => {
-                one.closed = true;
-                break;
+                Ok(Some(Ok(_))) => {}
+                Ok(_) => {
+                    one.closed = true;
+                    break;
+                }
+            },
+            // The queue connection stays open (and quiet) all along.
+            message = queue.next() => {
+                if !matches!(message, Some(Ok(_))) {
+                    one.closed = true;
+                    break;
+                }
             }
         }
     }
-    let _ = socket.close(None).await;
+    let _ = world.close(None).await;
+    let _ = queue.close(None).await;
     one
 }
 
-/// Runs `scenario.bots` bots in the hub for `scenario.duration`.
+/// Runs `scenario.bots` bots in hub worlds for `scenario.duration`.
 pub async fn run(scenario: HubScenario) -> HubReport {
     let started = Instant::now();
     let until = started + scenario.duration;
@@ -208,14 +304,14 @@ pub async fn run(scenario: HubScenario) -> HubReport {
     }
     let seconds = started.elapsed().as_secs_f64().max(0.001);
     let rates: Vec<f64> = bots.iter().map(|one| one.bytes as f64 / seconds).collect();
-    let mut instances: Vec<u32> = bots.iter().filter_map(|one| one.instance).collect();
+    let mut instances: Vec<String> = bots.iter().filter_map(|one| one.instance.clone()).collect();
     instances.sort_unstable();
     instances.dedup();
     let count = bots.len().max(1) as f64;
     HubReport {
         bots: scenario.bots,
         seconds,
-        joined: bots.iter().filter(|one| one.instance.is_some()).count(),
+        joined: bots.iter().filter(|one| one.welcomed).count(),
         instances: instances.len(),
         states: bots.iter().map(|one| one.states).sum(),
         bytes_per_second_mean: rates.iter().sum::<f64>() / count,
@@ -229,6 +325,7 @@ pub async fn run(scenario: HubScenario) -> HubReport {
             .map(|one| one.largest_message)
             .max()
             .unwrap_or(0),
+        hash_mismatches: bots.iter().map(|one| one.hash_mismatches).sum(),
         refusals: bots.iter().flat_map(|one| one.refusals.clone()).collect(),
         unexpected_closes: bots.iter().filter(|one| one.closed).count(),
     }

@@ -1,3 +1,4 @@
+import { inMatch as inMatchOf } from "../../domain/network";
 import type { ReactNode } from "react";
 import type { LinkState } from "../../domain/network";
 import { networkLink } from "../../state/network";
@@ -10,8 +11,7 @@ const NO_LINK = createStore<LinkState>({ phase: "idle", attempt: 0, ended: null,
 /** Whether the player is in a network match (seated or watching). */
 export function useInMatch() {
   const link = useStore(networkLink, (l) => l);
-  const phase = useStore(link?.state ?? NO_LINK, (s) => s.phase);
-  return phase !== "idle" && phase !== "ended";
+  return useStore(link?.state ?? NO_LINK, inMatchOf);
 }
 
 /** Whether the notification panel is free for cards: outside a

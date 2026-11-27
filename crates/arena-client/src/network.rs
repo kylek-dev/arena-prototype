@@ -8,10 +8,13 @@
 //! inputs and pings to send. Time is passed in, so the session is testable
 //! without a browser.
 //!
-//! The rest of the client assumes the local player is actor 0, with
-//! friends on even and enemies on odd indices. A session therefore
-//! renumbers the server's actors: local 0 is this seat, local `2k` the
-//! `k`th friendly seat and local `2k + 1` the `k`th enemy seat. Targets and
+//! The rest of the client assumes the local player is actor 0. In a match,
+//! friends are on even and enemies on odd indices: a session renumbers the
+//! server's actors so local 0 is this seat, local `2k` the `k`th friendly
+//! seat and local `2k + 1` the `k`th enemy seat. In a hub world (ADR 0057)
+//! local 0 is this player's slot and the others follow in slot order
+//! (stable, since slots only ever grow), with teams, vacancy and who holds
+//! each slot from the snapshot's roster and the `Member` relay. Targets and
 //! events are translated at this boundary only.
 //!
 //! The client never decides outcomes. It renders other fighters' authoritative
@@ -21,17 +24,17 @@
 //! snapshot reconciles the guess with the server's state, easing any
 //! correction out over a few frames instead of snapping.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::OnceLock;
 
 use arena_protocol::prediction::{InterpDelay, Pacer, Predictor, TickRate};
 use arena_protocol::{
-    ClientMessage, ErrorCode, FighterScore, FighterState, Handle, InputFrame, ServerMessage, Tags,
-    WireAction, WireAppearance, WireEvent,
+    ClientMessage, ErrorCode, FighterScore, FighterState, Handle, InputFrame, Member,
+    ServerMessage, Snapshot, Tags, WireAction, WireAppearance, WireEvent,
 };
 use arena_sim::arena::{
-    ActorInput, Arena, Axes, CastAction, Combatant, InterruptReason, MAX_ROUND_TICKS, Rejection,
-    RoundResult,
+    ActorInput, Arena, Axes, CastAction, Combatant, InterruptReason, MAX_ROUND_TICKS, Occupant,
+    Rejection, RoundResult, Slot,
 };
 use arena_sim::map::Layout;
 use arena_sim::spells::SpellId;
@@ -131,6 +134,8 @@ struct Received {
     result: Option<RoundResult>,
     /// Local order; `Some` only on a finished match's final snapshot.
     scoreboard: Option<Vec<FighterScore>>,
+    /// A hub world's slots in local order, and its next fighter id.
+    world: Option<(Vec<Slot>, u32)>,
 }
 
 /// Measured connection quality, for the debug overlay.
@@ -198,6 +203,9 @@ pub struct View {
     pub facings: Vec<f32>,
     /// Events whose tick the view has just passed, oldest first.
     pub shown: Vec<Shown>,
+    /// A hub world's slots in local order and next fighter id (`None` in a
+    /// match): who stands where, their teams, and which slots are vacant.
+    pub world: Option<(Vec<Slot>, u32)>,
 }
 
 #[derive(Debug, Default)]
@@ -247,6 +255,12 @@ pub struct Session {
     handles: Vec<Option<Handle>>,
     /// Relayed per-seat tags (the admin tag) in local actor order.
     tags: Vec<Tags>,
+    /// A hub world (ADR 0057): `Welcome.hub`.
+    hub: bool,
+    /// Hub worlds: who holds each fighter id (the `Member` relay).
+    members: HashMap<u32, Member>,
+    /// Hub worlds: the newest snapshot, to reconcile with.
+    newest_world: Option<Snapshot>,
     pub stats: Stats,
 }
 
@@ -291,6 +305,15 @@ pub fn seat_order(seat: usize, count: usize) -> Vec<usize> {
         .collect()
 }
 
+/// Local order in a hub world of `count` slots for the player in `seat`:
+/// their slot first, then the others in slot order. Stable while the world
+/// grows, since new slots only ever come at the end.
+pub fn world_order(seat: usize, count: usize) -> Vec<usize> {
+    std::iter::once(seat)
+        .chain((0..count).filter(|slot| *slot != seat))
+        .collect()
+}
+
 /// Presentation yaw (radians, 0 facing −Z) of a rules binary angle.
 pub fn yaw(facing: u16) -> f32 {
     f32::from(facing) / 65536.0 * std::f32::consts::TAU
@@ -301,7 +324,12 @@ impl Session {
     /// build embeds (`None` before the welcome).
     pub fn map_differs(&self) -> Option<bool> {
         static COLOSSEUM_HASH: OnceLock<u64> = OnceLock::new();
-        let expected = *COLOSSEUM_HASH.get_or_init(|| fnv1a(arena_map::COLOSSEUM_JSON.as_bytes()));
+        // A hub world announces the plaza (ADR 0057).
+        let expected = if self.hub {
+            arena_sim::hub::plaza_digest()
+        } else {
+            *COLOSSEUM_HASH.get_or_init(|| fnv1a(arena_map::COLOSSEUM_JSON.as_bytes()))
+        };
         self.map.map(|digest| digest != expected)
     }
     /// Total ticks in the round announced by the server (`MAX_ROUND_TICKS` before welcome).
@@ -408,6 +436,8 @@ impl Session {
             // Welcome when any seat has one.
             self.handles.clear();
             self.tags.clear();
+            self.members.clear();
+            self.newest_world = None;
             if !self.appearances.is_empty() {
                 self.appearances.clear();
                 self.appearances_version += 1;
@@ -419,7 +449,51 @@ impl Session {
                 continue;
             };
             match message {
+                ServerMessage::Welcome(welcome) if welcome.hub => {
+                    let seat = Some(usize::from(welcome.actor));
+                    if !self.hub
+                        || self.seat != seat
+                        || self
+                            .snapshots
+                            .back()
+                            .is_some_and(|newest| newest.tick > welcome.tick)
+                    {
+                        self.snapshots.clear();
+                        self.events.clear();
+                        self.view_tick = None;
+                        self.last_view_tick = 0;
+                        self.heading_taken = false;
+                    }
+                    // Every Welcome starts the member list afresh: the
+                    // server sends it whole right after.
+                    self.members.clear();
+                    self.handles.clear();
+                    self.tags.clear();
+                    if !self.appearances.is_empty() {
+                        self.appearances.clear();
+                        self.appearances_version += 1;
+                    }
+                    self.hub = true;
+                    self.spectator = false;
+                    self.seat = seat;
+                    self.order.clear();
+                    self.map = Some(welcome.map);
+                    self.round_ticks = Some(welcome.round_ticks);
+                    self.predictor.set_round_limit(welcome.round_ticks);
+                    self.phase = Phase::Waiting;
+                }
                 ServerMessage::Welcome(welcome) => {
+                    // From a hub world into a match: nothing buffered applies.
+                    let was_hub = std::mem::take(&mut self.hub);
+                    if was_hub {
+                        self.snapshots.clear();
+                        self.events.clear();
+                        self.view_tick = None;
+                        self.last_view_tick = 0;
+                        self.heading_taken = false;
+                        self.members.clear();
+                        self.newest_world = None;
+                    }
                     let count = usize::from(welcome.team_size) * 2;
                     let seat = welcome.seat();
                     let invalid_seat = if welcome.spectator {
@@ -464,6 +538,11 @@ impl Session {
                     self.round_ticks = Some(welcome.round_ticks);
                     self.predictor.set_round_limit(welcome.round_ticks);
                     self.phase = Phase::Waiting;
+                }
+                ServerMessage::Snapshot(snapshot) if self.hub => {
+                    if let Some(reason) = self.receive_world(snapshot, now, &mut frame_ticks) {
+                        rejections.extend(reason);
+                    }
                 }
                 ServerMessage::Snapshot(snapshot) => {
                     if (self.seat.is_none() && !self.spectator)
@@ -584,6 +663,7 @@ impl Session {
                         connected,
                         result: local_result,
                         scoreboard,
+                        world: None,
                     });
                     self.newest_at = now;
                     while self.snapshots.len() > BUFFER {
@@ -633,8 +713,14 @@ impl Session {
                     }
                     self.tags = self.order.iter().map(|&actor| server_tags[actor]).collect();
                 }
-                // Hub worlds (ADR 0057) are not played by this client yet:
-                // a hub `Welcome` (team size 0) closes the link above.
+                ServerMessage::Member(member) if self.hub => {
+                    self.members.insert(member.id, *member);
+                    self.relay_members();
+                }
+                ServerMessage::MemberLeft { id } if self.hub => {
+                    self.members.remove(&id);
+                    self.relay_members();
+                }
                 ServerMessage::Member(_) | ServerMessage::MemberLeft { .. } => {}
             }
         }
@@ -669,13 +755,19 @@ impl Session {
                 return;
             }
         };
-        let Some((tick, fighters, result, ack)) = self.newest_state.take() else {
-            return;
-        };
         let before = self.predictor.predicted();
-        let moved = self
-            .predictor
-            .reconcile(layout, tick, fighters, result, seat, ack);
+        let moved = if self.hub {
+            let Some(snapshot) = self.newest_world.take() else {
+                return;
+            };
+            self.predictor.reconcile_hub(&snapshot, seat)
+        } else {
+            let Some((tick, fighters, result, ack)) = self.newest_state.take() else {
+                return;
+            };
+            self.predictor
+                .reconcile(layout, tick, fighters, result, seat, ack)
+        };
         let Some(after) = self.predictor.predicted() else {
             self.own = None;
             return;
@@ -1018,11 +1110,27 @@ impl Session {
         } else {
             0.0
         };
+        // In a world, a slot that was vacant or held by someone else in the
+        // older snapshot is drawn where it is now, never glided across.
+        let same_holder = |index: usize| match (&a.world, &b.world) {
+            (Some((from, _)), Some((to, _))) => from
+                .get(index)
+                .zip(to.get(index))
+                .is_some_and(|(from, to)| from.occupant != Occupant::Vacant && from.id == to.id),
+            _ => true,
+        };
         let positions = a
             .fighters
             .iter()
             .zip(&b.fighters)
-            .map(|(from, to)| place(from).lerp(place(to), fraction))
+            .enumerate()
+            .map(|(index, (from, to))| {
+                if same_holder(index) {
+                    place(from).lerp(place(to), fraction)
+                } else {
+                    place(to)
+                }
+            })
             .collect();
         let facings = a
             .fighters
@@ -1048,7 +1156,166 @@ impl Session {
             positions,
             facings,
             shown,
+            world: a.world.clone(),
         })
+    }
+
+    /// Whether this connection is in a hub world (ADR 0057).
+    pub fn is_hub(&self) -> bool {
+        self.hub
+    }
+
+    /// A hub world's snapshot: the local order from its roster, the
+    /// prediction's newest state, the relayed identities for its slots, and
+    /// events. Returns this player's rejections.
+    fn receive_world(
+        &mut self,
+        snapshot: Snapshot,
+        now: f64,
+        frame_ticks: &mut Vec<u64>,
+    ) -> Option<Vec<Rejection>> {
+        let seat = self.seat?;
+        let roster = snapshot.roster.as_ref()?;
+        if seat >= snapshot.fighters.len()
+            || roster
+                .slots
+                .get(seat)
+                .map(|slot| Occupant::from(slot.occupant))
+                != Some(Occupant::Player)
+        {
+            return None;
+        }
+        while self
+            .unacked
+            .front()
+            .is_some_and(|(seq, _)| *seq <= snapshot.ack)
+        {
+            let (_, sent) = self.unacked.pop_front().expect("checked front");
+            if snapshot.tick > 0 {
+                smooth(&mut self.stats.input_ms, (now - sent) * 1000.0);
+            }
+        }
+        if snapshot
+            .hub_arena()
+            .is_none_or(|world| world.state_hash() != snapshot.hash)
+        {
+            self.stats.hash_mismatches += 1;
+        }
+        if snapshot.tick > 0 {
+            frame_ticks.push(snapshot.tick);
+            self.pacer.observe(snapshot.queued);
+            self.stats.queued = self.pacer.average();
+            self.stats.queued_min = self.pacer.minimum();
+        }
+        self.order = world_order(seat, snapshot.fighters.len());
+        let slots = roster.slots();
+        let local = |server: usize| self.order.iter().position(|&a| a == server);
+        let fighters: Vec<Combatant> = self
+            .order
+            .iter()
+            .map(|&actor| {
+                let mut fighter = snapshot.fighters[actor].combatant();
+                if let Some(cast) = fighter.active_cast.as_mut() {
+                    cast.target = cast.target.and_then(local);
+                }
+                if let Some(held) = fighter.buffered_cast.as_mut() {
+                    held.target = held.target.and_then(local);
+                }
+                fighter
+            })
+            .collect();
+        let local_slots: Vec<Slot> = self.order.iter().map(|&actor| slots[actor]).collect();
+        let connected = self
+            .order
+            .iter()
+            .map(|&actor| snapshot.fighters[actor].connected)
+            .collect();
+        let mut rejections = Vec::new();
+        for event in &snapshot.events {
+            match event.event {
+                WireEvent::Rejected(reason) => rejections.push(reason.into()),
+                other => {
+                    if let Some(shown) = self.local_event(other, 0) {
+                        self.events.push_back((event.tick, shown));
+                        if self.events.len() > 256 {
+                            self.events.pop_front();
+                        }
+                    }
+                }
+            }
+        }
+        self.stats.snapshots += 1;
+        self.phase = if snapshot.tick > 0 {
+            Phase::Playing
+        } else {
+            Phase::Waiting
+        };
+        let rewound = self
+            .snapshots
+            .back()
+            .is_some_and(|newest| newest.tick > snapshot.tick);
+        if rewound || snapshot.tick < self.last_view_tick {
+            self.last_view_tick = 0;
+            self.view_tick = None;
+        }
+        while self
+            .snapshots
+            .back()
+            .is_some_and(|newest| newest.tick >= snapshot.tick)
+        {
+            self.snapshots.pop_back();
+        }
+        self.snapshots.push_back(Received {
+            tick: snapshot.tick,
+            fighters,
+            connected,
+            result: None,
+            scoreboard: None,
+            world: Some((local_slots, roster.next_id)),
+        });
+        self.newest_at = now;
+        while self.snapshots.len() > BUFFER {
+            self.snapshots.pop_front();
+        }
+        self.newest_world = Some(snapshot);
+        self.relay_members();
+        Some(rejections)
+    }
+
+    /// Hub worlds: the handles, tags and looks of each local slot, from the
+    /// member relay and the newest roster (none for vacant slots and
+    /// training enemies).
+    fn relay_members(&mut self) {
+        let Some((slots, _)) = self
+            .snapshots
+            .back()
+            .and_then(|newest| newest.world.as_ref())
+        else {
+            return;
+        };
+        let member = |slot: &Slot| {
+            (slot.occupant == Occupant::Player)
+                .then(|| self.members.get(&slot.id))
+                .flatten()
+        };
+        let handles: Vec<Option<Handle>> = slots
+            .iter()
+            .map(|slot| member(slot).and_then(|m| m.handle))
+            .collect();
+        let tags: Vec<Tags> = slots
+            .iter()
+            .map(|slot| member(slot).map_or_else(Tags::default, |m| m.tags))
+            .collect();
+        let looks: Vec<Option<WireAppearance>> = slots
+            .iter()
+            .map(|slot| member(slot).and_then(|m| m.appearance.clone()))
+            .collect();
+        self.handles = handles;
+        self.tags = tags;
+        if self.appearances != looks {
+            self.appearances = looks;
+            self.appearances_version += 1;
+        }
     }
 
     /// The runtime's status line, as JSON for `onNetwork`.

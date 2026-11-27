@@ -37,6 +37,9 @@ export type Snapshot = {
   selectedPlayer?: boolean;
   hoveredUnit?: UnitTag | null;
   teamSize?: 1 | 2 | 3;
+  /** In a hub world (ADR 0057): no rounds, players friendly to each other,
+   * training enemies as the opponents, and a roster that changes. */
+  hub?: boolean;
   selectedActor?: number | null;
   roster?: RosterEntry[];
   /** A network match: the roster reports which players are attached. */
@@ -85,6 +88,10 @@ const CHARACTER_STATUSES = new Set(["ready", "failed", "placeholder", "loading"]
 const HOVERED_UNIT_RE = /^(Player|Opponent[1-3]|Team[1-2])$/;
 const NAMEPLATE_TAG_RE = /^(Opponent|Team)[1-3]$/;
 const SPECTATOR_NAMEPLATE_TAG_RE = /^(Player|(Opponent|Team)[1-3])$/;
+/** A hub world (ADR 0057) holds up to 16 fighters: 12 players and the
+ * training enemies, tagged by team in the engine's order. */
+const MAX_WORLD_FIGHTERS = 16;
+const WORLD_TAG_RE = /^(Opponent|Team)([1-9]|1[0-5])$/;
 
 function isNonNegativeFinite(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
@@ -242,6 +249,62 @@ export function needsImmediateDelivery(previous: Snapshot | null, next: Snapshot
   return false;
 }
 // Local practice snapshots optionally append a team roster; not a network protocol.
+/** A hub world's roster (ADR 0057): the engine's actors in order, vacant
+ * slots left out, so `actor` is the engine's number (for targeting and the
+ * per-actor relays) and not the place in the list. The player is actor 0,
+ * the others are `Team1`… and the training enemies `Opponent1`…, each
+ * tag once. */
+function worldRoster(
+  raw: unknown,
+  maxHealth: number,
+  maxResource: number | undefined,
+): RosterEntry[] {
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > MAX_WORLD_FIGHTERS)
+    throw new Error("Invalid world roster");
+  const roster: RosterEntry[] = [];
+  const tags = new Set<string>();
+  let previous = -1;
+  for (const unit of raw as Record<string, unknown>[]) {
+    const actor = unit?.actor;
+    const tag = unit?.tag;
+    if (
+      !Number.isInteger(actor) ||
+      (actor as number) <= previous ||
+      (actor as number) >= MAX_WORLD_FIGHTERS ||
+      typeof tag !== "string" ||
+      (actor === 0 ? tag !== "Player" : !WORLD_TAG_RE.test(tag)) ||
+      tags.has(tag) ||
+      typeof unit.health !== "number" ||
+      !Number.isFinite(unit.health) ||
+      unit.health < 0 ||
+      unit.health > maxHealth ||
+      (unit.connected !== undefined && typeof unit.connected !== "boolean")
+    )
+      throw new Error("Invalid world unit");
+    if (roster.length === 0 && actor !== 0) throw new Error("Invalid world roster");
+    previous = actor as number;
+    tags.add(tag);
+    const number = Number(tag.replace(/^\D+/, ""));
+    roster.push({
+      actor: actor as number,
+      tag: tag as UnitTag,
+      health: unit.health,
+      maxHealth,
+      ...validateCombatFields(unit, maxResource),
+      id: actor === 0 ? "practice-player" : `world-actor-${actor}`,
+      // Players are named by the relayed handles (`withHandles`).
+      name:
+        actor === 0
+          ? "Player"
+          : tag.startsWith("Opponent")
+            ? `Training Dummy ${number}`
+            : `Player ${number}`,
+      ...(unit.connected === false && tag.startsWith("Team") ? { disconnected: true } : {}),
+    });
+  }
+  return roster;
+}
+
 export function adaptSnapshot(raw: unknown): Snapshot {
   if (!raw || typeof raw !== "object") throw new Error("Invalid engine snapshot");
   const r = raw as Snapshot;
@@ -283,7 +346,9 @@ export function adaptSnapshot(raw: unknown): Snapshot {
       (!Number.isInteger(r.spectatorFollow) || r.spectatorFollow < 0 || r.spectatorFollow >= 6)) ||
     (r.hoveredUnit !== undefined &&
       r.hoveredUnit !== null &&
-      !HOVERED_UNIT_RE.test(r.hoveredUnit)) ||
+      !(r.hub === true
+        ? r.hoveredUnit === "Player" || WORLD_TAG_RE.test(r.hoveredUnit)
+        : HOVERED_UNIT_RE.test(r.hoveredUnit))) ||
     typeof r.won !== "boolean" ||
     (r.roundResult !== undefined && r.roundResult !== null && !ROUND_RESULTS.has(r.roundResult)) ||
     (r.roundResult !== undefined && r.won !== (r.roundResult !== null)) ||
@@ -316,10 +381,17 @@ export function adaptSnapshot(raw: unknown): Snapshot {
       }
     }
   }
+  const hub = r.hub === true;
+  if (r.hub !== undefined && typeof r.hub !== "boolean") throw new Error("Invalid hub flag");
+  if (hub && r.spectating === true) throw new Error("Hub worlds have no spectators");
   if (r.nameplates !== undefined) {
-    if (!Array.isArray(r.nameplates) || r.nameplates.length > 6)
+    if (!Array.isArray(r.nameplates) || r.nameplates.length > (hub ? MAX_WORLD_FIGHTERS - 1 : 6))
       throw new Error("Invalid nameplate projections");
-    const tagRe = r.spectating === true ? SPECTATOR_NAMEPLATE_TAG_RE : NAMEPLATE_TAG_RE;
+    const tagRe = hub
+      ? WORLD_TAG_RE
+      : r.spectating === true
+        ? SPECTATOR_NAMEPLATE_TAG_RE
+        : NAMEPLATE_TAG_RE;
     const len = r.nameplates.length;
     for (let i = 0; i < len; i += 1) {
       const plate = r.nameplates[i];
@@ -343,7 +415,17 @@ export function adaptSnapshot(raw: unknown): Snapshot {
     throw new Error("Invalid maximum health");
   let roster: RosterEntry[] | undefined;
   let networked = false;
-  if (r.roster !== undefined) {
+  if (r.roster !== undefined && hub) {
+    roster = worldRoster(r.roster, maxHealth, maxResource);
+    networked = true;
+    if (
+      r.selectedActor !== null &&
+      (!Number.isInteger(r.selectedActor) || !roster.some((unit) => unit.actor === r.selectedActor))
+    )
+      throw new Error("Invalid selected actor");
+    if (r.selected !== (r.selectedActor !== null) || r.selectedPlayer !== (r.selectedActor === 0))
+      throw new Error("Inconsistent selection");
+  } else if (r.roster !== undefined) {
     const teamSize = r.teamSize;
     if (
       (teamSize !== 1 && teamSize !== 2 && teamSize !== 3) ||
@@ -457,7 +539,7 @@ export function adaptSnapshot(raw: unknown): Snapshot {
     throw new Error("Invalid buffered spell");
   const targetCombat = validateCombatFields(r.target, maxResource);
   const spells = r.spells !== undefined ? validateSpells(r.spells) : undefined;
-  const opponent = roster?.[1];
+  const opponent = roster?.find((unit) => unit.actor === 1);
   return {
     ...r,
     ...(maxResource !== undefined ? { maxResource } : {}),
@@ -505,12 +587,6 @@ declare global {
       onHandles?: (handles: unknown) => void;
       /** Relayed `{admin}` tags per local actor, or `null`. */
       onTags?: (tags: unknown) => void;
-      /** The hub for the renderer (ADR 0056): `[revision, json]`. */
-      readHub?: () => unknown[];
-      /** One numbered hub tick of the local player's walk, from the renderer. */
-      onHubIntent?: (seq: number, x: number, z: number, facing: number, jump?: boolean) => void;
-      /** `[[id, x, y], ...]`: where each hub player's name goes on screen. */
-      onHubScreen?: (json: string) => void;
       onState: (state: unknown) => void;
     };
     arenaDebug?: { readonly state: Snapshot | null; readonly metrics: unknown };
