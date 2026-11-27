@@ -115,8 +115,9 @@ connection, which can discard the `Error` before the client reads it.
 `PROTOCOL_VERSION` (currently 10: `ServerMessage::Tags`; 9 added `ServerMessage::Handles`; 8 gave `WireAppearance` `facial_hair_color` and 24 part groups for the armour slots, [ADR 0053](decisions/0053-finished-character-kits.md)) changes with any
 incompatible layout change; the golden-frame test fails until it is bumped
 deliberately.
-`RULES_VERSION` (currently 6: timed casts charge their resource and health costs
-on completion instead of at cast start; [ADR 0048](decisions/0048-server-authoritative-casting-and-resources.md))
+`RULES_VERSION` (currently 7: a timed cast that does not complete refunds the GCD
+it started; 6 charged timed casts' resource and health costs on completion
+instead of at cast start; [ADR 0048](decisions/0048-server-authoritative-casting-and-resources.md))
 changes when a rules change
 could alter a replayed outcome. `Welcome.map` identifies the layout.
 

@@ -280,7 +280,7 @@ The client never decides authoritative damage, healing, CC duration, or resource
 
 The team still needs to decide:
 
-- ~~Whether cooldowns and GCD start at cast start or completion.~~ Decided for the current kit in [ADR 0048](decisions/0048-server-authoritative-casting-and-resources.md): GCD at start, personal cooldown on completion.
+- ~~Whether cooldowns and GCD start at cast start or completion.~~ Decided for the current kit in [ADR 0048](decisions/0048-server-authoritative-casting-and-resources.md): GCD at start, personal cooldown on completion; a cast that does not complete refunds its GCD.
 - ~~When resources are spent and whether interrupted casts receive refunds.~~ Decided for the current kit in [ADR 0048](decisions/0048-server-authoritative-casting-and-resources.md): costs are checked at cast start and charged at completion, so interrupted casts spend nothing.
 - ~~Whether range and LoS are rechecked at cast completion.~~ Decided in [ADR 0048](decisions/0048-server-authoritative-casting-and-resources.md): yes.
 - How ground-target positions are represented.

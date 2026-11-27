@@ -1,9 +1,10 @@
 //! Per-player casting timers. Call `tick()` once per simulation tick.
 //! Uses `spells.rs` with `GcdType` and `calculate_gcd_ticks`.
 //!
-//! GCD starts when a cast begins. Personal cooldown starts on successful
-//! completion, or immediately for an instant spell. Interrupting keeps the
-//! existing GCD and does not start the interrupted spell's cooldown.
+//! GCD starts when a cast begins, but only a cast that completes keeps it:
+//! interrupting a timed cast refunds the GCD that cast started (ADR 0048,
+//! 2026-11-26 amendment). Personal cooldown starts on successful completion,
+//! or immediately for an instant spell; an interrupted cast never starts it.
 //!
 //! `casting.rs` must check resources, targets, range, LoS and crowd control
 //! before calling `start_cast`, retain the cast's target/context, and resolve
@@ -20,6 +21,8 @@ pub struct ActiveCast {
     pub total_ticks: u32,
     // Snapshot the duration so later definition changes cannot alter this cast.
     cooldown_ticks: u32,
+    // Whether starting this cast started the GCD (anything but OffGcd).
+    started_gcd: bool,
 }
 
 impl ActiveCast {
@@ -28,17 +31,23 @@ impl ActiveCast {
         remaining_ticks: u32,
         total_ticks: u32,
         cooldown_ticks: u32,
+        started_gcd: bool,
     ) -> Self {
         Self {
             spell_id,
             remaining_ticks,
             total_ticks,
             cooldown_ticks,
+            started_gcd,
         }
     }
 
     pub const fn cooldown_ticks(&self) -> u32 {
         self.cooldown_ticks
+    }
+
+    pub const fn started_gcd(&self) -> bool {
+        self.started_gcd
     }
 }
 
@@ -177,7 +186,8 @@ impl CombatState {
     pub fn start_cast(&mut self, spell: &Spell) -> Result<CastStart, CastStateError> {
         self.can_cast(spell)?;
 
-        if !matches!(&spell.gcd, GcdType::OffGcd) {
+        let starts_gcd = !matches!(&spell.gcd, GcdType::OffGcd);
+        if starts_gcd {
             self.gcd_remaining = self.gcd_ticks_for(spell);
         }
 
@@ -191,6 +201,7 @@ impl CombatState {
             remaining_ticks: spell.cast_ticks,
             total_ticks: spell.cast_ticks,
             cooldown_ticks: spell.cooldown_ticks,
+            started_gcd: starts_gcd,
         });
 
         Ok(CastStart::Casting)
@@ -228,9 +239,15 @@ impl CombatState {
     }
 
     // Casting/CC code can use the returned ID to discard its pending context.
-    // Existing GCD and cooldowns keep running.
+    // A cast that started the GCD refunds it: casting blocks every other spell,
+    // so the whole running GCD is this cast's. An OffGcd cast leaves a GCD
+    // from an earlier spell running. Personal cooldowns keep running.
     pub fn interrupt_cast(&mut self) -> Option<SpellId> {
-        self.active_cast.take().map(|cast| cast.spell_id)
+        let cast = self.active_cast.take()?;
+        if cast.started_gcd {
+            self.gcd_remaining = 0;
+        }
+        Some(cast.spell_id)
     }
 
     pub fn reset_spell_cooldown(&mut self, spell_id: SpellId) {
@@ -326,16 +343,15 @@ mod tests {
         // Even OffGcd cannot cast concurrently with an active cast.
         assert_eq!(combat.can_cast(&quell), Err(CastStateError::AlreadyCasting));
 
-        // Interrupting keeps the running GCD and does not start personal cooldown.
+        // Interrupting refunds the GCD the cast started and does not start
+        // personal cooldown, so the next spell can start at once.
+        assert_eq!(combat.gcd_remaining(), 29);
         assert_eq!(combat.interrupt_cast(), Some(SpellId::RiftBolt));
         assert!(!combat.is_casting());
         assert_eq!(combat.cooldown_remaining(SpellId::RiftBolt), 0);
-        assert_eq!(combat.gcd_remaining(), 29);
+        assert_eq!(combat.gcd_remaining(), 0);
 
-        // Wait out GCD, then cast to completion.
-        for _ in 0..29 {
-            assert_eq!(combat.tick(), None);
-        }
+        // Cast to completion: the GCD runs out during the cast as usual.
         assert_eq!(combat.start_cast(&bolt), Ok(CastStart::Casting));
         for _ in 1..RIFT_BOLT_CAST_TICKS {
             assert_eq!(combat.tick(), None);
@@ -356,6 +372,26 @@ mod tests {
         combat.reset();
         assert_eq!(combat.gcd_remaining(), 0);
         assert_eq!(combat.gcd_ticks_for(&bolt), half_gcd);
+    }
+
+    #[test]
+    fn interrupting_an_off_gcd_cast_keeps_an_earlier_spells_gcd() {
+        let mut combat = CombatState::new();
+        combat.set_haste_percentage(23);
+        let pulse = SpellId::Pulse.definition();
+        let mut channel = Spell::active(SpellId::Mend, "Off-GCD channel", ARENA_CLASS);
+        channel.gcd = GcdType::OffGcd;
+        channel.cast_ticks = 20;
+
+        assert_eq!(
+            combat.start_cast(&pulse),
+            Ok(CastStart::Instant(SpellId::Pulse))
+        );
+        assert_eq!(combat.tick(), None);
+        assert_eq!(combat.start_cast(&channel), Ok(CastStart::Casting));
+        assert!(!combat.active_cast().unwrap().started_gcd());
+        assert_eq!(combat.interrupt_cast(), Some(SpellId::Mend));
+        assert_eq!(combat.gcd_remaining(), 28, "Pulse's GCD keeps running");
     }
 
     #[test]
