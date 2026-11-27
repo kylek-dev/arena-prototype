@@ -5,6 +5,7 @@ import { LOADING_ACCOUNT } from "../../runtime/account";
 import { interactUnit, unitRoster } from "../../runtime/commands";
 import { NO_FRIENDS } from "../../runtime/friends";
 import { accountService, friendsService } from "../../state/account";
+import { requestChat } from "../../state/chat";
 import { matchQueue } from "../../state/network";
 import { engine, focus, interaction, selectedLayout, setMode } from "../../state/session";
 import { createStore, useStore } from "../../state/store";
@@ -23,7 +24,7 @@ type Item = { label: string; run?: () => void; why?: string };
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /** The menu a right-click on a unit opens (target, focus, party and player
- * frames, friendly nameplates): invite, add as a friend, inspect and duel
+ * frames, friendly nameplates): whisper, invite, add as a friend, inspect and duel
  * (not yet available), focus, and editing the frame's place directly.
  * Arena (enemy) frames keep right-click to focus. */
 export function UnitMenu() {
@@ -89,6 +90,19 @@ export function UnitMenu() {
     : false;
   const blocked = handle ? list?.blocked.some((entry) => same(entry, handle)) : false;
   const loaded = !!list;
+  const whisper = (): Pick<Item, "run" | "why"> => {
+    if (!handle) return { why: "Only players can be whispered." };
+    if (!loggedIn) return { why: "Log in on the launcher page to whisper players." };
+    if (guest) return { why: "Guests cannot be whispered." };
+    if (!loaded) return { why: "Your friends list is loading." };
+    if (blocked) return { why: "You have blocked this player." };
+    if (!friend) return { why: "Only friends can be whispered." };
+    if (friend.presence === "offline") return { why: "This friend is offline." };
+    // The door does not deliver whispers to a player in a live match.
+    if (friend.presence === "in_match")
+      return { why: "Whispers do not reach players during a match. Use team chat." };
+    return { run: () => requestChat(`/w ${handle} `) };
+  };
   const invite = (): Pick<Item, "run" | "why"> => {
     if (!handle) return { why: "Only players can be invited." };
     if (!loggedIn) return { why: "Log in on the launcher page to invite players." };
@@ -115,6 +129,7 @@ export function UnitMenu() {
     ...(self
       ? []
       : [
+          { label: "Whisper", ...whisper() },
           { label: "Invite to group", ...invite() },
           { label: "Add friend", ...befriend() },
           { label: "Inspect", why: "Inspecting players is not available yet." },

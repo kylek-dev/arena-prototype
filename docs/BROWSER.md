@@ -402,5 +402,5 @@ The user approved the completed model right-click focus change, including shared
 2. Right-click an enemy (arena) frame or an enemy nameplate: it becomes the focus at once, with no menu. Right-click a friendly nameplate: the menu opens (without Edit layout).
 3. Pick **Focus**: the unit fills the focus frame. Pick **Edit layout** on the team frames: layout mode opens with the team frames picked; drag or nudge them, then leave layout mode.
 4. Arrow keys move through the menu, Escape closes it (the game menu does not open), and a click elsewhere closes it.
-5. In a network match with a friend on your team, logged in: **Invite to group** invites them; a stranger offers **Add friend**.
+5. In a network match with a friend on your team, logged in: **Invite to group** invites them; **Whisper** is greyed ("Use team chat", since whispers do not reach a live match); a stranger offers **Add friend**. In practice with a friend online (not in a match), **Whisper** opens the chat with `/w Name#number ` in the field.
 6. With a fresh profile (or one never resized), the chat beside the launcher is as tall as the launcher (P/F/S/C) and fills the width to the action bar; detached, it is 432 px wide. Resizing its height keeps that height.

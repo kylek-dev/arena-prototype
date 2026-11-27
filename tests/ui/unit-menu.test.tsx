@@ -9,6 +9,7 @@ import { UnitMenu } from "../../web/src/features/unit-frames/UnitMenu";
 import { createAccount } from "../../web/src/runtime/account";
 import { createFriends } from "../../web/src/runtime/friends";
 import { accountService, friendsService } from "../../web/src/state/account";
+import { chatFocusRequest } from "../../web/src/state/chat";
 import { matchQueue } from "../../web/src/state/network";
 import {
   engine,
@@ -44,12 +45,13 @@ function match(team: [string, string] = ["Ash#1000", "Zed#0003"], selected: numb
   );
 }
 
+const door = async (url: string) => ({
+  ok: true,
+  status: 200,
+  json: async () => (url === "/api/auth/me" ? ME : served),
+});
 async function logIn() {
-  const fetch = async (url: string) => ({
-    ok: true,
-    status: 200,
-    json: async () => (url === "/api/auth/me" ? ME : LIST),
-  });
+  const fetch = door;
   const account = createAccount({ fetch, navigate: () => {}, pageProtocol: "https:" });
   await account.refresh();
   accountService.set(account);
@@ -58,8 +60,11 @@ async function logIn() {
   await friends.refresh();
 }
 
+/** What the fake door answers for the friends list. */
+let served: object = LIST;
 let fake: ReturnType<typeof fakeQueue>;
 beforeEach(() => {
+  served = LIST;
   fake = fakeQueue();
   matchQueue.set(fake.queue);
   focus.set(null);
@@ -93,6 +98,7 @@ it("offers a friend an invitation, a stranger friendship, and says why not other
   view();
   fireEvent.contextMenu(screen.getByText("Ash#1000").closest("button")!);
   expect(items()).toEqual([
+    ["Whisper", false],
     ["Invite to group", false],
     ["Add friend", true],
     ["Inspect", true],
@@ -110,10 +116,14 @@ it("offers a friend an invitation, a stranger friendship, and says why not other
   expect(fake.sent().at(-1)).toEqual({ type: "invite", handle: "Ash#1000" });
   expect(screen.queryByRole("menu")).toBeNull();
   fireEvent.contextMenu(screen.getByText("Zed#0003").closest("button")!);
-  expect(items().slice(0, 2)).toEqual([
+  expect(items().slice(0, 3)).toEqual([
+    ["Whisper", true],
     ["Invite to group", true],
     ["Add friend", false],
   ]);
+  expect(screen.getByRole("menuitem", { name: /^Whisper/ }).textContent).toContain(
+    "Only friends can be whispered.",
+  );
   expect(screen.getByRole("menuitem", { name: /^Invite to group/ }).textContent).toContain(
     "Only friends who are online",
   );
@@ -212,7 +222,7 @@ it("keeps the keyboard under real clicks, and Escape closes only the menu", asyn
     const menu = screen.getByRole("menu", { name: "Teammate 1 options" });
     expect(menu.contains(document.activeElement)).toBe(true);
     await user.keyboard("{ArrowDown}");
-    expect(document.activeElement?.textContent).toMatch(/^Add friend/);
+    expect(document.activeElement?.textContent).toMatch(/^Invite to group/);
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu")).toBeNull();
     expect(interaction.get().panel).toBeNull();
@@ -260,6 +270,7 @@ it("opens from a friendly nameplate (without Edit layout); an enemy's focuses", 
   );
   fireEvent.contextMenu(screen.getByRole("button", { name: /^Teammate 1 health/ }));
   expect(items().map(([label]) => label)).toEqual([
+    "Whisper",
     "Invite to group",
     "Add friend",
     "Inspect",
@@ -270,4 +281,29 @@ it("opens from a friendly nameplate (without Edit layout); an enemy's focuses", 
   fireEvent.contextMenu(screen.getByRole("button", { name: /^Enemy Bot 2 health/ }));
   expect(screen.queryByRole("menu")).toBeNull();
   expect(focus.get()).toBe(teamSnapshot(3).roster?.[3].id);
+});
+
+it("whispers a friend through the chat, and explains a friend in a match", async () => {
+  await logIn();
+  match();
+  view();
+  fireEvent.contextMenu(screen.getByText("Ash#1000").closest("button")!);
+  fireEvent.click(screen.getByRole("menuitem", { name: /^Whisper/ }));
+  expect(chatFocusRequest.get().prefill).toBe("/w Ash#1000 ");
+  expect(screen.queryByRole("menu")).toBeNull();
+  // The door does not deliver whispers into a live match.
+  served = {
+    friends: [{ handle: "Ash#1000", relation: "friend", presence: "in_match" }],
+    blocked: [],
+  };
+  await act(async () => {
+    // A new list, as read when the menu next opens.
+    const friends = createFriends({ fetch: door, now: () => 0, later: () => () => {} });
+    friendsService.set(friends);
+    await friends.refresh();
+  });
+  fireEvent.contextMenu(screen.getByText("Ash#1000").closest("button")!);
+  expect(screen.getByRole("menuitem", { name: /^Whisper/ }).textContent).toContain(
+    "Use team chat.",
+  );
 });
