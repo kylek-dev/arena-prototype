@@ -1,10 +1,8 @@
-import { TooltipProvider } from "../../web/src/ui/Tooltip";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { App } from "../../web/src/app/App";
 import { initial } from "../../web/src/domain/preferences/schema";
-import { PlayOnline } from "../../web/src/features/play-online/PlayOnline";
 import { createAccount } from "../../web/src/runtime/account";
 import { installInput } from "../../web/src/runtime/input-router";
 import { beforeMatch, characterKits, customizerVisible } from "../../web/src/state/appearance";
@@ -133,12 +131,12 @@ it("closes the launcher's windows with Escape before opening the menu", async ()
   expect(interaction.get().panel).toBe("menu");
 });
 
-it("shows friends to a logged-in player, and asks guests to log in on the home screen", async () => {
+it("shows friends to a logged-in player, and asks guests to log in on the launcher page", async () => {
   await logIn(null);
   friendsWindowVisible.set(true);
   const { unmount } = render(<App />);
   expect(screen.getByRole("dialog", { name: "Friends" }).textContent).toMatch(
-    /Log in from the home screen to use the friends list\./,
+    /Log in on the launcher page to use the friends list\./,
   );
   unmount();
   await logIn("00112233445566ff");
@@ -161,15 +159,6 @@ it("shows friends to a logged-in player, and asks guests to log in on the home s
   ).toBeTruthy();
 });
 
-it("keeps account and party controls on the home screen", async () => {
-  await logIn(null);
-  render(<PlayOnline />, { wrapper: TooltipProvider });
-  expect(screen.getByRole("group", { name: "Account" })).toBeTruthy();
-  // No party to show yet, and no codes or links to share one.
-  expect(screen.queryByRole("group", { name: "Party" })).toBeNull();
-  expect(screen.queryByRole("button", { name: "Invite friends" })).toBeNull();
-});
-
 it("disables Spells while spectating, and moves with the layout editor", async () => {
   engine.set({ ...snapshot(), spectating: true });
   render(<App />);
@@ -185,11 +174,12 @@ it("disables Spells while spectating, and moves with the layout editor", async (
   expect(selectedLayout.get()).toBe("launcher");
 });
 
-it("goes back to the home screen from the menu, outside a match", async () => {
+it("goes back to the launcher page from the menu, outside a match", async () => {
   const user = userEvent.setup();
   render(<App />);
   await user.keyboard("{Escape}");
-  await user.click(screen.getByRole("button", { name: "Home screen" }));
+  await user.click(screen.getByRole("button", { name: "Launcher page" }));
+  expect(screen.getByRole("region", { name: "Launcher" })).toBeTruthy();
   expect(beforeMatch.get()).toBe(true);
   beforeMatch.set(false);
 });

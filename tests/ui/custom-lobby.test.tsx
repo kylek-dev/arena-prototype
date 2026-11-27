@@ -3,7 +3,8 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, expect, it } from "vitest";
 import type { MatchTicket } from "../../web/src/domain/network";
 import { CustomLobby } from "../../web/src/features/custom-lobby/CustomLobby";
-import { PlayOnline } from "../../web/src/features/play-online/PlayOnline";
+import { PlayWindow } from "../../web/src/features/launcher/PlayWindow";
+import { playTab } from "../../web/src/state/windows";
 import { QueueBar } from "../../web/src/features/queue/QueueBar";
 import { Scoreboard } from "../../web/src/features/scoreboard/Scoreboard";
 import { createQueue, installPartyLinks, type Queue } from "../../web/src/runtime/matchmaking";
@@ -126,9 +127,10 @@ afterEach(() => {
 it("hosts a custom lobby from the game menu, controls teams/settings/host, and starts when full", () => {
   const fake = fakeQueue();
   matchQueue.set(fake.queue);
+  playTab.set("host");
   render(
     <>
-      <PlayOnline />
+      <PlayWindow />
       <CustomLobby />
       <QueueBar />
     </>,
@@ -232,7 +234,7 @@ it("hosts a custom lobby from the game menu, controls teams/settings/host, and s
 
   // Minimize shows the top bar pill; clicking Open lobby brings the dialog back.
   fireEvent.click(within(dialog).getByRole("button", { name: "Minimize" }));
-  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.queryByRole("dialog", { name: /Custom match/ })).toBeNull();
   const bar = screen.getByRole("status", { name: "Custom lobby" });
   expect(bar.textContent).toContain("K7P2QX");
   fireEvent.click(within(bar).getByRole("button", { name: "Open lobby" }));
@@ -254,7 +256,7 @@ it("hosts a custom lobby from the game menu, controls teams/settings/host, and s
     expires: 2_000_000_000,
   });
   expect(fake.joined).toHaveLength(1);
-  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(screen.queryByRole("dialog", { name: /Custom match/ })).toBeNull();
 });
 
 it("joins a custom lobby from a #custom= invite fragment and returns to lobby from the scoreboard", () => {

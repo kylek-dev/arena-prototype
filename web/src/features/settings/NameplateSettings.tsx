@@ -23,8 +23,9 @@ export function NameplateSettings() {
         </label>
       ))}
       <p>
-        Left-click a bar to target; right-click to focus. Default toggles: V for enemies, Shift+V
-        for friends. Remap in Bindings. The practice scene currently has no teammates.
+        Left-click a bar to target. Right-click an enemy's bar to focus it, or a friendly bar for
+        more options. Default toggles: V for enemies, Shift+V for friends. Remap in Bindings. The
+        practice scene currently has no teammates.
       </p>
     </div>
   );

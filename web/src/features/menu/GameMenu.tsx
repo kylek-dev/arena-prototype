@@ -4,7 +4,9 @@ import { engine } from "../../state/session";
 import { useStore } from "../../state/store";
 import { debugEnabled, diagnosticsVisible } from "../../runtime/diagnostics";
 import { mapEditorVisible } from "../../state/map-editor";
-import { characterKits, returnToHome } from "../../state/appearance";
+import { useMapEditorAllowed } from "../map-editor/access";
+import { returnToLauncher } from "../../state/appearance";
+import { leaveHub } from "../../runtime/hub";
 import { networkLink } from "../../state/network";
 import { createStore } from "../../state/store";
 import type { LinkState } from "../../domain/network";
@@ -20,8 +22,8 @@ export function GameMenu() {
   const spectating = statusSpectator || engineSpectating;
   const inMatch = phase !== "idle" && phase !== "ended";
   const remembered = !inMatch ? link?.remembered() : null;
-  // The home screen holds the account, party invites and your fighter.
-  const home = useStore(characterKits, (k) => k.length > 0);
+  // Admins only (decided 2026-11-26); the door keeps map storage admin-only too.
+  const mapEditor = useMapEditorAllowed();
   return (
     <div className="stack game-menu">
       <Text size="2" color="gray">
@@ -55,24 +57,34 @@ export function GameMenu() {
           Rejoin last match
         </Button>
       )}
-      {!inMatch && home && (
-        <Button variant="surface" onClick={() => returnToHome()}>
-          Home screen
+      {/* The account, friends and party invitations live outside the game. */}
+      {!inMatch && (
+        <Button
+          variant="surface"
+          onClick={() => {
+            // Out of the hub too: the launcher page is outside the game.
+            leaveHub();
+            returnToLauncher();
+          }}
+        >
+          Launcher page
         </Button>
       )}
       <Button variant="surface" color="gray" onClick={() => setPanel("settings")}>
         Settings
       </Button>
-      <Button
-        variant="surface"
-        color="gray"
-        onClick={() => {
-          setPanel(null);
-          mapEditorVisible.set(true);
-        }}
-      >
-        Map editor
-      </Button>
+      {mapEditor && (
+        <Button
+          variant="surface"
+          color="gray"
+          onClick={() => {
+            setPanel(null);
+            mapEditorVisible.set(true);
+          }}
+        >
+          Map editor
+        </Button>
+      )}
       {!spectating && (
         <>
           <Button

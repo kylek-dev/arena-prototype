@@ -30,6 +30,8 @@ pub enum Channel {
     Match,
     Team,
     Spectator,
+    /// The speaker's hub instance (ADR 0056).
+    Hub,
 }
 
 impl Channel {
@@ -39,6 +41,7 @@ impl Channel {
             "match" => Some(Self::Match),
             "team" => Some(Self::Team),
             "spectator" => Some(Self::Spectator),
+            "hub" => Some(Self::Hub),
             _ => None,
         }
     }
@@ -49,6 +52,7 @@ impl Channel {
             Self::Match => "match",
             Self::Team => "team",
             Self::Spectator => "spectator",
+            Self::Hub => "hub",
         }
     }
 }

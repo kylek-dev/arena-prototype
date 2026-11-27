@@ -220,7 +220,8 @@ export const CHAT_COMMANDS: readonly ChatCommand[] = [
   },
   {
     name: "mapeditor",
-    description: "Open the map editor (admins can also keep maps on the server).",
+    description: "Open the map editor and the maps kept on the server.",
+    admin: true,
     run() {
       setPanel(null);
       mapEditorVisible.set(true);

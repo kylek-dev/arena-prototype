@@ -40,6 +40,7 @@ import { installTelemetry } from "./telemetry";
 import { matchQueue, networkLink, remoteHandles, remoteTags } from "../state/network";
 import { parseHandles, parseTags, withHandles, withTags } from "../domain/handles";
 import { clearPostMatchScoreboard, syncPostMatchScoreboard } from "../state/scoreboard";
+import { onHubIntent, onHubScreen, readHub } from "../state/hub-render";
 export function startRuntime(canvas: HTMLCanvasElement) {
   const pointer = installPointer(canvas, () => router.cancel());
   const router = installInput(canvas, pointer.end);
@@ -82,7 +83,21 @@ export function startRuntime(canvas: HTMLCanvasElement) {
   const stopPartyLinks = installPartyLinks(queue);
   // A join link wins; otherwise a reload rejoins this tab's match.
   const joining = takeJoinFragment() ?? link.resumable();
-  if (joining) link.join(joining);
+  // The launcher page comes first, unless a join link or a reloaded match
+  // is already taking the player into one; a join that ends before it ever
+  // opens (the match is over) shows the page after all.
+  let stopJoinWatch = () => {};
+  if (joining) {
+    stopJoinWatch = link.state.subscribe(() => {
+      const phase = link.state.get().phase;
+      if (phase === "open") stopJoinWatch();
+      else if (phase === "ended") {
+        stopJoinWatch();
+        beforeMatch.set(true);
+      }
+    });
+    link.join(joining);
+  } else beforeMatch.set(true);
   const stopJoinLinks = installJoinLinks(link);
   let lastDelivery = 0;
   window.arenaShell = {
@@ -92,6 +107,9 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     onAppearances,
     onHandles: (raw) => remoteHandles.set(parseHandles(raw)),
     onTags: (raw) => remoteTags.set(parseTags(raw)),
+    readHub,
+    onHubIntent,
+    onHubScreen,
     readInput: router.sample,
     readHover: unitHover.read,
     readGraphics,
@@ -155,6 +173,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     fail(String(e.message ?? e), e);
   });
   return () => {
+    stopJoinWatch();
     telemetry.stop();
     stopJoinLinks();
     stopPartyLinks();

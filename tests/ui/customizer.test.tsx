@@ -2,14 +2,11 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { defaultAppearance } from "../../web/src/domain/appearance";
 import { Customizer } from "../../web/src/features/customizer/Customizer";
-import { StartScreen } from "../../web/src/features/customizer/StartScreen";
 import { GameMenu } from "../../web/src/features/menu/GameMenu";
 import { Launcher } from "../../web/src/features/launcher/Launcher";
 import { TooltipProvider } from "../../web/src/ui/Tooltip";
-import * as commands from "../../web/src/runtime/commands";
 import {
   appearance,
-  beforeMatch,
   characterKits,
   customizerVisible,
   preview,
@@ -24,7 +21,6 @@ beforeEach(() => {
   characterKits.set([humanKit(), humanKit("male")]);
   appearance.set({ ...defaultAppearance });
   customizerVisible.set(false);
-  beforeMatch.set(false);
   preview.set({ yaw: 0, zoom: 0 });
   setPanel(null);
 });
@@ -33,59 +29,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const both = () =>
-  render(
-    <>
-      <StartScreen />
-      <Customizer />
-    </>,
-    { wrapper: TooltipProvider },
-  );
-
-it("the start screen offers entering directly, without forcing customization", () => {
-  const reset = vi.spyOn(commands, "dispatch").mockImplementation(() => {});
-  beforeMatch.set(true);
-  both();
-  const start = screen.getByRole("complementary", { name: "Ready" });
-  expect(within(start).getByText("Human · Male · Ranger outfit")).toBeTruthy();
-  expect(screen.queryByRole("complementary", { name: "Appearance" })).toBeNull();
-  // The character is framed and play waits while the screen is up.
-  expect(readPreview()[0]).toBe(1);
-  expect(blocksGameplay()).toBe(true);
-  // Keybinds and spells can be set up from here too.
-  expect(screen.getByRole("button", { name: "Keybinds" })).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Spells" })).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Practice" }));
-  expect(beforeMatch.get()).toBe(false);
-  expect(blocksGameplay()).toBe(false);
-  expect(readPreview()[0]).toBe(0);
-  expect(reset).toHaveBeenCalledWith("reset");
-  expect(screen.queryByRole("complementary", { name: "Ready" })).toBeNull();
-});
-
-it("customizing from the start screen saves back to it or enters the arena", () => {
-  const reset = vi.spyOn(commands, "dispatch").mockImplementation(() => {});
-  beforeMatch.set(true);
-  both();
-  fireEvent.click(screen.getByRole("button", { name: "Customize character" }));
-  expect(screen.queryByRole("complementary", { name: "Ready" })).toBeNull();
-  fireEvent.click(
-    within(screen.getByRole("radiogroup", { name: "Body type" })).getByRole("radio", {
-      name: "Male",
-    }),
-  );
-  fireEvent.click(screen.getByRole("button", { name: "Save" }));
-  expect(JSON.parse(localStorage.getItem("arena.appearance.v1") ?? "{}").body).toBe("male");
-  expect(
-    within(screen.getByRole("complementary", { name: "Ready" })).getByText(/Human · Male/),
-  ).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Customize character" }));
-  fireEvent.click(screen.getByRole("button", { name: "Enter the arena" }));
-  expect(beforeMatch.get()).toBe(false);
-  expect(customizerVisible.get()).toBe(false);
-  expect(reset).toHaveBeenCalledWith("reset");
-  expect(screen.queryByRole("complementary")).toBeNull();
-});
+const open = () => {
+  customizerVisible.set(true);
+  return render(<Customizer />, { wrapper: TooltipProvider });
+};
 
 it("opens from the launcher's C during play and closes with Done", () => {
   render(
@@ -188,8 +135,7 @@ it("finished kits choose a face, an eye colour and a separate facial hair colour
 });
 
 it("dragging the preview turns the character without selecting text", () => {
-  beforeMatch.set(true);
-  both();
+  open();
   const stage = screen.getByText(/Drag to turn/).parentElement as HTMLElement;
   // fireEvent returns false when the handler prevented the default (text selection, native drag).
   expect(fireEvent.pointerDown(stage, { clientX: 100, pointerId: 1 })).toBe(false);

@@ -33,6 +33,8 @@ In recommended order (2026-11-15):
 | done | Production-grade observability: structured logs, metrics, OTLP traces, browser reports, profiling & self-hosted Grafana LGTM stack ([ADR 0054](../docs/decisions/0054-observability-logs-metrics-and-local-lgtm.md); dashboards checked through the API, browser view pending) | 5 | [observability-telemetry](issues/observability-telemetry.md) |
 | 3 | Accounts (researched login choice), `Name#1234` handles, friends and friend invites, admin role (added by the user 2026-11-22; server side done 2026-11-25 with [ADR 0055](../docs/decisions/0055-accounts-oauth-login-in-arena-door.md), UI follow-ups in Lane B) | 5 | [social-identity](issues/social-identity.md) |
 | 4 | Team, match and public chat with system messages and slash commands (`/help`, commands to open panels) (added by the user 2026-11-22; chat server done 2026-11-25, chat box and commands in Lane B) | 4 / 5 | [chat](issues/chat.md) |
+| done | Replace the home screen with an out-of-game launcher page for accounts: sign in or up, guest, delete account, privacy notice (added by the user 2026-11-26; browser review pending) | 5 | [launcher-page](issues/launcher-page.md) |
+| done | Open-world social hub entered from the launcher: players see each other, move, chat, invite and add friends, and queue from there (added by the user 2026-11-26; [ADR 0056](../docs/decisions/0056-social-hub.md) proposed; browser review pending) | 4 / 5 | [social-hub](issues/social-hub.md) |
 | ongoing | Review the network match experience across browsers (manual, by the user) | 2 | [network-ui-review](issues/network-ui-review.md) |
 | ongoing | Measure and harden netcode on real networks | ongoing | [netcode-hardening](issues/netcode-hardening.md) |
 
@@ -43,6 +45,8 @@ Why this order:
 - **Custom matches after parties.** They can reuse the party invites and lobby state.
 - **Server-authoritative casting before spectating.** Spectator views then show cast bars and resources from the start instead of adding them twice.
 - **Observability (OpenTelemetry + self-hosted Grafana LGTM).** Can be pulled forward alongside remote playtests: Phase 1 (structured `tracing` logs, lock-free tick histograms, `arena-door` `/metrics`, and an opt-in local `grafana/otel-lgtm` Compose profile) immediately helps diagnose real WAN playtests, while Phase 2 (OTLP distributed tracing, Alloy log/metric shipping, alerts) and Phase 3 (scrubbed browser RUM + Pyroscope profiling) harden production operations with $0 software cost.
+- **Launcher page before the hub.** The launcher page moves account management out of the game, which the hub assumes: once a player enters, everything in front of them is the world. It is small and reuses the account UI that exists today.
+- **The hub needs a design decision first.** A persistent shared world is a new kind of server session (many players, no rounds, interest management, moderation). An ADR settles where it runs, its capacity, and how it hands players to queued matches before any code.
 - **Note on stages.** This pulls part of Stage 4 (lobby and queueing) ahead of the Stage 3 combat slice because remote playtests need it. The stages still describe the exit evidence for each milestone.
 
 ## Art production track (added by the user 2026-11-23)

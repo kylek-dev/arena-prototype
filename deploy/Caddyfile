@@ -26,6 +26,10 @@
 
 	handle {
 		root * /srv/arena
+		# Browsers revalidate every file (an unchanged one is a cheap 304):
+		# the client's JS glue and WASM keep their names across builds and
+		# must come from the same build, or the client fails to start.
+		header Cache-Control no-cache
 		file_server
 	}
 

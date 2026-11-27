@@ -1,4 +1,4 @@
-/* The friends list (home screen and the F window) and friends' invite
+/* The friends list (launcher page and the F window) and friends' invite
    prompts. Colors are palette swatches or the Radix scales the palette drives. */
 .friends {
   display: flex;

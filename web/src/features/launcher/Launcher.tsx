@@ -5,7 +5,12 @@ import { characterKits, customizerVisible } from "../../state/appearance";
 import { networkLink } from "../../state/network";
 import { engine, interaction, setPanel } from "../../state/session";
 import { createStore, useStore } from "../../state/store";
-import { friendsWindowVisible, openPlay, playWindowVisible } from "../../state/windows";
+import {
+  friendsWindowVisible,
+  hubWindowVisible,
+  openPlay,
+  playWindowVisible,
+} from "../../state/windows";
 import type { LinkState } from "../../domain/network";
 import "./launcher.css";
 
@@ -22,7 +27,8 @@ type Entry = {
 };
 
 /** The in-game launcher (playtest inbox): one-letter buttons, each with a
- * full tooltip, that open the Play, Friends, Spells and Customize windows.
+ * full tooltip, that open the Play, Friends, Hub, Spells and Customize
+ * windows.
  * Movable with the layout editor like the frames. */
 export function Launcher() {
   const value = useConfigSelector((c) => c.frames.launcher);
@@ -30,6 +36,7 @@ export function Launcher() {
   const panel = useStore(interaction, (s) => s.panel);
   const play = useStore(playWindowVisible, (v) => v);
   const friends = useStore(friendsWindowVisible, (v) => v);
+  const hub = useStore(hubWindowVisible, (v) => v);
   const customizing = useStore(customizerVisible, (v) => v);
   const kits = useStore(characterKits, (k) => k.length > 0);
   const link = useStore(networkLink, (l) => l);
@@ -54,6 +61,14 @@ export function Launcher() {
       open: friends,
       disabled: false,
       toggle: () => friendsWindowVisible.set(!friends),
+    },
+    {
+      letter: "H",
+      name: "Hub",
+      hint: "Hub: the players around you. Whisper to them, invite them, add them as friends or block them.",
+      open: hub,
+      disabled: false,
+      toggle: () => hubWindowVisible.set(!hub),
     },
     {
       letter: "S",

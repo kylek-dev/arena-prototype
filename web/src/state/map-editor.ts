@@ -35,6 +35,14 @@ export const mapStatus = createStore<{ revision: number; errors: string[] } | nu
 export const mapSavedText = createStore<string | null>(null);
 /** Whether this server can write map files (local dev/preview only). */
 export const mapWritable = createStore<boolean | null>(null);
+
+/**
+ * Whether this player may open the map editor: admins (the door checks every
+ * admin request again), or anyone on the local authoring server (`npm run dev`
+ * or preview, whose `__map-editor` endpoints a deployed host never serves).
+ */
+export const mapEditorAllowed = (admin: boolean, writable = mapWritable.get()) =>
+  admin || writable === true;
 export const mapNotice = createStore<{ tone: "ok" | "error"; text: string } | null>(null);
 /** File id (assets/maps/<id>.json) of the map being edited and played. */
 export const mapId = createStore(DEFAULT_MAP_ID);
