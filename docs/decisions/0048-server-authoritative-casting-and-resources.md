@@ -141,8 +141,9 @@ Balance consequences to expect in playtests:
 
 ## Amendment (2026-11-26): only completed casts keep their GCD
 
-**Status: proposed (implemented in `arena-sim`, `RULES_VERSION = 7`)**, at the
-user's request: the GCD is for spells that finish successfully.
+**Status: accepted (implemented in `arena-sim`, `RULES_VERSION = 7`)**, at the
+user's request: the GCD is for spells that finish successfully. The user
+playtested it and accepted it, free fake-casting included, on 2026-11-27.
 
 - The GCD still starts when a cast begins, so instants and casts that complete
   behave exactly as before. Nothing else can be cast during a timed cast, and
@@ -160,10 +161,10 @@ user's request: the GCD is for spells that finish successfully.
 - `RULES_VERSION` moves from 6 to 7: replays with a cancelled or interrupted
   cast reach the next spell sooner.
 
-Balance consequence to watch in playtests: with the 2026-11-22 amendment a
-cancelled cast already spent no resource, so **fake-casting is now free**. A
+**Fake-casting is free, by design** (decided by the user, 2026-11-27). With
+the 2026-11-22 amendment a cancelled cast already spent no resource, so a
 player can start and cancel casts back to back to bait an interrupt without
-losing anything. Interrupts still cost the interrupter its cooldown and
-resource. If juking proves too strong, options include a short cast-start
-lockout after a cancel or keeping a partial GCD for casts cancelled by the
-caster while refunding it for interrupts.
+losing anything; interrupts still cost the interrupter its cooldown and
+resource. Considered and not adopted: a short cast-start lockout after a
+cancel, and keeping the GCD for casts the caster cancels while refunding it
+only for interrupts.
