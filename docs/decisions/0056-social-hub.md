@@ -2,7 +2,10 @@
 
 Date: 2026-11-26. **Status: proposed** (requested by the user 2026-11-26;
 the open questions in [social-hub](../../planning/issues/social-hub.md) are
-answered provisionally below, for the user to confirm).
+answered provisionally below, for the user to confirm). **Partly
+superseded by [ADR 0057](0057-hub-on-the-world-server.md)** (2026-11-26):
+the hub moves to the world server with the arena's rules and full HUD;
+where it runs, movement and the movement messages below give way to it.
 
 Builds on [ADR 0046](0046-queues-parties-and-home-screen.md) (the queue
 connection, parties), [ADR 0050](0050-spectating-and-anti-ghosting-delay.md)

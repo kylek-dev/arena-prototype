@@ -12,6 +12,7 @@ import { hoveredFrame } from "../../runtime/unit-hover";
 import { IDLE_QUEUE } from "../../domain/matchmaking";
 import { matchQueue } from "../../state/network";
 import { createStore } from "../../state/store";
+import { openUnitMenu } from "../../state/unit-menu";
 
 const NO_QUEUE = createStore(IDLE_QUEUE);
 const NONE: readonly (string | null)[] = [];
@@ -64,7 +65,16 @@ function TaggedFrame({
       onClick={() => interactUnit(tag, "target")}
       onContextMenu={(e) => {
         e.preventDefault();
-        interactUnit(tag, "focus");
+        // Arena (enemy) frames focus; the others open the unit menu.
+        if (role === "opponent") interactUnit(tag, "focus");
+        else
+          openUnitMenu({
+            tag,
+            unitId: unit?.id ?? "",
+            x: e.clientX,
+            y: e.clientY,
+            frame: role === "teammate" ? "team" : role,
+          });
       }}
     >
       {frame}

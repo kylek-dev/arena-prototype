@@ -8,6 +8,7 @@ import { useConfigSelector } from "../../state/config";
 import { draggingSpell, error, interaction, nameplateScene } from "../../state/session";
 import { useStore } from "../../state/store";
 import { interactUnit, setSpectatorCamera, unitRoster } from "../../runtime/commands";
+import { openUnitMenu } from "../../state/unit-menu";
 
 export function Nameplates() {
   const scene = useStore(nameplateScene, (s) => s);
@@ -46,7 +47,7 @@ export function Nameplates() {
               type="button"
               className={`nameplate ${friendly ? "friendly" : "enemy"}${unit.disconnected ? " disconnected" : ""}`}
               style={{ left: `${x * 100}%`, top: `${y * 100}%` }}
-              aria-label={`${unit.name}${unit.admin ? " (admin)" : ""}${unit.disconnected ? " (disconnected)" : ""} health ${unit.health}/${unit.maxHealth}${activeCast ? `, casting ${spellLabel(activeCast.spell)}` : ""}. ${spectating ? "Follow fighter" : "Target; right-click to focus"}`}
+              aria-label={`${unit.name}${unit.admin ? " (admin)" : ""}${unit.disconnected ? " (disconnected)" : ""} health ${unit.health}/${unit.maxHealth}${activeCast ? `, casting ${spellLabel(activeCast.spell)}` : ""}. ${spectating ? "Follow fighter" : friendly ? "Target; more options on right-click" : "Target; focus on right-click"}`}
               aria-pressed={pressed}
               onMouseDown={(e) => {
                 press.current = { x: e.clientX, y: e.clientY };
@@ -63,7 +64,11 @@ export function Nameplates() {
               }}
               onContextMenu={(e) => {
                 e.preventDefault();
-                if (!spectating) interactUnit(tag, "focus");
+                if (spectating) return;
+                // Enemies focus, as arena frames do; friends open the unit menu.
+                if (friendly)
+                  openUnitMenu({ tag, unitId: unit.id, x: e.clientX, y: e.clientY, frame: null });
+                else interactUnit(tag, "focus");
               }}
             >
               <span
