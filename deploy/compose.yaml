@@ -69,6 +69,9 @@ services:
       # Maps saved by admins in the server-backed editor.
       - --maps-dir
       - /var/lib/arena/maps
+      # News admins post on the launcher page.
+      - --news-dir
+      - /var/lib/arena/news
       # Which matches ended (private network; Caddy never routes here),
       # so players leave the in-match state when their match ends.
       - --match-status

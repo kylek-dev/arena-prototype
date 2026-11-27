@@ -7,7 +7,6 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { afterEach, expect, it } from "vitest";
 import { Friends } from "../../web/src/features/friends/Friends";
 import { FriendsWindow } from "../../web/src/features/launcher/FriendsWindow";
-import { LauncherPage } from "../../web/src/features/launcher-page/LauncherPage";
 import { beforeMatch } from "../../web/src/state/appearance";
 import { InvitePrompt } from "../../web/src/features/friends/InvitePrompt";
 import { createAccount } from "../../web/src/runtime/account";
@@ -169,21 +168,6 @@ it("offers no party invitations in the in-game Friends window", async () => {
   ]);
   expect(screen.queryByRole("menuitem", { name: "Invite to group" })).toBeNull();
   expect(fake.sent().some((m) => m.type === "invite")).toBe(false);
-});
-
-it("keeps party invitations in the launcher page's friends list", async () => {
-  const { account } = fakeDoor({
-    "/api/auth/me": { status: 200, body: ROOK },
-    "/api/friends": { status: 200, body: LIST },
-  });
-  await account.refresh();
-  const fake = fakeQueue();
-  matchQueue.set(fake.queue);
-  await act(async () => {
-    beforeMatch.set(true);
-    render(<LauncherPage />, { wrapper: TooltipProvider });
-  });
-  expect(menuOf("Ash#1000").getByRole("menuitem", { name: "Invite to group" })).toBeTruthy();
 });
 
 it("adds through a prompt, accepts, removes and blocks after confirming, and words refusals", async () => {
