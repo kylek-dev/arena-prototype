@@ -58,6 +58,10 @@ pub const ARENA_HASTE_PERCENTAGE: u32 = Specialisation::Toxicologist.stat_templa
 /// Maximum ticks of authoritative target-position history retained for bounded
 /// server-side targeting lag compensation (6 ticks = 200 ms at 30 Hz; ADR 0049).
 pub const MAX_LAG_COMP_TICKS: u8 = 6;
+/// Longest cast buffer: 12 ticks (400 ms at 30 Hz). A cast intent sent this
+/// close to the end of the sender's GCD or active cast is held and fires on
+/// the tick they end (ADR 0058).
+pub const MAX_CAST_BUFFER_TICKS: u8 = 12;
 const POSITION_HISTORY_LEN: usize = MAX_LAG_COMP_TICKS as usize;
 pub use crate::spells::{
     INTERRUPT_LOCKOUT_TICKS as LOCKOUT_TICKS, MAX_RESOURCE as ARENA_MAX_RESOURCE,
@@ -74,6 +78,13 @@ impl Position {
         let z = i64::from(self.z) - i64::from(other.z);
         x * x + z * z
     }
+}
+
+/// A cast intent held until the caster's GCD or active cast ends (ADR 0058).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BufferedCast {
+    pub spell: SpellId,
+    pub target: Option<usize>,
 }
 
 /// Authoritative in-progress timed cast on a [`Combatant`].
@@ -103,6 +114,8 @@ pub struct Combatant {
     pub cooldowns: [u32; SpellId::COUNT],
     /// In-progress timed cast, if any.
     pub active_cast: Option<ActiveCastState>,
+    /// Cast intent waiting for the GCD or the active cast to end, if any.
+    pub buffered_cast: Option<BufferedCast>,
     /// Heading as a binary angle: 65536 units per turn, 0 faces −Z and
     /// angles grow counter-clockwise seen from above (a yaw about +Y). Every
     /// value is valid; no rule reads it yet, but it is authoritative state
@@ -123,6 +136,7 @@ impl Combatant {
             lockout_remaining: 0,
             cooldowns: [0; SpellId::COUNT],
             active_cast: None,
+            buffered_cast: None,
             facing,
         }
     }
@@ -161,12 +175,29 @@ impl Combatant {
     /// their GCD, so a cast that started one refunds it (ADR 0048, 2026-11-26
     /// amendment). Casting blocks every other spell, so the whole running GCD
     /// is the cast's; an off-GCD cast leaves an earlier spell's GCD alone.
+    /// A buffered spell is dropped with it.
     pub fn end_cast_early(&mut self) -> Option<ActiveCastState> {
         let cast = self.active_cast.take()?;
+        self.buffered_cast = None;
         if !matches!(cast.spell.definition().gcd, GcdType::OffGcd) {
             self.gcd_remaining = 0;
         }
         Some(cast)
+    }
+
+    /// Ticks until `spell` is no longer blocked by the active cast, the GCD
+    /// or its own cooldown, counted from the new-intent phase: an active cast
+    /// with `r` remaining ticks completes `r` ticks later, freeing that tick's
+    /// intents, and a GCD or cooldown of `g` reaches zero `g` ticks later.
+    /// Off-GCD spells ignore the GCD.
+    pub fn ticks_until_free(&self, spell: SpellId) -> u32 {
+        let cast = self.active_cast.map_or(0, |cast| cast.remaining_ticks);
+        let gcd = if matches!(spell.definition().gcd, GcdType::OffGcd) {
+            0
+        } else {
+            self.gcd_remaining
+        };
+        cast.max(gcd).max(self.cooldown_remaining(spell))
     }
 
     /// Canonical combatant state invariant check shared by `Arena::restore`
@@ -186,6 +217,11 @@ impl Combatant {
             {
                 return false;
             }
+        }
+        if let Some(buffered) = self.buffered_cast
+            && (self.health == 0 || buffered.target.is_some_and(|t| t >= roster_len))
+        {
+            return false;
         }
         true
     }
@@ -221,6 +257,11 @@ pub struct ActorInput {
     /// geometry checks (`0` = present tick only; capped at [`MAX_LAG_COMP_TICKS`]
     /// inside [`Arena::advance`]). Never carries client coordinates.
     pub rewind_ticks: u8,
+    /// The sender's cast buffer for this tick's `Cast`, in ticks (capped at
+    /// [`MAX_CAST_BUFFER_TICKS`]; `0` = off). A cast pressed while an active
+    /// cast, the GCD or its own cooldown still blocks it, ending within this
+    /// many ticks, is held and validated on the tick it fires (ADR 0058).
+    pub cast_buffer_ticks: u8,
 }
 impl ActorInput {
     pub fn is_idle(&self) -> bool {
@@ -792,6 +833,8 @@ impl Arena {
                         reason: InterruptReason::Cancelled,
                         by: None,
                     });
+                } else if self.fighters[actor].buffered_cast.take().is_some() {
+                    // Cancelling with only a buffered spell drops it.
                 } else {
                     reject(&mut events, actor, Rejection::NotCasting);
                 }
@@ -873,11 +916,37 @@ impl Arena {
             );
         }
 
-        // 4b. New spell intents.
-        for (actor, input) in inputs.iter().enumerate() {
-            let Some(CastAction::Cast { spell, target }) = input.action else {
-                continue;
+        // 4b. New spell intents, and buffered spells whose wait is over. A
+        // press replaces any buffered spell; a buffered spell fires only on a
+        // tick with no press (one combat action per tick). Every fighter is
+        // visited: a held spell fires on ticks its player sends nothing.
+        for (actor, &actor_moving) in moving.iter().enumerate().take(count) {
+            let input = inputs.get(actor).copied().unwrap_or_default();
+            let (spell, target, rewind_ticks, buffer_ticks) = match input.action {
+                Some(CastAction::Cast { spell, target }) => {
+                    self.fighters[actor].buffered_cast = None;
+                    let buffer = input.cast_buffer_ticks.min(MAX_CAST_BUFFER_TICKS);
+                    (spell, target, input.rewind_ticks, buffer)
+                }
+                _ => match self.fighters[actor].buffered_cast {
+                    Some(buffered)
+                        if self.fighters[actor].ticks_until_free(buffered.spell) == 0 =>
+                    {
+                        self.fighters[actor].buffered_cast = None;
+                        (buffered.spell, buffered.target, 0, 0)
+                    }
+                    _ => continue,
+                },
             };
+            // Held when only the GCD or the active cast blocks it now and that
+            // wait ends within the sender's buffer. Nothing else is judged yet:
+            // range, movement, costs and the rest are checked when it fires,
+            // as for a press made on that tick.
+            let wait = self.fighters[actor].ticks_until_free(spell);
+            if self.fighters[actor].health > 0 && wait > 0 && wait <= u32::from(buffer_ticks) {
+                self.fighters[actor].buffered_cast = Some(BufferedCast { spell, target });
+                continue;
+            }
             let def = spell.definition();
             let (mut combat, mut casting) = hydrate_casting(&self.fighters[actor], actor);
             let mut health = self.fighters[actor].health;
@@ -892,7 +961,7 @@ impl Arena {
                 active_effects: &[],
                 is_stunned: false,
                 silence_blocks_spell: self.fighters[actor].lockout_remaining > 0,
-                is_moving: moving[actor],
+                is_moving: actor_moving,
             };
             let target_ctx = target.and_then(|t| {
                 target_context_with_lag_comp(
@@ -902,7 +971,7 @@ impl Arena {
                     actor,
                     t,
                     def.range,
-                    input.rewind_ticks,
+                    rewind_ticks,
                 )
             });
             match casting.try_cast(&mut combat, &mut caster, &def, target_ctx.as_ref()) {
@@ -995,6 +1064,9 @@ impl Arena {
             }
         }
         for (actor, fighter) in self.fighters.iter_mut().enumerate() {
+            if fighter.health == 0 {
+                fighter.buffered_cast = None;
+            }
             if fighter.health == 0
                 && let Some(active) = fighter.end_cast_early()
             {
@@ -1102,6 +1174,16 @@ impl Arena {
                 }
             }
             hash.write(&fighter.facing.to_le_bytes());
+            match fighter.buffered_cast {
+                None => hash.write(&[0]),
+                Some(buffered) => {
+                    hash.write(&[1, buffered.spell as u8]);
+                    match buffered.target {
+                        None => hash.write(&[0]),
+                        Some(target) => hash.write(&[1, target as u8]),
+                    }
+                }
+            }
         }
         hash.0
     }
@@ -2215,6 +2297,7 @@ mod tests {
             jump: true,
             action: ActorInput::pulse(1),
             rewind_ticks: 0,
+            cast_buffer_ticks: 0,
         };
         assert_eq!(
             a.advance(&[input]),
@@ -2260,6 +2343,7 @@ mod tests {
                     lockout_remaining: 0,
                     cooldowns: [0; SpellId::COUNT],
                     active_cast: None,
+                    buffered_cast: None,
                     facing: 0,
                 },
                 Combatant {
@@ -2281,6 +2365,10 @@ mod tests {
                         remaining_ticks: 20,
                         total_ticks: 45,
                     }),
+                    buffered_cast: Some(BufferedCast {
+                        spell: SpellId::Pulse,
+                        target: Some(0),
+                    }),
                     facing: HALF_TURN,
                 },
             ],
@@ -2291,7 +2379,7 @@ mod tests {
         assert_eq!(arena.state_hash(), GOLDEN_STATE_HASH);
         assert_eq!(arena.clone().state_hash(), arena.state_hash());
         let mut seen = vec![arena.state_hash()];
-        let mutations: [fn(&mut Arena); 12] = [
+        let mutations: [fn(&mut Arena); 14] = [
             |a| a.fighters[0].facing = 1,
             |a| a.fighters[1].health -= 1,
             |a| a.fighters[0].position.x += 1,
@@ -2301,6 +2389,8 @@ mod tests {
             |a| a.fighters[1].cooldowns[SpellId::Pulse.index()] += 1,
             |a| a.fighters[1].active_cast.as_mut().unwrap().remaining_ticks -= 1,
             |a| a.fighters[1].active_cast = None,
+            |a| a.fighters[1].buffered_cast.as_mut().unwrap().target = None,
+            |a| a.fighters[1].buffered_cast = None,
             |a| a.tick += 1,
             |a| a.result = Some(RoundResult::Draw),
             |a| a.result = Some(RoundResult::TimeLimitDraw),
@@ -2650,6 +2740,198 @@ mod tests {
         );
         assert_eq!(oom.fighters()[0].gcd_remaining, 0);
         assert_eq!(oom.fighters()[0].cooldown_remaining(SpellId::Pulse), 0);
+    }
+
+    fn press(spell: SpellId, cast_buffer_ticks: u8) -> ActorInput {
+        ActorInput {
+            action: Some(CastAction::Cast {
+                spell,
+                target: Some(1),
+            }),
+            cast_buffer_ticks,
+            ..ActorInput::default()
+        }
+    }
+
+    /// Steps idle ticks until actor 0's GCD reads `gcd` after a tick.
+    fn idle_until_gcd(arena: &mut Arena, gcd: u32) {
+        while arena.fighters()[0].gcd_remaining > gcd {
+            assert_eq!(arena.advance(&[]), vec![]);
+        }
+        assert_eq!(arena.fighters()[0].gcd_remaining, gcd);
+    }
+
+    #[test]
+    fn cast_buffer_holds_a_press_until_the_gcd_ends() {
+        let buffered = Some(BufferedCast {
+            spell: SpellId::RiftBolt,
+            target: Some(1),
+        });
+        let mut arena = close_quarters(1, 5_000);
+        arena.advance(&[press(SpellId::Pulse, 0)]);
+
+        // One tick outside the window, a window of 0, or one past the cap: rejected as before.
+        idle_until_gcd(&mut arena, MAX_CAST_BUFFER_TICKS as u32 + 1);
+        for buffer in [MAX_CAST_BUFFER_TICKS, 0, u8::MAX] {
+            assert_eq!(
+                arena.clone().advance(&[press(SpellId::RiftBolt, buffer)]),
+                vec![rejected(0, Rejection::GlobalCooldown)]
+            );
+        }
+
+        // Inside the window: held without a rejection, and fired on the first
+        // tick the GCD is over, with no gap.
+        idle_until_gcd(&mut arena, MAX_CAST_BUFFER_TICKS as u32);
+        let mut held = arena.clone();
+        assert_eq!(held.advance(&[press(SpellId::RiftBolt, 12)]), vec![]);
+        assert_eq!(held.fighters()[0].buffered_cast, buffered);
+        for _ in 1..MAX_CAST_BUFFER_TICKS {
+            assert_eq!(held.advance(&[]), vec![]);
+        }
+        assert_eq!(held.fighters()[0].gcd_remaining, 0);
+        assert_eq!(
+            held.advance(&[]),
+            vec![ArenaEvent::CastStarted {
+                actor: 0,
+                spell: SpellId::RiftBolt,
+                target: Some(1),
+                duration_ticks: crate::spells::RIFT_BOLT_CAST_TICKS,
+            }]
+        );
+        assert_eq!(held.fighters()[0].buffered_cast, None);
+
+        // The latest press replaces the held spell.
+        let mut replaced = arena.clone();
+        replaced.advance(&[press(SpellId::RiftBolt, 12)]);
+        replaced.advance(&[ActorInput {
+            action: Some(CastAction::Cast {
+                spell: SpellId::Mend,
+                target: Some(0),
+            }),
+            cast_buffer_ticks: 12,
+            ..ActorInput::default()
+        }]);
+        assert_eq!(
+            replaced.fighters()[0].buffered_cast,
+            Some(BufferedCast {
+                spell: SpellId::Mend,
+                target: Some(0),
+            })
+        );
+
+        // Cancelling with only a held spell drops it, silently.
+        let mut cancelled = arena.clone();
+        cancelled.advance(&[press(SpellId::RiftBolt, 12)]);
+        assert_eq!(
+            cancelled.step(&[ArenaCommand::CancelCast { actor: 0 }]),
+            vec![]
+        );
+        assert_eq!(cancelled.fighters()[0].buffered_cast, None);
+
+        // A held spell is validated when it fires: moving then rejects a stationary cast.
+        let mut moved = arena.clone();
+        moved.advance(&[press(SpellId::RiftBolt, 12)]);
+        for _ in 1..MAX_CAST_BUFFER_TICKS {
+            moved.advance(&[]);
+        }
+        assert_eq!(
+            moved.step(&[forward()]),
+            vec![
+                ArenaEvent::Moved { actor: 0 },
+                rejected(0, Rejection::Moving)
+            ]
+        );
+        assert_eq!(moved.fighters()[0].buffered_cast, None);
+
+        // Snapshots carry the held spell: restoring keeps hash parity.
+        let mut restored = arena.clone();
+        assert!(restored.restore_in_place(held.tick(), held.fighters(), held.result()));
+        assert_eq!(restored.state_hash(), held.state_hash());
+    }
+
+    #[test]
+    fn cast_buffer_waits_out_the_spells_own_cooldown_too() {
+        // Pulse's 30-tick cooldown outlasts its 29-tick GCD by one tick: a
+        // second Pulse held during the GCD fires when the cooldown ends.
+        let mut arena = close_quarters(1, 5_000);
+        arena.advance(&[press(SpellId::Pulse, 0)]);
+        idle_until_gcd(&mut arena, 9);
+        assert_eq!(arena.fighters()[0].ticks_until_free(SpellId::Pulse), 10);
+        assert_eq!(arena.advance(&[press(SpellId::Pulse, 12)]), vec![]);
+        let mut fired = None;
+        for tick in 1..=MAX_CAST_BUFFER_TICKS {
+            let events = arena.advance(&[]);
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, ArenaEvent::Rejected { .. })),
+                "{events:?}"
+            );
+            if events.contains(&ArenaEvent::Hit {
+                actor: 0,
+                target: 1,
+                damage: ATTACK_DAMAGE,
+            }) {
+                fired = Some(tick);
+                break;
+            }
+        }
+        assert_eq!(fired, Some(10), "fires 10 ticks after the press read 10");
+        assert_eq!(arena.fighters()[0].buffered_cast, None);
+    }
+
+    #[test]
+    fn cast_buffer_fires_on_the_tick_a_cast_lands_and_drops_on_interrupt() {
+        use crate::spells::RIFT_BOLT_DAMAGE;
+
+        let mut arena = close_quarters(1, 5_000);
+        arena.advance(&[press(SpellId::RiftBolt, 0)]);
+        // A press during the GCD part of the cast reports the cast as the blocker.
+        while arena.fighters()[0].active_cast.unwrap().remaining_ticks > 5 {
+            arena.advance(&[]);
+        }
+        assert_eq!(arena.fighters()[0].ticks_until_free(SpellId::Pulse), 5);
+        assert_eq!(arena.fighters()[0].ticks_until_free(SpellId::Quell), 5);
+
+        // Pulse pressed 5 ticks before Rift Bolt lands fires on its completion tick.
+        // The press tick's own countdown makes the cast land 5 ticks later,
+        // counting the press tick.
+        let mut chained = arena.clone();
+        assert_eq!(chained.advance(&[press(SpellId::Pulse, 12)]), vec![]);
+        for _ in 2..5 {
+            assert_eq!(chained.advance(&[]), vec![]);
+        }
+        assert_eq!(
+            chained.advance(&[]),
+            vec![
+                ArenaEvent::CastCompleted {
+                    actor: 0,
+                    spell: SpellId::RiftBolt,
+                    target: Some(1),
+                },
+                ArenaEvent::Hit {
+                    actor: 0,
+                    target: 1,
+                    damage: RIFT_BOLT_DAMAGE,
+                },
+                ArenaEvent::Hit {
+                    actor: 0,
+                    target: 1,
+                    damage: ATTACK_DAMAGE,
+                },
+            ]
+        );
+
+        // An interrupt drops the held spell along with the cast.
+        let mut interrupted = arena.clone();
+        interrupted.advance(&[press(SpellId::Pulse, 12)]);
+        interrupted.step(&[ArenaCommand::Cast {
+            actor: 1,
+            spell: SpellId::Quell,
+            target: Some(0),
+        }]);
+        assert_eq!(interrupted.fighters()[0].active_cast, None);
+        assert_eq!(interrupted.fighters()[0].buffered_cast, None);
     }
 
     #[test]
@@ -3384,5 +3666,5 @@ mod tests {
         }
     }
 
-    const GOLDEN_STATE_HASH: u64 = 2_147_620_522_866_943_910;
+    const GOLDEN_STATE_HASH: u64 = 7_358_168_528_959_472_456;
 }

@@ -141,9 +141,12 @@ fn inputs_carry_this_seats_intent_with_targets_in_server_numbering() {
             // Local 1 (the enemy) is server actor 0.
             action: InputFrame::pulse(0),
             view_tick: 0,
+            cast_buffer: 0,
         }))
     );
-    // Non-Pulse spells translate local target indices through seat ordering too.
+    // Non-Pulse spells translate local target indices through seat ordering
+    // too, and casts carry the cast buffer setting.
+    session.set_cast_buffer(12);
     let bolt = session
         .input_action(
             [0, 0],
@@ -168,6 +171,7 @@ fn inputs_carry_this_seats_intent_with_targets_in_server_numbering() {
                 target: Some(0),
             },
             view_tick: 0,
+            cast_buffer: 12,
         }))
     );
     let mend = session
@@ -194,8 +198,17 @@ fn inputs_carry_this_seats_intent_with_targets_in_server_numbering() {
                 target: Some(1),
             },
             view_tick: 0,
+            cast_buffer: 12,
         }))
     );
+    // A frame without a cast never carries the buffer.
+    let idle = session
+        .input_action([0, 0], 0x4000, false, None, 0.03)
+        .unwrap();
+    assert!(matches!(
+        ClientMessage::decode(&idle),
+        Ok(ClientMessage::Input(InputFrame { cast_buffer: 0, .. }))
+    ));
     // An acknowledgement 0.1 s later measures input latency.
     let mut server = Arena::practice(layout(), 1).unwrap();
     server.step(&[]);
@@ -434,6 +447,7 @@ fn forward() -> ActorInput {
         jump: false,
         action: None,
         rewind_ticks: 0,
+        cast_buffer_ticks: 0,
     }
 }
 
@@ -524,6 +538,7 @@ fn nothing_is_predicted_while_waiting_and_a_new_socket_starts_over() {
         jump: false,
         action: WireAction::None,
         view_tick: 0,
+        cast_buffer: 0,
     }
     .merge_into(&mut slot);
     server.advance(&[slot]);
@@ -773,6 +788,10 @@ fn cast_and_interrupt_events_and_active_cast_targets_translate_to_local_numberin
         remaining_ticks: 20,
         total_ticks: 45,
     });
+    fighters[0].buffered_cast = Some(arena_sim::arena::BufferedCast {
+        spell: SpellId::Pulse,
+        target: Some(1),
+    });
     server = Arena::restore(layout(), 1, fighters, None).unwrap();
     // Join as seat 1: server actor 1 -> local 0, server actor 0 -> local 1.
     let mut session = joined(1, 1);
@@ -804,6 +823,8 @@ fn cast_and_interrupt_events_and_active_cast_targets_translate_to_local_numberin
     let view = session.view(0.1, 0.1).unwrap();
     // Server actor 0 is local 1; its active cast targeted server actor 1 (local 0).
     assert_eq!(view.fighters[1].active_cast.unwrap().target, Some(0));
+    // So did the spell its cast buffer holds.
+    assert_eq!(view.fighters[1].buffered_cast.unwrap().target, Some(0));
     assert_eq!(
         view.shown,
         vec![

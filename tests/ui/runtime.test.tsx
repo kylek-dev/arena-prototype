@@ -408,7 +408,8 @@ describe("production input routing", () => {
   it("slot click and keyboard use the same assignment and authoritative availability", () => {
     activateSlot("bar-1-s1");
     expect(router.sample()[2]).toBe(1);
-    engine.set(snapshot({ cooldown: 0.5 }));
+    // A recharge beyond the cast buffer's reach blocks the press locally.
+    engine.set(snapshot({ cooldown: 2 }));
     activateSlot("bar-1-s1");
     key("Digit1");
     expect(router.sample()[2]).toBe(0);

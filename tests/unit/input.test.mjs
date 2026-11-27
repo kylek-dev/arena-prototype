@@ -327,8 +327,8 @@ test('the Rust bridge input array keeps its positional contract and drains delta
   input.wheel(-30);
   down(input, 2, 2);
   move(input, 2, 10, 5);
-  assert.deepEqual(input.readInput(), [0, -1, 1, 1, 0, 0, 10, 5, 120, -1, -1, 1, 0, 0, 0, -1, -1, -1, 0, 1, -2, 0]);
-  assert.deepEqual(input.readInput(), [0, -1, 0, 0, 0, 0, 0, 0, 0, -1, -1, 1, 0, 0, 0, -1, -1, -1, 0, 0, -2, 0]);
+  assert.deepEqual(input.readInput(), [0, -1, 1, 1, 0, 0, 10, 5, 120, -1, -1, 1, 0, 0, 0, -1, -1, -1, 0, 1, -2, 0, 0]);
+  assert.deepEqual(input.readInput(), [0, -1, 0, 0, 0, 0, 0, 0, 0, -1, -1, 1, 0, 0, 0, -1, -1, -1, 0, 0, -2, 0, 0]);
 });
 
 test('requestSpectatorCamera encodes free and follow actor commands at index 20 and drains once', () => {
@@ -366,4 +366,14 @@ test('self selection uses the appended bridge field and drains or cancels once',
   input.selectPlayer = true;
   input.cancel();
   assert.equal(input.readInput()[13], 0);
+});
+
+test('sends the cast buffer setting in field 22 on every frame', () => {
+  const input = new InputState();
+  assert.equal(input.readInput()[22], 0);
+  input.setCastBuffer(400);
+  assert.equal(input.readInput()[22], 400);
+  assert.equal(input.readInput()[22], 400, 'a setting, not a one-shot press');
+  input.setCastBuffer(Number.NaN);
+  assert.equal(input.readInput()[22], 0);
 });

@@ -650,6 +650,7 @@ pub fn decide(actor: usize, snapshot: &Snapshot, rng: &mut Rng) -> InputFrame {
         jump: input.jump,
         action,
         view_tick: 0,
+        cast_buffer: input.cast_buffer_ticks,
     }
 }
 

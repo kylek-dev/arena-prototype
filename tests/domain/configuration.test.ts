@@ -191,6 +191,21 @@ describe("preferences and profiles", () => {
     expect(migrated.assignmentsLocked).toBe(true);
   });
 
+  it("defaults the cast buffer to 400 ms and keeps saved values within 0-400", () => {
+    expect(initial().profiles[0].config.castBufferMs).toBe(400);
+    const config = initial().profiles[0].config as Record<string, unknown>;
+    for (const [saved, kept] of [
+      [undefined, 400],
+      ["fast", 400],
+      [-50, 0],
+      [9999, 400],
+      [125.4, 125],
+      [0, 0],
+    ] as const) {
+      expect(validateConfig({ ...config, castBufferMs: saved }).castBufferMs).toBe(kept);
+    }
+  });
+
   it("does not steal a custom Escape binding while adding the menu action", () => {
     const old = initial().profiles[0].config;
     delete old.bindings.menu;

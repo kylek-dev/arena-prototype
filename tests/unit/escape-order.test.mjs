@@ -21,7 +21,7 @@ test('binding capture and text fields keep Escape even while casting', () => {
 test('a stop-casting request is ABI field 21, drains once and is cleared by cancel', () => {
   const input = new InputState();
   const before = input.readInput();
-  assert.equal(before.length, 22);
+  assert.equal(before.length, 23);
   assert.equal(before[21], 0);
   input.requestStopCast();
   const stopped = input.readInput();

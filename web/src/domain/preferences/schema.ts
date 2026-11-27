@@ -43,8 +43,13 @@ export type Config = {
    * instead of matching the launcher's height. */
   chatHeightCustom: boolean;
   assignmentsLocked: boolean;
+  /** How early a spell may be pressed before the GCD or the current cast
+   * ends and still be cast the moment it ends (ms; 0 = off; ADR 0058). */
+  castBufferMs: number;
   nameplates: { friendly: boolean; enemy: boolean };
 };
+/** The cast buffer setting's range. The rules cap it at 12 ticks (400 ms). */
+export const CAST_BUFFER_MS = { min: 0, max: 400, step: 50, initial: 400 } as const;
 export type ChatSize = { width: number; height: number };
 /** The chat box's size limits: big enough for tabs, a few lines and the
  * field; at most most of a large screen. */
@@ -90,6 +95,7 @@ export function defaultConfig(): Config {
     chatSizeCustom: false,
     chatHeightCustom: false,
     assignmentsLocked: false,
+    castBufferMs: CAST_BUFFER_MS.initial,
     nameplates: { friendly: true, enemy: true },
   };
 }
@@ -292,6 +298,9 @@ export function validateConfig(value: unknown): Config {
       cleanChatSize(r.chatSize).height !== OLD_CHAT_HEIGHT,
     ),
     assignmentsLocked: bool(r.assignmentsLocked, false),
+    castBufferMs: Math.round(
+      num(r.castBufferMs, CAST_BUFFER_MS.initial, CAST_BUFFER_MS.min, CAST_BUFFER_MS.max),
+    ),
     nameplates: {
       friendly: bool(record(r.nameplates).friendly, true),
       enemy: bool(record(r.nameplates).enemy, true),

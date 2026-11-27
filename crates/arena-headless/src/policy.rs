@@ -81,6 +81,7 @@ pub fn decide(actor: usize, tick: u64, fighters: &[Combatant], rng: &mut Rng) ->
             jump: false,
             action: None,
             rewind_ticks: 0,
+            cast_buffer_ticks: 0,
         };
     }
 
@@ -143,6 +144,7 @@ pub fn decide(actor: usize, tick: u64, fighters: &[Combatant], rng: &mut Rng) ->
                 target: Some(victim),
             }),
             rewind_ticks: 0,
+            cast_buffer_ticks: 0,
         };
     }
 
@@ -168,6 +170,7 @@ pub fn decide(actor: usize, tick: u64, fighters: &[Combatant], rng: &mut Rng) ->
                 target: Some(index),
             }),
             rewind_ticks: 0,
+            cast_buffer_ticks: 0,
         };
     }
 
@@ -186,6 +189,7 @@ pub fn decide(actor: usize, tick: u64, fighters: &[Combatant], rng: &mut Rng) ->
             None
         },
         rewind_ticks: 0,
+        cast_buffer_ticks: 0,
     }
 }
 

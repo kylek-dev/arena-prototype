@@ -13,6 +13,7 @@ fn input(seq: u32) -> InputFrame {
         jump: true,
         action: InputFrame::pulse(3),
         view_tick: 0,
+        cast_buffer: 0,
     }
 }
 
@@ -207,15 +208,15 @@ fn ordinary_traffic_is_small() {
 #[test]
 fn the_wire_layout_is_pinned() {
     // Golden frames: changing them requires a PROTOCOL_VERSION bump.
-    assert_eq!(PROTOCOL_VERSION, 10);
+    assert_eq!(PROTOCOL_VERSION, 11);
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 10,
+            protocol: 11,
             ticket: vec![0xAB, 0xCD],
             appearance: None,
         }
         .encode(),
-        [0, 10, 2, 0xAB, 0xCD, 0]
+        [0, 11, 2, 0xAB, 0xCD, 0]
     );
     let compact = WireAppearance {
         ancestry: "elf".into(),
@@ -230,13 +231,13 @@ fn the_wire_layout_is_pinned() {
     };
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 10,
+            protocol: 11,
             ticket: vec![0xAB, 0xCD],
             appearance: Some(Box::new(compact)),
         }
         .encode(),
         [
-            0, 10, 2, 0xAB, 0xCD, 1, // Hello variant 0, protocol 10, ticket, Some
+            0, 11, 2, 0xAB, 0xCD, 1, // Hello variant 0, protocol 11, ticket, Some
             3, b'e', b'l', b'f', // ancestry
             4, b'm', b'a', b'l', b'e', // body
             4, b'f', b'a', b'i', b'r', // skin_tone
@@ -264,19 +265,21 @@ fn the_wire_layout_is_pinned() {
         })
         .encode(),
         // variant 0, protocol 7, actor 0, team_size 2, tick 10, tick_rate 30,
-        // round_ticks 600 (0xD8 0x04), rules 7, map 1, spectator true (1).
-        [0, 7, 0, 2, 10, 30, 0xD8, 0x04, 7, 1, 1]
+        // round_ticks 600 (0xD8 0x04), rules 8, map 1, spectator true (1).
+        [0, 7, 0, 2, 10, 30, 0xD8, 0x04, 8, 1, 1]
     );
     assert_eq!(
         ClientMessage::Input(InputFrame {
             view_tick: 120,
+            cast_buffer: 12,
             ..input(300)
         })
         .encode(),
         // variant 1, seq 300 (varint), x -1000 / z 707 (zigzag varints),
-        // facing 0xC000, jump, WireAction::Cast { Pulse (0), Some(3) }, view_tick 120.
+        // facing 0xC000, jump, WireAction::Cast { Pulse (0), Some(3) }, view_tick 120,
+        // cast_buffer 12.
         [
-            1, 0xAC, 0x02, 0xCF, 0x0F, 0x86, 0x0B, 0x80, 0x80, 0x03, 1, 1, 0, 1, 3, 120
+            1, 0xAC, 0x02, 0xCF, 0x0F, 0x86, 0x0B, 0x80, 0x80, 0x03, 1, 1, 0, 1, 3, 120, 12
         ]
     );
     // Scoreboard golden suffix: `scoreboard: None, events: []` ends in `[0, 0]`;
@@ -354,21 +357,21 @@ fn malformed_frames_are_rejected_not_trusted() {
     // Unknown variants, invalid bool and enum/option tags.
     assert_eq!(ClientMessage::decode(&[9, 0]), Err(DecodeError::Malformed));
     let mut bad_bool = ClientMessage::Input(input(1)).encode();
-    let jump = bad_bool.len() - 5;
+    let jump = bad_bool.len() - 6;
     bad_bool[jump] = 2;
     assert_eq!(
         ClientMessage::decode(&bad_bool),
         Err(DecodeError::Malformed)
     );
     let mut bad_action = ClientMessage::Input(input(1)).encode();
-    let action_tag = bad_action.len() - 4;
+    let action_tag = bad_action.len() - 5;
     bad_action[action_tag] = 7;
     assert_eq!(
         ClientMessage::decode(&bad_action),
         Err(DecodeError::Malformed)
     );
     let mut bad_spell = ClientMessage::Input(input(1)).encode();
-    let spell_tag = bad_spell.len() - 3;
+    let spell_tag = bad_spell.len() - 4;
     bad_spell[spell_tag] = 99;
     assert_eq!(
         ClientMessage::decode(&bad_spell),
@@ -705,6 +708,7 @@ fn merged_inputs_keep_one_command_of_each_kind_and_never_lose_a_press() {
         jump: false,
         action: WireAction::None,
         view_tick: 0,
+        cast_buffer: 0,
     }
     .merge_into(&mut slot);
     assert_eq!(
@@ -715,6 +719,7 @@ fn merged_inputs_keep_one_command_of_each_kind_and_never_lose_a_press() {
             jump: true,
             action: ActorInput::pulse(3),
             rewind_ticks: 0,
+            cast_buffer_ticks: 0,
         }
     );
     InputFrame {
@@ -739,6 +744,21 @@ fn merged_inputs_keep_one_command_of_each_kind_and_never_lose_a_press() {
     }
     .merge_into(&mut slot);
     assert_eq!(slot.action, Some(CastAction::Cancel));
+    // A cast carries its frame's cast buffer, capped by the rules.
+    for (sent, kept) in [
+        (7, 7),
+        (MAX_CAST_BUFFER_TICKS, MAX_CAST_BUFFER_TICKS),
+        (u8::MAX, 12),
+    ] {
+        let mut slot = ActorInput::default();
+        InputFrame {
+            action: InputFrame::pulse(1),
+            cast_buffer: sent,
+            ..InputFrame::default()
+        }
+        .merge_into(&mut slot);
+        assert_eq!(slot.cast_buffer_ticks, kept);
+    }
     // A client-chosen target is only intent: the rules still judge it.
     let mut arena = colosseum(1);
     let mut slot = ActorInput::default();

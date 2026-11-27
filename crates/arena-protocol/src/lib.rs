@@ -11,8 +11,8 @@ pub mod delta;
 pub mod prediction;
 
 use arena_sim::arena::{
-    ActiveCastState, ActorInput, Arena, ArenaEvent, Axes, CastAction, Combatant, InterruptReason,
-    MAX_ROUND_TICKS, Position, Rejection, RoundResult,
+    ActiveCastState, ActorInput, Arena, ArenaEvent, Axes, BufferedCast, CastAction, Combatant,
+    InterruptReason, MAX_CAST_BUFFER_TICKS, MAX_ROUND_TICKS, Position, Rejection, RoundResult,
 };
 use arena_sim::spells::SpellId;
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,8 @@ use serde::{Deserialize, Serialize};
 /// 8: `WireAppearance.facial_hair_color`, and up to 24 part groups for the armour slots (ADR 0053).
 /// 9: `ServerMessage::Handles`: each seat's server-set `Name#1234` handle.
 /// 10: `ServerMessage::Tags`: each seat's server-set tags (the admin tag).
-pub const PROTOCOL_VERSION: u16 = 10;
+/// 11: `InputFrame.cast_buffer` and `FighterState.buffered_cast` (ADR 0058).
+pub const PROTOCOL_VERSION: u16 = 11;
 /// Bumped whenever a rules change could alter a replayed outcome.
 /// 2: rounds end in a draw after twenty minutes (`MAX_ROUND_TICKS`).
 /// 3: time-limit draws are distinct from mutual-elimination draws and round limits are explicit.
@@ -38,7 +39,8 @@ pub const PROTOCOL_VERSION: u16 = 10;
 /// 5: bounded server-side target-position history rewind for cast starts (ADR 0049).
 /// 6: timed casts charge resource and health costs on completion, not at start (ADR 0048).
 /// 7: a timed cast that does not complete refunds the GCD it started (ADR 0048).
-pub const RULES_VERSION: u32 = 7;
+/// 8: cast intents near the end of the GCD or a cast are buffered (ADR 0058).
+pub const RULES_VERSION: u32 = 8;
 /// Largest frame a client may send.
 pub const MAX_CLIENT_FRAME: usize = 1024;
 /// Largest frame the server sends; a full 3v3 snapshot is far smaller.
@@ -194,6 +196,9 @@ pub struct InputFrame {
     /// `MAX_LAG_COMP_TICKS` behind the current tick and validates only against
     /// server-recorded target positions.
     pub view_tick: u64,
+    /// The player's cast buffer in ticks for this frame's `Cast` (`0` = off;
+    /// the rules cap it at `MAX_CAST_BUFFER_TICKS`).
+    pub cast_buffer: u8,
 }
 impl InputFrame {
     /// Convenience action for the default Pulse attack against `target`.
@@ -222,6 +227,7 @@ impl InputFrame {
                     spell: spell.into(),
                     target: target.map(usize::from),
                 });
+                slot.cast_buffer_ticks = self.cast_buffer.min(MAX_CAST_BUFFER_TICKS);
             }
             WireAction::CancelCast => {
                 slot.action = Some(CastAction::Cancel);
@@ -419,6 +425,29 @@ impl Snapshot {
     }
 }
 
+/// Wire representation of a cast waiting for the GCD or a cast to end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireBufferedCast {
+    pub spell: WireSpell,
+    pub target: Option<u8>,
+}
+impl From<BufferedCast> for WireBufferedCast {
+    fn from(cast: BufferedCast) -> Self {
+        Self {
+            spell: cast.spell.into(),
+            target: cast.target.map(|t| t as u8),
+        }
+    }
+}
+impl From<WireBufferedCast> for BufferedCast {
+    fn from(cast: WireBufferedCast) -> Self {
+        Self {
+            spell: cast.spell.into(),
+            target: cast.target.map(usize::from),
+        }
+    }
+}
+
 /// Wire representation of an in-progress timed cast.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WireCast {
@@ -462,6 +491,8 @@ pub struct FighterState {
     pub cooldowns: [u32; SpellId::COUNT],
     pub active_cast: Option<WireCast>,
     pub facing: u16,
+    /// Cast waiting for this fighter's GCD or active cast to end (ADR 0058).
+    pub buffered_cast: Option<WireBufferedCast>,
     /// Whether this fighter's player is attached. A disconnected fighter
     /// stands idle (no forfeit) and its player may rejoin with the same
     /// ticket; clients show it as disconnected. Not part of the rules or
@@ -488,6 +519,7 @@ impl FighterState {
             lockout_remaining: self.lockout_remaining,
             cooldowns: self.cooldowns,
             active_cast: self.active_cast.map(ActiveCastState::from),
+            buffered_cast: self.buffered_cast.map(BufferedCast::from),
             facing: self.facing,
         }
     }
@@ -505,6 +537,7 @@ impl FighterState {
             cooldowns: fighter.cooldowns,
             active_cast: fighter.active_cast.map(WireCast::from),
             facing: fighter.facing,
+            buffered_cast: fighter.buffered_cast.map(WireBufferedCast::from),
             connected,
         }
     }
