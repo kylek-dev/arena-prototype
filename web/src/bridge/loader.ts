@@ -1,7 +1,5 @@
 import { parseKits } from "../domain/appearance";
 import { characterKits } from "../state/appearance";
-import { networkLink } from "../state/network";
-import { prematch } from "../state/session";
 export async function loadEngine() {
   if (!("WebAssembly" in window)) throw new Error("WebAssembly is unavailable.");
   const assetResponse = await fetch(new URL("assets/character.json", document.baseURI));
@@ -19,10 +17,6 @@ export async function loadEngine() {
   // model it loads already wears the saved look.
   const kits = parseKits(assetConfig.kits);
   characterKits.set(kits);
-  // A start screen shows the character before the first round; skip it when a
-  // direct join link or reloaded network match is already connecting/active.
-  const linkPhase = networkLink.get()?.state.get().phase ?? "idle";
-  if (kits.length && (linkPhase === "idle" || linkPhase === "ended")) prematch.set(true);
   const url = new URL("pkg/arena_client.js", document.baseURI).href;
   const { default: init } = await import(/* @vite-ignore */ url);
   await init();

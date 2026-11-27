@@ -31,10 +31,12 @@ import { LOADING_ACCOUNT } from "../../runtime/account";
 import { pageCommandContext, runSlash } from "../../runtime/chat-commands";
 import { parseSlash, unescapeSlash } from "../../domain/commands";
 import { AdminTag } from "../../ui/AdminTag";
+import { OUT_OF_HUB } from "../../domain/hub";
 import { Placed } from "../../ui/Placed";
 import "./chat.css";
 
 const NO_ACCOUNT = createStore(LOADING_ACCOUNT);
+const NO_HUB = createStore(OUT_OF_HUB);
 const NO_FRIENDS_LIST = createStore(NO_FRIENDS);
 /** A resize in progress: the size, and where the top-left corner stays. */
 type ChatDraft = { size: ChatSize; left: number; top: number; scale: number };
@@ -252,7 +254,9 @@ function Box({
   const account = useStore(accountService, (a) => a);
   const me = useStore(account?.state ?? NO_ACCOUNT, (s) => s.me?.handle ?? null);
   const friends = useStore(friendsService, (f) => f);
-  const tabs = chatTabs(spectating, chat.conversations);
+  // Stand-in queues (tests, older callers) may have no hub.
+  const inHub = useStore(queue.hub ?? NO_HUB, (h) => h.status === "in");
+  const tabs = chatTabs(spectating, chat.conversations, inHub);
   const active: ChatTab = tabs.includes(chat.active) ? chat.active : "all";
   const [draft, setDraft] = useState("");
   const [menu, setMenu] = useState<number | null>(null);
@@ -314,7 +318,7 @@ function Box({
   const whisperingTo = typed?.to ?? (partner && !parseSlash(draft) ? partner : null);
   const body = typed ? typed.text : draft;
   const { text, tooLong } = chatText(body);
-  const channel = defaultChannel({ seated, spectating });
+  const channel = defaultChannel({ seated, spectating, inHub });
   /** The channel plain text goes to: All's default, or the tab's own. */
   const target =
     active === "all"
@@ -518,11 +522,14 @@ function Box({
  * themselves (size and style), so the chat follows them as they move. */
 function useBesideLauncher(
   attached: boolean,
-  height: number,
+  /** The player's height, or `null` to match the launcher's. */
+  chosenHeight: number | null,
   scale: number,
   watch: readonly unknown[],
 ) {
-  const [at, setAt] = useState<ReturnType<typeof besideLauncher> | null>(null);
+  const [at, setAt] = useState<(ReturnType<typeof besideLauncher> & { height: number }) | null>(
+    null,
+  );
   useLayoutEffect(() => {
     if (!attached) {
       setAt(null);
@@ -536,6 +543,11 @@ function useBesideLauncher(
         setAt(null);
         return;
       }
+      // As tall as the launcher (the micro menu) unless the player chose.
+      const height = clampChatSize({
+        width: CHAT_SIZE.min.width,
+        height: chosenHeight ?? rect.height / scale,
+      }).height;
       // Only bars level with the chat (whose bottom meets the launcher's).
       const top = rect.bottom - height * scale;
       const lefts = [...document.querySelectorAll(".action-bar")]
@@ -544,7 +556,7 @@ function useBesideLauncher(
           (bar) => bar.width && bar.left > rect.right && bar.top < rect.bottom && bar.bottom > top,
         )
         .map((bar) => bar.left);
-      const next = besideLauncher(
+      const spot = besideLauncher(
         rect,
         lefts.length ? Math.min(...lefts) : null,
         height,
@@ -552,13 +564,15 @@ function useBesideLauncher(
         innerWidth,
         CHAT_SIZE.min.width,
       );
+      const next = spot && { ...spot, height };
       setAt((before) =>
         before === next ||
         (before &&
           next &&
           before.left === next.left &&
           before.top === next.top &&
-          before.width === next.width)
+          before.width === next.width &&
+          before.height === next.height)
           ? before
           : next,
       );
@@ -589,7 +603,7 @@ function useBesideLauncher(
       moves.disconnect();
       removeEventListener("resize", soon);
     };
-  }, [attached, height, scale, ...watch]);
+  }, [attached, chosenHeight, scale, ...watch]);
   return at;
 }
 
@@ -604,11 +618,15 @@ export function ChatBox() {
   const savedSize = useConfigSelector((c) => c.chatSize);
   const attached = useConfigSelector((c) => c.chatAttached);
   const custom = useConfigSelector((c) => c.chatSizeCustom);
+  const heightCustom = useConfigSelector((c) => c.chatHeightCustom);
   const launcher = useConfigSelector((c) => c.frames.launcher);
   const bars = useConfigSelector((c) => c.bars);
   // Attached: measured beside the launcher (bottoms aligned), as wide as
   // the space up to the action bar unless the player sized it.
-  const beside = useBesideLauncher(attached, savedSize.height, saved.scale, [launcher, bars]);
+  const beside = useBesideLauncher(attached, heightCustom ? savedSize.height : null, saved.scale, [
+    launcher,
+    bars,
+  ]);
   // While the grip is dragged: the size, and the layout keeping the box's
   // top-left corner where it was; saved once, on release.
   const [draft, setDraft] = useState<ChatDraft | null>(null);
@@ -618,8 +636,11 @@ export function ChatBox() {
   }, [editing]);
   const size =
     draft?.size ??
-    (beside && !custom && beside.width !== null
-      ? clampChatSize({ width: beside.width, height: savedSize.height })
+    (beside
+      ? clampChatSize({
+          width: !custom && beside.width !== null ? beside.width : savedSize.width,
+          height: beside.height,
+        })
       : savedSize);
   const keep = (next: ChatDraft) =>
     anchorAt(
@@ -675,9 +696,11 @@ export function ChatBox() {
             updateConfig((c) => ({
               ...c,
               chatSize: next.size,
-              // Only a width change is the player's width; a taller box
-              // still fills the space beside the launcher.
+              // A changed width or height is the player's own; until then
+              // the box fills the space and matches the launcher's height.
               chatSizeCustom: c.chatSizeCustom || next.size.width !== size.width,
+              // (a few pixels of drift on a sideways drag are not a height)
+              chatHeightCustom: c.chatHeightCustom || Math.abs(next.size.height - size.height) >= 4,
               frames: c.chatAttached
                 ? c.frames
                 : { ...c.frames, chat: { ...keep(next), scale: c.frames.chat.scale } },

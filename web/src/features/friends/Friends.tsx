@@ -15,6 +15,7 @@ import type { Queue } from "../../runtime/matchmaking";
 import { accountService, friendsService } from "../../state/account";
 import { matchQueue } from "../../state/network";
 import { requestChat } from "../../state/chat";
+import { holdPopupMenu } from "../../state/popup-menu";
 import { createStore, useStore } from "../../state/store";
 import "./friends.css";
 
@@ -28,10 +29,10 @@ export const PRESENCE_POLL_MS = 30_000;
 /** The example a player types against. */
 const HANDLE_EXAMPLE = "Name#0000";
 
-type Action = { label: string; run: () => void; danger?: boolean; confirm?: string };
+export type Action = { label: string; run: () => void; danger?: boolean; confirm?: string };
 
 /** The ⋮ menu of a row: its actions, asking once more before a dangerous one. */
-function RowMenu({ handle, actions }: { handle: string; actions: Action[] }) {
+export function RowMenu({ handle, actions }: { handle: string; actions: Action[] }) {
   const [open, setOpen] = useState(false);
   const [asking, setAsking] = useState<Action | null>(null);
   /** Where the menu shows: fixed, under the button, so the scrolling window
@@ -45,23 +46,29 @@ function RowMenu({ handle, actions }: { handle: string; actions: Action[] }) {
     setAsking(null);
     if (refocus) trigger.current?.focus();
   };
-  // The first item (or the confirmation) takes focus, for keyboards.
+  // The menu leaves the keyboard with the game (keys keep moving and
+  // casting; its items are clicked): Escape (through the input router) or a
+  // click elsewhere closes it.
   useEffect(() => {
-    if (open) list.current?.querySelector<HTMLButtonElement>("button")?.focus();
-  }, [open, asking]);
+    if (!open) return;
+    // A player who reached the menu with Tab gets focus back on its button.
+    const release = holdPopupMenu(() => close(!!root.current?.contains(document.activeElement)));
+    const away = (event: PointerEvent) => {
+      if (!root.current?.contains(event.target as Node)) close();
+    };
+    document.addEventListener("pointerdown", away);
+    return () => {
+      release();
+      document.removeEventListener("pointerdown", away);
+    };
+  }, [open]);
   return (
     <span
       className="friend-menu"
       ref={root}
-      // While open, Escape closes the menu only, not the window.
+      // While open, Escape closes the menu only, not the window (for a
+      // player who reached it with Tab).
       data-escape-owner={open ? "true" : undefined}
-      // The menu keeps keyboard focus while it is used: the dock windows do
-      // not own the keyboard, and the focus policy would otherwise hand it
-      // back to the game, which closes the menu the moment it opens.
-      data-keyboard-owner="true"
-      onBlur={(event) => {
-        if (!root.current?.contains(event.relatedTarget as Node | null)) close();
-      }}
       onKeyDown={(event) => {
         if (event.key === "Escape" && open) {
           event.stopPropagation();
@@ -145,7 +152,7 @@ function RowMenu({ handle, actions }: { handle: string; actions: Action[] }) {
   );
 }
 
-function Row({
+export function Row({
   handle,
   status,
   presence,
@@ -230,12 +237,11 @@ function friendActions(
   friends: FriendsService,
   queue: Queue | null,
   inviting: boolean,
-  invites: boolean,
 ): Action[] {
   const act = (action: Parameters<FriendsService["act"]>[0]) => () =>
     void friends.act(action, friend.handle);
   return [
-    ...(invites && queue && invitable(friend) && !inviting
+    ...(queue && invitable(friend) && !inviting
       ? [{ label: "Invite to group", run: () => queue.invite(friend.handle) }]
       : []),
     ...(queue && friend.presence !== "offline"
@@ -252,13 +258,11 @@ function friendActions(
   ];
 }
 
-/** The friends list (home screen and the F window; social-identity step 4):
- * requests to answer, friends with presence, requests sent and blocked
- * players, each with its actions in a ⋮ menu, and Add at the bottom.
- * Logged-in players only. `invites` offers Invite to group; the in-game
- * window leaves it out, since parties form outside the game (decided
- * 2026-11-26). */
-export function Friends({ invites = true }: { invites?: boolean }) {
+/** The friends list (the F window; social-identity step 4): requests to
+ * answer, friends with presence (Invite to group, Whisper, Remove, Block),
+ * requests sent and blocked players, each with its actions in a ⋮ menu, and
+ * Add at the bottom. Logged-in players only. */
+export function Friends() {
   const account = useStore(accountService, (a) => a);
   const me = useStore(account?.state ?? NO_ACCOUNT, (s) => s.me);
   const friends = useStore(friendsService, (f) => f);
@@ -285,7 +289,7 @@ export function Friends({ invites = true }: { invites?: boolean }) {
   const busy = !!state.busy;
   const groups = state.list ? groupFriends(state.list) : null;
   // A refused invitation is answered in either list (sent only from the
-  // home screen's; the in-game window may show its answer after entering).
+  // launcher page's; the in-game window may show its answer after entering).
   const inviteRefused =
     queueState.notice && INVITE_REFUSALS.has(queueState.notice)
       ? noticeText(queueState.notice)
@@ -354,7 +358,7 @@ export function Friends({ invites = true }: { invites?: boolean }) {
             >
               <RowMenu
                 handle={friend.handle}
-                actions={friendActions(friend, friends, queue, !!queueState.inviting, invites)}
+                actions={friendActions(friend, friends, queue, !!queueState.inviting)}
               />
             </Row>
           ))}

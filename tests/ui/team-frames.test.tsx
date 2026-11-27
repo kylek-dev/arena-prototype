@@ -5,6 +5,7 @@ import { fakeQueue } from "./fake-queue";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { Frames } from "../../web/src/features/unit-frames/Frames";
+import { UnitMenu } from "../../web/src/features/unit-frames/UnitMenu";
 import { PlayWindow } from "../../web/src/features/launcher/PlayWindow";
 import { openPlay } from "../../web/src/state/windows";
 import { TooltipProvider } from "../../web/src/ui/Tooltip";
@@ -57,7 +58,12 @@ it.each([1, 2, 3] as const)(
 
 it("targets/focuses every roster slot and cycles only living opponents", () => {
   engine.set(teamSnapshot(3));
-  render(<Frames />);
+  render(
+    <>
+      <Frames />
+      <UnitMenu />
+    </>,
+  );
   for (const [name, actor] of [
     ["Teammate 1", 2],
     ["Teammate 2", 4],
@@ -68,6 +74,11 @@ it("targets/focuses every roster slot and cycles only living opponents", () => {
     fireEvent.click(frame);
     expect(input.readInput()[17]).toBe(actor);
     fireEvent.contextMenu(frame);
+    // Arena (enemy) frames focus on right-click; party frames open the
+    // unit menu, whose Focus focuses.
+    if (name.startsWith("Teammate"))
+      fireEvent.click(screen.getByRole("menuitem", { name: "Focus" }));
+    else expect(screen.queryByRole("menu")).toBeNull();
     expect(focus.get()).toBe(teamSnapshot(3).roster?.[actor].id);
   }
   dispatch("nextTarget");

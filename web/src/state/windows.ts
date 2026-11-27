@@ -3,6 +3,10 @@ import { createStore } from "./store";
 // the spellbook panel. All of them open in the window dock (`WindowDock`).
 export const playWindowVisible = createStore(false);
 export const friendsWindowVisible = createStore(false);
+/** H: the hub's players around you (ADR 0056). */
+export const hubWindowVisible = createStore(false);
+/** A hub player picked by their nameplate: the H window opens their menu. */
+export const hubFocus = createStore<{ handle: string; at: number } | null>(null);
 export type PlayTab = "practice" | "queue" | "host";
 /** The Play window's tab, kept while it is closed. */
 export const playTab = createStore<PlayTab>("queue");
@@ -11,10 +15,11 @@ export function openPlay(tab: PlayTab = playTab.get()) {
   playTab.set(tab);
   playWindowVisible.set(true);
 }
-/** Closes both; `true` when one was open (Escape closes them first). */
+/** Closes them all; `true` when one was open (Escape closes them first). */
 export function closeLauncherWindows() {
-  const open = playWindowVisible.get() || friendsWindowVisible.get();
+  const open = playWindowVisible.get() || friendsWindowVisible.get() || hubWindowVisible.get();
   playWindowVisible.set(false);
   friendsWindowVisible.set(false);
+  hubWindowVisible.set(false);
   return open;
 }

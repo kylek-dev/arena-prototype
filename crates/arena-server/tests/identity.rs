@@ -594,16 +594,16 @@ async fn players_pick_handles_that_ride_in_their_tickets() {
     let session = log_in(addr, &fake).await;
 
     // Before picking, a logged-in player plays under a guest handle, as
-    // guests do.
+    // guests do: the guest name of the browser's guest id.
     let (before, guest) = tokio::join!(
         queue_ticket(addr, 1, Some(&session)),
         queue_ticket(addr, 2, None)
     );
-    for ticket in [&before, &guest] {
+    for (ticket, name) in [(&before, "Guest#0002"), (&guest, "Guest#0003")] {
         let handle = claims(ticket)
             .handle
             .expect("everyone from the queue has a handle");
-        assert_eq!(handle.name(), "Guest");
+        assert_eq!(handle.to_string(), name);
     }
 
     // Names follow the rules; the door picks the number.
@@ -1227,7 +1227,20 @@ async fn admins_come_from_configuration_and_alone_may_store_maps() {
     assert_eq!(clear(bob.clone(), bob_h.clone(), true).await, 403);
     assert_eq!(clear(alice.clone(), bob_h.clone(), false).await, 403);
     assert_eq!(clear(alice.clone(), "Nobody#0001".into(), true).await, 404);
+    // Bob is in a lobby: its members see his browser's guest name at once.
+    let mut bob_queue = connect_queue(addr, 7, &bob).await;
+    say(
+        &mut bob_queue,
+        r#"{"type":"create_lobby","mode":"1v1"}"#.into(),
+    )
+    .await;
+    let lobby_handle = |m: QueueMessage| match m {
+        QueueMessage::Lobby(view) => view.members[0].handle.clone(),
+        _ => None,
+    };
+    assert_eq!(until(&mut bob_queue, lobby_handle).await, bob_h);
     assert_eq!(clear(alice.clone(), bob_h.clone(), true).await, 204);
+    assert_eq!(until(&mut bob_queue, lobby_handle).await, "Guest#0008");
     let bob_now = me(addr, &bob).await;
     assert_eq!((bob_now.handle, bob_now.rename_at), (None, None));
     assert_eq!(
@@ -1244,6 +1257,124 @@ async fn admins_come_from_configuration_and_alone_may_store_maps() {
     let claims = |ticket: &str| ticket_key.verify(&from_hex(ticket).unwrap(), 0).unwrap();
     assert!(claims(&alice_ticket).admin);
     assert!(!claims(&bob_ticket).admin);
+
+    // News for the launcher page: anyone reads it, only the admin posts
+    // and deletes, and it is checked as plain bounded text.
+    let send = |method: &'static str, path: String, session: Option<String>, body: String| async move {
+        let cookie = session.map_or(String::new(), |s| {
+            format!("Cookie: __Host-arena_session={s}\r\n")
+        });
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: test\r\n{cookie}{ORIGIN}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        let status: u16 = response[9..12].parse().unwrap();
+        let json = response.split_once("\r\n\r\n").unwrap().1;
+        (
+            status,
+            serde_json::from_str::<serde_json::Value>(json).unwrap_or(serde_json::Value::Null),
+        )
+    };
+    let news = || send("GET", "/api/news".into(), None, String::new());
+    assert_eq!(news().await, (200, serde_json::json!({ "news": [] })));
+    let post = r#"{"title":"Spring update","body":"The hub is open.\nCome and see."}"#;
+    assert_eq!(
+        send(
+            "POST",
+            "/api/admin/news".into(),
+            Some(bob.clone()),
+            post.into()
+        )
+        .await,
+        (403, serde_json::json!({ "error": "not_admin" }))
+    );
+    assert_eq!(
+        send("POST", "/api/admin/news".into(), None, post.into())
+            .await
+            .0,
+        401
+    );
+    assert_eq!(
+        send(
+            "POST",
+            "/api/admin/news".into(),
+            Some(alice.clone()),
+            r#"{"title":"  ","body":"x"}"#.into()
+        )
+        .await,
+        (
+            422,
+            serde_json::json!({ "error": "invalid_news", "problem": "empty_title" })
+        )
+    );
+    let long = format!(r#"{{"title":"t","body":"{}"}}"#, "y".repeat(2001));
+    assert_eq!(
+        send("POST", "/api/admin/news".into(), Some(alice.clone()), long).await,
+        (
+            422,
+            serde_json::json!({ "error": "invalid_news", "problem": "long_body" })
+        )
+    );
+    // Past the 16 KiB body limit, the door refuses it unread, as any body
+    // it cannot read.
+    let huge = format!(r#"{{"title":"t","body":"{}"}}"#, "y".repeat(17 * 1024));
+    assert_eq!(
+        send("POST", "/api/admin/news".into(), Some(alice.clone()), huge).await,
+        (400, serde_json::json!({ "error": "bad_request" }))
+    );
+    let (status, item) = send(
+        "POST",
+        "/api/admin/news".into(),
+        Some(alice.clone()),
+        post.into(),
+    )
+    .await;
+    assert_eq!(status, 201);
+    assert_eq!(item["body"], "The hub is open.\nCome and see.");
+    let (_, listed) = news().await;
+    assert_eq!(listed["news"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["news"][0]["title"], "Spring update");
+    // Alice has not picked a name here: no author is shown.
+    assert!(listed["news"][0].get("author").is_none());
+    let id = item["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        send(
+            "DELETE",
+            format!("/api/admin/news/{id}"),
+            Some(bob.clone()),
+            String::new()
+        )
+        .await
+        .0,
+        403
+    );
+    assert_eq!(
+        send(
+            "DELETE",
+            format!("/api/admin/news/{id}"),
+            Some(alice.clone()),
+            String::new()
+        )
+        .await
+        .0,
+        204
+    );
+    assert_eq!(
+        send(
+            "DELETE",
+            format!("/api/admin/news/{id}"),
+            Some(alice.clone()),
+            String::new()
+        )
+        .await
+        .0,
+        404
+    );
+    assert_eq!(news().await, (200, serde_json::json!({ "news": [] })));
     door.stop().await.unwrap();
     let _ = std::fs::remove_dir_all(directory);
 }
@@ -1527,4 +1658,128 @@ async fn whispers_reach_friends_and_admins_mute_while_blocks_silence() {
     }
     door.stop().await.unwrap();
     let _ = std::fs::remove_dir_all(directory);
+}
+
+const LOOK: &str = r#"{"ancestry":"human","body":"male","skin_tone":"s1","hair_color":"h1","facial_hair_color":"h1","eyes":"e1","build":0,"groups":[],"variants":[]}"#;
+
+/// Joins the hub (ADR 0056); `Err(code)` when refused.
+async fn hub_join(socket: &mut Socket, friend: Option<&str>) -> Result<u32, String> {
+    let friend = friend.map_or(String::new(), |name| format!(r#","friend":"{name}""#));
+    say(
+        socket,
+        format!(r#"{{"type":"hub_join","appearance":{LOOK}{friend}}}"#),
+    )
+    .await;
+    until(socket, |m| match m {
+        QueueMessage::Hub(joined) => Some(Ok(joined.you)),
+        QueueMessage::Refused { code } => Some(Err(code)),
+        _ => None,
+    })
+    .await
+}
+
+/// The hub ids `socket` sees, once its view has settled on `want` players.
+async fn hub_view(socket: &mut Socket, want: usize) -> Vec<u32> {
+    loop {
+        let state = until(socket, |m| match m {
+            QueueMessage::HubState(state) => Some(state),
+            _ => None,
+        })
+        .await;
+        if state.players.len() == want {
+            return state.players.iter().map(|player| player.0).collect();
+        }
+    }
+}
+
+#[tokio::test]
+async fn the_hub_follows_friends_carries_chat_and_hides_blocked_players() {
+    if no_database() {
+        return;
+    }
+    let fake = Fake::default();
+    let provider = fake_provider(fake.clone()).await;
+    let (door, _) = door_tuned(
+        Origins::Only(vec!["https://arena.example.com".into()]),
+        provider,
+        |config| config.auth_burst = 1000,
+    )
+    .await;
+    let addr = door.addr;
+    let mut players = Vec::new();
+    for who in ["alice", "bob", "carol"] {
+        let session = log_in_as(addr, &fake, who).await;
+        let (status, picked) = choose(addr, &session, &format!("{who}x")).await;
+        assert_eq!(status, 200, "{picked}");
+        players.push((session, picked["handle"].as_str().unwrap().to_owned()));
+    }
+    let [(alice, alice_h), (bob, bob_h), (carol, carol_h)] =
+        <[(String, String); 3]>::try_from(players).unwrap();
+    friend(addr, &alice, "request", &bob_h).await;
+    friend(addr, &bob, "accept", &alice_h).await;
+    let mut alice_socket = connect_queue(addr, 1, &alice).await;
+    let mut bob_socket = connect_queue(addr, 2, &bob).await;
+    let mut carol_socket = connect_queue(addr, 3, &carol).await;
+
+    // Following a friend works; following a stranger does not.
+    let alice_id = hub_join(&mut alice_socket, None).await.unwrap();
+    assert_eq!(
+        hub_join(&mut carol_socket, Some(&alice_h)).await,
+        Err("not_friends".into())
+    );
+    hub_join(&mut bob_socket, Some(&alice_h)).await.unwrap();
+    let carol_id = hub_join(&mut carol_socket, None).await.unwrap();
+    assert_eq!(hub_view(&mut carol_socket, 2).await.len(), 2);
+    assert!(hub_view(&mut alice_socket, 2).await.contains(&carol_id));
+
+    // Hub chat reaches the instance, logged-in speakers only.
+    say(
+        &mut alice_socket,
+        r#"{"type":"chat","channel":"hub","text":"hi all"}"#.into(),
+    )
+    .await;
+    for socket in [&mut bob_socket, &mut carol_socket] {
+        let (channel, from, _, _, text) = chat_heard(socket).await;
+        assert_eq!(
+            (channel.as_str(), from.as_str(), text.as_str()),
+            ("hub", alice_h.as_str(), "hi all")
+        );
+    }
+
+    // Carol blocks Alice: neither sees the other any more, and Carol no
+    // longer hears her; Bob still sees both.
+    assert_eq!(friend(addr, &carol, "block", &alice_h).await.0, 204);
+    assert!(!hub_view(&mut carol_socket, 1).await.contains(&alice_id));
+    assert!(!hub_view(&mut alice_socket, 1).await.contains(&carol_id));
+    assert_eq!(hub_view(&mut bob_socket, 2).await.len(), 2);
+    say(
+        &mut alice_socket,
+        r#"{"type":"chat","channel":"hub","text":"still there?"}"#.into(),
+    )
+    .await;
+    assert_eq!(chat_heard(&mut bob_socket).await.4, "still there?");
+    assert!(
+        !hears(&mut carol_socket, 300, |m| matches!(
+            m,
+            QueueMessage::Chat { .. }
+        ))
+        .await
+    );
+    // Both ways: Alice no longer hears Carol either (after her own copy).
+    assert_eq!(chat_heard(&mut alice_socket).await.4, "still there?");
+    say(
+        &mut carol_socket,
+        r#"{"type":"chat","channel":"hub","text":"anyone?"}"#.into(),
+    )
+    .await;
+    assert_eq!(chat_heard(&mut bob_socket).await.4, "anyone?");
+    assert!(
+        !hears(&mut alice_socket, 300, |m| matches!(
+            m,
+            QueueMessage::Chat { .. }
+        ))
+        .await
+    );
+    let _ = carol_h;
+    door.stop().await.unwrap();
 }

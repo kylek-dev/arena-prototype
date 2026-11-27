@@ -98,6 +98,15 @@ pub(super) fn guest_handle() -> Handle {
     Handle::new("Guest", number).expect("Guest is a valid name")
 }
 
+/// The `Guest#NNNN` handle of a browser's guest id: the same on every
+/// connection from that browser, so the launcher page can show it before
+/// connecting (`guestHandle` in `web/src/domain/matchmaking.ts` computes the
+/// same number). Guest handles carry no rights and may repeat.
+pub(crate) fn guest_handle_for(guest: crate::matchmaker::Guest) -> Handle {
+    let number = (guest % u128::from(MAX_HANDLE_NUMBER)) as u16 + 1;
+    Handle::new("Guest", number).expect("Guest is a valid name")
+}
+
 /// Whether the per-address limit on login routes refuses this request.
 pub(super) fn limited(door: &Door, peer: SocketAddr, headers: &HeaderMap) -> bool {
     let address = ingress::client_address(peer, headers, &door.config.trusted_proxies);
@@ -410,7 +419,7 @@ pub(super) async fn choose_handle(
                 .queue
                 .send(super::queue::Command::Rename {
                     account: account.id,
-                    handle,
+                    handle: Some(handle),
                 })
                 .await;
             no_store(Json(serde_json::json!({ "handle": handle.to_string() })).into_response())
@@ -430,4 +439,25 @@ pub(super) fn refusal(status: StatusCode, code: &str, rename_at: Option<u64>) ->
         body["rename_at"] = at.into();
     }
     no_store((status, Json(body)).into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::guest_handle_for;
+
+    /// The same vectors as `guestHandle` in `tests/domain/matchmaking.test.ts`:
+    /// the page shows the name the door gives.
+    #[test]
+    fn guest_names_follow_the_guest_id() {
+        for (guest, handle) in [
+            (0, "Guest#0001"),
+            (1, "Guest#0002"),
+            (9998, "Guest#9999"),
+            (9999, "Guest#0001"),
+            (u128::MAX, "Guest#8968"),
+            (0x0123_4567_89ab_cdef_0123_4567_89ab_cdef, "Guest#4549"),
+        ] {
+            assert_eq!(guest_handle_for(guest).to_string(), handle, "{guest:032x}");
+        }
+    }
 }
