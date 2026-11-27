@@ -115,4 +115,23 @@ They asked for the better architecture over patching the current one.
   at the hidden slot dropped, events naming it withheld, the hash
   recomputed). For slice 5: the page's outbox must never evict or merge
   `Member`/`MemberLeft` (variants 7 and 8), which are additive.
+- **Slice 3 (world server), 2026-11-27, `auto/hub-world-server`:**
+  `Role::Hub` tickets (`ticket::issue_hub`: instance in `match_id`, team
+  size 0, the door's player id); hub worlds on the match server
+  (`world::World`, pure state, and `worlds.rs`, the registry and each
+  world's task), started by their first ticket and ended after a minute
+  empty; a dropped connection keeps its place for 10 s and a reconnect with
+  the same player id takes it back. The instance directory is an exchange
+  the door starts (as it already asks `/matches/{id}`): `POST
+  /worlds/report`, signed with the ticket key and timestamped against
+  replays, carries the door's block pairs and answers each world's
+  instance, players and capacity. Blocked players see each other's slots
+  as vacant (with the hash of that view), never each other's member entry
+  or events, and cannot aim at each other. Metrics: `arena_worlds_active`,
+  `arena_world_players`. Amends the Decision's wording: the door asks the
+  world servers (one exchange a second) rather than the world servers
+  calling the door, so no world server needs the door's address and the
+  door's list of servers stays its own configuration. The server keeps the
+  last block list for worlds that start between reports; the door must
+  report before handing a ticket to someone with a new block (slice 4).
 

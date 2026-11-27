@@ -739,6 +739,33 @@ impl Arena {
         Some(events)
     }
 
+    /// Ends whatever `caster` has aimed at `target` in this hub world: a
+    /// cast in progress (the returned event, reason `TargetDead`, as when
+    /// the target leaves) and a held spell. For players who may no longer
+    /// reach each other (a block). Nothing for a match or other aims.
+    pub fn drop_aims(&mut self, caster: usize, target: usize) -> Option<ArenaEvent> {
+        if self.rules != Rules::Hub {
+            return None;
+        }
+        let fighter = self.fighters.get_mut(caster)?;
+        if fighter
+            .buffered_cast
+            .is_some_and(|held| held.target == Some(target))
+        {
+            fighter.buffered_cast = None;
+        }
+        let cast = fighter
+            .active_cast
+            .filter(|cast| cast.target == Some(target))?;
+        fighter.end_cast_early();
+        Some(ArenaEvent::CastInterrupted {
+            actor: caster,
+            spell: cast.spell,
+            reason: InterruptReason::TargetDead,
+            by: None,
+        })
+    }
+
     /// Puts a new occupant in the first vacant slot, or a new slot.
     fn occupy(&mut self, occupant: Occupant, home: Position, facing: u16) -> Option<usize> {
         // Ids first, so a world out of ids changes nothing.
