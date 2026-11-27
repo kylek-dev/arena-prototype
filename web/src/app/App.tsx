@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { TooltipProvider } from "../ui/Tooltip";
 import { Theme } from "@radix-ui/themes";
 import { Frames } from "../features/unit-frames/Frames";
+import { UnitMenu } from "../features/unit-frames/UnitMenu";
 import { PlayerCastBar } from "../features/cast-bar/PlayerCastBar";
 import { Nameplates } from "../features/nameplates/Nameplates";
 import { CombatText } from "../features/combat-text/CombatText";
@@ -124,6 +125,7 @@ export function App() {
             ) : (
               <>
                 <Frames />
+                <UnitMenu />
                 <PlayerCastBar />
                 <UnitTooltip />
                 <ActionBars />

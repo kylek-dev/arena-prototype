@@ -39,6 +39,9 @@ export type Config = {
   /** The player set the chat width themselves (grip or slider): an
    * attached chat keeps it instead of filling the space. */
   chatSizeCustom: boolean;
+  /** The player set the chat height themselves: an attached chat keeps it
+   * instead of matching the launcher's height. */
+  chatHeightCustom: boolean;
   assignmentsLocked: boolean;
   nameplates: { friendly: boolean; enemy: boolean };
 };
@@ -48,7 +51,9 @@ export type ChatSize = { width: number; height: number };
 export const CHAT_SIZE = {
   min: { width: 260, height: 150 },
   max: { width: 960, height: 720 },
-  initial: { width: 360, height: 210 },
+  // 20% wider than the first default (360); the height follows the
+  // launcher's beside it until the player sets one.
+  initial: { width: 432, height: 210 },
 } as const;
 export function clampChatSize(size: ChatSize): ChatSize {
   return {
@@ -83,6 +88,7 @@ export function defaultConfig(): Config {
     chatSize: { ...CHAT_SIZE.initial },
     chatAttached: true,
     chatSizeCustom: false,
+    chatHeightCustom: false,
     assignmentsLocked: false,
     nameplates: { friendly: true, enemy: true },
   };
@@ -274,11 +280,17 @@ export function validateConfig(value: unknown): Config {
       ),
     },
     castBarAttached: bool(r.castBarAttached, false),
-    chatSize: cleanChatSize(r.chatSize),
+    chatSize: newDefaultChatSize(cleanChatSize(r.chatSize), bool(r.chatSizeCustom, false)),
     // Profiles from before attaching: attached when the chat still sat at
     // an old default (the player never moved it), detached otherwise.
     chatAttached: typeof r.chatAttached === "boolean" ? r.chatAttached : untouched(r, frames, d),
     chatSizeCustom: bool(r.chatSizeCustom, false),
+    // Profiles from before the flag: a height other than the old default
+    // was the player's own (height-only resizes set no flag then).
+    chatHeightCustom: bool(
+      r.chatHeightCustom,
+      cleanChatSize(r.chatSize).height !== OLD_CHAT_HEIGHT,
+    ),
     assignmentsLocked: bool(r.assignmentsLocked, false),
     nameplates: {
       friendly: bool(record(r.nameplates).friendly, true),
@@ -319,6 +331,17 @@ export function parsePreferences(text: string): Preferences {
   };
 }
 
+/** The first default width, which profiles saved before it grew. */
+const OLD_CHAT_WIDTH = 360;
+/** The default height, which profiles from before `chatHeightCustom` saved. */
+const OLD_CHAT_HEIGHT = 210;
+/** A chat still at the first default width (never sized by the player)
+ * takes the new default. */
+function newDefaultChatSize(size: ChatSize, custom: boolean): ChatSize {
+  return !custom && size.width === OLD_CHAT_WIDTH
+    ? { ...size, width: CHAT_SIZE.initial.width }
+    : size;
+}
 function cleanChatSize(raw: unknown): ChatSize {
   const value = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const number = (n: unknown, fallback: number) =>

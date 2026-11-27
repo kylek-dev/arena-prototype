@@ -87,3 +87,24 @@ it("moves frames still at old defaults, and attaches only a chat nobody moved", 
   expect(validateConfig(profile(layout(0.99, 0.74), layout(0.3, 0.4))).chatAttached).toBe(false);
   expect(defaultConfig().chatAttached).toBe(true);
 });
+
+it("gives profiles still at the first default width the wider default, and keeps chosen sizes", () => {
+  const saved = (chatSize: object, chatSizeCustom: boolean) =>
+    validateConfig({ ...defaultConfig(), chatSize, chatSizeCustom });
+  expect(saved({ width: 360, height: 210 }, false).chatSize).toEqual({ width: 432, height: 210 });
+  // A player who chose 360 keeps it.
+  expect(saved({ width: 360, height: 210 }, true).chatSize).toEqual({ width: 360, height: 210 });
+  expect(saved({ width: 500, height: 300 }, false).chatSize).toEqual({ width: 500, height: 300 });
+  // The height follows the launcher until the player sets one.
+  expect(defaultConfig().chatHeightCustom).toBe(false);
+  // An older profile (no flag) with a height of its own keeps it.
+  const { chatHeightCustom: _, ...old } = defaultConfig();
+  expect(validateConfig(old).chatHeightCustom).toBe(false);
+  expect(validateConfig({ ...old, chatSize: { width: 360, height: 400 } }).chatHeightCustom).toBe(
+    true,
+  );
+  expect(validateConfig({ ...defaultConfig(), chatHeightCustom: true }).chatHeightCustom).toBe(
+    true,
+  );
+  expect(CHAT_SIZE.initial.width).toBe(432);
+});
