@@ -134,4 +134,15 @@ They asked for the better architecture over patching the current one.
   door's list of servers stays its own configuration. The server keeps the
   last block list for worlds that start between reports; the door must
   report before handing a ticket to someone with a new block (slice 4).
+- **Slice 4 (door), 2026-11-27, `auto/hub-world-door`:** `door/worlds.rs`
+  (pure placement: ADR 0056's rules over the door's placements and the
+  directory's reports, 12 a world, confirmation by the directory within
+  20 s, departures dropped, block pairs per world, a ticket player id per
+  queue connection); the queue socket's `world_join {friend?}` and
+  `world_leave {}`, answered by `world {instance, server, ticket, expires}`,
+  held until the directory exchange after the placement answers; the
+  exchange runs once a second while anyone is placed, one at a time, with
+  a clock that only rises; `hub_left` when the directory stops showing a
+  player or a match ticket takes them; `hub` chat by world; the door's own
+  hub stays until slice 5 removes it.
 

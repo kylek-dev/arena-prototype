@@ -175,7 +175,7 @@ pub struct App {
     directory_last: AtomicU64,
     /// The newest accepted block list, for worlds that start before the
     /// next report.
-    directory_blocks: Mutex<world::BlockSet>,
+    directory_blocks: Mutex<(world::BlockSet, world::Allowed)>,
     open: Arc<OpenPerAddress>,
     next_conn: AtomicU64,
     draining: AtomicBool,

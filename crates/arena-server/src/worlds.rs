@@ -28,7 +28,7 @@ use crate::logging::MatchId;
 use crate::metrics::Metrics;
 use crate::session::{ConnId, Out};
 use crate::ticket::Claims;
-use crate::world::{BlockSet, World, WorldReport, block_set};
+use crate::world::{Allowed, BlockSet, World, WorldReport, block_set};
 use crate::{App, Conns, Outbound, deliver, insert_conn, remove_conn, unix_now};
 use arena_protocol::ErrorCode;
 
@@ -52,6 +52,12 @@ pub struct DirectoryRequest {
     /// Every blocked pair among players the door has placed in worlds, by
     /// the ticket player ids it issued.
     pub blocks: Vec<(u64, u64)>,
+    /// Every player id the door has placed (in any world). When given,
+    /// nobody else may join or stay in a world: a ticket outlives the
+    /// door's placement, so this is how leaving the hub, taking a match or
+    /// being forgotten takes effect on the world server.
+    #[serde(default)]
+    pub players: Option<Vec<u64>>,
 }
 
 /// `POST /worlds/report`'s answer.
@@ -79,7 +85,10 @@ pub(crate) enum WorldCommand {
     Detach {
         conn: ConnId,
     },
-    Blocks(BlockSet),
+    Directory {
+        blocks: BlockSet,
+        allowed: Allowed,
+    },
 }
 
 /// Commands buffered per world; readers wait when it is full.
@@ -113,12 +122,18 @@ impl App {
             return Err(ErrorCode::ServerShutdown);
         }
         let id = claims.match_id;
-        let blocks = self
+        let (blocks, allowed) = self
             .directory_blocks
             .lock()
             .expect("directory blocks")
             .clone();
-        let world = World::new(id, blocks, self.config.world_limits, self.metrics.clone());
+        let world = World::new(
+            id,
+            blocks,
+            allowed,
+            self.config.world_limits,
+            self.metrics.clone(),
+        );
         let report = Arc::new(Mutex::new(world.report()));
         let (sender, receiver) = mpsc::channel(COMMAND_QUEUE);
         worlds.live.insert(
@@ -217,7 +232,11 @@ fn apply(world: &mut World, conns: &mut Conns, command: WorldCommand) -> Vec<Out
             world.detach(conn);
             Vec::new()
         }
-        WorldCommand::Blocks(blocks) => world.set_blocks(blocks),
+        WorldCommand::Directory { blocks, allowed } => {
+            let mut out = world.set_allowed(allowed);
+            out.extend(world.set_blocks(blocks));
+            out
+        }
     }
 }
 
@@ -330,10 +349,16 @@ pub(crate) async fn directory(
     }
     // Kept for worlds started before the next report, and shared by all.
     let blocks = block_set(request.blocks);
-    *app.directory_blocks.lock().expect("directory blocks") = blocks.clone();
+    let allowed: Allowed = request
+        .players
+        .map(|players| Arc::new(players.into_iter().collect()));
+    *app.directory_blocks.lock().expect("directory blocks") = (blocks.clone(), allowed.clone());
     for sender in app.world_senders() {
-        // A full queue skips this round; the next report repeats the list.
-        let _ = sender.try_send(WorldCommand::Blocks(blocks.clone()));
+        // A full queue skips this round; the next report repeats the lists.
+        let _ = sender.try_send(WorldCommand::Directory {
+            blocks: blocks.clone(),
+            allowed: allowed.clone(),
+        });
     }
     axum::Json(DirectoryReply {
         draining: app.is_draining(),
