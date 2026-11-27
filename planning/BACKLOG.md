@@ -18,6 +18,7 @@ opponent nameplate stuck greyed out." (illustrations only, not reported bugs).
 Playtest notes and decisions from the user, 2026-11-26:
 
 - [x] (Decision) Every pending UI review through PR #124 is approved (2026-11-26), and the Hub window's Invite to group stays.
+- [x] (Lane B) The party frames get the right-click menu too (requested 2026-11-26). — `auto/frame-menus`: the greyed frames of party members not in this match open the unit menu by handle (Whisper, Edit layout; Invite, Focus and the placeholders greyed with reasons); one's own frame offers Leave party.
 - [x] (Lane B) Invite to group from the in-game Friends list again (reverses the earlier decision), and its ⋮ menu must not take the game's keybinds, as the unit menu does not: items are clicked (requested 2026-11-26). — `auto/frame-menus`: Invite restored in the **F** window; the ⋮ menus and the unit menu leave focus with the game, Escape closes the open one first (`state/popup-menu.ts`), a click elsewhere closes it.
 
 - [x] (Lane B) Remove "right-click to focus" and give target, party, player and focus frames a right-click menu: Whisper (added at the user's request), Invite, Add friend, Inspect (not yet), Challenge to a duel (not yet), Focus, and Edit layout (layout mode with that frame picked); arena (enemy) frames keep right-click to focus (requested 2026-11-26). — `auto/frame-menus`: `UnitMenu` on those frames and friendly nameplates; disabled items say why; enemy frames and nameplates still focus.

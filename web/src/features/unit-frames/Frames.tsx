@@ -89,6 +89,12 @@ function PartyMate({ handle }: { handle: string | null }) {
     <section
       className="unit-frame teammate party-away"
       aria-label={`${handle ?? "Party member"} status`}
+      // The same menu as the live frames (by handle: they have no unit here).
+      onContextMenu={(e) => {
+        e.preventDefault();
+        if (handle)
+          openUnitMenu({ kind: "party", handle, x: e.clientX, y: e.clientY, frame: "team" });
+      }}
     >
       <div className="unit-heading">
         <span className="unit-name">

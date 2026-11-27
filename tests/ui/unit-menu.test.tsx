@@ -317,3 +317,53 @@ it("whispers a friend through the chat, and explains a friend in a match", async
     "Use team chat.",
   );
 });
+
+it("opens on a party member who is not in this match, and offers Leave party on one's own frame", async () => {
+  await logIn();
+  engine.set(teamSnapshot(1));
+  fake.queue.connect();
+  fake.open();
+  const party = async (mates: string[]) => {
+    await act(async () => {
+      fake.say({ type: "party", code: "K7P2QX", members: 2, leader: true, queue: null, mates });
+    });
+  };
+  await party(["Ash#1000"]);
+  view();
+  fireEvent.contextMenu(screen.getByRole("region", { name: "Ash#1000 status" }));
+  expect(items()).toEqual([
+    ["Whisper", false],
+    ["Invite to group", true],
+    ["Add friend", true],
+    ["Inspect", true],
+    ["Challenge to a duel", true],
+    ["Focus", true],
+    ["Edit layout", false],
+  ]);
+  const menu = screen.getByRole("menu", { name: "Ash#1000 options" });
+  expect(menu.textContent).toContain("This player is already in your party.");
+  expect(menu.textContent).toContain("This party member is not in this match.");
+  fireEvent.click(screen.getByRole("menuitem", { name: /^Whisper/ }));
+  expect(chatFocusRequest.get().prefill).toBe("/w Ash#1000 ");
+  // Leaving the party closes their menu.
+  fireEvent.contextMenu(screen.getByRole("region", { name: "Ash#1000 status" }));
+  await party([]);
+  expect(unitMenu.get()).toBeNull();
+  // One's own frame offers Leave party while in one.
+  await party(["Ash#1000"]);
+  fireEvent.contextMenu(screen.getByRole("region", { name: "player status" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Leave party" }));
+  expect(fake.sent().at(-1)).toEqual({ type: "leave_party" });
+  // Not on a party member's frame.
+  fireEvent.contextMenu(screen.getByRole("region", { name: "Ash#1000 status" }));
+  expect(screen.queryByRole("menuitem", { name: /Leave party/ })).toBeNull();
+  fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+  // While the party searches, leaving would stop it for everyone: greyed.
+  await act(async () => {
+    fake.say({ type: "queued", mode: "2v2", waiting: 2, waited_ms: 0, expected_ms: null });
+  });
+  fireEvent.contextMenu(screen.getByRole("region", { name: "player status" }));
+  expect(screen.getByRole("menuitem", { name: /^Leave party/ }).textContent).toContain(
+    "while searching",
+  );
+});

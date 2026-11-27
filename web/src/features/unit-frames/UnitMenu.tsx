@@ -17,6 +17,7 @@ import "./unit-menu.css";
 const NO_ACCOUNT = createStore(LOADING_ACCOUNT);
 const NO_LIST = createStore(NO_FRIENDS);
 const NO_QUEUE = createStore(IDLE_QUEUE);
+const NO_MATES: readonly (string | null)[] = [];
 /** Space kept between the menu and the screen's edges. */
 const EDGE = 8;
 
@@ -35,28 +36,43 @@ export function UnitMenu() {
   const editing = useStore(interaction, (s) => s.layout);
   const queue = useStore(matchQueue, (q) => q);
   const inviting = useStore(queue?.state ?? NO_QUEUE, (s) => !!s.inviting);
+  const mates = useStore(queue?.state ?? NO_QUEUE, (s) => s.party?.mates ?? NO_MATES);
+  const inParty = useStore(queue?.state ?? NO_QUEUE, (s) => !!s.party?.code && !s.lobby);
+  // As on the launcher: leaving mid-search would stop the party's search
+  // (or break a ready check) for everyone.
+  const searching = useStore(queue?.state ?? NO_QUEUE, (s) => s.phase !== "idle");
   const account = useStore(accountService, (a) => a);
   const me = useStore(account?.state ?? NO_ACCOUNT, (s) => s.me);
   const friends = useStore(friendsService, (f) => f);
   const list = useStore(friends?.state ?? NO_LIST, (s) => s.list);
   const menu = useRef<HTMLDivElement>(null);
   const [place, setPlace] = useState<{ left: number; top: number } | null>(null);
+  const party = request?.kind === "party" ? request : null;
+  const slot = request && request.kind !== "party" ? request : null;
   const unit =
-    request && state && !state.spectating
-      ? resolveUnit(request.tag, unitRoster(state, focused))
-      : null;
+    slot && state && !state.spectating ? resolveUnit(slot.tag, unitRoster(state, focused)) : null;
+  const mate = (handle: string | null | undefined) =>
+    !!handle && mates.some((entry) => !!entry && same(entry, handle));
   // The slot no longer shows the unit the menu was opened on (a new target,
-  // a match ended, spectating, layout editing): close, so nothing stale
-  // reopens later or acts on someone else.
-  const gone = !!request && (editing || !unit || unit.id !== request.unitId);
+  // a match ended, spectating, layout editing), or the party member left:
+  // close, so nothing stale reopens later or acts on someone else.
+  const gone =
+    !!request &&
+    (editing ||
+      (party
+        ? // They left the party, or joined this match (their live frame replaces this one).
+          !mate(party.handle) ||
+          !!state?.roster?.some((entry) => !!entry.handle && same(entry.handle, party.handle))
+        : !unit || unit.id !== (slot as { unitId: string }).unitId));
   useEffect(() => {
     if (gone) closeUnitMenu();
   }, [gone]);
   const loggedIn = !!me?.account && !!me.handle;
   // Friends decide what the menu offers: read the list when it opens.
+  const opened = party ? `party:${party.handle}` : slot?.unitId;
   useEffect(() => {
     if (request && loggedIn && friends) void friends.refresh();
-  }, [request?.unitId, loggedIn, friends]);
+  }, [opened, loggedIn, friends]);
   // Measured on screen, then kept inside it.
   useLayoutEffect(() => {
     if (!request || !menu.current) {
@@ -68,7 +84,7 @@ export function UnitMenu() {
       left: Math.max(EDGE, Math.min(request.x, innerWidth - width - EDGE)),
       top: Math.max(EDGE, Math.min(request.y, innerHeight - height - EDGE)),
     });
-  }, [request, unit?.id]);
+  }, [request, opened]);
   // The menu leaves the keyboard with the game (keys keep moving and
   // casting; its items are clicked): Escape (through the input router) or a
   // click elsewhere closes it.
@@ -84,9 +100,11 @@ export function UnitMenu() {
       document.removeEventListener("pointerdown", away);
     };
   }, [request]);
-  if (!request || !unit || gone) return null;
-  const self = request.tag === "Player";
-  const handle = unit.handle ?? null;
+  if (!request || (!unit && !party) || gone) return null;
+  const self = slot?.tag === "Player";
+  const name = party ? party.handle : (unit?.name ?? "");
+  const handle = party ? party.handle : (unit?.handle ?? null);
+  const partyMember = !!party || mate(handle);
   const guest = !!handle && handle.startsWith("Guest#");
   const friend = handle
     ? list?.friends.find((entry) => entry.relation === "friend" && same(entry.handle, handle))
@@ -112,6 +130,7 @@ export function UnitMenu() {
   const invite = (): Pick<Item, "run" | "why"> => {
     if (!handle) return { why: "Only players can be invited." };
     if (!loggedIn) return { why: "Log in on the launcher page to invite players." };
+    if (partyMember) return { why: "This player is already in your party." };
     if (guest) return { why: "Guests cannot be invited." };
     if (!loaded) return { why: "Your friends list is loading." };
     if (blocked) return { why: "You have blocked this player." };
@@ -141,7 +160,17 @@ export function UnitMenu() {
           { label: "Inspect", why: "Inspecting players is not available yet." },
           { label: "Challenge to a duel", why: "Duels are not available yet." },
         ]),
-    { label: "Focus", run: () => interactUnit(request.tag, "focus") },
+    slot
+      ? { label: "Focus", run: () => interactUnit(slot.tag, "focus") }
+      : { label: "Focus", why: "This party member is not in this match." },
+    // Leaving, from one's own frame.
+    ...(queue && inParty && self
+      ? [
+          searching
+            ? { label: "Leave party", why: "You cannot leave the party while searching." }
+            : { label: "Leave party", run: () => queue.leaveParty() },
+        ]
+      : []),
     ...(request.frame
       ? [
           {
@@ -167,7 +196,7 @@ export function UnitMenu() {
       // Escape closes this menu, not the game menu behind it (for a
       // player who reached it with Tab).
       data-escape-owner="true"
-      aria-label={`${unit.name} options`}
+      aria-label={`${name} options`}
       style={place ?? { left: request.x, top: request.y, visibility: "hidden" }}
       onContextMenu={(event) => event.preventDefault()}
       onKeyDown={(event) => {
@@ -185,7 +214,7 @@ export function UnitMenu() {
         }
       }}
     >
-      <div className="unit-menu-title">{unit.name}</div>
+      <div className="unit-menu-title">{name}</div>
       {items.map((item) => (
         <button
           key={item.label}
