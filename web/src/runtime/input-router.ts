@@ -22,6 +22,7 @@ import { dispatch, input, isCasting, stopCasting, stopRecentlyRequested } from "
 import { installFocusPolicy, isTextEntry } from "./focus";
 import { chatShown, requestChat } from "../state/chat";
 import { closeLauncherWindows } from "../state/windows";
+import { popupMenu } from "../state/popup-menu";
 // Precedence: conflict > capture > quick bind > text entry > Escape stops a cast >
 // modal/typing > layout > gameplay (see domain/bindings/escape.ts).
 export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void) {
@@ -148,6 +149,14 @@ export function installInput(canvas: HTMLCanvasElement, releaseMouse: () => void
       }
       e.preventDefault();
       if (!e.repeat) acceptBinding(destination.action, destination.entry, c);
+      return;
+    }
+    // An open menu over the game (which leaves the keys with the game)
+    // closes on Escape before the windows or the game menu.
+    const menu = popupMenu.get();
+    if (e.code === "Escape" && menu && !isTextEntry(document.activeElement)) {
+      e.preventDefault();
+      if (!e.repeat) menu();
       return;
     }
     if (

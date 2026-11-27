@@ -204,7 +204,7 @@ it("closes when its slot shows someone else, the match ends or layout editing st
   expect(unitMenu.get()).toBeNull();
 });
 
-it("keeps the keyboard under real clicks, and Escape closes only the menu", async () => {
+it("leaves the keys with the game under real clicks; Escape closes only the menu", async () => {
   const user = userEvent.setup();
   engine.set(teamSnapshot(3));
   document.body.innerHTML = '<canvas id="arena" tabindex="0"></canvas>';
@@ -219,13 +219,23 @@ it("keeps the keyboard under real clicks, and Escape closes only the menu", asyn
     });
     // Let the focus policy run (it restores the game's focus in a microtask).
     await act(async () => {});
-    const menu = screen.getByRole("menu", { name: "Teammate 1 options" });
-    expect(menu.contains(document.activeElement)).toBe(true);
-    await user.keyboard("{ArrowDown}");
-    expect(document.activeElement?.textContent).toMatch(/^Invite to group/);
+    // The game keeps the keyboard (movement and spells keep working).
+    expect(screen.getByRole("menu", { name: "Teammate 1 options" })).toBeTruthy();
+    expect(document.activeElement).toBe(canvas);
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("menu")).toBeNull();
     expect(interaction.get().panel).toBeNull();
+    // Items are clicked.
+    await user.pointer({
+      keys: "[MouseRight]",
+      target: screen.getByText("Teammate 1").closest("button")!,
+    });
+    await act(async () => {});
+    await user.click(screen.getByRole("menuitem", { name: "Focus" }));
+    await act(async () => {});
+    expect(focus.get()).toBe(teamSnapshot(3).roster?.[2].id);
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(canvas);
   } finally {
     router.dispose();
   }

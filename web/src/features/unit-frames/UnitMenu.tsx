@@ -9,6 +9,7 @@ import { requestChat } from "../../state/chat";
 import { matchQueue } from "../../state/network";
 import { engine, focus, interaction, selectedLayout, setMode } from "../../state/session";
 import { createStore, useStore } from "../../state/store";
+import { holdPopupMenu } from "../../state/popup-menu";
 import { closeUnitMenu, unitMenu } from "../../state/unit-menu";
 import { IDLE_QUEUE } from "../../domain/matchmaking";
 import "./unit-menu.css";
@@ -68,15 +69,20 @@ export function UnitMenu() {
       top: Math.max(EDGE, Math.min(request.y, innerHeight - height - EDGE)),
     });
   }, [request, unit?.id]);
-  // The keyboard goes into the menu; a click elsewhere closes it.
+  // The menu leaves the keyboard with the game (keys keep moving and
+  // casting; its items are clicked): Escape (through the input router) or a
+  // click elsewhere closes it.
   useEffect(() => {
     if (!request) return;
-    menu.current?.querySelector<HTMLButtonElement>("[role=menuitem]")?.focus();
+    const release = holdPopupMenu(closeUnitMenu);
     const away = (event: PointerEvent) => {
       if (!menu.current?.contains(event.target as Node)) closeUnitMenu();
     };
     document.addEventListener("pointerdown", away);
-    return () => document.removeEventListener("pointerdown", away);
+    return () => {
+      release();
+      document.removeEventListener("pointerdown", away);
+    };
   }, [request]);
   if (!request || !unit || gone) return null;
   const self = request.tag === "Player";
@@ -158,17 +164,12 @@ export function UnitMenu() {
       ref={menu}
       className="unit-menu"
       role="menu"
-      // Escape closes this menu, not the game menu behind it; and the menu
-      // keeps the keyboard while open (the focus policy would otherwise hand
-      // it back to the game, whose keys would move the character).
+      // Escape closes this menu, not the game menu behind it (for a
+      // player who reached it with Tab).
       data-escape-owner="true"
-      data-keyboard-owner="true"
       aria-label={`${unit.name} options`}
       style={place ?? { left: request.x, top: request.y, visibility: "hidden" }}
       onContextMenu={(event) => event.preventDefault()}
-      onBlur={(event) => {
-        if (!menu.current?.contains(event.relatedTarget as Node | null)) closeUnitMenu();
-      }}
       onKeyDown={(event) => {
         if (event.key === "Escape") {
           event.stopPropagation();
