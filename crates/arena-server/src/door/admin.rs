@@ -336,7 +336,7 @@ pub(super) async fn clear_handle(
                 .queue
                 .send(super::queue::Command::Rename {
                     account,
-                    handle: super::auth::guest_handle(),
+                    handle: None,
                 })
                 .await;
             tracing::info!("admin cleared a handle");

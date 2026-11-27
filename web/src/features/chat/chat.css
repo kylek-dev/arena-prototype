@@ -81,6 +81,9 @@
 .chat-line.whisper {
   color: var(--pal-arcane-5);
 }
+.chat-line.hub {
+  color: var(--pal-leaf-5);
+}
 .chat-name {
   padding: 0;
   color: inherit;

@@ -11,6 +11,7 @@ import {
   guestId,
   inviteLink,
   isGuestId,
+  guestHandle,
   isQueueBarVisible,
   lobbyReadinessText,
   noticeText,
@@ -121,6 +122,23 @@ describe("queue messages", () => {
     const id = guestId(new Uint8Array(16).fill(0xab));
     expect(isGuestId(id)).toBe(true);
     expect(isGuestId("AB".repeat(16))).toBe(false);
+  });
+
+  it("names a guest as the door does, from the guest id", () => {
+    // The same vectors as `guest_names_follow_the_guest_id` in
+    // crates/arena-server/src/door/auth.rs.
+    const hex = (n: bigint) => n.toString(16).padStart(32, "0");
+    for (const [id, handle] of [
+      [0n, "Guest#0001"],
+      [1n, "Guest#0002"],
+      [9998n, "Guest#9999"],
+      [9999n, "Guest#0001"],
+      [(1n << 128n) - 1n, "Guest#8968"],
+      [0x0123456789abcdef0123456789abcdefn, "Guest#4549"],
+    ] as const)
+      expect(guestHandle(hex(id)), hex(id)).toBe(handle);
+    expect(guestHandle("me")).toBeNull();
+    expect(guestHandle("AB".repeat(16))).toBeNull();
   });
 });
 

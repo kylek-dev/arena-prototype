@@ -6,12 +6,15 @@ import { TooltipProvider } from "../../web/src/ui/Tooltip";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it } from "vitest";
 import { Friends } from "../../web/src/features/friends/Friends";
+import { FriendsWindow } from "../../web/src/features/launcher/FriendsWindow";
+import { beforeMatch } from "../../web/src/state/appearance";
 import { InvitePrompt } from "../../web/src/features/friends/InvitePrompt";
 import { createAccount } from "../../web/src/runtime/account";
 import { createFriends } from "../../web/src/runtime/friends";
 import { followAccount } from "../../web/src/runtime/social";
 import { accountService, friendsService } from "../../web/src/state/account";
 import { matchQueue } from "../../web/src/state/network";
+import { interaction } from "../../web/src/state/session";
 import { fakeQueue } from "./fake-queue";
 import { RECONNECT_MS, type SocialDeps } from "../../web/src/runtime/social";
 import { createFriends as makeFriends, READ_GAP_MS } from "../../web/src/runtime/friends";
@@ -103,6 +106,7 @@ function fakeDoor(routes: Record<string, Reply | Reply[]>) {
 
 afterEach(() => {
   cleanup();
+  beforeMatch.set(false);
   accountService.set(null);
   friendsService.set(null);
   matchQueue.set(null);
@@ -142,6 +146,32 @@ it("lists requests, friends with presence, sent requests and blocks as rows", as
   expect(menuOf("Zed#0001").queryByRole("menuitem", { name: "Invite to group" })).toBeNull();
   expect(menuOf("Dot#0004").getByRole("menuitem", { name: "Withdraw request" })).toBeTruthy();
   expect(menuOf("Eve#0005").getByRole("menuitem", { name: "Unblock" })).toBeTruthy();
+});
+
+it("offers party invitations in the in-game Friends window", async () => {
+  // Decided 2026-11-26 (reversing the earlier decision): friends are
+  // invited from the F window again.
+  const { account } = fakeDoor({
+    "/api/auth/me": { status: 200, body: ROOK },
+    "/api/friends": { status: 200, body: LIST },
+  });
+  await account.refresh();
+  const fake = fakeQueue();
+  matchQueue.set(fake.queue);
+  fake.queue.connect();
+  fake.open();
+  await act(async () => {
+    render(<FriendsWindow />, { wrapper: TooltipProvider });
+  });
+  const menu = menuOf("Ash#1000");
+  expect(menu.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+    "Invite to group",
+    "Whisper",
+    "Remove friend",
+    "Block",
+  ]);
+  fireEvent.click(menu.getByRole("menuitem", { name: "Invite to group" }));
+  expect(fake.sent().at(-1)).toEqual({ type: "invite", handle: "Ash#1000" });
 });
 
 it("adds through a prompt, accepts, removes and blocks after confirming, and words refusals", async () => {
@@ -454,13 +484,23 @@ it("closes only an open ⋮ menu on Escape, and answers a refused invitation", a
       );
     });
     menuOf("Ash#1000");
-    // The first item has focus; Escape closes the menu, not the window.
-    expect(document.activeElement?.textContent).toBe("Invite to group");
-    fireEvent.keyDown(document.activeElement!, { key: "Escape", code: "Escape" });
+    // The menu leaves the keys with the game; Escape closes the menu, not
+    // the window or the game menu.
+    canvas.focus();
+    fireEvent.keyDown(canvas, { key: "Escape", code: "Escape" });
     expect(screen.queryByRole("menu")).toBeNull();
     expect(friendsWindowVisible.get()).toBe(true);
+    expect(interaction.get().panel).toBeNull();
+    // A player who reached it with Tab: Escape there closes it too and
+    // returns to its button.
+    menuOf("Ash#1000");
+    const first = screen.getAllByRole("menuitem")[0];
+    first.focus();
+    fireEvent.keyDown(first, { key: "Escape", code: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
     expect(document.activeElement?.getAttribute("aria-label")).toBe("Actions for Ash#1000");
-    fireEvent.click(menuOf("Ash#1000").getByRole("menuitem", { name: "Invite to group" }));
+    // An invitation sent before entering the game is still answered here.
+    fake.queue.invite("Ash#1000");
     fake.say({ type: "refused", code: "offline" });
     expect(screen.getByRole("alert").textContent).toMatch(/^This friend is offline\./);
   } finally {
@@ -532,7 +572,7 @@ it("opens the ⋮ menu under its button, or above it near the bottom of the scre
   expect(list.style.bottom).toBe("44px");
 });
 
-it("keeps the ⋮ menu open under real clicks while the game owns the keyboard", async () => {
+it("keeps the ⋮ menu open under real clicks and leaves the keyboard with the game", async () => {
   const user = userEvent.setup();
   const { account, calls } = fakeDoor({
     "/api/auth/me": { status: 200, body: ROOK },
@@ -559,6 +599,8 @@ it("keeps the ⋮ menu open under real clicks while the game owns the keyboard",
     // Let the focus policy run (it restores the game's focus in a microtask).
     await act(async () => {});
     const menu = screen.getByRole("menu", { name: "Actions for Ash#1000" });
+    // The game keeps the keyboard while the menu is open.
+    expect(document.activeElement).toBe(canvas);
     await user.click(within(menu).getByRole("menuitem", { name: "Remove friend" }));
     await act(async () => {});
     await user.click(screen.getByRole("menuitem", { name: "Confirm removal" }));

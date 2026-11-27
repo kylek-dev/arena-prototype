@@ -438,7 +438,7 @@ it("closes open combat modals/editors on scoreboard open, stays dismissed during
   }
 });
 
-it("returns to the home screen on Leave when character kits exist and leaves the match link", () => {
+it("returns to the launcher page on Leave and leaves the match link", () => {
   const { link, leave } = makeFakeLink();
   networkLink.set(link);
   characterKits.set([{ id: "female", label: "Female" } as unknown as Kit]);
@@ -449,12 +449,12 @@ it("returns to the home screen on Leave when character kits exist and leaves the
 
   fireEvent.click(screen.getByRole("button", { name: "Leave" }));
   expect(screen.queryByRole("dialog")).toBeNull();
-  expect(blocksGameplay()).toBe(true); // prematch home screen is now active
+  expect(blocksGameplay()).toBe(true); // the launcher page is now up
   expect(beforeMatch.get()).toBe(true);
   expect(leave).toHaveBeenCalledTimes(1);
 });
 
-it("stays out of blank prematch when no character kits are installed and hides on fatal errors", () => {
+it("returns to the launcher page even without character kits, and hides on fatal errors", () => {
   engine.set(finishedNet2v2("won"));
   render(<App />);
   expect(screen.getByRole("dialog", { name: "Victory" })).toBeTruthy();
@@ -464,6 +464,7 @@ it("stays out of blank prematch when no character kits are installed and hides o
 
   act(() => error.set(""));
   fireEvent.click(screen.getByRole("button", { name: "Leave" }));
-  expect(beforeMatch.get()).toBe(false);
-  expect(blocksGameplay()).toBe(false);
+  expect(beforeMatch.get()).toBe(true);
+  expect(blocksGameplay()).toBe(true);
+  expect(screen.getByRole("region", { name: "Launcher" })).toBeTruthy();
 });

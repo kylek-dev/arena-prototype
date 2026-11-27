@@ -21,14 +21,11 @@ import {
 import {
   appearance,
   appearanceSaveError,
-  beforeMatch,
   characterKits,
   customizerVisible,
-  enterArena,
   preview,
   updateAppearance,
 } from "../../state/appearance";
-import { dispatch } from "../../runtime/commands";
 import { engine } from "../../state/session";
 import { useStore } from "../../state/store";
 import { ancestryNames, bodyNames, describe, optionName, variantName } from "./labels";
@@ -424,7 +421,6 @@ export function Stage() {
 
 export function Customizer() {
   const visible = useStore(customizerVisible, (v) => v);
-  const prematch = useStore(beforeMatch, (v) => v);
   const kits = useStore(characterKits, (k) => k);
   const look = useStore(appearance, (a) => a);
   const saveError = useStore(appearanceSaveError, (e) => e);
@@ -441,12 +437,7 @@ export function Customizer() {
             <h2>Appearance</h2>
             <p className="customizer-summary">{describe(kit, look)}</p>
           </div>
-          <Button
-            variant="ghost"
-            color="gray"
-            aria-label={prematch ? "Back" : "Close appearance"}
-            onClick={close}
-          >
+          <Button variant="ghost" color="gray" aria-label="Close appearance" onClick={close}>
             ×
           </Button>
         </header>
@@ -496,16 +487,7 @@ export function Customizer() {
             Reset
           </Button>
           <span className="customizer-footer-gap" />
-          {prematch ? (
-            <>
-              <Button variant="soft" onClick={close}>
-                Save
-              </Button>
-              <Button onClick={() => enterArena(() => dispatch("reset"))}>Enter the arena</Button>
-            </>
-          ) : (
-            <Button onClick={close}>Done</Button>
-          )}
+          <Button onClick={close}>Done</Button>
         </footer>
       </aside>
     </div>

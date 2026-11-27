@@ -136,7 +136,8 @@ async fn the_door_names_the_sender_and_cleans_masks_and_bounds_text() {
     post(&mut a, "team", "  gg  ").await;
     let (channel, from, text) = heard(&mut a).await;
     assert_eq!((channel.as_str(), text.as_str()), ("team", "gg"));
-    assert!(from.starts_with("Guest#"), "{from}");
+    // Guest 1's own guest name, the one its launcher page shows.
+    assert_eq!(from, "Guest#0002");
     for other in [&mut b, &mut c] {
         assert_eq!(
             heard(other).await,

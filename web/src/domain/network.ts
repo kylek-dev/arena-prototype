@@ -2,6 +2,7 @@
 // Pure functions only: the socket lives in runtime/network.ts.
 import type { RoundResult } from "../bridge/snapshot";
 import type { Appearance } from "./appearance";
+import { wireAppearance } from "./hub";
 import { roundResultLabel } from "./round-clock";
 
 /** A seat or spectator pass in one match: where to connect and the bearer ticket for it. */
@@ -191,10 +192,7 @@ function varint(value: number): number[] {
   return bytes;
 }
 
-const WIRE_ID_RE = /^[A-Za-z0-9_-]{1,32}$/;
 const MAX_CLIENT_FRAME = 1024;
-const MAX_APPEARANCE_GROUPS = 24;
-const MAX_APPEARANCE_VARIANTS = 8;
 
 function encodeAsciiString(value: string): number[] {
   const bytes = varint(value.length);
@@ -203,42 +201,24 @@ function encodeAsciiString(value: string): number[] {
 }
 
 function encodeWireAppearance(look: Appearance): number[] | null {
-  if (
-    !WIRE_ID_RE.test(look.ancestry) ||
-    !WIRE_ID_RE.test(look.body) ||
-    !WIRE_ID_RE.test(look.skinTone) ||
-    !WIRE_ID_RE.test(look.hairColor) ||
-    !WIRE_ID_RE.test(look.facialHairColor) ||
-    !WIRE_ID_RE.test(look.eyes)
-  ) {
-    return null;
-  }
-  const build = Number.isFinite(look.build)
-    ? Math.max(0, Math.min(100, Math.round(look.build * 100)))
-    : 0;
-  const groups = Object.entries(look.groups)
-    .filter(([k, v]) => typeof v === "string" && WIRE_ID_RE.test(k) && WIRE_ID_RE.test(v))
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .slice(0, MAX_APPEARANCE_GROUPS) as [string, string][];
-  const variants = Object.entries(look.variants)
-    .filter(([k, v]) => typeof v === "string" && WIRE_ID_RE.test(k) && WIRE_ID_RE.test(v))
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .slice(0, MAX_APPEARANCE_VARIANTS);
+  // The same normalized look the hub sends as JSON (`domain/hub.ts`).
+  const wire = wireAppearance(look);
+  if (!wire) return null;
   const out: number[] = [
-    ...encodeAsciiString(look.ancestry),
-    ...encodeAsciiString(look.body),
-    ...encodeAsciiString(look.skinTone),
-    ...encodeAsciiString(look.hairColor),
-    ...encodeAsciiString(look.facialHairColor),
-    ...encodeAsciiString(look.eyes),
-    build,
-    ...varint(groups.length),
+    ...encodeAsciiString(wire.ancestry),
+    ...encodeAsciiString(wire.body),
+    ...encodeAsciiString(wire.skin_tone),
+    ...encodeAsciiString(wire.hair_color),
+    ...encodeAsciiString(wire.facial_hair_color),
+    ...encodeAsciiString(wire.eyes),
+    wire.build,
+    ...varint(wire.groups.length),
   ];
-  for (const [k, v] of groups) {
+  for (const [k, v] of wire.groups) {
     out.push(...encodeAsciiString(k), ...encodeAsciiString(v));
   }
-  out.push(...varint(variants.length));
-  for (const [k, v] of variants) {
+  out.push(...varint(wire.variants.length));
+  for (const [k, v] of wire.variants) {
     out.push(...encodeAsciiString(k), ...encodeAsciiString(v));
   }
   return out;

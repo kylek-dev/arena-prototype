@@ -856,3 +856,142 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Branch:** `auto/plan-launcher-hub` (planning only, no code)
 - **Decisions recorded (user, 2026-11-26):** `/mapeditor` and the menu's Map editor become admin-only; the in-game Friends window loses its Invite buttons; Settings stays out of the launcher dock.
 - **Added:** BACKLOG Playtest Inbox items for the two UI changes; two epics with issue definitions, [launcher-page](issues/launcher-page.md) (ROADMAP order 5) and [social-hub](issues/social-hub.md) (order 6, ADR first), with open questions for the user.
+
+## 2026-11-26 — Map editor for admins only (playtest decision)
+- **Branch / Commit:** `auto/admin-map-editor`
+- **Base / PR:** `auto/plan-launcher-hub` (stacked on PR #114)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox: `/mapeditor` and the game menu's **Map editor** are admin-only; the command is unknown to others and missing from `/help`.
+- **Changes:** `mapeditor` is an admin command (listed under **Admin commands**); `features/map-editor/access.ts` (`useAdmin`, `useMapEditorAllowed`) gates the menu button and the editor, which closes when access is lost; `mapEditorAllowed` in `state/map-editor.ts` also allows the local authoring server (`__map-editor/status` writable, `npm run dev`/`serve` only) so maps can be authored without a door, while the command stays admin-only everywhere.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/plan-launcher-hub`: see PR.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): docs still presented the editor as open to everyone (README, BROWSER scenarios 19/20, the new scenario's test host). Minor (fixed): the editor stayed "visible" behind the render guard after logout; added guest/unprobed and real-logout tests and a test that `/mapeditor` stays unknown on the dev server.
+
+## 2026-11-26 — No party invitations in the in-game Friends window (playtest decision)
+- **Branch / Commit:** `auto/friends-no-invite`
+- **Base / PR:** `auto/admin-map-editor` (stacked on PR #115)
+- **Lane:** B (pending human review)
+- **Task:** [BACKLOG](BACKLOG.md) Playtest Inbox: remove the friend Invite action from the in-game Friends window; the ⋮ menu keeps Whisper, Remove and Block.
+- **Changes:** `Friends({ invites })` (default on); `FriendsWindow` passes `invites={false}`; tests for the in-game menu items and the dock's Escape/refusal test now starting on Whisper.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/admin-map-editor`: see PR.
+- **Fresh-Eyes Review:** no Critical or Important. Minor (fixed): a stale comment on refused invitations, scenario 16 now says to invite from the home screen, a `PlayOnline` test pins the home list's Invite to group.
+
+## 2026-11-26 — Stable guest names (launcher page, Lane A slice)
+- **Branch / Commit:** `auto/guest-names`
+- **Base / PR:** `auto/friends-no-invite` (stacked on PR #116)
+- **Lane:** A
+- **Task:** [launcher-page](issues/launcher-page.md): "Play as a guest, with the guest's temporary `Guest#` name shown". The door drew a random `Guest#NNNN` per queue connection, so the page could not know it, and it changed on every reconnect.
+- **Changes:** `door::auth::guest_handle_for(guest)` (`guest % 9999 + 1`) applied at hello for a holder without a handle (guests, and accounts without a name) and on logout revocation; the browser computes the same name with `guestHandle(id)` (`domain/matchmaking.ts`). Golden vectors shared by a Rust unit test and a Vitest test; the chat and identity tests now expect exact guest names. An admin clearing a name (`Command::Rename { handle: None }`) gives each open connection its browser's guest name too. Groundwork only: the launcher page slice shows the name (the `launcher-page` item stays open).
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/friends-no-invite`: see PR.
+- **Fresh-Eyes Review:** no Critical. Important (by design, next slice): `guestHandle` has no UI caller yet. Minor (fixed): the admin clear-name path drew a random guest name; PROTOCOL.md notes the cross-session linkability.
+
+## 2026-11-26 — Launcher page (epic, Lane B slice)
+- **Branch / Commit:** `auto/launcher-page`
+- **Base / PR:** `auto/guest-names` (stacked on PR #117)
+- **Lane:** B (pending human review)
+- **Task:** [launcher-page](issues/launcher-page.md), ROADMAP order 5.
+- **Changes:** `features/launcher-page/{LauncherPage,PartyStatus}.tsx` and styles; `AccountPanel` takes the guest name and leaves the privacy link to the page; `startRuntime` raises the page unless a join link or reload is joining a match (the loader no longer does, so entering early cannot be undone by the asset config arriving); `returnToHome` became `returnToLauncher` and works without character kits (the close-up behind the page needs a kit); game menu **Launcher page**; `arenaReady` shared with the loading screen; removed `StartScreen`, the customizer's pre-match branch and `PlayOnline` (its tests now drive the Play window).
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/guest-names`: see PR.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): party refusals (`no_such_party`, `party_full`, `party_busy`, `rate_limited`) had lost their only display with `PlayOnline`; `PartyStatus` shows them (also to guests) with a test. Minor (fixed): a reload rejoin that ends before opening now shows the page; the page is a `section` (no nested `main`) and focuses **Enter the arena**; stale comments, an unused class and docs scenarios 14–27 and DEPLOYMENT now say launcher page.
+
+## 2026-11-26 — Social hub: ADR and rules (epic slice 1)
+- **Branch / Commit:** `auto/hub-rules`
+- **Base / PR:** `auto/launcher-page` (stacked on PR #118)
+- **Lane:** A
+- **Task:** [social-hub](issues/social-hub.md) "Design first (ADR)".
+- **Changes:** Proposed [ADR 0056](../docs/decisions/0056-social-hub.md): hub instances in the door beside the queue (identity, friends, blocks and chat are there), 40 players each, intent-only movement integrated by the door at 10 Hz, 40 m interest with enter/state/exit messages, blocks hide both ways, a `hub` chat channel, leaving for matches and rejoining after, a graybox plaza, and the JSON message contract. `arena_sim::hub`: `step`/`settle` (arena speed, plaza edge, a fountain and four columns), `spawn_point`, `in_interest`, `Intent::is_valid`, with tests.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/launcher-page`: see PR.
+- **Fresh-Eyes Review:** no Critical. Important (fixed in the ADR): the move budget now amends ADR 0046 explicitly (separate 20/s budget, excess dropped); one `hub_state` per tick carries view changes and the door records them only when the outbox accepted it (a full-instance join no longer overflows the 32-message outbox); following is for friends and party-mates (`not_friends`). Minor (fixed): rename updates, block/unblock behaviour, refusal codes, door-side last instance, a note on the interest radius; `step` settles first (no overflow at `i32` extremes, tested), const asserts for column spacing, edge and tick ratio, one spawn place per player of a full instance.
+
+## 2026-11-26 — Social hub: the door's hub service (epic slice 2)
+- **Branch / Commit:** `auto/hub-door`
+- **Base / PR:** `auto/hub-rules` (stacked on PR #119)
+- **Lane:** A
+- **Task:** [social-hub](issues/social-hub.md): server side and tests (joining, leaving, instance limits, interest filtering, handoff to a match and back, blocked players hidden, a full-instance load test).
+- **Changes:** `door/hub.rs` (`Hubs`: instances of 40, placement by followed friend or party-mate, party, last instance, fullest with room; intents; one `hub_state` per tick with `enter`/`exit`, recorded only when the outbox took it; renames; blocks hide both ways); queue messages `hub_join`/`hub_move`/`hub_leave` and `hub`/`hub_state`/`hub_left`; a separate 20/s move budget (excess dropped); friends looked up in the store for following; seat and spectator tickets take players out of the hub; `hub` chat channel (logged-in only); `/metrics` gauges and tick time; `arena-bot --hub` load test; `--dev` doors allow 64 queue connections per address.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/hub-rules`: see PR. Load test (`a_full_hub_instance_stays_within_its_budget`, 41 bots, 3 s): 41 joined, 2 instances, about 11.4 KB/s per bot (max about 12 KB/s), 9.7 states/s, largest view 39, largest message 8.8 KB.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): hub states could fill the outbox and push out tickets, ready checks and chat (now they leave 12 slots); the view diff compared connections, so a rejoin under a new id between two states left a ghost (now by id and version, tested); renames were lost when a viewer's state was dropped (versioned, tested); hub chat honoured blocks one way only (both now, tested). Minor (fixed): a move flood past 80/s closes the connection; following checks the account still logged in and shares the invite budget; an offline friend gets `not_in_hub`; ids skip live ones after wrapping; docs say guests cannot be hidden, and ADR axes read ±1000. Not done: refusing a hub join while seated in a match (the in-match window can outlast the match by 21 minutes without `--match-status`, which would keep players out of the hub after a match).
+
+## 2026-11-26 — Social hub: the page (epic slice 3)
+- **Branch / Commit:** `auto/hub-web`
+- **Base / PR:** `auto/hub-door` (stacked on PR #120)
+- **Lane:** B (pending human review)
+- **Task:** [social-hub](issues/social-hub.md): entering from the launcher page, interacting (chat, player menu), queues from the hub, returning after a match.
+- **Changes:** `domain/hub.ts` (strict parsing of `hub`/`hub_state`/`hub_left`, the view kept by id with names and looks from `enter`, `wireAppearance` now shared with the match `Hello` encoder, `appearanceFromWire`, intents clamped, refusal words); the queue runtime's `hub` store, `joinHub` (quiet when no door), `leaveHub`, `moveHub` (newest intent, at most 10 a second, unchanged ones not resent); `runtime/hub.ts` (`enterHub`, `returnToHub`, `leaveHub`); launcher page Enter joins the hub; scoreboard/spectator Leave return to it; H window (`features/hub/HubWindow.tsx`); `hub` chat channel and tab; Play → Practice switches between hub and arena; the game menu's Launcher page leaves the hub.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/hub-door`: see PR.
+- **Fresh-Eyes Review:** no Critical. Important (fixed, tested): a join refused with `no_name`, `rate_limited` or `bad_request` stayed "joining" (the join is now its own request kind, and any refusal while it was last asked ends it); moves overwrote whose refusal arrives next (they now go straight to the open socket); the H window offered Enter during a match (it now says the player returns after the match). Minor (fixed): a trailing timer sends a held intent, the hub fast path falls back to the queue parser, `enter`/`exit` are checked as arrays before use and duplicate ids are refused, words for `lost`, `no_name` and the rate limit, "Invite to group" as in Friends, docs say Enter the game.
+
+## 2026-11-26 — Social hub: the rendered plaza (epic slice 4)
+- **Branch / Commit:** `auto/hub-render`
+- **Base / PR:** `auto/hub-web` (stacked on PR #121)
+- **Lane:** B (pending human review)
+- **Task:** [social-hub](issues/social-hub.md): seeing each other (look, nameplate, smooth movement), the graybox map.
+- **Changes:** `arena-client/src/hub.rs` (page bridge `readHub`/`onHubIntent`/`onHubScreen`, strict view parsing, `Walk` prediction with `arena_sim::hub` and correction, plaza spawn and venue hiding, avatars with kits or a stand-in, interpolation, screen anchors); `appearance::Desired` hub specs; `character_animation` drives hub avatars as standing fighters; `present` draws the local player at its predicted hub place; page `state/hub-render.ts` (view JSON with render specs cached per look), `HubNameplates`, the combat HUD hidden in the hub.
+- **Checks Observed:** `.agents/skills/iterate-game/scripts/run-critics.sh --auto --base auto/hub-web` and `./scripts/build-web.sh`: see PR.
+- **Fresh-Eyes Review:** no Critical. Important (fixed, tested): a stopping player was pulled back to the door's lagging place (the page now says when the door has applied every intent sent, `settled`, and only then does a standing player settle); the hidden arena's walls and pillars still blocked the camera (the plaza now has its own camera obstacles, the only ones used in the hub); arrivals and departures in one state could share a kit actor (departures are freed first, and no slot means no avatar). Minor (fixed): a stand-in body shows until the kit is ready and then goes, an old kit goes when a look changes, legacy builds use stand-ins only, the spec cache resets with the kits, arena selection is cleared in the hub, the camera boom restarts on entering and leaving, a venue rebuilt in the hub stays hidden, a nameplate click waits for the player's row. Not done: turning is not interpolated, and the view JSON repeats each player's spec at 10 Hz (fine at 39 players).
+
+## 2026-11-26 — Backlog cleared
+- All outstanding BACKLOG items are implemented as a stack of PRs: #115 (map editor admin-only), #116 (no in-game invites), #117 and #118 (launcher page), #119 to #122 (social hub: ADR and rules, door service, page, renderer). Every Lane B change is pending human browser review in `docs/UI-REVIEW.md`; ADR 0056 is proposed, with the open questions answered provisionally.
+
+## 2026-11-26 — Hub rubber-banding (playtest)
+- **Branch / Commit:** `auto/hub-render` (PR #122; touches the door's hub too)
+- **Lane:** A + B
+- **Task:** the user saw rubber-banding walking in the hub.
+- **Root cause:** the door applied the newest intent every tick while the page merged intents to 10 a second and the client predicted on its own clock, so the two started, stopped and turned on different ticks; the client only corrected past 3 m or when standing, so the drift showed as snaps (at every stop, and on curves).
+- **Fix:** moves are numbered steps. The client sends one per hub tick while walking or turning; the door queues them (8 at most) and applies each once in order, acknowledging the last; the client starts each state from the door's place, replays the moves after the acknowledged one (exactly the door's arithmetic) and fades any small difference over about 150 ms. The page passes moves through unchanged; `arena-bot --hub` sends one per tick. ADR 0056 and PROTOCOL amended.
+
+## 2026-11-26 — Client failed to start after a rebuild (playtest)
+- **Branch / Commit:** `auto/hub-render` (PR #122)
+- **Symptom:** "WebAssembly.instantiate(): Import #8 … `__wbg_arena_hub_intent_…`: function import requires a callable" on Enter the game.
+- **Root cause:** not the code: `dist/pkg/arena_client.js` and `arena_client_bg.wasm` on disk matched, but Caddy's `file_server` sent no `Cache-Control`, so the browser reused the previous build's JS glue (heuristic freshness) with the new WASM, whose import names changed with the hub intent's new signature.
+- **Fix:** `deploy/Caddyfile` sends `Cache-Control: no-cache` for the static files (revalidation; 304 when unchanged), verified on the running stack with `curl` (header present, `If-None-Match` → 304). `docs/DEPLOYMENT.md` notes it.
+
+## 2026-11-26 — Hub chat lines broken apart (playtest)
+- **Branch / Commit:** `auto/hub-render` (PR #122)
+- **Symptom:** a hub chat line showed `[Hub] Name#0000` on one row (bold, centred for others' lines) and `: text` on the next.
+- **Root cause:** chat lines carry their channel as a class (`chat-line hub`), and the H window's stylesheet styled a bare `.hub` (`display: grid`), which caught every hub chat line.
+- **Fix:** the window's class is `hub-panel`; hub chat lines get their own colour (`--pal-leaf-5`); `tests/unit/hud-css.test.mjs` fails on any stylesheet styling a bare channel class (checked to catch the old rule and allow `.chat-line.hub`).
+- **Checks Observed:** typecheck, Biome lint and format, palette check, `npm test` (56 Node, 58 Vitest files / 473 tests), `npm run build`.
+
+## 2026-11-26 — Jumping in the hub (playtest)
+- **Branch / Commit:** `auto/hub-render` (PR #122; rules, door, page and client)
+- **Task:** the user could not jump in the hub: the first hub rules only walked, and the client dropped the jump key there.
+- **Changes:** `arena_sim::hub::{Body, step_body}` (the arena's jump: ground only, `JUMP_SPEED`/`GRAVITY` run three times per hub tick, take-off step kept as momentum, no air steering; tested: 8 hub ticks, apex 1.32 m as in the arena); the door keeps a body per player, `hub_move` gains `jump`, `hub_state` gains this player's `y`, `vy`, `mx`, `mz` and each player's height; the page parses and forwards them; the client predicts and replays bodies (sending a move every airborne tick), draws heights, and plays the jump animations for the local player and others. ADR 0056 and PROTOCOL amended.
+
+## 2026-11-26 — One jump for the arena and the hub (playtest)
+- **Branch / Commit:** `auto/hub-render` (PR #122; sim, door, page, client)
+- **Task:** the user found the hub jump unlike the match's, glitchy and slow-motion, and asked why they were not the same.
+- **Root cause:** the hub re-derived the arena's motion at 10 Hz: bodies changed every 100 ms and were drawn as straight segments between, the jump animation read an upward speed changing in thirds held 100 ms, and others' heights came as 10 Hz samples.
+- **Fix:** `arena_sim::motion::Motion` (carry, walk, jump, fall) is now the arena's own per-tick movement; the arena calls it (a seeded 50-match 3v3 headless run is byte-identical before and after) and the hub runs it at 30 Hz with the plaza's walls (`hub::step_body`, tested tick for tick against an arena fighter: 23 ticks, 1.32 m). The door moves everyone every tick and sends states every third (10 a second); moves are one per tick (budget 40/s, flood 160/s, 24 waiting). The client steps the local body in `FixedUpdate` and draws it with the fixed overstep like a match fighter; others' heights fall with the same gravity from the door's height and upward speed (added to each player's entry). ADR 0056 and PROTOCOL amended.
+
+## 2026-11-26 — Launcher page: top bar, news, no friends list (user request)
+- **Branch / Commit:** `auto/launcher-news`
+- **Base / PR:** `auto/hub-render` (stacked on PR #122)
+- **Lane:** A (news API) + B (page; pending human review)
+- **Changes:** door `news.rs` (`GET /api/news`, admin `POST`/`DELETE /api/admin/news`, plain bounded cleaned text, newest first, 50 kept, atomic `news.json` in `--news-dir`, memory without; compose passes `/var/lib/arena/news`); page `domain/news.ts`, `state/news.ts`, `features/launcher-page/{News,AccountBar}.tsx` and a new layout (top bar with the account, the way in beside the news, footer); `AccountPanel` replaced by `AccountBar` (menu and dialogs); the friends list removed from the page.
+- **Checks Observed:** see PR. Tests: news unit tests (cleaning, bounds, order, cap, restart, broken file), admin end to end in `tests/identity.rs` (public read, 401/403/422, post, author, delete 204/404), account bar tests (every former account-panel behaviour through the menu and dialogs), launcher-page tests (top bar, no friends list, party, news as plain text, empty and unavailable, admin post with refusal and delete with confirmation), news domain tests.
+- **Fresh-Eyes Review:** no Critical. Important (raised with the user): with the friends list gone from the page and Invite off in the F window, friends can be invited only from the hub. Minor (fixed): news readers take a snapshot and never wait for a write's sync; `news.json` re-checked, sorted and capped on load, an unreadable file set aside and logged; the folder synced after the rename; titles turn line breaks into spaces; U+061C, U+2028 and U+2029 dropped; long words wrap in cards and notices; the menu takes focus, arrows move, Escape returns to the name, tabbing or clicking away closes it; a failed reload keeps the news shown; Cancel clears a news error; tests for those, the no-name dialog reopening, a 403 post, `long_body` and an over-limit body (400). Scenario 28 marked superseded.
+
+
+## 2026-11-26 — Unit menus, chat size, and the hub decision (user request)
+- **Branch / Commit:** `auto/frame-menus`
+- **Base / PR:** `auto/launcher-news` (stacked on PR #123)
+- **Lane:** B (pending human review); the hub rebuild decided in ADR 0057 and queued
+- **Changes:** `state/unit-menu.ts` and `features/unit-frames/UnitMenu.tsx` (right-click menu on player, target, focus and team frames and friendly nameplates; enemy frames and nameplates keep focus); chat default 432 px with migration and launcher-height matching (`chatHeightCustom`); ADR 0057 (hub on the world server, accepted), ADR 0056 marked partly superseded; backlog: the hub epic in six slices, Inspect, Duel, the world-server rename.
+- **Why the hub had no HUD:** ADR 0056 ran the hub in the door with no combat, so no fighter state existed to drive frames, bars or casting, and the HUD was hidden on purpose; ADR 0057 replaces that design.
+- **Checks Observed:** see PR. Tests: `tests/ui/unit-menu.test.tsx` (items for a friend, a stranger, a bot and the player; reasons; invite sent; Edit layout picks the frame; Escape and outside click close; enemy frames focus), updated frame focus tests, chat size migration and launcher-height tests.
+- **Fresh-Eyes Review:** two Critical, fixed: the menu never kept the keyboard (the focus policy returned it to the game, so Escape opened the game menu and arrows moved the character; now `data-keyboard-owner`, closing on blur, with a real-focus test that fails without it); and the menu followed the slot, not the unit, and its request outlived a match (now pinned to the unit's id and closed when the slot shows someone else, the match ends, spectating or layout editing starts). Important, fixed: placement measured and kept 8 px inside the screen; the height flag for older profiles comes from their saved height (a height of their own stays); the friends list is read when the menu opens, and guests, blocked players, pending requests and a waiting invitation are explained. Minor, fixed: unavailable items use `aria-disabled` and stay reachable; a few pixels of drift on a sideways grip drag do not set a height. Minor, left: Escape during a cast stops the cast first (as for the Friends menu); the layout sliders show the saved size rather than the attached size.
+
+## 2026-11-26 — Approvals; Invite in the Friends window; menus keep the game's keys (user request)
+- **Branch / Commit:** `auto/frame-menus` (added to PR #124)
+- **Lane:** B (pending human review)
+- **Changes:** every pending UI review through PR #124 recorded as approved by the user (`docs/UI-REVIEW.md`), except the in-game Friends window without Invite, which the user reversed; **Invite to group** back in the **F** window's ⋮ menu (`Friends` lost its `invites` option); the ⋮ menus and the unit menu no longer take keyboard focus (no `data-keyboard-owner`, no first-item focus, no close on blur), the game keeps moving and casting, items are clicked, and Escape closes the open menu first (`state/popup-menu.ts`, read by the input router before the windows and game menu); BROWSER scenarios 32–33 in the numbered list, 27 superseded.
+- **Checks Observed:** see PR. Tests: Invite in the F window sends an invitation; with the input router installed, the canvas keeps focus while a ⋮ or unit menu is open, Escape on the canvas closes only the menu (window and game menu unchanged), Tab users' Escape still returns to the ⋮ button, a clicked Focus item works.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): a Tab user's Escape would have closed the ⋮ menu through the router without returning focus to its button in a real browser (the test passed only because jsdom batches the update); the router's close now refocuses the button when focus was inside the menu. Minor (fixed): the menu's Escape now comes before the custom lobby's; a stale `FriendsWindow` comment; the approval section no longer claims pending statements in ADR 0056, and BROWSER scenarios 21–32 now read approved. Minor (left): Escape during a cast or a key capture, or while typing, leaves the menu open (a second Escape closes it); an unrendered unit menu holds Escape until its effect clears it.
+
+## 2026-11-26 — Party members' frames get the unit menu (user request)
+- **Branch / Commit:** `auto/frame-menus` (added to PR #124)
+- **Lane:** B (pending human review)
+- **Changes:** `UnitMenuRequest` gains a party form (`{kind: "party", handle}`) for party members with no unit in this match; `PartyMate` frames open it; the menu closes when they leave the party; Invite greys "already in your party" for any party member; Focus greys "not in this match"; **Leave party** on one's own frame while in a party.
+- **Checks Observed:** see PR. Test: the party-member menu's items and reasons, Whisper prefill, closing when they leave the party, Leave party sends `leave_party`.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): **Leave party** ignored the queue state, so leaving mid-search or in a ready check would have stopped the search for the whole party; it is now greyed while searching (and not offered in a custom lobby), as on the launcher, with a test. Minor (fixed): a party member's menu also closes when they join this match. Minor (left): the greyed party frame opens its menu by right-click only (not keyboard reachable); Whisper stays reachable from the Friends window.
+

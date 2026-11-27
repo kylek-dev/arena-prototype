@@ -47,20 +47,12 @@ import {
   serverSavedText,
   undoMap,
 } from "../../state/map-editor";
-import { accountService } from "../../state/account";
-import { LOADING_ACCOUNT } from "../../runtime/account";
-import { createStore, useStore } from "../../state/store";
+import { useAdmin, useMapEditorAllowed } from "./access";
+import { useStore } from "../../state/store";
 import { MovableWindow } from "../../ui/MovableWindow";
 import { MapInspector, PropOptions } from "./MapInspector";
 import { MapPlan } from "./MapPlan";
 import "./map-editor.css";
-
-const NO_ACCOUNT = createStore(LOADING_ACCOUNT);
-/** Whether the door says this player is an admin (it checks every request). */
-function useAdmin() {
-  const account = useStore(accountService, (a) => a);
-  return useStore(account?.state ?? NO_ACCOUNT, (s) => !!s.me?.admin);
-}
 
 /** Asks before an open replaces unsaved changes. */
 function DiscardPrompt({
@@ -420,15 +412,22 @@ export function MapEditor() {
   const id = useStore(mapId, (i) => i);
   const [creating, setCreating] = useState(false);
   const admin = useAdmin();
+  const allowed = useMapEditorAllowed();
 
   useEffect(() => {
-    if (!visible) return;
+    if (!visible || !allowed) return;
     void loadPropCatalog();
     void listMaps();
-  }, [visible]);
+  }, [visible, allowed]);
   useEffect(() => {
     if (visible && admin) void listServerMaps();
   }, [visible, admin]);
+
+  // Losing access (logging out) closes the editor rather than keeping it
+  // open, unseen, behind the render guard below.
+  useEffect(() => {
+    if (visible && !allowed) mapEditorVisible.set(false);
+  }, [visible, allowed]);
 
   useEffect(() => {
     if (!unsaved) return;
@@ -437,7 +436,8 @@ export function MapEditor() {
     return () => removeEventListener("beforeunload", warn);
   }, [unsaved]);
 
-  if (!visible) return null;
+  // Admins only (decided 2026-11-26).
+  if (!visible || !allowed) return null;
   const close = () => mapEditorVisible.set(false);
 
   const keys = (e: KeyboardEvent) => {

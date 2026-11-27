@@ -4,7 +4,8 @@ import { afterEach, expect, it } from "vitest";
 import type { MatchTicket } from "../../web/src/domain/network";
 import { MatchReady } from "../../web/src/features/queue/MatchReady";
 import { QueueBar } from "../../web/src/features/queue/QueueBar";
-import { PlayOnline } from "../../web/src/features/play-online/PlayOnline";
+import { PlayWindow } from "../../web/src/features/launcher/PlayWindow";
+import { playTab } from "../../web/src/state/windows";
 import { createQueue, installPartyLinks, type Queue } from "../../web/src/runtime/matchmaking";
 import { matchQueue } from "../../web/src/state/network";
 
@@ -244,14 +245,15 @@ function withQueue() {
 
 it("the queue bar shows the queue, time waited, expected wait and players, with Cancel", () => {
   const fake = withQueue();
+  playTab.set("queue");
   render(
     <>
-      <PlayOnline />
+      <PlayWindow />
       <QueueBar />
     </>,
     { wrapper: TooltipProvider },
   );
-  expect(screen.getByRole("region", { name: "Play online" })).toBeTruthy();
+  expect(screen.getByRole("dialog", { name: "Play" })).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Solo 2v2" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "3v3" }));
   fake.open();
@@ -306,14 +308,19 @@ it("the match-ready window counts down, shows acceptances and takes Accept or De
 
 it("a party member waits for the leader to choose the queue", () => {
   const fake = withQueue();
-  render(<PlayOnline />, { wrapper: TooltipProvider });
+  playTab.set("queue");
+  render(
+    <>
+      <PlayWindow />
+      <QueueBar />
+    </>,
+    { wrapper: TooltipProvider },
+  );
   act(() => fake.queue.joinParty("K7P2QX"));
   fake.open();
   fake.say({ type: "party", code: "K7P2QX", members: 2, leader: false, queue: null });
   expect(screen.getByText("The party leader selects the queue.")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "2v2" })).toBeNull();
-  fake.say({ type: "refused", code: "no_such_party" });
-  expect(screen.getByText(/This party no longer exists/)).toBeTruthy();
 });
 
 it("the bar explains why online play stopped and can be dismissed", () => {

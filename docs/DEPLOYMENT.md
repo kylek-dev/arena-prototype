@@ -46,6 +46,8 @@ Changing the key invalidates every link already handed out.
 
 ## Updating and stopping
 
+- **News.** Admins (accounts in `ARENA_ADMIN_ACCOUNTS`) post and delete the launcher page's news on the page itself. The door keeps it in `/var/lib/arena/news/news.json` on the `door-data` volume (`--news-dir`), so it survives restarts; back it up with the volume.
+- **Caching.** Caddy serves the client with `Cache-Control: no-cache`, so browsers revalidate each file (an unchanged one is a 304). The client's `pkg/arena_client.js` and `pkg/arena_client_bg.wasm` keep their names across builds; a browser that reused one from an older build failed to start ("function import requires a callable"), seen in a local trial on 2026-11-26.
 - **SIGTERM drains.** `docker compose stop server` (or a redeploy) sends
   SIGTERM. The server then stops starting matches and lets running ones
   finish for up to 1210 s. A round lasts at most 20 minutes, plus a 5 s
@@ -120,7 +122,7 @@ before.
    - how to delete an account.
 
    The game ships one at `web/privacy.html` (served as `/privacy.html`
-   and linked from Play online). Add who runs the server and how to reach
+   and linked from the launcher page). Add who runs the server and how to reach
    them, and review it against your own logs and jurisdiction.
 2. **Create a WorkOS application** (dashboard.workos.com; the first million
    monthly active users are free). Use the Staging environment for trials;

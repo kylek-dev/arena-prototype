@@ -12,6 +12,7 @@ import { hoveredFrame } from "../../runtime/unit-hover";
 import { IDLE_QUEUE } from "../../domain/matchmaking";
 import { matchQueue } from "../../state/network";
 import { createStore } from "../../state/store";
+import { openUnitMenu } from "../../state/unit-menu";
 
 const NO_QUEUE = createStore(IDLE_QUEUE);
 const NONE: readonly (string | null)[] = [];
@@ -64,7 +65,16 @@ function TaggedFrame({
       onClick={() => interactUnit(tag, "target")}
       onContextMenu={(e) => {
         e.preventDefault();
-        interactUnit(tag, "focus");
+        // Arena (enemy) frames focus; the others open the unit menu.
+        if (role === "opponent") interactUnit(tag, "focus");
+        else
+          openUnitMenu({
+            tag,
+            unitId: unit?.id ?? "",
+            x: e.clientX,
+            y: e.clientY,
+            frame: role === "teammate" ? "team" : role,
+          });
       }}
     >
       {frame}
@@ -79,6 +89,12 @@ function PartyMate({ handle }: { handle: string | null }) {
     <section
       className="unit-frame teammate party-away"
       aria-label={`${handle ?? "Party member"} status`}
+      // The same menu as the live frames (by handle: they have no unit here).
+      onContextMenu={(e) => {
+        e.preventDefault();
+        if (handle)
+          openUnitMenu({ kind: "party", handle, x: e.clientX, y: e.clientY, frame: "team" });
+      }}
     >
       <div className="unit-heading">
         <span className="unit-name">
