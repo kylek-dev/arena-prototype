@@ -1,5 +1,5 @@
 # Single-machine playtest deployment (ADR 0045): Caddy terminates TLS and
-# serves the browser client; one match server and one front door sit behind
+# serves the browser client; one world server and one front door sit behind
 # it on a private network. From the repository root, after building dist/:
 #   docker compose -f deploy/compose.yaml --env-file deploy/.env up -d --build
 # Add `--profile obs` for Grafana, Prometheus, Loki and Tempo (ADR 0054) on
@@ -18,11 +18,11 @@ x-public: &public
   OTEL_EXPORTER_OTLP_TIMEOUT: ${OTEL_EXPORTER_OTLP_TIMEOUT:-3000}
 
 services:
-  server:
+  world:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
-    image: arena-server:local
+    image: arena-world:local
     command:
       - --bind
       - 0.0.0.0:8080
@@ -50,9 +50,9 @@ services:
         ipv4_address: 172.30.10.10
 
   door:
-    image: arena-server:local
+    image: arena-world:local
     depends_on:
-      server:
+      world:
         condition: service_started
       identity-db:
         condition: service_healthy
@@ -60,7 +60,7 @@ services:
     command:
       - --bind
       - 0.0.0.0:8090
-      - --match-server
+      - --world-server
       - wss://${ARENA_HOST}/play
       - --page
       - https://${ARENA_HOST}/
@@ -74,8 +74,8 @@ services:
       - /var/lib/arena/news
       # Which matches ended (private network; Caddy never routes here),
       # so players leave the in-match state when their match ends.
-      - --match-status
-      - http://server:8080
+      - --world-status
+      - http://world:8080
     environment:
       <<: *public
       # Accounts are off (guests only) until ARENA_SESSION_KEY is set: hex,
@@ -119,7 +119,7 @@ services:
 
   caddy:
     image: caddy:2.11.9
-    depends_on: [server, door]
+    depends_on: [world, door]
     ports:
       - "${ARENA_HTTP_PORT:-80}:80"
       - "${ARENA_HTTPS_PORT:-443}:${ARENA_HTTPS_PORT:-443}"
@@ -153,7 +153,7 @@ services:
       - ./observability/alerts.yaml:/otel-lgtm/grafana/conf/provisioning/alerting/arena.yaml:ro
       - lgtm-data:/data
     environment:
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /otel-lgtm/grafana/conf/provisioning/dashboards/custom/match-server-health.json
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /otel-lgtm/grafana/conf/provisioning/dashboards/custom/world-server-health.json
       # Where alerts are posted. The default goes nowhere (the discard
       # port); set a Discord, Slack or other webhook URL in deploy/.env.
       ARENA_ALERT_WEBHOOK_URL: ${ARENA_ALERT_WEBHOOK_URL:-http://127.0.0.1:9/}
@@ -166,8 +166,8 @@ services:
       arena:
         ipv4_address: 172.30.10.20
 
-  # Ships the game host's telemetry to lgtm: scrapes server and door
-  # /metrics, tails the server, door and Caddy logs through the Docker
+  # Ships the game host's telemetry to lgtm: scrapes world and door
+  # /metrics, tails the world, door and Caddy logs through the Docker
   # socket (read-only, but Docker API access is root-equivalent: keep this
   # container's UI on loopback), and forwards OTLP traces. Point it at a
   # remote stack with ARENA_OBS_OTLP_ENDPOINT, ARENA_OBS_REMOTE_WRITE_URL and

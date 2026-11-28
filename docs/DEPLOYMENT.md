@@ -1,9 +1,18 @@
 # Deploying a playtest server
 
-How to run the match server, the front door and the browser client on one
+How to run the world server, the front door and the browser client on one
 machine for remote playtests ([ADR 0045](decisions/0045-front-door-and-playtest-deployment.md)).
 This setup is **proposed**. It ran locally behind a self-signed certificate
 (see [Local trial](#local-trial)) but has not yet served a public playtest.
+
+**Renamed 2026-11-28.** The match server is now the world server (ADR
+0057): the Compose service `server` became `world`, the image
+`arena-world:local` and the scrape job `arena-world`. A stack started
+before the rename needs, once, `docker compose stop -t 1230 server` (so
+running matches drain; `--remove-orphans` alone stops it within 10 s),
+then `docker compose up -d --build --remove-orphans` (Caddy and Alloy now
+point at `world`). Metrics before the rename sit under the job
+`arena-server`; the old down alert is deleted on provisioning.
 
 ## What runs
 
@@ -11,11 +20,11 @@ This setup is **proposed**. It ran locally behind a self-signed certificate
 | --- | --- | --- |
 | Caddy | TLS, static browser client (`dist/`), reverse proxy | `https://HOST/` |
 | `arena-door` | Creates matches and join links; lobby page | `/lobby/`, `/api/matches` |
-| `arena-server` | Hosts matches over WebSockets | `wss://HOST/play` |
+| `arena-world` | Hosts matches over WebSockets | `wss://HOST/play` |
 
-The match server and door share `ARENA_TICKET_KEY`. Only Caddy is published.
-The match server's `/metrics`, `/readyz`, `/healthz` and `/matches/{id}`
-(which the door asks, through `arena-door --match-status http://server:8080`,
+The world server and door share `ARENA_TICKET_KEY`. Only Caddy is published.
+The world server's `/metrics`, `/readyz`, `/healthz` and `/matches/{id}`
+(which the door asks, through `arena-door --world-status http://world:8080`,
 whether a match has ended) stay on the private network.
 
 ## Requirements
@@ -48,13 +57,13 @@ Changing the key invalidates every link already handed out.
 
 - **News.** Admins (accounts in `ARENA_ADMIN_ACCOUNTS`) post and delete the launcher page's news on the page itself. The door keeps it in `/var/lib/arena/news/news.json` on the `door-data` volume (`--news-dir`), so it survives restarts; back it up with the volume.
 - **Caching.** Caddy serves the client with `Cache-Control: no-cache`, so browsers revalidate each file (an unchanged one is a 304). The client's `pkg/arena_client.js` and `pkg/arena_client_bg.wasm` keep their names across builds; a browser that reused one from an older build failed to start ("function import requires a callable"), seen in a local trial on 2026-11-26.
-- **SIGTERM drains.** `docker compose stop server` (or a redeploy) sends
+- **SIGTERM drains.** `docker compose stop world` (or a redeploy) sends
   SIGTERM. The server then stops starting matches and lets running ones
   finish for up to 1210 s. A round lasts at most 20 minutes, plus a 5 s
   linger. Compose waits 1230 s (`stop_grace_period`) before killing it, which
   leaves time for the last profile and spans.
 - **Restarting now.** To restart sooner, accept that running matches end:
-  `docker compose stop -t 5 server`. A second SIGTERM also stops at once.
+  `docker compose stop -t 5 world`. A second SIGTERM also stops at once.
 - **During a restart.** Players whose match had not started get
   `ServerShutdown` and retry by themselves until the new server is up.
   Players of matches that were cut off see the match as over.
@@ -74,12 +83,12 @@ Changing the key invalidates every link already handed out.
 
 | Setting | Default | Where |
 | --- | --- | --- |
-| Open connections per client address | 12 | `arena-server --connections-per-address` |
+| Open connections per client address | 12 | `arena-world --connections-per-address` |
 | Matches created per client address | burst 5, then 1 per 30 s | `arena-door` (code: `DoorConfig`) |
-| Allowed page origins (`/play`) | required without `--dev` | `arena-server --allow-origin` |
+| Allowed page origins (`/play`) | required without `--dev` | `arena-world --allow-origin` |
 | Allowed page origins (`/api/matches`) | the `--page` origin | `arena-door --allow-origin` |
 | Join link lifetime | 2 hours | `arena-door --ticket-minutes` |
-| How soon players leave the in-match state | about 10 s after the match ends (asked every 5 s); 21 minutes without `--match-status` | `arena-door --match-status` |
+| How soon players leave the in-match state | about 10 s after the match ends (asked every 5 s); 21 minutes without `--world-status` | `arena-door --world-status` |
 | Trusted proxy (for client addresses) | none | `--trusted-proxy CIDR` on both |
 
 `--trusted-proxy` must name only the proxy. Every client can write
@@ -89,14 +98,14 @@ network.
 
 ## Watching a playtest
 
-- `docker compose logs -f server` prints one JSON line per match start, seat
+- `docker compose logs -f world` prints one JSON line per match start, seat
   join, disconnect and end (`ARENA_LOG_FORMAT=json` in `compose.yaml`). Every
   line names the `match_id` the lobby shows, and seat lines carry `seat` and
-  `conn_id`, so `docker compose logs server door | grep 0123456789abcdef`
+  `conn_id`, so `docker compose logs world door | grep 0123456789abcdef`
   follows one match from the door to the server. Logs never contain tickets,
   join links or the signing key. Set `RUST_LOG=debug` in `deploy/.env` for
   more, or run the binaries without `ARENA_LOG_FORMAT` for readable lines.
-- Server counters: `docker compose exec caddy wget -qO- http://server:8080/metrics`,
+- Server counters: `docker compose exec caddy wget -qO- http://world:8080/metrics`,
   and the front door's at `http://door:8090/metrics`.
 - Players can add `?debug=1` before the `#` in their link to see ping,
   corrections, queue and server tick rate in the diagnostics overlay.
@@ -151,7 +160,7 @@ before.
      `door-data` volume;
    - optionally `ARENA_BLOCKED_NAMES`, the path inside the container to a
      file of extra words handles may not contain (one per line, `#` for
-     comments), added to `crates/arena-server/src/identity/blocked-names.txt`.
+     comments), added to `crates/arena-world/src/identity/blocked-names.txt`.
 4. Start or restart: `docker compose up -d identity-db door`. The door waits
    for the database's health check and creates its tables on first start.
 
@@ -193,9 +202,9 @@ This adds two containers:
   OpenTelemetry collector, capped at 1 GB of memory.
 - **`alloy`** (`grafana/alloy`, capped at 256 MB): ships the game host's
   telemetry to it (`deploy/observability/alloy.alloy`):
-  - It scrapes `server:8080/metrics` and `door:8090/metrics` every 15 s and
+  - It scrapes `world:8080/metrics` and `door:8090/metrics` every 15 s and
     remote-writes them to Prometheus.
-  - It reads the `server`, `door` and `caddy` containers' logs through the
+  - It reads the `world`, `door` and `caddy` containers' logs through the
     Docker socket and pushes them to Loki, labelled `service_name` and
     `level`.
   - It forwards OTLP traces to Tempo.
@@ -211,7 +220,7 @@ Three dashboards are provisioned in the **Arena** folder:
 
 | Dashboard | Shows |
 | --- | --- |
-| Match Server Health | active matches, connections, spectators, drain state, matches created and finished, errors by code, refusals, RSS, CPU, open descriptors |
+| World Server Health | active matches, connections, spectators, drain state, matches created and finished, errors by code, refusals, RSS, CPU, open descriptors |
 | Tick Latency & Input Jitter | tick duration p50/p95/p99 and mean from `arena_tick_duration_microseconds`, slowest tick, overruns, input arrivals per tick, starved/folded/stale/overflowed inputs, dropped frames, bytes out |
 | Front Door & Matchmaking | players queued per mode, queue connections, parties, lobbies, queue wait p50/p95, ready checks and accepts/declines, matches and tickets issued, refusals, searches by party size |
 
@@ -219,8 +228,8 @@ Grafana in this image signs everyone in as an administrator without a
 password. That is acceptable only because its port is on loopback.
 
 **Logs.** In Grafana's Explore, use Loki:
-`{service_name="server"} | json | match_id="0123456789abcdef"` follows one
-match on the server, and `{service_name=~"server|door"} | json | level="WARN"`
+`{service_name="world"} | json | match_id="0123456789abcdef"` follows one
+match on the server, and `{service_name=~"world|door"} | json | level="WARN"`
 shows the anomaly warnings. Each kind is reported at most once every 10 s per
 process, with `suppressed_reports` counting what was held back:
 - tick overruns and frames dropped for slow clients;
@@ -260,7 +269,7 @@ socket exists. On stop the services flush their last spans for at most
 | --- | --- |
 | Tick overruns | more than 0.1 overruns/s for 5 min |
 | Bad ticket or rate-limited spike | more than 1 such refusal/s for 5 min |
-| Match server not scraped | its `up` below 1, or missing, for 2 min |
+| World server not scraped | its `up` below 1, or missing, for 2 min |
 | Front door not scraped | the same for the door |
 | Server draining | the server reports `arena_draining` (info) |
 | Drain approaching grace period | draining for 18 min of the 1230 s grace |
@@ -287,7 +296,7 @@ real browser has been seen sending one yet; the live check used hand-made
 requests, and a browser check is pending.
 
 **Profiling.** The image is built with the `profiling` feature. With
-`ARENA_PYROSCOPE_URL=http://lgtm:4040` in `deploy/.env`, the match server
+`ARENA_PYROSCOPE_URL=http://lgtm:4040` in `deploy/.env`, the world server
 samples its CPU at 100 Hz (`ARENA_PYROSCOPE_HZ`) and sends flame graphs to
 Pyroscope; read them under Grafana's Explore, Profiles. It is off when the
 variable is empty, which is the default. On stop it waits at most 11 s for
@@ -322,21 +331,21 @@ changes.
 ### Observability trial
 
 Run on 2026-11-25 on the development machine (WSL2, Docker 29.1.3), with
-`ARENA_HOST=localhost`, the `obs` profile and the `server`, `door` and `lgtm`
+`ARENA_HOST=localhost`, the `obs` profile and the `world`, `door` and `lgtm`
 services (no Caddy). For synthetic traffic a scratch override published the
 door and server on loopback ports and a Node script queued six guests
 (one declined ready check, two 1v1 matches found after 1.5 s and 3 s), created
 one lobby match and held every seat for 70 s. Observed:
 
 - **Logs.** Both containers wrote one JSON object per line
-  (`"message":"arena-server listening on ws://0.0.0.0:8080/play"`).
-- **Scraping.** `up` was 1 for `arena-server` and `arena-door`.
+  (`"message":"arena-world listening on ws://0.0.0.0:8080/play"`).
+- **Scraping.** `up` was 1 for `arena-world` and `arena-door`.
   `arena_tick_duration_microseconds_count` equalled `arena_ticks_total`
   (6 248). The door reported 6 tickets, 4 found waits and a queue-wait p95
   of 3.8 s. The ready-check counts included one check left over from an
   earlier aborted run of the script.
 - **Dashboards.** All three were provisioned in the **Arena** folder, the
-  home page opened Match Server Health, and every panel query returned data
+  home page opened World Server Health, and every panel query returned data
   through Grafana's Prometheus datasource. A second run after the final
   changes (28 panels, finer tick buckets, party sizes) again returned data
   for every panel: tick p50 about 11 µs and p99 about 48 µs, and 6 solo
@@ -345,7 +354,7 @@ one lobby match and held every seat for 70 s. Observed:
   door used about 3 MiB each.
 
 The same day, release builds were compared under the same load: 60 3v3
-`arena-bot` matches of 20 s with seed 7, against `arena-server --dev`, run
+`arena-bot` matches of 20 s with seed 7, against `arena-world --dev`, run
 alternately twice. Mean running-tick time was 8.28 and 8.80 µs before this
 change and 8.43 and 8.22 µs after it, with 0 overruns in every run. That
 difference is within run-to-run noise, so no regression was seen.
@@ -368,11 +377,11 @@ fresh rebuild and empty volumes. Observed through Grafana's HTTP API:
   Grafana's Loki datasource links `trace_id` to Tempo
   (`matcherType: label`); the link was not clicked in a browser.
 - **Traces.** Tempo held `ws.hello`, `http.request` and `match` traces from
-  `arena-server`, and `queue.search`, `http.request` and `party.create` traces
+  `arena-world`, and `queue.search`, `http.request` and `party.create` traces
   from `arena-door`.
 - **Alerts.** All eight rules loaded and evaluated healthy. With the
   previous rule set, stopping the server raised a firing critical
-  "Service not scraped" alert for `job="arena-server"`. Grafana posted it to
+  "Service not scraped" alert for `job="arena-world"`. Grafana posted it to
   the webhook about 3.5 minutes after the stop. On the final rule set,
   stopping the door raised "Front door not scraped" (critical), posted
   3 min 33 s after the stop. An earlier attempt went unseen because the
@@ -391,7 +400,7 @@ and the image built with `profiling`:
   ticket appeared nowhere in the door's container log or in Loki. The
   counters and the Front Door "Browser reports" panel showed the report.
   No real browser sent one; that check is pending.
-- **Profiling.** Under bot traffic, Pyroscope listed `arena-server`. On
+- **Profiling.** Under bot traffic, Pyroscope listed `arena-world`. On
   `docker stop`, the drain waited for the three running matches, then the
   profiler stopped within its bound (5.7 s). A first attempt with a 3 s
   bound timed out, because the agent finishes its 10 s cycle first; the bound

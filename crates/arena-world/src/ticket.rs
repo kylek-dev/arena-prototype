@@ -1,11 +1,11 @@
 //! Signed join tickets (ADR 0044, `docs/PROTOCOL.md`).
 //!
 //! A ticket is the postcard-encoded [`Claims`] followed by a 32-byte
-//! HMAC-SHA256 tag over those bytes. The match server derives a connection's
-//! seat from the claims alone; the client cannot choose it. A match server
+//! HMAC-SHA256 tag over those bytes. The world server derives a connection's
+//! seat from the claims alone; the client cannot choose it. A world server
 //! starts a match when the first ticket for it arrives, sized by the claims,
 //! so whatever holds the key (the front door, or `--dev`) creates matches
-//! without talking to the match server. Time is passed in explicitly so
+//! without talking to the world server. Time is passed in explicitly so
 //! verification is deterministic in tests.
 
 use arena_protocol::{Handle, MAX_TICKET};
@@ -105,7 +105,7 @@ pub struct Claims {
     pub team_size: u8,
     /// Unix seconds after which the ticket is refused.
     pub expires: u64,
-    /// Optional custom match settings enforced by the match server.
+    /// Optional custom match settings enforced by the world server.
     pub settings: Option<MatchSettings>,
     /// The logged-in player's account (ADR 0055); `None` for guests and
     /// for links handed out by the lobby. Signed, not encrypted: only the
@@ -188,7 +188,7 @@ pub struct NewMatch {
 }
 
 /// Issues a ticket per seat for a new match with a random identifier. No
-/// match server knows about it until the first ticket connects. `None`
+/// world server knows about it until the first ticket connects. `None`
 /// when the team size is outside `1..=MAX_TEAM`.
 pub fn issue_match(key: &TicketKey, team_size: usize, expires: u64) -> Option<NewMatch> {
     issue_match_full(key, team_size, None, 0, expires)

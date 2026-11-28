@@ -1,4 +1,4 @@
-//! Authoritative match server (ADR 0044, `docs/PROTOCOL.md`).
+//! Authoritative world server (ADR 0044, `docs/PROTOCOL.md`).
 //!
 //! Each match is one Tokio task that owns a [`session::Session`] and ticks
 //! it at a fixed interval; matches share nothing, so a process scales with
@@ -701,7 +701,7 @@ fn deliver(app: &App, id: u64, conns: &mut Conns, out: Vec<Out>) -> u64 {
                 };
                 if app.config.debug_json {
                     tracing::info!(
-                        target: "arena_server::wire",
+                        target: "arena_world::wire",
                         match_id = %MatchId(id),
                         conn_id = conn,
                         payload = %message.to_debug_json(),
@@ -1061,7 +1061,7 @@ async fn connection(socket: &mut WebSocket, app: Arc<App>) {
         span.record("role", tracing::field::debug(claims.role));
         if app.config.debug_json {
             tracing::info!(
-                target: "arena_server::wire",
+                target: "arena_world::wire",
                 match_id = %MatchId(claims.match_id),
                 conn_id = conn,
                 role = ?claims.role,
@@ -1187,7 +1187,7 @@ async fn connection(socket: &mut WebSocket, app: Arc<App>) {
                         other => other.to_debug_json(),
                     };
                     tracing::info!(
-                        target: "arena_server::wire",
+                        target: "arena_world::wire",
                         conn_id = conn,
                         payload = %shown,
                         "from client"

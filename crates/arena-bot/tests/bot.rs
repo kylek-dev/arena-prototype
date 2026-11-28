@@ -5,10 +5,10 @@ use std::time::Duration;
 
 use arena_bot::link::Link;
 use arena_bot::{Scenario, run};
-use arena_server::ticket::TicketKey;
-use arena_server::{Config, start};
+use arena_world::ticket::TicketKey;
+use arena_world::{Config, start};
 
-async fn scenario(rtt_ms: u64, jitter_ms: u64) -> (arena_server::Running, Scenario) {
+async fn scenario(rtt_ms: u64, jitter_ms: u64) -> (arena_world::Running, Scenario) {
     let mut config = Config::new(TicketKey::random());
     config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
     config.dev = true;
@@ -93,7 +93,7 @@ async fn bots_that_drop_out_are_seen_as_disconnected_and_rejoin() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn bots_queue_through_the_front_door_accept_and_play_what_it_forms() {
     use arena_bot::queue::QueueScenario;
-    use arena_server::door::{self, DoorConfig};
+    use arena_world::door::{self, DoorConfig};
     let (running, mut scenario) = scenario(20, 5).await;
     let mut config = DoorConfig::new(
         running.app.key().clone(),
@@ -371,9 +371,9 @@ async fn bots_measure_spectator_bandwidth_and_privacy_with_zero_mismatches() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_full_hub_world_stays_within_its_budget() {
     use arena_bot::hub::{self, HubScenario};
-    use arena_server::door::{self, DoorConfig};
     use arena_sim::arena::HUB_PLAYER_CAP;
-    let key = arena_server::ticket::TicketKey::random();
+    use arena_world::door::{self, DoorConfig};
+    let key = arena_world::ticket::TicketKey::random();
     // A world server and a door that asks its directory (ADR 0057).
     let mut server_config = Config::new(key.clone());
     server_config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
@@ -385,7 +385,7 @@ async fn a_full_hub_world_stays_within_its_budget() {
         "http://localhost:8000/".into(),
     );
     config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
-    config.match_status = Some(format!("http://{}", server.addr));
+    config.world_status = Some(format!("http://{}", server.addr));
     // Every bot connects from this one address.
     config.queue_per_address = 64;
     let door = door::start(config).await.unwrap();

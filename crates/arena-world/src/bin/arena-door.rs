@@ -1,13 +1,13 @@
-//! `arena-door --match-server URL --page URL [--bind ADDR] [--dev]
+//! `arena-door --world-server URL --page URL [--bind ADDR] [--dev]
 //!  [--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]...
-//!  [--ticket-minutes N] [--maps-dir PATH] [--news-dir PATH] [--match-status URL]`
+//!  [--ticket-minutes N] [--maps-dir PATH] [--news-dir PATH] [--world-status URL]`
 //!
 //! The front door (ADR 0045): creates matches for remote players and hands
-//! out one join link per seat. `--match-server` is the match server's
+//! out one join link per seat. `--world-server` is the world server's
 //! `/play` URL and `--page` the game page, both as players reach them. The
-//! signing key comes from `ARENA_TICKET_KEY`, the same key the match server
-//! uses. The lobby is at `/lobby/`. `--match-status` is the match server's
-//! base URL on the private network (`http://server:8080`): the door asks it
+//! signing key comes from `ARENA_TICKET_KEY`, the same key the world server
+//! uses. The lobby is at `/lobby/`. `--world-status` is the world server's
+//! base URL on the private network (`http://world:8080`): the door asks it
 //! which matches ended, so their players leave the in-match state at once.
 //!
 //! Without `--dev` both URLs must be secure (`wss://`, `https://`), since
@@ -29,18 +29,18 @@ use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use arena_server::door::{DoorConfig, start};
-use arena_server::identity::IdentityConfig;
-use arena_server::ingress::{Cidr, Origins};
-use arena_server::ticket::TicketKey;
+use arena_world::door::{DoorConfig, start};
+use arena_world::identity::IdentityConfig;
+use arena_world::ingress::{Cidr, Origins};
+use arena_world::ticket::TicketKey;
 
-const USAGE: &str = "usage: arena-door --match-server URL --page URL [--bind ADDR] [--dev] \
-[--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]... [--ticket-minutes N] [--maps-dir PATH] [--news-dir PATH] [--match-status URL]";
+const USAGE: &str = "usage: arena-door --world-server URL --page URL [--bind ADDR] [--dev] \
+[--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]... [--ticket-minutes N] [--maps-dir PATH] [--news-dir PATH] [--world-status URL]";
 
 fn main() -> ExitCode {
     // Telemetry starts before and stops after the runtime: the OTLP HTTP
     // exporter blocks, which an async context must not do.
-    let telemetry = arena_server::logging::init("arena-door");
+    let telemetry = arena_world::logging::init("arena-door");
     let code = match tokio::runtime::Runtime::new() {
         Ok(runtime) => {
             let result = runtime.block_on(run());
@@ -71,11 +71,11 @@ fn origin_of(url: &str) -> Option<String> {
 }
 
 /// Checks the two public URLs; production requires TLS for both.
-fn check_urls(match_server: &str, page: &str, dev: bool) -> Result<(), String> {
-    let secure = match_server.starts_with("wss://");
-    if !(secure || dev && match_server.starts_with("ws://")) {
+fn check_urls(world_server: &str, page: &str, dev: bool) -> Result<(), String> {
+    let secure = world_server.starts_with("wss://");
+    if !(secure || dev && world_server.starts_with("ws://")) {
         return Err(format!(
-            "--match-server {match_server} must be a wss:// URL{}",
+            "--world-server {world_server} must be a wss:// URL{}",
             if dev {
                 " or ws:// URL"
             } else {
@@ -83,9 +83,9 @@ fn check_urls(match_server: &str, page: &str, dev: bool) -> Result<(), String> {
             }
         ));
     }
-    if !match_server.trim_end_matches('/').ends_with("/play") {
+    if !world_server.trim_end_matches('/').ends_with("/play") {
         return Err(format!(
-            "--match-server {match_server} must be the match server's /play endpoint"
+            "--world-server {world_server} must be the world server's /play endpoint"
         ));
     }
     let secure_page = page.starts_with("https://");
@@ -105,7 +105,7 @@ fn check_urls(match_server: &str, page: &str, dev: bool) -> Result<(), String> {
 async fn run() -> Result<(), String> {
     let mut bind: SocketAddr = SocketAddr::from(([127, 0, 0, 1], 8090));
     let mut dev = false;
-    let mut match_server = None;
+    let mut world_server = None;
     let mut page = None;
     let mut allowed = Vec::new();
     let mut any_origin = false;
@@ -113,7 +113,7 @@ async fn run() -> Result<(), String> {
     let mut ticket_minutes = None;
     let mut maps = None;
     let mut news = None;
-    let mut match_status = None;
+    let mut world_status = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| USAGE.to_owned());
@@ -123,7 +123,9 @@ async fn run() -> Result<(), String> {
                 bind = text.parse().map_err(|_| format!("invalid --bind {text}"))?;
             }
             "--dev" => dev = true,
-            "--match-server" => match_server = Some(value()?),
+            // `--match-server` and `--match-status`: the names before the
+            // world server was renamed (ADR 0057), still accepted.
+            "--world-server" | "--match-server" => world_server = Some(value()?),
             "--page" => page = Some(value()?),
             "--allow-origin" => {
                 let text = value()?;
@@ -150,12 +152,12 @@ async fn run() -> Result<(), String> {
             }
             "--maps-dir" => maps = Some(std::path::PathBuf::from(value()?)),
             "--news-dir" => news = Some(std::path::PathBuf::from(value()?)),
-            "--match-status" => {
+            "--world-status" | "--match-status" => {
                 let text = value()?;
                 if !(text.starts_with("http://") || text.starts_with("https://")) {
-                    return Err(format!("--match-status {text} must be an http(s):// URL"));
+                    return Err(format!("--world-status {text} must be an http(s):// URL"));
                 }
-                match_status = Some(text);
+                world_status = Some(text);
             }
             "-h" | "--help" => {
                 println!("{USAGE}");
@@ -164,9 +166,9 @@ async fn run() -> Result<(), String> {
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
     }
-    let match_server = match_server.ok_or(format!("--match-server is required\n{USAGE}"))?;
+    let world_server = world_server.ok_or(format!("--world-server is required\n{USAGE}"))?;
     let page = page.ok_or(format!("--page is required\n{USAGE}"))?;
-    check_urls(&match_server, &page, dev)?;
+    check_urls(&world_server, &page, dev)?;
     if dev && !bind.ip().is_loopback() {
         return Err("--dev requires a loopback --bind address".into());
     }
@@ -181,10 +183,10 @@ async fn run() -> Result<(), String> {
         Origins::Only(allowed)
     };
     let key = std::env::var("ARENA_TICKET_KEY")
-        .map_err(|_| "ARENA_TICKET_KEY is required: the match server's signing key (hex)")?;
+        .map_err(|_| "ARENA_TICKET_KEY is required: the world server's signing key (hex)")?;
     let key = TicketKey::from_hex(&key)
         .ok_or("ARENA_TICKET_KEY must be hex encoding at least 32 bytes")?;
-    let mut config = DoorConfig::new(key, match_server, page);
+    let mut config = DoorConfig::new(key, world_server, page);
     config.bind = bind;
     config.origins = origins;
     config.trusted_proxies = trusted_proxies;
@@ -193,7 +195,7 @@ async fn run() -> Result<(), String> {
     }
     config.maps = maps;
     config.news = news;
-    config.match_status = match_status;
+    config.world_status = world_status;
     if dev {
         // A loopback door: local load tests (`arena-bot --hub`) open many
         // queue connections from one address.

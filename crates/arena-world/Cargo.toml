@@ -1,10 +1,10 @@
 [package]
-name = "arena-server"
+name = "arena-world"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Authoritative match server: runs the shared rules per match at a fixed tick behind a WebSocket endpoint."
+description = "Authoritative world server: runs the shared rules per match at a fixed tick behind a WebSocket endpoint."
 
 [dependencies]
 arena-sim = { path = "../arena-sim" }

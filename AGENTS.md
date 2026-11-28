@@ -27,9 +27,9 @@ Run `./scripts/check.sh` for Rust changes. Account tests need PostgreSQL: the sc
 
 - crates/arena-sim: pure fixed-tick rules and tests
 - crates/arena-protocol: versioned match wire messages (no I/O)
-- crates/arena-server: authoritative match server (Axum/Tokio WebSockets) and the `arena-door` front door
+- crates/arena-world: authoritative world server (Axum/Tokio WebSockets) and the `arena-door` front door
 - deploy: container image, Caddy and Compose files for playtest hosting (docs/DEPLOYMENT.md)
-- crates/arena-bot: bot players and load tester for the match server
+- crates/arena-bot: bot players and load tester for the world server
 - crates/arena-headless: executable scenario runner
 - crates/arena-client: Bevy rendering and narrow browser bridge
 - web: HTML/CSS HUD and browser input

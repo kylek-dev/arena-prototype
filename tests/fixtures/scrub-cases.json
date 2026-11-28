@@ -1,5 +1,5 @@
 {
-  "_comment": "Inputs and expected outputs both scrubbers must agree on: web/src/domain/telemetry.ts scrubText and crates/arena-server/src/door/browser.rs scrub.",
+  "_comment": "Inputs and expected outputs both scrubbers must agree on: web/src/domain/telemetry.ts scrubText and crates/arena-world/src/door/browser.rs scrub.",
   "cases": [
     {
       "in": "failed at https://arena.example.com/#server=x&ticket=a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2a1b2 now",

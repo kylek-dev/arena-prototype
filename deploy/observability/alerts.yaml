@@ -3,6 +3,13 @@
 # webhook comes from ARENA_ALERT_WEBHOOK_URL (Discord, Slack or any webhook).
 apiVersion: 1
 
+# Renamed 2026-11-28 (ADR 0057: the match server is the world server):
+# Grafana keeps provisioned rules that leave this file, so the old uid is
+# deleted outright, or it would alert on a job that no longer reports.
+deleteRules:
+  - orgId: 1
+    uid: arena-server-down
+
 contactPoints:
   - orgId: 1
     name: arena-webhook
@@ -80,8 +87,8 @@ groups:
         annotations:
           summary: "Many connections refused for bad tickets or flooding"
           description: "More than one refusal a second for five minutes: expired links, a client bug or someone probing the server."
-      - uid: arena-server-down
-        title: Match server not scraped
+      - uid: arena-world-down
+        title: World server not scraped
         condition: C
         data:
           - refId: A
@@ -89,7 +96,7 @@ groups:
             datasourceUid: prometheus
             model:
               refId: A
-              expr: 'min(up{job="arena-server"}) or vector(0)'
+              expr: 'min(up{job="arena-world"}) or vector(0)'
               instant: true
           - refId: C
             datasourceUid: __expr__
@@ -105,8 +112,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "The match server is down or unreachable"
-          description: "Alloy could not scrape server:8080/metrics for two minutes (or reported nothing at all)."
+          summary: "The world server is down or unreachable"
+          description: "Alloy could not scrape world:8080/metrics for two minutes (or reported nothing at all)."
       - uid: arena-door-down
         title: Front door not scraped
         condition: C
@@ -159,7 +166,7 @@ groups:
         labels:
           severity: info
         annotations:
-          summary: "The match server is draining"
+          summary: "The world server is draining"
           description: "A stop signal arrived: readiness fails and no new match starts while running ones finish."
       - uid: arena-drain-near-grace
         title: Drain approaching grace period
@@ -197,7 +204,7 @@ groups:
             datasourceUid: prometheus
             model:
               refId: A
-              expr: 'max by (job) (process_resident_memory_bytes{job=~"arena-server|arena-door"})'
+              expr: 'max by (job) (process_resident_memory_bytes{job=~"arena-world|arena-door"})'
               instant: true
           - refId: C
             datasourceUid: __expr__
@@ -224,7 +231,7 @@ groups:
             datasourceUid: prometheus
             model:
               refId: A
-              expr: 'max by (job) (process_open_fds{job=~"arena-server|arena-door"})'
+              expr: 'max by (job) (process_open_fds{job=~"arena-world|arena-door"})'
               instant: true
           - refId: C
             datasourceUid: __expr__

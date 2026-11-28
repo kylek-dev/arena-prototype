@@ -594,7 +594,7 @@ mod tests {
 
     #[test]
     fn process_stats_parse_proc_files() {
-        let status = "Name:\tarena-server\nVmPeak:\t  9000 kB\nVmRSS:\t   2048 kB\nThreads:\t8\n";
+        let status = "Name:\tarena-world\nVmPeak:\t  9000 kB\nVmRSS:\t   2048 kB\nThreads:\t8\n";
         assert_eq!(parse_resident_bytes(status), Some(2048 * 1024));
         assert_eq!(parse_resident_bytes("Name:\tx\n"), None);
         // A command name with spaces and a parenthesis must not shift fields.

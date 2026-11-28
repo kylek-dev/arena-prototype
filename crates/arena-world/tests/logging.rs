@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arena_protocol::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
-use arena_server::door::{self, CreatedMatch, DoorConfig};
-use arena_server::ticket::{TicketKey, from_hex};
-use arena_server::{Config, start};
+use arena_world::door::{self, CreatedMatch, DoorConfig};
+use arena_world::ticket::{TicketKey, from_hex};
+use arena_world::{Config, start};
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;

@@ -7,8 +7,8 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use arena_server::door::{self, DoorConfig, QueueMessage};
-use arena_server::ticket::TicketKey;
+use arena_world::door::{self, DoorConfig, QueueMessage};
+use arena_world::ticket::TicketKey;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
@@ -416,9 +416,9 @@ const UNKNOWN: u8 = 0;
 const LIVE: u8 = 1;
 const ENDED: u8 = 2;
 
-/// A stand-in match server answering `GET /matches/{id}` with what `state`
+/// A stand-in world server answering `GET /matches/{id}` with what `state`
 /// says: [`UNKNOWN`] (404), [`LIVE`] or [`ENDED`].
-async fn fake_match_server(state: std::sync::Arc<std::sync::atomic::AtomicU8>) -> SocketAddr {
+async fn fake_world_server(state: std::sync::Arc<std::sync::atomic::AtomicU8>) -> SocketAddr {
     use axum::Json;
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
@@ -443,16 +443,16 @@ async fn fake_match_server(state: std::sync::Arc<std::sync::atomic::AtomicU8>) -
 }
 
 #[tokio::test]
-async fn players_leave_the_match_as_soon_as_the_match_server_says_it_ended() {
+async fn players_leave_the_match_as_soon_as_the_world_server_says_it_ended() {
     let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(UNKNOWN));
-    let server = fake_match_server(state.clone()).await;
+    let server = fake_world_server(state.clone()).await;
     let mut config = DoorConfig::new(
         TicketKey::random(),
         "ws://127.0.0.1:1/play".into(),
         "http://localhost:8000/".into(),
     );
     config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
-    config.match_status = Some(format!("http://{server}"));
+    config.world_status = Some(format!("http://{server}"));
     config.match_check_every = Duration::from_millis(50);
     let door = door::start(config).await.unwrap();
     let mut host = connect(door.addr, 1).await;

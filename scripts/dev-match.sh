@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Creates a match on a development server (`arena-server --dev`) and prints
+# Creates a match on a development server (`arena-world --dev`) and prints
 # one browser join link per seat. Open each link in its own tab or browser.
 # Links carry the ticket in the URL fragment, which browsers never send to a
 # server; the page removes it from the address bar on load. Development only.

@@ -28,7 +28,7 @@ All commands below were executed fresh after the final commit on this branch:
 
 - `./scripts/check.sh`: pass (<exact key counts, e.g., Rust tests, Python tests, Vitest>)
 - `cargo run -p arena-headless --locked`: pass (<observed output>)
-- `cargo build -p arena-server -p arena-bot --locked && ./scripts/server-smoke.sh`: pass | not applicable (unchanged crates)
+- `cargo build -p arena-world -p arena-bot --locked && ./scripts/server-smoke.sh`: pass | not applicable (unchanged crates)
 - `npm run build`: pass | not applicable (unchanged `web/`)
 - `cargo clippy -p arena-client --target wasm32-unknown-unknown --locked -- -D warnings`: pass | not applicable | toolchain unavailable
 - `./scripts/build-web.sh`: pass | not applicable | toolchain unavailable

@@ -1,4 +1,4 @@
-// `Name#number` handles relayed by the match server (social-identity step 3):
+// `Name#number` handles relayed by the world server (social-identity step 3):
 // one per local actor, set by the front door and signed into tickets, never
 // a client's claim. Parsing is strict so a malformed relay shows nothing.
 

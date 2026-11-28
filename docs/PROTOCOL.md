@@ -4,7 +4,7 @@
 [ADR 0044](decisions/0044-authoritative-match-server.md). The
 `arena-protocol` crate (`crates/arena-protocol`) is the source of truth for
 message layouts, limits and decoding, and its tests pin golden frames.
-`arena-server` (`crates/arena-server`) implements the transport, tickets,
+`arena-world` (`crates/arena-world`) implements the transport, tickets,
 limits and match lifecycle below. The browser network mode is not written
 yet.
 
@@ -66,7 +66,7 @@ yet.
 | Message | Fields | Notes |
 | --- | --- | --- |
 | `Welcome` | `protocol`, `actor: u8`, `team_size: u8`, `tick: u64`, `tick_rate: u8`, `round_ticks: u64`, `rules: u32`, `map: u64`, `spectator: bool`, `hub: bool` | `hub` is `true` for a hub world ([ADR 0057](decisions/0057-hub-on-the-world-server.md)): `actor` is the player's slot (`< 44`), `team_size` is `0`, `round_ticks` is `MAX_ROUND_TICKS` (a world has no clock), never with `spectator`. When `spectator` is `true`, `actor` is `0`, `tick` is the latest already-eligible delayed tick (or `0`, never the live tick), and the connection is watch-only. `round_ticks` is the round's tick limit (`1..=MAX_ROUND_TICKS`, default 20 minutes), `rules` is the rules version and `map` a digest of the layout, so the remaining clock, replays and mismatches are explainable. |
-| `Snapshot` | `tick: u64`, `ack: u32`, `queued: u8`, `hash: u64`, `result`, `fighters` (≤ 6 in a match, ≤ 44 in a hub world), `scoreboard` (`Option<Vec<FighterScore>>`), `roster` (`Option<WireRoster>`), `events` (≤ 256) | `roster` is `None` in a match and, in a hub world, one `WireSlot` per fighter (`occupant`: `Vacant`, `Player` or `TrainingEnemy`; `id`, the fighter id, never reused in that world, `0` when vacant; `home: [i32; 2]`, `home_facing`, `respawn_at: Option<u64>`) plus `next_id`. A world snapshot has any number of fighters `1..=44`, no `result`, no `scoreboard` and no `Finished` event, and its roster must pass `arena_sim::arena::valid_hub_roster` (the rules' own check: vacant slots exactly as the rules leave them, training enemies with no cast or held spell and standing still (no height, vertical speed or momentum), distinct ids, nothing aimed at a vacant slot); the roster is part of `hash`. A hub world sends most snapshots as `WorldDelta` (below). `ack` is the last input `seq` applied, and `queued` how many of the recipient's inputs are still waiting. `hash` is `Arena::state_hash()`. `result` is `None` while running, or `Won { team }`, `Draw` (simultaneous elimination) or `TimeLimitDraw` (round clock expired with both teams standing). `fighters` carries each fighter's full rule state in actor order (position, height, vertical velocity, momentum, health, resource, `gcd_remaining`, `lockout_remaining`, per-spell `cooldowns`, `active_cast`, facing, `buffered_cast`), so a client can rebuild the arena and check `hash`, plus `connected`: whether that fighter's player is attached (not part of the rules or `hash`). `scoreboard` is `None` while the match runs (1 byte on the wire) and `Some(scores)` in server actor order on the final snapshot (`result.is_some()`), with one `FighterScore` (`damage_done`, `damage_taken`, `healing_done`, `healing_received`, `killing_blows`) per seat accumulated authoritatively by the match server (not part of `hash`). `events` are tick-tagged events since the previous snapshot: `Jumped`, `CastStarted`, `CastCompleted`, `CastInterrupted`, `Hit`, `Healed`, `Finished`, and `Rejected` only for the actor it names. `Moved` is not sent because positions show it. |
+| `Snapshot` | `tick: u64`, `ack: u32`, `queued: u8`, `hash: u64`, `result`, `fighters` (≤ 6 in a match, ≤ 44 in a hub world), `scoreboard` (`Option<Vec<FighterScore>>`), `roster` (`Option<WireRoster>`), `events` (≤ 256) | `roster` is `None` in a match and, in a hub world, one `WireSlot` per fighter (`occupant`: `Vacant`, `Player` or `TrainingEnemy`; `id`, the fighter id, never reused in that world, `0` when vacant; `home: [i32; 2]`, `home_facing`, `respawn_at: Option<u64>`) plus `next_id`. A world snapshot has any number of fighters `1..=44`, no `result`, no `scoreboard` and no `Finished` event, and its roster must pass `arena_sim::arena::valid_hub_roster` (the rules' own check: vacant slots exactly as the rules leave them, training enemies with no cast or held spell and standing still (no height, vertical speed or momentum), distinct ids, nothing aimed at a vacant slot); the roster is part of `hash`. A hub world sends most snapshots as `WorldDelta` (below). `ack` is the last input `seq` applied, and `queued` how many of the recipient's inputs are still waiting. `hash` is `Arena::state_hash()`. `result` is `None` while running, or `Won { team }`, `Draw` (simultaneous elimination) or `TimeLimitDraw` (round clock expired with both teams standing). `fighters` carries each fighter's full rule state in actor order (position, height, vertical velocity, momentum, health, resource, `gcd_remaining`, `lockout_remaining`, per-spell `cooldowns`, `active_cast`, facing, `buffered_cast`), so a client can rebuild the arena and check `hash`, plus `connected`: whether that fighter's player is attached (not part of the rules or `hash`). `scoreboard` is `None` while the match runs (1 byte on the wire) and `Some(scores)` in server actor order on the final snapshot (`result.is_some()`), with one `FighterScore` (`damage_done`, `damage_taken`, `healing_done`, `healing_received`, `killing_blows`) per seat accumulated authoritatively by the world server (not part of `hash`). `events` are tick-tagged events since the previous snapshot: `Jumped`, `CastStarted`, `CastCompleted`, `CastInterrupted`, `Hit`, `Healed`, `Finished`, and `Rejected` only for the actor it names. `Moved` is not sent because positions show it. |
 | `Pong` | `nonce: u32` | |
 | `Error` | `code` | Sent before the server closes: `VersionMismatch`, `BadTicket`, `MatchFull`, `MatchOver`, `RateLimited`, `Malformed`, `HelloTimeout`, `ServerShutdown`, `Replaced` (a newer connection with the same ticket took the seat). Stays variant 3 (`[3, code]`). |
 | `Appearances` | `Vec<Option<WireAppearance>>` (`2..=6`, even) | Sent on join (when any seat has a locked look) and broadcast whenever a seat locks a new look on first join, in server actor order. Never carries paths; clients validate against their local kit catalog and fall back to defaults. |
@@ -137,14 +137,14 @@ marks an account holding the admin role and is never set without one;
 `role` is `Player { seat }`, `Spectator` or `Hub` (a place in hub world `match_id`, with `team_size` 0 and no settings; the world server picks the slot, [ADR 0057](decisions/0057-hub-on-the-world-server.md)), so player, spectator and hub credentials are never interchangeable; `expires` in Unix
 seconds; optional versioned `MatchSettings { version: 1, map, round_seconds, allow_spectators }`
 for private custom matches) followed by a 32-byte HMAC-SHA256 tag over those
-bytes, under a key shared by whatever issues tickets and the match servers
+bytes, under a key shared by whatever issues tickets and the world servers
 (`ARENA_TICKET_KEY`). The signature is checked in constant time before the
 claims are parsed. Tickets are about 58–68 bytes and valid for two hours,
 which covers the match, so a client reconnects with the same ticket. Browsers
 treat tickets as opaque bytes.
 
 **A match starts with its first ticket** ([ADR 0045](decisions/0045-front-door-and-playtest-deployment.md)).
-A match server that receives a valid ticket for a match it does not host
+A world server that receives a valid ticket for a match it does not host
 starts it, sized by `team_size` (and applying validated `settings` when
 present, such as the custom round time limit and spectator opt-in), so whatever holds the key
 creates matches without calling the server. Claims for a team size outside
@@ -156,7 +156,7 @@ first ticket of a new match with `ServerShutdown`.
 Accounts are optional (see [Accounts](#accounts)). The front door (`arena-door`, `POST /api/matches`
 and the `/lobby/` page) issues one join link per seat, with the ticket in
 the URL fragment. With `--dev`, `POST /dev/match?team_size=1|2|3&spectators=0..N` on the
-match server returns the match id, one hex ticket per seat, and optional watch-only `spectator_tickets`. It refuses
+world server returns the match id, one hex ticket per seat, and optional watch-only `spectator_tickets`. It refuses
 to listen beyond loopback.
 
 **Before the handshake.** `/play` refuses a browser whose `Origin` is not
@@ -198,7 +198,7 @@ the connection with `error`.
 | `{"type":"kick_lobby_member","member":2}` | Host only: removes another member from the lobby (`lobby_left` `kicked`). |
 | `{"type":"transfer_lobby_host","member":2}` | Host only: passes the host role to another member. |
 | `{"type":"set_lobby_mode","mode":"1v1"\|"2v2"\|"3v3"}` | Host only: changes team size before starting (overflow moves to spectators or refuses `lobby_too_big`). |
-| `{"type":"set_lobby_settings","settings":{"version":1,"map":"colosseum","round_seconds":300\|600\|900\|1200,"allow_spectators":true\|false}}` | Host only: updates versioned, allowlisted match settings enforced by the match server. |
+| `{"type":"set_lobby_settings","settings":{"version":1,"map":"colosseum","round_seconds":300\|600\|900\|1200,"allow_spectators":true\|false}}` | Host only: updates versioned, allowlisted match settings enforced by the world server. |
 | `{"type":"start_lobby"}` | Host only: requires both teams full; rate-limited per address via `door.creations`; issues signed seat tickets and signed watch-only spectator tickets (when allowed) while keeping the lobby open for rematches. |
 
 | From the door | Meaning |
@@ -225,7 +225,7 @@ the connection with `error`.
 
 Login is optional and handled by the front door
 ([ADR 0055](decisions/0055-accounts-oauth-login-in-arena-door.md),
-`crates/arena-server/src/identity/`, `door/auth.rs`). It is on when the door
+`crates/arena-world/src/identity/`, `door/auth.rs`). It is on when the door
 has `ARENA_SESSION_KEY`, and then also needs `ARENA_DATABASE_URL` and the
 WorkOS application (`ARENA_WORKOS_CLIENT_ID`, `ARENA_WORKOS_API_KEY`).
 Players log in on WorkOS AuthKit's hosted page with email and password, an
@@ -305,7 +305,7 @@ step 4, `door/friends.rs`, `identity/friends.rs`). Players are addressed by
 
 | Request | Answer |
 | --- | --- |
-| `GET /api/friends` | `{friends: [{handle, relation, presence}], blocked: [handle]}`. `relation` is `friend`, `incoming` or `outgoing`; friends also get `presence`: `offline`, `online`, `searching`, `in_lobby` or `in_match` (a match ticket in the last 21 minutes, until the match server reports the match ended; see Chat). |
+| `GET /api/friends` | `{friends: [{handle, relation, presence}], blocked: [handle]}`. `relation` is `friend`, `incoming` or `outgoing`; friends also get `presence`: `offline`, `online`, `searching`, `in_lobby` or `in_match` (a match ticket in the last 21 minutes, until the world server reports the match ended; see Chat). |
 | `POST /api/friends/<request\|accept\|decline\|remove\|block\|unblock>` `{"handle"}` | `request` answers `{"relation"}` (`outgoing`, or `friend` when they had asked you); the others answer 204. Errors are `{"error"}`: `no_such_player` (404; also when they blocked you), `yourself` (422), `bad_request` (422), `already_friends`, `already_asked`, `too_many` (50 waiting requests, or 200 friends on either side), `nothing_there`, `pick_a_name_first` (409), `not_logged_in` (401), `rate_limited` (429). |
 
 Acting needs an allowed `Origin`. Rate limits are per account:
@@ -348,7 +348,7 @@ hears only `match` and `team`, and only players of that match post there.**
 
 A player is "in a match" from the moment the door issued their ticket from
 the queue or a custom lobby until the match ends, they search again, or 21
-minutes pass. With `--match-status`, the door asks the match server
+minutes pass. With `--world-status`, the door asks the world server
 (`GET /matches/{id}`, 16 hexadecimal digits, on the private network) every
 5 seconds about each match it seated; `{"state":"ended"}` clears that
 match's players and spectators at once (`live` and an unknown match, 404,
@@ -433,7 +433,7 @@ HTML.
 
 The game page reports a few scrubbed facts to the front door's
 `POST /api/telemetry` ([ADR 0054](decisions/0054-observability-logs-metrics-and-local-lgtm.md),
-`web/src/domain/telemetry.ts`, `crates/arena-server/src/door/browser.rs`). Each
+`web/src/domain/telemetry.ts`, `crates/arena-world/src/door/browser.rs`). Each
 request is one JSON object tagged by `kind`, at most 2 KB, from an allowed
 `Origin`, within a per-address rate limit. Unknown kinds or fields are refused
 (422), and the door answers 204 with no body.

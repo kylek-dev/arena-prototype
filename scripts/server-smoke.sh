@@ -12,7 +12,7 @@ bin="target/${1:-debug}"
 port="${ARENA_SMOKE_PORT:-18085}"
 log="$(mktemp)"
 
-"$bin/arena-server" --dev --bind "127.0.0.1:$port" --drain-seconds 0 2>"$log" &
+"$bin/arena-world" --dev --bind "127.0.0.1:$port" --drain-seconds 0 2>"$log" &
 server=$!
 cleanup() {
   kill "$server" 2>/dev/null || true

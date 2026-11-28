@@ -460,7 +460,7 @@ export function guestId(bytes: Uint8Array) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 /** The door's `Guest#NNNN` name for a guest id (`guest_handle_for` in
- * `crates/arena-server/src/door/auth.rs`): the same on every connection from
+ * `crates/arena-world/src/door/auth.rs`): the same on every connection from
  * this browser, so the launcher page can show it before connecting. `null`
  * for anything but a guest id. */
 export function guestHandle(id: string): string | null {

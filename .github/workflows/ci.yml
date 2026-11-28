@@ -12,7 +12,7 @@ concurrency:
 jobs:
   rust:
     runs-on: ubuntu-latest
-    # The match server's Axum/Tokio stack makes cold-cache builds slower.
+    # The world server's Axum/Tokio stack makes cold-cache builds slower.
     timeout-minutes: 20
     # Account tests run against PostgreSQL (ADR 0055).
     services:
@@ -40,14 +40,14 @@ jobs:
           shared-key: unit
       - name: Check formatting
         run: cargo fmt --all -- --check
-      - name: Lint rules, protocol, match server, bots and headless runner (no renderer)
-        run: cargo clippy -p arena-sim -p arena-protocol -p arena-server -p arena-bot -p arena-headless --all-targets --locked -- -D warnings
-      - name: Test rules, protocol, match server, bots and headless runner
-        run: cargo test -p arena-sim -p arena-protocol -p arena-server -p arena-bot -p arena-headless --locked
+      - name: Lint rules, protocol, world server, bots and headless runner (no renderer)
+        run: cargo clippy -p arena-sim -p arena-protocol -p arena-world -p arena-bot -p arena-headless --all-targets --locked -- -D warnings
+      - name: Test rules, protocol, world server, bots and headless runner
+        run: cargo test -p arena-sim -p arena-protocol -p arena-world -p arena-bot -p arena-headless --locked
       - name: Run headless scenario
         run: cargo run --locked -p arena-headless
-      - name: Build match server and bot binaries
-        run: cargo build --locked -p arena-server -p arena-bot
+      - name: Build world server and bot binaries
+        run: cargo build --locked -p arena-world -p arena-bot
       - name: Smoke test server and bots over WebSockets with latency and rejoins
         run: bash scripts/server-smoke.sh debug
   # Keep the required check name; test browser input without compiling Bevy.

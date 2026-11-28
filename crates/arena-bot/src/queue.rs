@@ -53,7 +53,7 @@ fn play_address(server: &str) -> Result<String, String> {
         .strip_prefix("ws://")
         .and_then(|rest| rest.strip_suffix("/play"))
         .map(str::to_owned)
-        .ok_or_else(|| format!("bots need a ws://HOST:PORT/play match server, not {server}"))
+        .ok_or_else(|| format!("bots need a ws://HOST:PORT/play world server, not {server}"))
 }
 
 /// A seat the queue handed out.

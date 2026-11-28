@@ -1,4 +1,4 @@
-//! Bot players and load tester for `arena-server` (ADR 0044, Phase 4).
+//! Bot players and load tester for `arena-world` (ADR 0044, Phase 4).
 //!
 //! A scenario runs `matches` concurrent match groups against a server in
 //! development mode. Each group creates a match through `POST /dev/match`,
@@ -259,7 +259,7 @@ pub struct ServerMetrics {
     pub matches_finished_time_limit_draw: u64,
 }
 
-/// Linux `/proc/<pid>` + `/metrics` breakdown of `arena-server` CPU, memory,
+/// Linux `/proc/<pid>` + `/metrics` breakdown of `arena-world` CPU, memory,
 /// and scheduler wake-up activity during the scenario window.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ServerProfile {
@@ -1284,11 +1284,11 @@ mod tests {
 
     #[test]
     fn proc_stat_and_status_parsers_extract_cpu_memory_and_context_switches() {
-        let stat = "1234 (arena-server) S 1 2 3 4 5 6 7 8 9 10 250 150 0 0 20 0 8 0";
+        let stat = "1234 (arena-world) S 1 2 3 4 5 6 7 8 9 10 250 150 0 0 20 0 8 0";
         assert_eq!(parse_proc_stat(stat), Some((2.5, 1.5)));
         assert_eq!(parse_proc_stat("malformed"), None);
 
-        let status = "Name:\tarena-server\nThreads:\t9\nVmHWM:\t   32768 kB\nvoluntary_ctxt_switches:\t4200\nnonvoluntary_ctxt_switches:\t31\n";
+        let status = "Name:\tarena-world\nThreads:\t9\nVmHWM:\t   32768 kB\nvoluntary_ctxt_switches:\t4200\nnonvoluntary_ctxt_switches:\t31\n";
         assert_eq!(parse_proc_status_field(status, "VmHWM:"), Some(32768));
         assert_eq!(parse_proc_status_field(status, "Threads:"), Some(9));
         assert_eq!(

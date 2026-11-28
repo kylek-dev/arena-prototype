@@ -3,7 +3,7 @@
 //! A browser client predicts its own fighter's movement immediately while
 //! rendering other fighters behind the newest received snapshot (default 100 ms =
 //! `DEFAULT_INTERP_DELAY_TICKS = 3` ticks, adapting down to ~42 ms on low-jitter
-//! links via `InterpDelay`). Meanwhile, `arena-server` validates spell range,
+//! links via `InterpDelay`). Meanwhile, `arena-world` validates spell range,
 //! line of sight, and target liveness authoritatively with bounded target-position
 //! history rewind (ADR 0049).
 //!
