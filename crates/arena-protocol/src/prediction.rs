@@ -461,9 +461,10 @@ impl Predictor {
 
     /// Rebuilds from the server's state (`fighters` in server actor order,
     /// `actor` this player's seat, `ack` the last input it applied) and
-    /// replays the inputs it has not applied yet. Active casts are stripped
-    /// from the local prediction arena so timed cast completions, damage,
-    /// kills, and round endings are never client-predicted (ADR 0048).
+    /// replays the inputs it has not applied yet. Active casts and held
+    /// spells are stripped from the local prediction arena so timed cast
+    /// completions, held casts firing, damage, kills, resources, the GCD and
+    /// round endings are never client-predicted (ADR 0048).
     /// Returns how far the prediction moved, in millimetres, or `None` if
     /// there was none yet.
     pub fn reconcile(
@@ -488,9 +489,11 @@ impl Predictor {
             self.arena = None;
             return None;
         }
-        // Never predict timed cast completions or phantom kills while replaying movement.
+        // Never predict timed cast completions, held spells firing or
+        // phantom kills while replaying movement.
         for fighter in &mut fighters {
             fighter.active_cast = None;
+            fighter.buffered_cast = None;
         }
         let round_ticks = self.round_ticks.unwrap_or(MAX_ROUND_TICKS);
         let mut arena = match self.arena.take() {
@@ -801,6 +804,78 @@ mod tests {
             -3 * arena_sim::arena::MOVE_PER_TICK,
             "movement prediction must not freeze on unconfirmed casts"
         );
+    }
+
+    #[test]
+    fn prediction_never_fires_held_spells() {
+        use arena_sim::arena::{BufferedCast, Position};
+        use arena_sim::spells::SpellId;
+
+        // An instant spell held while walking, and one with a cast time held
+        // while standing (moving refuses it anyway).
+        let cases = [
+            (SpellId::Pulse, true, -3 * arena_sim::arena::MOVE_PER_TICK),
+            (SpellId::RiftBolt, false, 0),
+        ];
+        for (spell, walking, moved_z) in cases {
+            // Movement only, as `apply` sends it.
+            let input = |seq: u32| {
+                let walk = ActorInput {
+                    action: None,
+                    ..walk(seq).1
+                };
+                if walking {
+                    walk
+                } else {
+                    ActorInput {
+                        movement: None,
+                        jump: false,
+                        ..walk
+                    }
+                }
+            };
+            let mut fighters = Arena::practice(layout(), 1).unwrap().fighters().to_vec();
+            fighters[0].position = Position { x: 0, z: 0 };
+            fighters[1].position = Position { x: 0, z: -3_000 };
+            // Held on a GCD that ends this tick: the server fires it.
+            fighters[0].gcd_remaining = 1;
+            fighters[0].buffered_cast = Some(BufferedCast {
+                spell,
+                target: Some(1),
+            });
+            let resource = fighters[0].resource;
+
+            // The bug this guards: replayed with the held spell kept, the
+            // same movement fires it (a spend and a new GCD).
+            let mut unstripped = Arena::restore(layout(), 10, fighters.clone(), None).unwrap();
+            step(&mut unstripped, 0, input(1));
+            step(&mut unstripped, 0, input(2));
+            let fired = unstripped.fighters()[0];
+            assert!(
+                fired.buffered_cast.is_none()
+                    && fired.gcd_remaining > 0
+                    && (fired.resource < resource || fired.active_cast.is_some()),
+                "{spell:?}: the held spell fires when replayed unstripped: {fired:?}"
+            );
+
+            let mut predictor = Predictor::default();
+            predictor.reconcile(&layout(), 10, fighters, None, 0, 0);
+            for seq in 1..=3 {
+                predictor.apply(seq, input(seq));
+            }
+            let predicted = predictor.predicted().unwrap();
+            assert_eq!(predicted.buffered_cast, None, "{spell:?}");
+            assert_eq!(predicted.active_cast, None, "{spell:?}");
+            assert_eq!(
+                predicted.resource, resource,
+                "{spell:?}: no predicted spend"
+            );
+            assert_eq!(predicted.gcd_remaining, 0, "{spell:?}: no predicted GCD");
+            assert_eq!(
+                predicted.position.z, moved_z,
+                "{spell:?}: movement is still predicted"
+            );
+        }
     }
 }
 
