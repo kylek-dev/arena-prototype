@@ -370,9 +370,39 @@ Rules:
   guest id) or blocked (per account). An admin can mute an account; the
   mute holds on tabs that log out.
 
+## Hub worlds through the door
+
+Since [ADR 0057](decisions/0057-hub-on-the-world-server.md) the hub is a
+world on the world server; the door only places players (`door/worlds.rs`):
+
+| Direction | Message | Meaning |
+| --- | --- | --- |
+| client → door | `world_join {friend?}` | Enter a hub world beside a friend or party-mate (`Name#number`) when given. The look goes to the world server in `Hello`. |
+| client → door | `world_leave {}` | Leave the hub world (the page closes its world connection). |
+| door → client | `world {instance, server, ticket, expires}` | A place in hub world `instance` (16 hex digits): connect to `server` (the world server's `/play`) and send `Hello` with `ticket` (hex, a `Role::Hub` ticket) before `expires` (Unix seconds). Sent once the directory exchange after the placement has answered, so the world server already knows the newcomer's blocks. |
+| door → client | `hub_left {reason}` | Out of the hub world: `left` (asked, or the world server stopped showing them: their world connection ended, or they never connected within 20 s), or `match` when a seat or spectator ticket was issued. |
+
+Placement follows the rules below (beside a followed friend, else a
+party-mate's world, else the connection's last world, else the fullest with
+room, else a new world), with 12 players a world; players the world still
+holds (within their reconnect grace) count toward its room. Refusals are the
+same codes, plus `hub_unavailable` while the world server is draining. The
+door asks the directory once a second while anyone is placed (and at once
+after a placement), sending the blocked pairs among players sharing a world;
+the `hub` chat channel reaches the speaker's world (only placements the
+world has confirmed listen). Tickets are released only by an answer; when
+the world server does not answer, they wait and are refused
+(`hub_unavailable`) after 20 s, and unconfirmed placements end then too. A
+rename or logout takes the player out of their world (`hub_left
+{reason: "renamed"}`) so the page asks again with the new name; one more
+exchange after the last player leaves tells the world server. Each queue connection
+keeps one ticket player id while it is open, so the page reconnecting to its
+world takes its own place back.
+
 ## Hub
 
-The hub ([ADR 0056](decisions/0056-social-hub.md), proposed; `door/hub.rs`,
+The door's own hub ([ADR 0056](decisions/0056-social-hub.md), superseded by
+ADR 0057 and retired with the page's move to hub worlds; `door/hub.rs`,
 rules in `arena_sim::hub`) also rides on the queue WebSocket:
 
 | Direction | Message | Meaning |
@@ -518,7 +548,7 @@ drops keeps their place for 10 s. A full world (12 players) answers
 
 `POST /worlds/report` on the world server (private network only; Caddy
 routes only `/play` there) is the instance directory. The door sends JSON
-`{now_ms, blocks: [[player, player], ...]}` with header `x-arena-signature`,
+`{now_ms, blocks: [[player, player], ...], players?: [player, ...]}` with header `x-arena-signature`,
 the hex HMAC-SHA256 under the ticket key of `"world-directory"`, a zero byte
 and the body. `now_ms` must be within a minute of the server's clock and
 above the last accepted request's (`401` and `409` otherwise). The answer is
@@ -526,7 +556,11 @@ above the last accepted request's (`401` and `409` otherwise). The answer is
 (`draining`: the server is stopping, place nobody new there). The door sends
 `max(now, last + 1)` so a corrected clock is never refused, and reports
 before handing out a ticket whose holder has a new block. The server keeps
-the last accepted list and every new world starts with it.
+the last accepted lists and every new world starts with them. `players`, when
+given, lists every player id the door has placed: nobody else may join a
+world (`BadTicket`) or stay in one (closed with `MatchOver`), since a ticket
+outlives the placement it was issued for (leaving the hub, taking a match,
+a rename or logout, the door forgetting a placement).
 The blocks apply at once: blocked players see each other's slots as vacant,
 get `MemberLeft` for each other (and `Member` again when unblocked), never
 see events about each other, and cannot aim spells at each other (a cast at

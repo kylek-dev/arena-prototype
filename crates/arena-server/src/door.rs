@@ -31,6 +31,7 @@ mod friends;
 mod hub;
 mod news;
 mod queue;
+mod worlds;
 pub use auth::Me;
 pub use hub::{Entered as HubEntered, Joined as HubJoined, State as HubState};
 pub use queue::ToClient as QueueMessage;

@@ -177,6 +177,7 @@ async fn the_directory_reports_worlds_and_applies_blocks_only_when_signed_and_fr
                 .unwrap()
                 .as_millis() as u64,
             blocks: Vec::new(),
+            players: None,
         };
         let reply = report(server.addr, key, &request, false).await;
         assert_eq!(reply.status(), 200);
@@ -196,6 +197,7 @@ async fn the_directory_reports_worlds_and_applies_blocks_only_when_signed_and_fr
     let fresh = |offset: u64| DirectoryRequest {
         now_ms: (now() + 1) * 1000 + offset,
         blocks: vec![(11, 12)],
+        players: None,
     };
     // Unsigned (or signed for something else): refused, nothing changes.
     assert_eq!(
@@ -206,6 +208,7 @@ async fn the_directory_reports_worlds_and_applies_blocks_only_when_signed_and_fr
     let stale = DirectoryRequest {
         now_ms: 1_000,
         blocks: vec![(11, 12)],
+        players: None,
     };
     assert_eq!(report(server.addr, key, &stale, false).await.status(), 401);
     // Accepted, and the same request again is a replay.
@@ -291,6 +294,7 @@ async fn blocks_reported_before_a_world_exists_apply_from_its_first_arrival() {
     let request = DirectoryRequest {
         now_ms: now_ms(),
         blocks: vec![(21, 22)],
+        players: None,
     };
     assert_eq!(
         report(server.addr, key, &request, false).await.status(),

@@ -10,7 +10,7 @@ const LIMITS: WorldLimits = WorldLimits {
 };
 
 fn world() -> World {
-    World::new(0xAB, Arc::default(), LIMITS, Arc::default())
+    World::new(0xAB, Arc::default(), None, LIMITS, Arc::default())
 }
 
 fn sent(out: &[Out], to: ConnId) -> Vec<ServerMessage> {
@@ -323,7 +323,7 @@ fn shutting_down_closes_everyone() {
 
 #[test]
 fn a_fresh_world_starts_with_the_servers_blocks() {
-    let mut world = World::new(1, block_set([(1, 2)]), LIMITS, Arc::default());
+    let mut world = World::new(1, block_set([(1, 2)]), None, LIMITS, Arc::default());
     join(&mut world, 1, 10);
     let out = join(&mut world, 2, 20);
     assert!(member_ids(&sent(&out, 10)).is_empty());
@@ -401,4 +401,27 @@ fn the_map_digest_names_the_plaza_layout() {
         panic!("welcome");
     };
     assert_eq!(welcome.map, plaza_digest());
+}
+
+#[test]
+fn only_players_the_door_placed_may_be_in_a_world() {
+    let mut world = world();
+    join(&mut world, 1, 10);
+    join(&mut world, 2, 20);
+    let b_id = world.players[1].member.id;
+    let allowed: Allowed = Some(Arc::new([1].into_iter().collect()));
+    let out = world.set_allowed(allowed);
+    assert_eq!(closed(&out, 20), Some(Some(ErrorCode::MatchOver)));
+    let out = world.tick();
+    assert!(sent(&out, 10).contains(&ServerMessage::MemberLeft { id: b_id }));
+    assert_eq!(world.report().players, vec![1]);
+    // Their ticket no longer lets them in.
+    assert_eq!(
+        closed(&join(&mut world, 2, 21), 21),
+        Some(Some(ErrorCode::BadTicket))
+    );
+    assert!(
+        closed(&join(&mut world, 1, 11), 11).is_none(),
+        "the placed one may reconnect"
+    );
 }

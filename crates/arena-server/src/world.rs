@@ -52,6 +52,10 @@ pub fn plaza_digest() -> u64 {
 /// world on the server.
 pub type BlockSet = Arc<BTreeSet<(u64, u64)>>;
 
+/// The player ids the front door has placed (in any world): once the door
+/// has said, nobody else may be in a world. `None` until a first report.
+pub type Allowed = Option<Arc<std::collections::HashSet<u64>>>;
+
 /// The canonical form of a block list.
 pub fn block_set(pairs: impl IntoIterator<Item = (u64, u64)>) -> BlockSet {
     Arc::new(
@@ -108,6 +112,8 @@ struct Player {
     max_view_tick: u64,
     pending: VecDeque<InputFrame>,
     over_backlog_since: Option<u64>,
+    /// The door no longer stands behind them: they leave at the next tick.
+    evicted: bool,
 }
 
 pub struct World {
@@ -115,6 +121,7 @@ pub struct World {
     arena: Arena,
     players: Vec<Player>,
     blocks: BlockSet,
+    allowed: Allowed,
     /// Events from between ticks (casts ended by a block), sent with the
     /// next tick's.
     pending_events: Vec<ArenaEvent>,
@@ -136,6 +143,7 @@ impl World {
     pub fn new(
         instance: u64,
         blocks: BlockSet,
+        allowed: Allowed,
         limits: WorldLimits,
         metrics: Arc<Metrics>,
     ) -> Self {
@@ -144,6 +152,7 @@ impl World {
             arena: Arena::hub(),
             players: Vec::new(),
             blocks,
+            allowed,
             pending_events: Vec::new(),
             clock: 0,
             empty_since: Some(0),
@@ -211,6 +220,18 @@ impl World {
                 error: Some(ErrorCode::ServerShutdown),
             }];
         }
+        // A ticket the door no longer stands behind (the player left the
+        // hub, took a match, or the door forgot them) lets nobody in.
+        if self
+            .allowed
+            .as_ref()
+            .is_some_and(|allowed| !allowed.contains(&player))
+        {
+            return vec![Out::Close {
+                conn,
+                error: Some(ErrorCode::BadTicket),
+            }];
+        }
         let mut out = Vec::new();
         let index = match self.players.iter().position(|p| p.id == player) {
             Some(index) => {
@@ -254,6 +275,7 @@ impl World {
                     max_view_tick: 0,
                     pending: VecDeque::new(),
                     over_backlog_since: None,
+                    evicted: false,
                 });
                 self.empty_since = None;
                 // Everyone who may see the newcomer hears who they are
@@ -333,6 +355,31 @@ impl World {
             player.pending.pop_front();
             Metrics::add(&self.metrics.inputs_overflow, 1);
         }
+    }
+
+    /// The door's latest list of placed players: anyone in this world it no
+    /// longer lists leaves at the next tick (their connection is closed
+    /// with `MatchOver`; others hear `MemberLeft`).
+    pub fn set_allowed(&mut self, allowed: Allowed) -> Vec<Out> {
+        self.allowed = allowed;
+        let mut out = Vec::new();
+        let Some(allowed) = self.allowed.clone() else {
+            return out;
+        };
+        for player in &mut self.players {
+            if !allowed.contains(&player.id) {
+                if let Some(conn) = player.conn.take() {
+                    out.push(Out::Close {
+                        conn,
+                        error: Some(ErrorCode::MatchOver),
+                    });
+                }
+                // Gone at the next tick, as when a grace runs out.
+                player.evicted = true;
+                player.pending.clear();
+            }
+        }
+        out
     }
 
     /// The front door's current blocked pairs (see [`block_set`]). Players
@@ -500,9 +547,11 @@ impl World {
         let clock = self.clock;
         let mut index = 0;
         while index < self.players.len() {
-            let gone = self.players[index]
-                .absent_since
-                .is_some_and(|since| clock - since >= grace);
+            let player = &self.players[index];
+            let gone = player.evicted
+                || player
+                    .absent_since
+                    .is_some_and(|since| clock - since >= grace);
             if !gone {
                 index += 1;
                 continue;

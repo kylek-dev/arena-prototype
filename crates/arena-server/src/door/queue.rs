@@ -51,6 +51,7 @@ use tracing::Span;
 
 use super::chat::{self as chat_rules, Channel, ChatBudget, ChatSeat};
 use super::hub::{self, Hubs, Placement, Who};
+use super::worlds::{Placement as WorldPlacement, Worlds};
 use super::{Door, unix_now};
 use crate::RateWindow;
 use crate::ingress;
@@ -170,6 +171,14 @@ enum FromClient {
         jump: bool,
     },
     HubLeave {},
+    /// Enter a hub world on the world server (ADR 0057), beside a friend or
+    /// party-mate (`Name#1234`) when given: answered with a `world` ticket.
+    WorldJoin {
+        #[serde(default)]
+        friend: Option<String>,
+    },
+    /// Leave the hub world (the page closes its world connection).
+    WorldLeave {},
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -259,6 +268,14 @@ pub enum ToClient {
     /// No longer in the hub: `left`, or `match` when a ticket took them.
     HubLeft {
         reason: String,
+    },
+    /// A place in hub world `instance` (hex): join `server` with `ticket`
+    /// (hex), a `Role::Hub` ticket, until `expires` (ADR 0057).
+    World {
+        instance: String,
+        server: String,
+        ticket: String,
+        expires: u64,
     },
     /// Friend requests or friendships changed: fetch `/api/friends`.
     FriendsChanged {},
@@ -382,6 +399,20 @@ pub(super) enum Command {
     },
     HubLeave {
         conn: QueueConn,
+    },
+    WorldJoin {
+        conn: QueueConn,
+        follow: Option<(String, Option<u64>)>,
+        account: Option<u64>,
+    },
+    WorldLeave {
+        conn: QueueConn,
+    },
+    /// The world server's instance directory answered exchange
+    /// `generation` (`None` when it did not).
+    Directory {
+        generation: u64,
+        reply: Option<crate::worlds::DirectoryReply>,
     },
     /// The match server reports these matches ended: their players and
     /// spectators are no longer in a match (presence, whispers, chat).
@@ -549,6 +580,13 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
     let mut chat = ChatState::default();
     let mut searches = Searches::default();
     let mut hubs = Hubs::default();
+    // Hub worlds on the world server (ADR 0057): placements, the directory
+    // exchange (one at a time) and tickets held until the exchange after
+    // their placement has told the world server about blocks.
+    let mut worlds = Worlds::default();
+    let mut directory_tick = tokio::time::interval(crate::worlds::DIRECTORY_EVERY);
+    directory_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut directory = DirectoryState::default();
     let mut hub_tick = tokio::time::interval(HUB_TICK_EVERY);
     hub_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut tick = tokio::time::interval(TICK_EVERY);
@@ -587,6 +625,30 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 metrics
                     .hub_tick_us
                     .fetch_add(started.elapsed().as_micros() as u64, Ordering::Relaxed);
+                Vec::new()
+            }
+            _ = directory_tick.tick(), if door.match_status.is_some() => {
+                if worlds.is_empty()
+                    && directory.held.is_empty()
+                    && !directory.draining
+                    && !directory.listed_anyone
+                {
+                    // Nobody placed: an old report would only mislead.
+                    worlds.forget_reports();
+                } else {
+                    // Tickets the world server never heard about in time,
+                    // and placements it never confirmed while unreachable.
+                    for conn in directory.expire(now.into_std()) {
+                        worlds.leave(conn);
+                        send(&conns, conn, ToClient::Refused { code: "hub_unavailable".into() });
+                    }
+                    if !directory.answered_lately(now.into_std()) {
+                        for conn in worlds.expire(now.into_std()) {
+                            send(&conns, conn, ToClient::HubLeft { reason: hub::Left::Left.id().into() });
+                        }
+                    }
+                    directory.start(&door, &worlds, |a, b| hidden(&chat, &holders, a, b));
+                }
                 Vec::new()
             }
             _ = check.tick(), if door.match_status.is_some() => {
@@ -689,6 +751,14 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                         }
                     }
                     rename_in_hub(&mut hubs, &holders, &renamed);
+                    // A world shows the name its ticket carried: leave it,
+                    // and the page asks again with the new one.
+                    for conn in &renamed {
+                        directory.drop_held(*conn);
+                        if worlds.leave(*conn) {
+                            send(&conns, *conn, ToClient::HubLeft { reason: "renamed".into() });
+                        }
+                    }
                     // Lobby- and party-mates see the new (guest) name at once.
                     let mut out = mm.announce_lobbies_of(renamed.iter().copied());
                     out.extend(mm.announce_parties_of(renamed));
@@ -708,6 +778,14 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                         }
                     }
                     rename_in_hub(&mut hubs, &holders, &renamed);
+                    // A world shows the name its ticket carried: leave it,
+                    // and the page asks again with the new one.
+                    for conn in &renamed {
+                        directory.drop_held(*conn);
+                        if worlds.leave(*conn) {
+                            send(&conns, *conn, ToClient::HubLeft { reason: "renamed".into() });
+                        }
+                    }
                     let mut out = mm.announce_lobbies_of(renamed.iter().copied());
                     out.extend(mm.announce_parties_of(renamed));
                     out
@@ -738,6 +816,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                         Chat {
                             mm: &mm,
                             hubs: &hubs,
+                            worlds: &worlds,
                             conns: &conns,
                             holders: &holders,
                             state: &chat,
@@ -752,6 +831,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     Chat {
                         mm: &mm,
                         hubs: &hubs,
+                        worlds: &worlds,
                         conns: &conns,
                         holders: &holders,
                         state: &chat,
@@ -805,29 +885,17 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                         send(&conns, conn, ToClient::Refused { code: "no_name".into() });
                         continue;
                     };
-                    // Following: the friend's connections, or a party-mate
-                    // by name; nobody else (no following strangers).
-                    // A friend found for an account this tab has since
-                    // logged out of no longer counts.
-                    let friend = follow
-                        .as_ref()
-                        .and_then(|(_, friend)| *friend)
-                        .filter(|_| account.is_some() && holder.account == account);
-                    let followed: Option<Vec<QueueConn>> = follow.map(|(name, _)| {
-                        let mut found: Vec<QueueConn> = friend
-                            .and_then(|account| by_account.get(&account))
-                            .cloned()
-                            .unwrap_or_default();
-                        found.extend(party.iter().copied().filter(|mate| {
-                            holders.get(mate).and_then(|h| h.handle).is_some_and(|h| {
-                                h.to_string().eq_ignore_ascii_case(&name)
-                            })
-                        }));
-                        found
-                    });
+                    if worlds.instance_of(conn).is_some() {
+                        send(&conns, conn, ToClient::Refused { code: "in_hub".into() });
+                        continue;
+                    }
+                    let followed =
+                        followed_conns(follow, account, &holder, &by_account, &party, &holders);
                     let answer = match &followed {
                         // A friend who is not on is simply not in the hub.
-                        Some(found) if found.is_empty() && friend.is_none() => Err("not_friends"),
+                        Some((found, friend)) if found.is_empty() && friend.is_none() => {
+                            Err("not_friends")
+                        }
                         _ => hubs.join(
                             conn,
                             Who {
@@ -836,7 +904,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                             },
                             appearance,
                             Placement {
-                                follow: followed.as_deref().unwrap_or(&[]),
+                                follow: followed.as_ref().map_or(&[][..], |(found, _)| found),
                                 following: followed.is_some(),
                                 party: &party,
                             },
@@ -846,6 +914,96 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     match answer {
                         Ok(joined) => send(&conns, conn, ToClient::Hub(joined)),
                         Err(code) => send(&conns, conn, ToClient::Refused { code: code.into() }),
+                    }
+                    Vec::new()
+                }
+                Some(Command::WorldJoin { conn, follow, account }) => {
+                    let party: Vec<QueueConn> = mm.party_mates(conn);
+                    let Some(holder) = holders.get(&conn).copied() else {
+                        continue;
+                    };
+                    if holder.handle.is_none() {
+                        send(&conns, conn, ToClient::Refused { code: "no_name".into() });
+                        continue;
+                    }
+                    if hubs.instance_of(conn).is_some() {
+                        send(&conns, conn, ToClient::Refused { code: "in_hub".into() });
+                        continue;
+                    }
+                    if directory.draining {
+                        send(&conns, conn, ToClient::Refused { code: "hub_unavailable".into() });
+                        continue;
+                    }
+                    let followed = followed_conns(
+                        follow, account, &holder, &by_account, &party, &holders,
+                    );
+                    let player = worlds.player_for(conn, ticket::random_u64);
+                    let answer = match &followed {
+                        Some((found, friend)) if found.is_empty() && friend.is_none() => {
+                            Err("not_friends")
+                        }
+                        _ => worlds.place(
+                            conn,
+                            player,
+                            WorldPlacement {
+                                follow: followed.as_ref().map_or(&[][..], |(found, _)| found),
+                                following: followed.is_some(),
+                                party: &party,
+                            },
+                            |a, b| hidden(&chat, &holders, a, b),
+                            ticket::random_u64,
+                            now.into_std(),
+                        ),
+                    };
+                    match answer {
+                        Ok(instance) => {
+                            let expires = unix_now() + door.config.ticket_ttl.as_secs();
+                            let pass = ticket::issue_hub(&door.config.key, instance, player, holder, expires);
+                            Metrics::add(&door.metrics.tickets, 1);
+                            let message = ToClient::World {
+                                instance: format!("{instance:016x}"),
+                                server: door.config.match_server.clone(),
+                                ticket: ticket::to_hex(&pass),
+                                expires,
+                            };
+                            if door.match_status.is_some() {
+                                // Tell the world server about blocks first.
+                                directory.hold(conn, message, now.into_std());
+                                directory.start(&door, &worlds, |a, b| hidden(&chat, &holders, a, b));
+                            } else {
+                                send(&conns, conn, message);
+                            }
+                        }
+                        Err(code) => send(&conns, conn, ToClient::Refused { code: code.into() }),
+                    }
+                    Vec::new()
+                }
+                Some(Command::WorldLeave { conn }) => {
+                    directory.drop_held(conn);
+                    if worlds.leave(conn) {
+                        send(&conns, conn, ToClient::HubLeft { reason: hub::Left::Left.id().into() });
+                    }
+                    Vec::new()
+                }
+                Some(Command::Directory { generation, reply }) => {
+                    if let Some(reply) = &reply {
+                        directory.draining = reply.draining;
+                        for conn in worlds.reconcile(reply, now.into_std()) {
+                            directory.drop_held(conn);
+                            send(&conns, conn, ToClient::HubLeft { reason: hub::Left::Left.id().into() });
+                        }
+                    }
+                    // Only an answer releases tickets (the world server then
+                    // knows the newcomers' blocks); a failure keeps them for
+                    // the next exchange, until they expire.
+                    for (conn, message) in directory.finished(generation, reply.is_some(), now.into_std()) {
+                        // Still placed (not left or matched meanwhile).
+                        if worlds.instance_of(conn).is_some() {
+                            send(&conns, conn, message);
+                        }
+                    }
+                    if !directory.held.is_empty() {
+                        directory.start(&door, &worlds, |a, b| hidden(&chat, &holders, a, b));
                     }
                     Vec::new()
                 }
@@ -863,6 +1021,8 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 }
                 Some(Command::Gone { conn }) => {
                     hubs.gone(conn);
+                    worlds.gone(conn);
+                    directory.drop_held(conn);
                     searches.end(conn, "left");
                     conns.remove(&conn);
                     addresses.remove(&conn);
@@ -943,6 +1103,8 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     matched_at.remove(&conn);
                     chat.forget(conn);
                     hubs.gone(conn);
+                    worlds.gone(conn);
+                    directory.drop_held(conn);
                 }
                 Out::Start { mode, seats } => {
                     let match_id = start_match(&door, &conns, &holders, mode, &seats);
@@ -959,7 +1121,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     }
                     for conn in seats {
                         searches.matched(conn, match_id);
-                        leave_hub_for_match(&mut hubs, &conns, conn);
+                        leave_hub_for_match(&mut hubs, &mut worlds, &mut directory, &conns, conn);
                     }
                 }
                 Out::Lobby { conn, mut view } => {
@@ -1001,7 +1163,13 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                         spectators,
                     ) {
                         for (conn, team) in players.into_iter().zip(teams) {
-                            leave_hub_for_match(&mut hubs, &conns, conn);
+                            leave_hub_for_match(
+                                &mut hubs,
+                                &mut worlds,
+                                &mut directory,
+                                &conns,
+                                conn,
+                            );
                             matched_at.insert(conn, now);
                             chat.seat(
                                 conn,
@@ -1051,7 +1219,15 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 );
             }
         }
-        publish_metrics(&door, &mut mm, conns.len(), hubs.counts());
+        // The door's hub and hub worlds count together (ADR 0057).
+        let ((door_players, door_hubs), (world_players, world_count)) =
+            (hubs.counts(), worlds.counts());
+        publish_metrics(
+            &door,
+            &mut mm,
+            conns.len(),
+            (door_players + world_players, door_hubs + world_count),
+        );
         debug_assert!(
             searches.0.len() <= conns.len(),
             "a search outlived its connection"
@@ -1347,6 +1523,7 @@ impl ChatState {
 struct Chat<'a> {
     mm: &'a Matchmaker,
     hubs: &'a Hubs,
+    worlds: &'a Worlds,
     conns: &'a Senders,
     holders: &'a HashMap<QueueConn, Holder>,
     state: &'a ChatState,
@@ -1511,7 +1688,12 @@ impl Chat<'_> {
                     self.refuse(conn, "log_in");
                     return None;
                 }
-                let members = self.hubs.instance_members(conn);
+                // In a hub world (ADR 0057), or the door's own hub.
+                let members = if self.worlds.instance_of(conn).is_some() {
+                    self.worlds.members(conn)
+                } else {
+                    self.hubs.instance_members(conn)
+                };
                 if members.is_empty() {
                     self.refuse(conn, "not_in_hub");
                     return None;
@@ -1732,9 +1914,243 @@ fn rename_in_hub(hubs: &mut Hubs, holders: &HashMap<QueueConn, Holder>, renamed:
     }
 }
 
-/// A ticket takes its player out of the hub; others see them go next tick.
-fn leave_hub_for_match(hubs: &mut Hubs, conns: &Senders, conn: QueueConn) {
-    if hubs.leave(conn) {
+/// The instance directory exchange with the world server (ADR 0057): at
+/// most one in flight, and world tickets held until an exchange started
+/// after their placement answers, so the world server knows the new
+/// player's blocks before the page connects.
+#[derive(Default)]
+struct DirectoryState {
+    /// The last exchange started.
+    generation: u64,
+    in_flight: bool,
+    /// The last request's clock, so the next is always later.
+    last_ms: u64,
+    /// The world server is stopping: place nobody new.
+    draining: bool,
+    /// Tickets waiting for an answer to an exchange started after them.
+    held: Vec<Held>,
+    /// When the last exchange started and the last answer came.
+    started_at: Option<std::time::Instant>,
+    answered_at: Option<std::time::Instant>,
+    /// Whether the last request listed anyone: when everyone has left, one
+    /// more exchange tells the world server so.
+    listed_anyone: bool,
+}
+
+struct Held {
+    after: u64,
+    conn: QueueConn,
+    message: ToClient,
+    at: std::time::Instant,
+}
+
+/// Exchanges start at most this often (a burst of joins shares one).
+const DIRECTORY_GAP: std::time::Duration = std::time::Duration::from_millis(200);
+
+impl DirectoryState {
+    fn hold(&mut self, conn: QueueConn, message: ToClient, now: std::time::Instant) {
+        self.held.push(Held {
+            after: self.generation + 1,
+            conn,
+            message,
+            at: now,
+        });
+    }
+
+    fn drop_held(&mut self, conn: QueueConn) {
+        self.held.retain(|held| held.conn != conn);
+    }
+
+    /// Held tickets older than the confirmation window (the world server
+    /// has not answered since they were placed): their connections.
+    fn expire(&mut self, now: std::time::Instant) -> Vec<QueueConn> {
+        let (old, young): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held)
+            .into_iter()
+            .partition(|held| now.duration_since(held.at) >= super::worlds::CONFIRM_WITHIN);
+        self.held = young;
+        old.into_iter().map(|held| held.conn).collect()
+    }
+
+    /// Whether the directory answered within the confirmation window (or
+    /// has not been asked that long).
+    fn answered_lately(&self, now: std::time::Instant) -> bool {
+        let within =
+            |at: std::time::Instant| now.duration_since(at) < super::worlds::CONFIRM_WITHIN;
+        self.answered_at.is_some_and(within) || self.started_at.is_none_or(within)
+    }
+
+    /// Whether an exchange may start now: none in flight, and none started
+    /// within [`DIRECTORY_GAP`] (the tick or the answer starts the next).
+    fn may_start(&self, now: std::time::Instant) -> bool {
+        !self.in_flight
+            && self
+                .started_at
+                .is_none_or(|at| now.duration_since(at) >= DIRECTORY_GAP)
+    }
+
+    /// Starts an exchange when [`Self::may_start`].
+    fn start(
+        &mut self,
+        door: &Arc<Door>,
+        worlds: &Worlds,
+        hidden: impl Fn(QueueConn, QueueConn) -> bool,
+    ) {
+        let now = std::time::Instant::now();
+        if !self.may_start(now) {
+            return;
+        }
+        let (Some(client), Some(base)) =
+            (door.match_status.clone(), door.config.match_status.clone())
+        else {
+            return;
+        };
+        let request = self.request(now, worlds, hidden);
+        let generation = self.generation;
+        let door = door.clone();
+        tokio::spawn(async move {
+            let reply = exchange(&door, &client, &base, &request).await;
+            if reply.is_none() {
+                warn_directory_unanswered();
+            }
+            let _ = door
+                .queue
+                .send(Command::Directory { generation, reply })
+                .await;
+        });
+    }
+
+    /// Begins exchange `generation + 1`: its request, with a clock that
+    /// only rises.
+    fn request(
+        &mut self,
+        now: std::time::Instant,
+        worlds: &Worlds,
+        hidden: impl Fn(QueueConn, QueueConn) -> bool,
+    ) -> crate::worlds::DirectoryRequest {
+        self.generation += 1;
+        self.in_flight = true;
+        self.started_at = Some(now);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis() as u64);
+        self.last_ms = now_ms.max(self.last_ms + 1);
+        let players = worlds.placed_players();
+        self.listed_anyone = !players.is_empty();
+        crate::worlds::DirectoryRequest {
+            now_ms: self.last_ms,
+            blocks: worlds.block_pairs(hidden),
+            players: Some(players),
+        }
+    }
+
+    /// Exchange `generation` answered (`answered`) or failed: the tickets
+    /// an answer releases (none on failure: they wait for the next).
+    fn finished(
+        &mut self,
+        generation: u64,
+        answered: bool,
+        now: std::time::Instant,
+    ) -> Vec<(QueueConn, ToClient)> {
+        if generation == self.generation {
+            self.in_flight = false;
+        }
+        if !answered {
+            return Vec::new();
+        }
+        self.answered_at = Some(now);
+        let (ready, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held)
+            .into_iter()
+            .partition(|held| held.after <= generation);
+        self.held = waiting;
+        ready
+            .into_iter()
+            .map(|held| (held.conn, held.message))
+            .collect()
+    }
+}
+
+/// Unanswered directory exchanges leave hub tickets waiting: say so, at
+/// most once a minute (apart from match checks, which have their own).
+fn warn_directory_unanswered() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = unix_now();
+    let last = LAST.load(Ordering::Relaxed);
+    if now >= last + 60
+        && LAST
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        tracing::warn!("the world server did not answer the hub directory; check --match-status");
+    }
+}
+
+/// One signed `POST /worlds/report`, bounded by a few seconds.
+async fn exchange(
+    door: &Door,
+    client: &reqwest::Client,
+    base: &str,
+    request: &crate::worlds::DirectoryRequest,
+) -> Option<crate::worlds::DirectoryReply> {
+    let body = serde_json::to_vec(request).ok()?;
+    let tag = door.config.key.sign(crate::worlds::DIRECTORY_LABEL, &body);
+    let url = format!("{}/worlds/report", base.trim_end_matches('/'));
+    let reply = client
+        .post(url)
+        .header(crate::worlds::DIRECTORY_SIGNATURE, tag)
+        .header("content-type", "application/json")
+        .timeout(std::time::Duration::from_secs(3))
+        .body(body)
+        .send()
+        .await
+        .ok()?;
+    if !reply.status().is_success() {
+        return None;
+    }
+    reply.json().await.ok()
+}
+
+/// The connections to join beside when a follow was asked for: the
+/// friend's (an accepted friend of the account this tab is logged into),
+/// or a party-mate's by name; nobody else (no following strangers).
+/// `None` when no follow was asked; the friend's account rides along.
+fn followed_conns(
+    follow: Option<(String, Option<u64>)>,
+    account: Option<u64>,
+    holder: &Holder,
+    by_account: &HashMap<u64, Vec<QueueConn>>,
+    party: &[QueueConn],
+    holders: &HashMap<QueueConn, Holder>,
+) -> Option<(Vec<QueueConn>, Option<u64>)> {
+    let (name, friend) = follow?;
+    // A friend found for an account this tab has since logged out of no
+    // longer counts.
+    let friend = friend.filter(|_| account.is_some() && holder.account == account);
+    let mut found: Vec<QueueConn> = friend
+        .and_then(|account| by_account.get(&account))
+        .cloned()
+        .unwrap_or_default();
+    found.extend(party.iter().copied().filter(|mate| {
+        holders
+            .get(mate)
+            .and_then(|h| h.handle)
+            .is_some_and(|h| h.to_string().eq_ignore_ascii_case(&name))
+    }));
+    Some((found, friend))
+}
+
+/// A ticket takes its player out of the hub (the door's or a world); others
+/// see them go next tick.
+fn leave_hub_for_match(
+    hubs: &mut Hubs,
+    worlds: &mut Worlds,
+    directory: &mut DirectoryState,
+    conns: &Senders,
+    conn: QueueConn,
+) {
+    directory.drop_held(conn);
+    let in_world = worlds.leave(conn);
+    if hubs.leave(conn) || in_world {
         send(
             conns,
             conn,
@@ -2041,7 +2457,32 @@ fn command(conn: QueueConn, message: FromClient) -> Result<Command, &'static str
             },
         },
         FromClient::HubLeave {} => Command::HubLeave { conn },
+        FromClient::WorldJoin { .. } => return Err("Join the hub through the connection."),
+        FromClient::WorldLeave {} => Command::WorldLeave { conn },
     })
+}
+
+/// The friend to join beside: the handle asked for, and the friend's account
+/// when it is an accepted friend of `account`'s. Looking a friend up reads
+/// the store, so it shares the per-account invite budget.
+async fn follow_of(
+    door: &Door,
+    account: Option<u64>,
+    friend: Option<String>,
+) -> Option<(String, Option<u64>)> {
+    let name = friend?;
+    let found = match (door.identity.as_ref(), account) {
+        (Some(identity), Some(account))
+            if name.len() <= 32 && door.invites.take(account, Instant::now()).is_ok() =>
+        {
+            friend_by_handle(identity, account, &name)
+                .await
+                .ok()
+                .flatten()
+        }
+        _ => None,
+    };
+    Some((name, found))
 }
 
 /// Checks an invite before it reaches the matchmaker: the inviter is logged
@@ -2263,24 +2704,24 @@ async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr, ho
                 };
                 // Invites need the store, so they are checked here.
                 let message = match message {
+                    Ok(FromClient::WorldJoin { friend }) => {
+                        let follow = follow_of(&door, holder.account, friend).await;
+                        if door
+                            .queue
+                            .send(Command::WorldJoin {
+                                conn,
+                                follow,
+                                account: holder.account,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                        continue;
+                    }
                     Ok(FromClient::HubJoin { appearance, friend }) => {
-                        let follow = match friend {
-                            None => None,
-                            Some(name) => {
-                                // Looking a friend up reads the store: it
-                                // shares the per-account invite budget.
-                                let account = match (door.identity.as_ref(), holder.account) {
-                                    (Some(identity), Some(account))
-                                        if name.len() <= 32
-                                            && door.invites.take(account, Instant::now()).is_ok() =>
-                                    {
-                                        friend_by_handle(identity, account, &name).await.ok().flatten()
-                                    }
-                                    _ => None,
-                                };
-                                Some((name, account))
-                            }
-                        };
+                        let follow = follow_of(&door, holder.account, friend).await;
                         if door
                             .queue
                             .send(Command::HubJoin {
@@ -2346,6 +2787,70 @@ async fn connection(socket: &mut WebSocket, door: Arc<Door>, address: IpAddr, ho
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ticket_for(conn: QueueConn) -> ToClient {
+        ToClient::World {
+            instance: format!("{conn:016x}"),
+            server: "ws://x/play".into(),
+            ticket: "00".into(),
+            expires: 0,
+        }
+    }
+
+    #[test]
+    fn held_world_tickets_wait_for_an_answer_to_a_later_exchange() {
+        let start = std::time::Instant::now();
+        let mut worlds = Worlds::default();
+        let mut directory = DirectoryState::default();
+        // Exchange 1 is in flight when the ticket is placed: its answer
+        // knows nothing of the newcomer, so the ticket waits for the next.
+        let first = directory.request(start, &worlds, |_, _| false);
+        assert!(!directory.may_start(start), "one at a time");
+        directory.hold(1, ticket_for(1), start);
+        assert!(directory.finished(1, true, start).is_empty());
+        assert!(!directory.may_start(start), "not within the gap");
+        // Exchange 2 fails: nothing is released.
+        let later = start + DIRECTORY_GAP;
+        assert!(directory.may_start(later));
+        let second = directory.request(later, &worlds, |_, _| false);
+        assert!(second.now_ms > first.now_ms, "the clock only rises");
+        assert!(directory.finished(2, false, later).is_empty());
+        assert_eq!(directory.held.len(), 1);
+        // Exchange 3 answers: released.
+        let last = later + DIRECTORY_GAP;
+        let _ = directory.request(last, &worlds, |_, _| false);
+        let released = directory.finished(3, true, last);
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].0, 1);
+        assert!(directory.held.is_empty());
+        // Requests name every placed player.
+        worlds
+            .place(9, 99, Default::default(), |_, _| false, || 5, start)
+            .unwrap();
+        let request = directory.request(last + DIRECTORY_GAP, &worlds, |_, _| false);
+        assert_eq!(request.players, Some(vec![99]));
+    }
+
+    #[test]
+    fn held_tickets_expire_and_are_dropped_with_their_connection() {
+        let start = std::time::Instant::now();
+        let mut directory = DirectoryState::default();
+        directory.hold(1, ticket_for(1), start);
+        directory.hold(2, ticket_for(2), start);
+        directory.drop_held(2);
+        assert!(directory.expire(start).is_empty());
+        assert_eq!(
+            directory.expire(start + super::super::worlds::CONFIRM_WITHIN),
+            vec![1]
+        );
+        assert!(directory.held.is_empty());
+        // Never asked: still "lately"; asked long ago and never answered: not.
+        assert!(directory.answered_lately(start));
+        let _ = directory.request(start, &Worlds::default(), |_, _| false);
+        assert!(!directory.answered_lately(start + super::super::worlds::CONFIRM_WITHIN));
+        let _ = directory.finished(1, true, start + super::super::worlds::CONFIRM_WITHIN);
+        assert!(directory.answered_lately(start + super::super::worlds::CONFIRM_WITHIN));
+    }
 
     #[test]
     fn ending_a_match_unseats_only_its_players() {
