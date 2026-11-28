@@ -160,11 +160,14 @@ fn expected_cast(prev: Option<WireCast>, tick_delta: u64) -> Option<WireCast> {
 impl SnapshotDelta {
     /// Builds a lossless delta from `prev` to `curr` and returns per-field
     /// change counts. Returns `None` if `curr.tick < prev.tick`, the roster
-    /// size changed, or the fighter count is outside `2..=MAX_FIGHTERS` (or odd)
-    /// — caller must send a full keyframe instead.
+    /// size changed, the fighter count is outside `2..=MAX_FIGHTERS` (or odd),
+    /// or either is a hub world's (deltas for those come with ADR 0057's
+    /// last slice) — caller must send a full keyframe instead.
     pub fn from_pair(prev: &Snapshot, curr: &Snapshot) -> Option<(Self, FieldChangeCounts)> {
         let count = curr.fighters.len();
         if curr.tick < prev.tick
+            || prev.roster.is_some()
+            || curr.roster.is_some()
             || count != prev.fighters.len()
             || !(2..=MAX_FIGHTERS).contains(&count)
             || !count.is_multiple_of(2)
@@ -441,6 +444,10 @@ impl SnapshotDelta {
     /// Decodes a delta frame and reconstructs the exact [`Snapshot`] against
     /// `prev`, enforcing the same decode invariants as [`crate::ServerMessage::decode`].
     pub fn apply(prev: &Snapshot, frame: &[u8]) -> Result<Snapshot, DecodeError> {
+        if prev.roster.is_some() {
+            // Hub worlds are never sent as deltas yet.
+            return Err(DecodeError::Malformed);
+        }
         if frame.is_empty() {
             return Err(DecodeError::Empty);
         }
@@ -617,6 +624,7 @@ impl SnapshotDelta {
             result,
             fighters,
             scoreboard,
+            roster: None,
             events,
         };
         if !valid_snapshot(&snapshot) {

@@ -355,6 +355,7 @@ impl Session {
                 rules: RULES_VERSION,
                 map: self.map,
                 spectator: false,
+                hub: false,
             }),
         });
         out.push(Out::Send {
@@ -447,6 +448,7 @@ impl Session {
                 rules: RULES_VERSION,
                 map: self.map,
                 spectator: true,
+                hub: false,
             }),
         });
         match self.phase {
@@ -629,6 +631,7 @@ impl Session {
                             result,
                             &fighters[..count],
                             scoreboard,
+                            None,
                             (!has_rejections).then_some(shared_events.as_slice()),
                         );
                         let mut seat_events = Vec::new();
@@ -659,6 +662,7 @@ impl Session {
                             result,
                             fighters: fighters[..count].to_vec(),
                             scoreboard: scoreboard.map(|s| s.to_vec()),
+                            roster: None,
                             events: shared_events,
                         };
                         self.enqueue_spectator_snapshot(snap);
@@ -992,6 +996,7 @@ impl Session {
                 result,
                 fighters: fighters.clone(),
                 scoreboard: scoreboard.clone(),
+                roster: None,
                 events: public_events.clone(),
             });
         }
@@ -1019,6 +1024,7 @@ impl Session {
                         result,
                         fighters: fighters.clone(),
                         scoreboard: scoreboard.clone(),
+                        roster: None,
                         events,
                     }),
                 })
