@@ -17,7 +17,12 @@ import {
   requests,
   type LobbySlot,
   MAX_INVITES,
+  MAX_CHALLENGES,
+  CHALLENGE_ONLY_REFUSALS,
+  CHALLENGE_REFUSALS,
+  CHALLENGE_TTL_MS,
   type Invite,
+  type OwnChallenge,
   type MatchSettings,
   type QueueMode,
   type QueueState,
@@ -94,7 +99,20 @@ export function createQueue(deps: QueueDeps) {
   const chat = createStore<ChatState>(EMPTY_CHAT);
   const updateChat = (patch: Partial<ChatState>) => chat.set({ ...chat.get(), ...patch });
   /** What the last request was, to tell whose refusal arrives next. */
-  let lastAsked: "chat" | "hub" | "other" = "other";
+  let lastAsked: "chat" | "hub" | "challenge" | "other" = "other";
+  /** The last challenge request (ADR 0060), for its refusal: sending one
+   * (with the challenge it would replace) or answering one. */
+  let challengeAsked:
+    | { kind: "send"; with: string; previous: OwnChallenge | null }
+    | { kind: "answer"; with: string }
+    | null = null;
+  const sameHandle = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  /** Out of the hub, or matched: the door has closed this player's
+   * challenges, telling only the other players. */
+  const forgetChallenges = () => {
+    challengeAsked = null;
+    update({ challenges: [], challenging: null });
+  };
   /** An ignore waiting on the door (it answers only refusals). */
   let ignoring: string | null = null;
   let pendingIgnore: string | null = null;
@@ -126,6 +144,7 @@ export function createQueue(deps: QueueDeps) {
   };
   const end = (reason: string) => {
     drop();
+    challengeAsked = null;
     // A listening connection ends quietly: offline, with the reason kept for
     // whoever reopens it (`runtime/social.ts`).
     state.set({ ...IDLE_QUEUE, connection: background ? "offline" : "ended", ended: reason });
@@ -134,7 +153,10 @@ export function createQueue(deps: QueueDeps) {
     if (hub.get().status !== "out") hub.set({ ...OUT_OF_HUB, notice: "lost" });
   };
   /** Sends `request`, connecting first when needed. */
-  const request = (message: string | null, kind: "chat" | "hub" | "other" = "other") => {
+  const request = (
+    message: string | null,
+    kind: "chat" | "hub" | "challenge" | "other" = "other",
+  ) => {
     if (message) {
       lastAsked = kind;
       // The door answers an ignore before any later request of the same
@@ -241,11 +263,37 @@ export function createQueue(deps: QueueDeps) {
           hub.set({ ...OUT_OF_HUB, notice: message.code });
           break;
         }
-        if (message.code === "not_in_hub" && lastAsked !== "chat") break;
+        // Replayed ignores' refusals first: they are never news.
         if (IGNORE_REFUSALS.has(message.code) && replaying > 0 && !ignoring) {
           replaying -= 1;
           break;
         }
+        // A challenge's refusal is told with the challenge (ADR 0060): the
+        // last request was one, or the code belongs to challenges alone.
+        if (
+          challengeAsked &&
+          CHALLENGE_REFUSALS.has(message.code) &&
+          (lastAsked === "challenge" || CHALLENGE_ONLY_REFUSALS.has(message.code))
+        ) {
+          const asked = challengeAsked;
+          challengeAsked = null;
+          const notice = { with: asked.with, code: message.code, mine: asked.kind === "send" };
+          if (asked.kind === "send")
+            // Refused: nothing changed, so an earlier challenge still stands.
+            update({ challenging: asked.previous, challengeNotice: notice });
+          else
+            update({
+              challenges:
+                message.code === "challenge_gone"
+                  ? current.challenges.filter((c) => !sameHandle(c.from, asked.with))
+                  : current.challenges.map((c) =>
+                      sameHandle(c.from, asked.with) ? { ...c, answering: false } : c,
+                    ),
+              challengeNotice: notice,
+            });
+          break;
+        }
+        if (message.code === "not_in_hub" && lastAsked !== "chat") break;
         if (
           CHAT_ONLY_REFUSALS.has(message.code) ||
           (lastAsked === "chat" && SHARED_CHAT_REFUSALS.has(message.code))
@@ -268,7 +316,17 @@ export function createQueue(deps: QueueDeps) {
         else update({ notice: message.code, inviting: null });
         break;
       case "match":
-        update({ phase: "idle", since: null, readyCheck: null, notice: null });
+        challengeAsked = null;
+        update({
+          phase: "idle",
+          since: null,
+          readyCheck: null,
+          notice: null,
+          // Matched: the door closed every challenge of this player's.
+          challenges: [],
+          challenging: null,
+          challengeNotice: null,
+        });
         deps.onMatch(message.ticket);
         break;
       case "world":
@@ -279,6 +337,7 @@ export function createQueue(deps: QueueDeps) {
         break;
       case "hub_left":
         hub.set({ ...OUT_OF_HUB, notice: message.reason });
+        forgetChallenges();
         // A new name needs a new place: ask again.
         if (message.reason === "renamed") api.joinHub();
         else if (message.reason === "left") deps.onWorldLeft?.();
@@ -304,6 +363,66 @@ export function createQueue(deps: QueueDeps) {
       case "friends_changed":
         update({ friendsChanged: current.friendsChanged + 1 });
         break;
+      case "challenged": {
+        // One card per challenger, the newest kept; a few at most.
+        const others = current.challenges.filter((c) => !sameHandle(c.from, message.from));
+        const challenge = {
+          from: message.from,
+          deadline: now + message.remainingMs,
+          answering: false,
+        };
+        update({ challenges: [...others, challenge].slice(-MAX_CHALLENGES) });
+        break;
+      }
+      case "challenge_sent":
+        challengeAsked = null;
+        update({
+          challenging: { to: message.to, sent: true, deadline: now + CHALLENGE_TTL_MS },
+          challengeNotice: null,
+        });
+        break;
+      case "challenge_ended": {
+        const held = current.challenges.find((c) => sameHandle(c.from, message.with));
+        const own =
+          current.challenging?.sent && sameHandle(current.challenging.to, message.with)
+            ? current.challenging
+            : null;
+        // Which challenge ended: `declined` and `left` reach only the
+        // challenger, `withdrawn` only the challenged player, `busy` the
+        // challenged player only after accepting; `expired` reaches both,
+        // so with challenges both ways it is the one due first.
+        let mine: boolean;
+        switch (message.reason) {
+          case "declined":
+          case "left":
+            mine = true;
+            break;
+          case "withdrawn":
+            mine = false;
+            break;
+          case "busy":
+            mine = !held?.answering;
+            break;
+          case "expired":
+            mine = !held || (!!own && own.deadline <= held.deadline);
+            break;
+        }
+        if (mine && own) {
+          update({
+            challenging: null,
+            challengeNotice: { with: message.with, code: message.reason, mine: true },
+          });
+        } else if (!mine && held) {
+          update({
+            challenges: current.challenges.filter((c) => c !== held),
+            // A held card going away is news only when it was accepted.
+            challengeNotice: held.answering
+              ? { with: message.with, code: message.reason, mine: false }
+              : current.challengeNotice,
+          });
+        }
+        break;
+      }
       case "chat":
         chat.set(receiveChat(chat.get(), message.line));
         break;
@@ -336,6 +455,7 @@ export function createQueue(deps: QueueDeps) {
     leaveHub() {
       if (hub.get().status === "out") return;
       hub.set(OUT_OF_HUB);
+      forgetChallenges();
       request(hubRequests.leave());
     },
     /** The clock search times are measured on. */
@@ -425,6 +545,39 @@ export function createQueue(deps: QueueDeps) {
       if (state.get().inviting) return;
       update({ notice: null, inviteSent: null, inviting: handle });
       request(requests.invite(handle));
+    },
+    /** Challenges `handle` in this hub world to a 1v1 (ADR 0060); a new
+     * challenge replaces one's own open one. */
+    challenge(handle: string) {
+      const current = state.get();
+      // A challenge still on its way is replaced, as the door replaces it.
+      const previous = current.challenging?.sent ? current.challenging : null;
+      challengeAsked = { kind: "send", with: handle, previous };
+      update({ challenging: { to: handle, sent: false, deadline: 0 }, challengeNotice: null });
+      request(requests.challenge(handle), "challenge");
+    },
+    /** Accepts (a match follows) or declines another player's challenge. */
+    answerChallenge(from: string, accept: boolean) {
+      const current = state.get();
+      const held = current.challenges.find((c) => sameHandle(c.from, from));
+      if (!held || held.answering) return;
+      challengeAsked = { kind: "answer", with: from };
+      update({
+        challenges: accept
+          ? current.challenges.map((c) => (c === held ? { ...c, answering: true } : c))
+          : current.challenges.filter((c) => c !== held),
+        challengeNotice: null,
+      });
+      request(requests.answerChallenge(held.from, accept), "challenge");
+    },
+    /** Takes back one's own challenge. */
+    withdrawChallenge() {
+      if (!state.get().challenging?.sent) return;
+      update({ challenging: null });
+      request(requests.withdrawChallenge());
+    },
+    dismissChallengeNotice() {
+      update({ challengeNotice: null });
     },
     /** Clears "invite sent". */
     dismissInviteSent() {

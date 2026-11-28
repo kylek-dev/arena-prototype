@@ -68,8 +68,10 @@ the world server does not keep.
 - The result is a normal match result. Challenge matches are not rated or
   recorded separately; a later ranking or record can tell them apart by
   adding the source to the ticket.
-- The page work (the unit menu item and the Accept/Decline cards) is a
-  separate, human-reviewed change.
+- The page offers **Challenge to a 1v1** in the unit menu (in the hub only)
+  and shows challenges with the invitation cards: Accept and Decline for one
+  received, Withdraw for one's own, and a notice of how either ended
+  (`challengeText` in `web/src/domain/matchmaking.ts`); pending human review.
 - A party-mate may still queue the party while one member plays a challenge,
   as they already may during a custom match; the ready check then reaches
   the player in the match.

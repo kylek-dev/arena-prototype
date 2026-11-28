@@ -12,11 +12,13 @@ import { createStore, useStore } from "../../state/store";
 import { holdPopupMenu } from "../../state/popup-menu";
 import { closeUnitMenu, unitMenu } from "../../state/unit-menu";
 import { IDLE_QUEUE } from "../../domain/matchmaking";
+import { OUT_OF_HUB } from "../../domain/hub";
 import "./unit-menu.css";
 
 const NO_ACCOUNT = createStore(LOADING_ACCOUNT);
 const NO_LIST = createStore(NO_FRIENDS);
 const NO_QUEUE = createStore(IDLE_QUEUE);
+const NO_HUB = createStore(OUT_OF_HUB);
 const NO_MATES: readonly (string | null)[] = [];
 /** Space kept between the menu and the screen's edges. */
 const EDGE = 8;
@@ -26,8 +28,9 @@ type Item = { label: string; run?: () => void; why?: string };
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /** The menu a right-click on a unit opens (target, focus, party and player
- * frames, friendly nameplates): whisper, invite, add as a friend, inspect and duel
- * (not yet available), focus, and editing the frame's place directly.
+ * frames, friendly nameplates): whisper, invite, add as a friend, inspect
+ * (not yet available), challenge to a 1v1 (in the hub), focus, and editing
+ * the frame's place directly.
  * Arena (enemy) frames keep right-click to focus. */
 export function UnitMenu() {
   const request = useStore(unitMenu, (m) => m);
@@ -41,6 +44,9 @@ export function UnitMenu() {
   // As on the launcher: leaving mid-search would stop the party's search
   // (or break a ready check) for everyone.
   const searching = useStore(queue?.state ?? NO_QUEUE, (s) => s.phase !== "idle");
+  const inLobby = useStore(queue?.state ?? NO_QUEUE, (s) => !!s.lobby);
+  const challenging = useStore(queue?.state ?? NO_QUEUE, (s) => s.challenging);
+  const placed = useStore(queue?.hub ?? NO_HUB, (h) => h.status === "in");
   const account = useStore(accountService, (a) => a);
   const me = useStore(account?.state ?? NO_ACCOUNT, (s) => s.me);
   const friends = useStore(friendsService, (f) => f);
@@ -150,6 +156,16 @@ export function UnitMenu() {
     if (pending) return { why: "A friend request is already pending." };
     return { run: () => void friends.act("request", handle) };
   };
+  const challenge = (): Pick<Item, "run" | "why"> => {
+    if (!handle) return { why: "Only players can be challenged." };
+    if (!queue || !placed || !state?.hub) return { why: "Challenges are available in the hub." };
+    if (blocked) return { why: "You have blocked this player." };
+    if (searching) return { why: "You cannot challenge a player while searching for a match." };
+    if (inLobby) return { why: "Leave your custom lobby before challenging a player." };
+    if (challenging && same(challenging.to, handle))
+      return { why: "Your challenge to this player is waiting for an answer." };
+    return { run: () => queue.challenge(handle) };
+  };
   const items: Item[] = [
     ...(self
       ? []
@@ -158,7 +174,7 @@ export function UnitMenu() {
           { label: "Invite to group", ...invite() },
           { label: "Add friend", ...befriend() },
           { label: "Inspect", why: "Inspecting players is not available yet." },
-          { label: "Challenge to a duel", why: "Duels are not available yet." },
+          { label: "Challenge to a 1v1", ...challenge() },
         ]),
     slot
       ? { label: "Focus", run: () => interactUnit(slot.tag, "focus") }
