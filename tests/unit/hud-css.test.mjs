@@ -26,10 +26,11 @@ test('dock windows share one size and open at the left middle, side by side', ()
   assert.doesNotMatch(rule('.dock-window'), /transform:/);
   assert.doesNotMatch(rule('.dock-window-body'), /transform:/);
   const window = rule('.dock-window');
-  assert.match(window, /width:\s*320px/);
-  assert.match(window, /height:\s*min\(460px/);
+  // 400 × 680 px at 100% interface scale.
+  assert.match(window, /width:\s*calc\(400px \* var\(--ui-scale, 1\)\)/);
+  assert.match(window, /height:\s*min\(calc\(680px \* var\(--ui-scale, 1\)\)/);
   // Several open windows shrink to fit instead of overlapping.
-  assert.match(window, /flex:\s*0 1 320px/);
+  assert.match(window, /flex:\s*0 1 calc\(400px \* var\(--ui-scale, 1\)\)/);
 });
 
 test('the Queue tab stacks full-width bracket buttons', () => {
@@ -84,3 +85,16 @@ test('no stylesheet styles a bare chat channel class, which every chat line carr
   }
 });
 
+
+test('a unit frame keeps its size when a cast bar appears, so it never moves', () => {
+  // Placement is a fraction of the free space, which depends on the frame's
+  // size: the cast bar hangs outside the box and nothing resizes for it.
+  const css = readFileSync(
+    new URL('../../web/src/features/unit-frames/unit-frames.css', import.meta.url),
+    'utf8',
+  ).replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.doesNotMatch(css, /\.unit-frame:has\([^)]*cast/);
+  const hung = css.match(/\.unit-frame > :is\(\.cast-track, \.cast-ending\)\s*\{([^}]*)\}/)[1];
+  assert.match(hung, /position:\s*absolute/);
+  assert.match(hung, /top:\s*calc\(100% \+ 2px\)/);
+});

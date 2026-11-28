@@ -14,6 +14,7 @@ import {
   remoteAppearances,
 } from "../state/appearance";
 import { observeCastResult } from "./cast-feedback";
+import { observeCastEnds } from "./cast-endings";
 import {
   customLobbyVisible,
   engine,
@@ -133,6 +134,7 @@ export function startRuntime(canvas: HTMLCanvasElement) {
           previous = engine.get();
         recordState(next.frames);
         observeCastResult(next);
+        observeCastEnds(next);
         nameplateScene.set(next);
         const currentFocus = focus.get();
         if (currentFocus !== null) {

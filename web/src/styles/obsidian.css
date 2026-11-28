@@ -1,0 +1,71 @@
+/* The interface's obsidian look (2026-11-28), dark volcanic glass instead
+   of the old blue-black. Radix's gray scale and the gold accent come from
+   the palette (docs/palette.json, the obsidian family and the gold scale);
+   here the HUD's own uses of the night neutrals take obsidian too, inside
+   the interface only (the 3D scene keeps night), and windows, dialogs and
+   menus become dark glass, lit faintly from above. */
+.overlay-theme {
+  --pal-night-1: var(--pal-obsidian-1);
+  --pal-night-2: var(--pal-obsidian-2);
+  --pal-night-3: var(--pal-obsidian-3);
+  --pal-night-4: var(--pal-obsidian-4);
+  --pal-night-5: var(--pal-obsidian-5);
+  --pal-night-6: var(--pal-obsidian-6);
+  --pal-night-7: var(--pal-obsidian-7);
+  --pal-night-8: var(--pal-obsidian-8);
+  --pal-night-9: var(--pal-obsidian-9);
+  --pal-night-10: var(--pal-obsidian-10);
+  --pal-night-11: var(--pal-obsidian-11);
+  --pal-night-12: var(--pal-obsidian-12);
+  --obsidian-glass: linear-gradient(
+    180deg,
+    var(--pal-obsidian-3) 0%,
+    var(--pal-obsidian-2) 40%,
+    var(--pal-obsidian-1) 100%
+  );
+  --obsidian-sheen: inset 0 1px 0 color-mix(in srgb, var(--pal-obsidian-12) 9%, transparent);
+}
+/* Windows, dialogs and menus: the glass gradient, lit along the top edge. */
+.overlay-theme
+  :is(
+    .dialog,
+    .dock-window,
+    .movable-window,
+    .rt-BaseDialogContent,
+    .rt-PopoverContent,
+    .rt-BaseMenuContent,
+    .rt-HoverCardContent
+  ) {
+  background: var(--obsidian-glass);
+  box-shadow:
+    var(--obsidian-sheen),
+    0 12px 32px color-mix(in srgb, var(--pal-obsidian-1) 70%, transparent);
+}
+
+/* Windows and dialogs wear the stone window frame (assets/ui/window-frame.webp,
+   its slices in window-art.css): a 9-slice whose ornate corners keep their
+   shape at any size. It is drawn under the window's content, over its
+   gradient; `--window-stone` is how thick its stone shows. Menus and
+   popovers are too small for it and keep a hairline border. */
+.overlay-theme :is(.dialog, .dock-window, .movable-window, .rt-BaseDialogContent) {
+  --window-stone: 11px;
+  isolation: isolate;
+  border-color: transparent;
+  border-radius: 0;
+}
+.overlay-theme .dock-window {
+  position: relative;
+  /* Keeps the title bar and body inside the stone. */
+  padding: 9px;
+}
+.overlay-theme :is(.dialog, .dock-window, .movable-window, .rt-BaseDialogContent)::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  box-sizing: border-box;
+  border: calc(var(--window-stone) * var(--window-art-slice) / var(--window-art-stone)) solid
+    transparent;
+  border-image: url("../../../assets/ui/window-frame.webp") var(--window-art-slice) / 1 / 0 round;
+  pointer-events: none;
+}

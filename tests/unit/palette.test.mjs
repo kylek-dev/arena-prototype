@@ -83,7 +83,9 @@ test("only palette-driven Radix scales and color props are used", () => {
   }
   assert.deepEqual(found, [], "map the scale in docs/palette.json radix.scales first");
   const app = read("web/src/app/App.tsx");
-  assert.match(app, /accentColor="indigo"/);
+  // The gold accent (obsidian look, 2026-11-28), drawn from the palette.
+  assert.match(app, /accentColor="gold"/);
+  assert.ok(driven.has("gold"));
   assert.match(app, /grayColor="slate"/);
 });
 

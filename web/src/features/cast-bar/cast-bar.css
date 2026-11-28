@@ -1,10 +1,11 @@
 .player-cast-bar {
-  width: 280px;
+  width: 336px;
 }
+/* The cast bar art, taller for the bar of one's own casts. */
 .player-cast-bar .cast-track {
-  height: 24px;
+  --cast-h: 34px;
   margin-top: 0;
-  box-shadow: var(--shadow-3);
+  filter: drop-shadow(0 2px 3px color-mix(in srgb, var(--pal-night-1) 60%, transparent));
 }
 /* Like the live unit tooltip: a live bar over the arena never swallows
    camera drags, world clicks or nameplate clicks. Editing keeps it draggable. */

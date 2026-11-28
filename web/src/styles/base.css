@@ -1,8 +1,8 @@
 :root {
   color-scheme: dark;
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
-  background: var(--pal-night-1);
-  color: var(--pal-night-12);
+  background: var(--pal-obsidian-1);
+  color: var(--pal-obsidian-12);
 }
 
 * {

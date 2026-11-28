@@ -3,7 +3,14 @@ import { move, position, type Layout } from "../domain/layout/model";
 
 // Shared viewport-bounded positioning for HUD frames and floating editor windows.
 // Drag drafts stay local; only a completed gesture commits to preferences.
-export function useMovable(value: Layout, onChange: (next: Layout) => void, enabled: boolean) {
+// `zoom` (the interface scale) multiplies the layout's own scale when drawn;
+// the saved layout keeps its own.
+export function useMovable(
+  value: Layout,
+  onChange: (next: Layout) => void,
+  enabled: boolean,
+  zoom = 1,
+) {
   const ref = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ width: 260, height: 110 });
   const [viewport, setViewport] = useState({ width: innerWidth, height: innerHeight });
@@ -17,7 +24,7 @@ export function useMovable(value: Layout, onChange: (next: Layout) => void, enab
   };
   const scale = Math.max(
     0.1,
-    Math.min(current.scale, usable.width / size.width, usable.height / size.height),
+    Math.min(current.scale * zoom, usable.width / size.width, usable.height / size.height),
   );
   const coordinates = position({ ...current, scale }, usable, size);
   const travel = {

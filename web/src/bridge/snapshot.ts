@@ -17,6 +17,11 @@ export type RosterEntry = Entity & { actor: number; tag: UnitTag };
 import type { NameplateProjection } from "../domain/units/nameplates";
 import { validCombatText, type CombatTextProjection } from "../domain/units/combat-text";
 export type RoundResult = "won" | "lost" | "draw" | "time_limit_draw";
+export type CastOutcome = "completed" | "cancelled" | "interrupted";
+/** How a unit's timed cast just ended (from the authoritative events); each
+ * stays in snapshots for about a second, so play it once per `id`. `unit`
+ * is the unit's entity id. */
+export type CastEnd = { id: number; unit: string; spell: SpellKey; outcome: CastOutcome };
 export type SpellSnapshot = {
   cooldown: number;
   maxCooldown: number;
@@ -50,6 +55,8 @@ export type Snapshot = {
   spectatorFollow?: number | null;
   nameplates?: NameplateProjection[];
   combatText?: CombatTextProjection[];
+  /** Recent cast endings; absent from older clients. */
+  castEnds?: CastEnd[];
   distance: number;
   range: number;
   cooldown: number;
@@ -83,6 +90,7 @@ export type StartupState = {
 };
 
 const STARTUP_PHASES = new Set(["assets", "render", "warming", "ready"]);
+const CAST_OUTCOMES = new Set<CastOutcome>(["completed", "cancelled", "interrupted"]);
 const ROUND_RESULTS = new Set<RoundResult>(["won", "lost", "draw", "time_limit_draw"]);
 const CHARACTER_STATUSES = new Set(["ready", "failed", "placeholder", "loading"]);
 const HOVERED_UNIT_RE = /^(Player|Opponent[1-3]|Team[1-2])$/;
@@ -303,6 +311,42 @@ function worldRoster(
     });
   }
   return roster;
+}
+
+/** The engine's cast endings, by entity id: each a spell of a unit on the
+ * roster (actor 0 and 1 without one), ids unique. Instant spells have no
+ * cast bar to end (an instant interrupt reports completing), so their
+ * endings are dropped, never an error. */
+function validateCastEnds(raw: unknown, roster: RosterEntry[] | undefined): CastEnd[] {
+  if (!Array.isArray(raw) || raw.length > 32) throw new Error("Invalid cast endings");
+  const ends: CastEnd[] = [];
+  for (const value of raw as Record<string, unknown>[]) {
+    const { id, actor, spell, outcome } = value ?? {};
+    const unit = roster
+      ? roster.find((entry) => entry.actor === actor)?.id
+      : actor === 0
+        ? "practice-player"
+        : actor === 1
+          ? "practice-opponent"
+          : undefined;
+    if (
+      !Number.isSafeInteger(id) ||
+      (id as number) < 1 ||
+      ends.some((end) => end.id === id) ||
+      !unit ||
+      !isValidSpellKey(spell) ||
+      !CAST_OUTCOMES.has(outcome as CastOutcome)
+    )
+      throw new Error("Invalid cast ending");
+    if (!isValidActiveCast({ spell, remainingTicks: 1, totalTicks: 1 })) continue;
+    ends.push({
+      id: id as number,
+      unit,
+      spell: spell as SpellKey,
+      outcome: outcome as CastOutcome,
+    });
+  }
+  return ends;
 }
 
 export function adaptSnapshot(raw: unknown): Snapshot {
@@ -540,11 +584,13 @@ export function adaptSnapshot(raw: unknown): Snapshot {
   const targetCombat = validateCombatFields(r.target, maxResource);
   const spells = r.spells !== undefined ? validateSpells(r.spells) : undefined;
   const opponent = roster?.find((unit) => unit.actor === 1);
+  const castEnds = r.castEnds !== undefined ? validateCastEnds(r.castEnds, roster) : undefined;
   return {
     ...r,
     ...(maxResource !== undefined ? { maxResource } : {}),
     ...(spells !== undefined ? { spells } : {}),
     ...(scoreboard !== undefined ? { scoreboard } : {}),
+    ...(castEnds !== undefined ? { castEnds } : {}),
     roster,
     networked,
     player: {

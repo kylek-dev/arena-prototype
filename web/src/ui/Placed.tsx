@@ -1,7 +1,8 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import type { Layout } from "../domain/layout/model";
 import { interaction, selectedLayout } from "../state/session";
 import { useStore } from "../state/store";
+import { useConfigSelector } from "../state/config";
 import { useMovable } from "./useMovable";
 
 export function Placed({
@@ -17,15 +18,25 @@ export function Placed({
 }) {
   const editing = useStore(interaction, (s) => s.layout);
   const selected = useStore(selectedLayout, (s) => s === id);
-  const placement = useMovable(value, onChange, editing && !value.locked);
+  const zoom = useConfigSelector((c) => c.uiScale);
+  const placement = useMovable(value, onChange, editing && !value.locked, zoom);
 
   if (!value.visible && !editing) return null;
+  // Frames that draw a background read its opacity from this variable.
+  const style: CSSProperties =
+    value.background === undefined
+      ? placement.style
+      : ({
+          ...placement.style,
+          "--hud-background": `${Math.round(value.background * 100)}%`,
+        } as CSSProperties);
 
   return (
     <div
       ref={placement.ref}
       className={`placed ${editing ? "editing" : ""} ${editing && selected ? "layout-selected" : ""} ${!value.visible ? "preview" : ""}`}
-      style={placement.style}
+      style={style}
+      data-background={value.background === 0 ? "none" : undefined}
       role={editing ? "button" : undefined}
       tabIndex={editing ? 0 : undefined}
       aria-label={editing ? `Edit ${id}` : undefined}

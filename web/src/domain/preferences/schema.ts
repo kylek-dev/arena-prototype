@@ -14,7 +14,7 @@ import {
   type Bindings,
   type Chord,
 } from "../bindings/model";
-import { clamp, layout, type Layout } from "../layout/model";
+import { barLayout, clamp, layout, unitFrameLayout, type Layout } from "../layout/model";
 export type FrameRole =
   | "player"
   | "target"
@@ -43,11 +43,19 @@ export type Config = {
    * instead of matching the launcher's height. */
   chatHeightCustom: boolean;
   assignmentsLocked: boolean;
+  /** Show empty action bar slots; when false they appear only while a spell
+   * is dragged (or the layout or key binding editors are open). */
+  showEmptySlots: boolean;
   /** How early a spell may be pressed before the GCD or the current cast
    * ends and still be cast the moment it ends (ms; 0 = off; ADR 0058). */
   castBufferMs: number;
   nameplates: { friendly: boolean; enemy: boolean };
+  /** The whole interface's size: every HUD frame's own scale is
+   * multiplied by it, and nameplates and windows follow it. */
+  uiScale: number;
 };
+/** The interface scale setting's range. */
+export const UI_SCALE = { min: 0.6, max: 1.6, step: 0.05, initial: 1 } as const;
 /** The cast buffer setting's range. The rules cap it at 12 ticks (400 ms). */
 export const CAST_BUFFER_MS = { min: 0, max: 400, step: 50, initial: 400 } as const;
 export type ChatSize = { width: number; height: number };
@@ -75,11 +83,14 @@ export function defaultConfig(): Config {
     bars,
     bindings: defaults(bars),
     frames: {
-      player: layout(0.03, 0.04),
-      target: layout(0.19, 0.04),
-      focus: layout(0.7, 0.23),
-      opponents: layout(0.97, 0.24),
-      team: layout(0.03, 0.24),
+      player: unitFrameLayout(0.03, 0.04),
+      // Beside the 272 px player frame, about 30 px from it on a 1920 px
+      // wide screen at 100% interface scale (positions are fractions of the
+      // free width).
+      target: unitFrameLayout(0.215, 0.04),
+      focus: unitFrameLayout(0.7, 0.23),
+      opponents: unitFrameLayout(0.97, 0.24),
+      team: unitFrameLayout(0.03, 0.24),
       unitTooltip: layout(1, 1),
       // Centred, just above the default action bar (y 0.92), down to 800×600.
       castBar: layout(0.5, 0.78),
@@ -95,8 +106,10 @@ export function defaultConfig(): Config {
     chatSizeCustom: false,
     chatHeightCustom: false,
     assignmentsLocked: false,
+    showEmptySlots: true,
     castBufferMs: CAST_BUFFER_MS.initial,
     nameplates: { friendly: true, enemy: true },
+    uiScale: UI_SCALE.initial,
   };
 }
 export function initial(): Preferences {
@@ -114,13 +127,18 @@ const bool = (v: unknown, fallback: boolean) => (typeof v === "boolean" ? v : fa
 const id = (v: unknown) => (typeof v === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(v) ? v : null);
 function cleanLayout(v: unknown, d: Layout): Layout {
   const r = record(v);
-  return {
+  const l: Layout = {
     x: num(r.x, d.x, 0, 1),
     y: num(r.y, d.y, 0, 1),
     scale: num(r.scale, 1, 0.6, 1.6),
     visible: bool(r.visible, true),
     locked: bool(r.locked, false),
   };
+  // Only frames that draw a background keep its opacity; profiles from
+  // before the setting take the (more transparent) default.
+  if (d.background !== undefined) l.background = num(r.background, d.background, 0, 1);
+  if (d.portrait !== undefined) l.portrait = bool(r.portrait, d.portrait);
+  return l;
 }
 export function validateConfig(value: unknown): Config {
   const r = record(value),
@@ -154,7 +172,7 @@ export function validateConfig(value: unknown): Config {
         slots,
         rows: Math.round(num(b.rows, 1, 1, slots.length)),
         vertical: bool(b.vertical, false),
-        layout: cleanLayout(b.layout, layout(0.5, 0.92)),
+        layout: cleanLayout(b.layout, barLayout()),
       });
     }
   const safeBars = bars.length ? bars : d.bars;
@@ -269,7 +287,11 @@ export function validateConfig(value: unknown): Config {
     bindings,
     frames: {
       player: cleanLayout(frames.player, d.frames.player),
-      target: cleanLayout(frames.target, d.frames.target),
+      target: movedDefault(
+        cleanLayout(frames.target, d.frames.target),
+        OLD_TARGET,
+        d.frames.target,
+      ),
       focus: cleanLayout(frames.focus, d.frames.focus),
       opponents: cleanLayout(frames.opponents, d.frames.opponents),
       team: cleanLayout(frames.team, d.frames.team),
@@ -298,6 +320,7 @@ export function validateConfig(value: unknown): Config {
       cleanChatSize(r.chatSize).height !== OLD_CHAT_HEIGHT,
     ),
     assignmentsLocked: bool(r.assignmentsLocked, false),
+    showEmptySlots: bool(r.showEmptySlots, true),
     castBufferMs: Math.round(
       num(r.castBufferMs, CAST_BUFFER_MS.initial, CAST_BUFFER_MS.min, CAST_BUFFER_MS.max),
     ),
@@ -305,6 +328,7 @@ export function validateConfig(value: unknown): Config {
       friendly: bool(record(r.nameplates).friendly, true),
       enemy: bool(record(r.nameplates).enemy, true),
     },
+    uiScale: num(r.uiScale, UI_SCALE.initial, UI_SCALE.min, UI_SCALE.max),
   };
 }
 export function parsePreferences(text: string): Preferences {
@@ -363,6 +387,9 @@ function cleanChatSize(raw: unknown): ChatSize {
 
 /** Defaults earlier versions saved into every profile. */
 const OLD_LAUNCHER = [layout(0.99, 0.74), layout(1, 0.66)];
+/** Earlier target defaults: beside the 236 px player frame, (briefly) far
+ * to its right, then beside the 336 px frame. */
+const OLD_TARGET = [layout(0.19, 0.04), layout(0.55, 0.04), layout(0.26, 0.04)];
 const OLD_CHAT = [layout(0.01, 0.7), layout(0.01, 0.97)];
 function sameLayout(a: Layout, b: Layout) {
   return (

@@ -14,7 +14,6 @@ import type { LinkState } from "../../domain/network";
 import { engine } from "../../state/session";
 import { createStore, useStore } from "../../state/store";
 import { hubWindowVisible } from "../../state/windows";
-import { AdminTag } from "../../ui/AdminTag";
 import { DockWindow } from "../../ui/DockWindow";
 import { Hint } from "../../ui/Tooltip";
 import { Row, RowMenu, type Action } from "../friends/Friends";
@@ -112,7 +111,6 @@ export function HubWindow() {
                 const menu = actions(player);
                 return (
                   <Row key={player.id} handle={player.handle} status="In the hub">
-                    {player.admin && <AdminTag />}
                     {menu.length > 0 && <RowMenu handle={player.handle} actions={menu} />}
                   </Row>
                 );

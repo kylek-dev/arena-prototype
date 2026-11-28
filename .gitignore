@@ -23,6 +23,8 @@
 
 # Generated icon masters (multi-MB JPEGs); prepared WebPs in assets/icons/spells are tracked.
 /assets/icons/source/
+# Generated UI art masters; the prepared WebP in assets/ui is tracked.
+/assets/ui/source/
 
 # Quaternius packs: track only the CC0 sources scripts/quaternius_character.py
 # reads, plus provenance and licenses. Other downloaded files stay local until

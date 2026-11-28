@@ -134,11 +134,12 @@ it("lists the other players in the world with what each can be offered", async (
   expect(screen.getByRole("status").textContent).toBe("2 other players are here.");
   const rows = within(screen.getByRole("list", { name: "Players here" })).getAllByRole("listitem");
   // By name; training enemies are not players.
+  // No admin tag is shown beside an admin's name.
   expect(rows.map((row) => row.querySelector(".friend-handle")?.textContent)).toEqual([
     "Ash#1000",
     "Zed#0001",
   ]);
-  expect(rows[1].textContent).toContain("Admin");
+  expect(rows[1].textContent).not.toContain("Admin");
   const friend = menuOf("Ash#1000")
     .getAllByRole("menuitem")
     .map((item) => item.textContent);

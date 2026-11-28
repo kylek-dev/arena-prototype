@@ -6,6 +6,7 @@ import { useConfigSelector, updateConfig } from "../../state/config";
 export function BarSettings() {
   const bars = useConfigSelector((c) => c.bars),
     locked = useConfigSelector((c) => c.assignmentsLocked),
+    showEmptySlots = useConfigSelector((c) => c.showEmptySlots),
     castBufferMs = useConfigSelector((c) => c.castBufferMs);
   const [message, setMessage] = useState("");
   return (
@@ -21,6 +22,14 @@ export function BarSettings() {
           onChange={(e) => updateConfig((c) => ({ ...c, assignmentsLocked: e.target.checked }))}
         />{" "}
         Lock spell assignments
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={showEmptySlots}
+          onChange={(e) => updateConfig((c) => ({ ...c, showEmptySlots: e.target.checked }))}
+        />{" "}
+        Show empty slots (otherwise they appear only while dragging a spell)
       </label>
       <label>
         Cast buffer: {castBufferMs > 0 ? `${castBufferMs} ms` : "Off"}

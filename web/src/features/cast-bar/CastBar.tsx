@@ -46,7 +46,9 @@ export function CastBar(
   if (props.variant === "nameplate") {
     return (
       <span className="nameplate-cast" aria-hidden="true">
-        <span ref={fill} className="nameplate-cast-fill" />
+        <span ref={fill} className="nameplate-cast-fill">
+          <span className="bar-spark" />
+        </span>
         <span className="nameplate-cast-label">{spellLabel(spell)}</span>
       </span>
     );
@@ -60,7 +62,9 @@ export function CastBar(
       aria-valuemax={100}
       aria-valuenow={Math.round(castProgress(cast) * 100)}
     >
-      <div ref={fill} className="cast-fill" />
+      <div ref={fill} className="cast-fill">
+        <span className="bar-spark" aria-hidden="true" />
+      </div>
       <span className="cast-label">
         <span>{spellLabel(spell)}</span>
         <span ref={time} />

@@ -1,5 +1,83 @@
 # Asset provenance
 
+## Window frame (2026-11-28)
+
+`assets/ui/window-frame.webp`: the stone frame windows and dialogs wear, a
+CSS 9-slice border (`web/src/styles/window-art.css` gives its slices).
+
+- **Generated** by the user with Google Gemini on 2026-11-28 (model and plan
+  not recorded) from the brief: a game UI window frame, polished black
+  obsidian stone border with subtle antique gold inlay at the corners,
+  empty centre, even front lighting, no text. Gemini output carries
+  Google's invisible SynthID watermark. AI assistance does not establish
+  exclusive rights. (A seamless obsidian surface texture from the same day
+  was tried behind the windows and dropped at the user's request.)
+- **Master** (1024² on opaque black, in the gitignored `assets/ui/source/`),
+  SHA-256: `window-frame.png`
+  `ea8f54551af6e9b6dc43dc476095b7e8bd7131141312247726e5319e330d5ea8`.
+- **Prepared** by `scripts/prepare_ui_art.py`: the black ground and black
+  centre made transparent, cropped, its corner slices measured to keep the
+  gold corner ornaments whole, Lanczos downscale to 360 px, WebP quality 90
+  with lossless alpha. Colours as generated (near-black stone, antique
+  gold), not remapped to the palette.
+- **Status:** in use for review; not yet accepted in the browser.
+
+## Cast bar art (2026-11-28)
+
+`assets/ui/cast-bar.webp`: the frame every cast bar wears (unit frames, the
+separate player cast bar and nameplates), drawn as a CSS 9-slice border so
+it stretches to any bar length; `web/src/features/unit-frames/cast-bar-art.css`
+gives its slices.
+
+- **Generated** by the user with Google Gemini on 2026-11-28 (model and plan
+  not recorded), to match the unit frame art: an empty horizontal bar trough
+  in black stone with an antique gold rim. Gemini output carries Google's
+  invisible SynthID watermark. AI assistance does not establish exclusive
+  rights.
+- **Master** (1600 × 500 PNG on opaque black, in the gitignored
+  `assets/ui/source/`), SHA-256:
+  `cast-bar.png` `8af1a4f541ff6555293189857b4ab523833e91915191ad23882e5b787a752400`.
+- **Prepared** by `scripts/prepare_ui_art.py`: the black ground made
+  transparent (edges un-blended from black), cropped to the bar, the trough
+  measured for the slices, Lanczos downscale to 800 px wide, WebP quality 90
+  with lossless alpha. Colours as generated, not remapped to the palette.
+- **Status:** in use for review; not yet accepted in the browser.
+
+## Unit frame art (2026-11-28)
+
+`assets/ui/unit-frame.webp` and `assets/ui/unit-frame-bare.webp`: the frame
+every unit frame wears, with and without its round portrait socket (a
+per-frame layout setting; player and party frames as painted, target, focus
+and opponent frames mirrored in CSS), with
+`web/src/features/unit-frames/unit-frame-art.css` giving where each one's
+plaque, socket and bar troughs sit.
+
+- **Generated** by the user with Google Gemini on 2026-11-28 (model and plan
+  not recorded), over several rounds the same day; the ones in use are the
+  last portrait frame and a matching frame without the portrait. The brief
+  asked for an original horizontal frame: black textured stone with antique
+  gold trim and small faceted blue gems, an empty name plaque, two empty bar
+  troughs, no dragons or brown, even lighting so it can be mirrored. Earlier
+  rounds (dragons around a portrait ring, painted bar fills, opaque
+  background; a longer frame with a thin resource trough; an oval ring) were
+  replaced. Gemini output carries Google's invisible SynthID watermark. AI
+  assistance does not establish exclusive rights.
+- **Masters** (1024 × 426 PNGs on opaque black, the same frame with and
+  without the portrait, kept out of Git in the gitignored
+  `assets/ui/source/`), SHA-256:
+  `unit-frame.png` `4ca9611284b906f8227a5ca8147f24f9c7d8926952e7d14c5c86d70758c2add0`,
+  `unit-frame-bare.png` `25fc6a407ad6b0eaf5754503015ad9c2c47ae6053c7a0a39542ab1a01b80cf8b`.
+- **Prepared** by `scripts/prepare_ui_art.py`: the black ground made
+  transparent (edges un-blended from black), each frame cropped to itself
+  and its troughs, plaque and socket measured (the live bars are drawn on
+  top, sized to the troughs), Lanczos downscale to 840 px wide with the
+  portrait (the bare frame at the same density, 621 px), WebP quality 90 with
+  lossless alpha. Colours are as generated (antique gold, near-black stone,
+  blue gems), not remapped to the palette's swatches; the palette rule for
+  painted textures applies before this ships.
+- **Status:** in use for review; the user has not yet accepted it in the
+  browser ([ADR 0052](../docs/decisions/0052-art-scope-and-quality-bar.md)).
+
 ## Spell icons: Pulse, Rift Bolt, Quell and Mend (2026-11-26)
 
 `assets/icons/spells/{pulse,rift-bolt,quell,mend}-{128,256}.webp`: the action

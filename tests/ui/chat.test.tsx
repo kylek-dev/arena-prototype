@@ -79,9 +79,9 @@ it("marks unread tabs, switches channels and shows refusals in words", async () 
   await user.click(team);
   expect(within(team).queryByLabelText("1 unread")).toBeNull();
   const log = screen.getByRole("log", { name: "Team" });
-  expect(log.textContent).toContain("[Team] Rook#0042");
-  expect(log.textContent).toContain("push left");
-  expect(within(log).getByText("Admin")).toBeTruthy();
+  // No admin tag is shown, even for an admin's line.
+  expect(log.textContent).toContain("[Team] Rook#0042: push left");
+  expect(within(log).queryByText("Admin")).toBeNull();
   await user.click(screen.getByRole("textbox", { name: "Message to Team" }));
   await user.keyboard("gg{Enter}");
   expect(fake.sent().at(-1)).toEqual({ type: "chat", channel: "team", text: "gg" });

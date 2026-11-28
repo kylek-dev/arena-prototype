@@ -109,6 +109,31 @@ it("copies from the spellbook onto an empty slot without native dragstart or a c
   expect(document.querySelector(".spell-drag-preview")).toBeNull();
 });
 
+it("centres the drag preview on the pointer", () => {
+  hitTarget(null);
+  press(screen.getByRole("button", { name: "Pulse spell" }));
+  moveSpell(240, 180);
+  const preview = document.querySelector<HTMLElement>(".spell-drag-preview")!;
+  expect([preview.style.left, preview.style.top]).toEqual(["240px", "180px"]);
+  dropSpell();
+});
+
+it("hides empty slots, when set, until a spell is dragged", () => {
+  const bar = screen.getByRole("region", { name: "Action bar bar-1" });
+  expect(bar.classList.contains("hide-empty")).toBe(false);
+  act(() => updateConfig((c) => ({ ...c, showEmptySlots: false })));
+  expect(bar.classList.contains("hide-empty")).toBe(true);
+  hitTarget(null);
+  press(screen.getByRole("button", { name: "Pulse spell" }));
+  moveSpell();
+  expect(bar.classList.contains("hide-empty")).toBe(false);
+  dropSpell();
+  expect(bar.classList.contains("hide-empty")).toBe(true);
+  // The layout and key binding editors show them too.
+  act(() => interaction.set({ ...interaction.get(), quick: true }));
+  expect(bar.classList.contains("hide-empty")).toBe(false);
+});
+
 it("moves a slot assignment and discards it on canvas without deleting the binding", () => {
   const bindings = preferences.get().profiles[0].config.bindings;
   hitTarget(screen.getByRole("button", { name: "Slot 5 empty" }));
