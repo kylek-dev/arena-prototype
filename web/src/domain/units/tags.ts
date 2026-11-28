@@ -1,7 +1,7 @@
 import type { Entity } from "./selection";
 
 /** Units by role: in a match `Team1`–`Team2` and `Opponent1`–`Opponent3`;
- * in a hub world (ADR 0057) up to `Team11` (the other players) and the
+ * in a hub world (ADR 0057) up to `Team39` (the other players) and the
  * training enemies as `Opponent1`… */
 export type UnitTag = "Player" | "Target" | "Focus" | `Opponent${number}` | `Team${number}`;
 

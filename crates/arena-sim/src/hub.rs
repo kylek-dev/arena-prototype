@@ -9,12 +9,11 @@ use crate::map::{Layout, Pillar};
 
 /// The plaza is a square floor `2 × PLAZA_HALF` on a side (80 m).
 pub const PLAZA_HALF: i32 = 40_000;
-/// Players see the others within this distance (40 m). On the 80 m
-/// graybox plaza this filters little; it bounds the cost of larger worlds.
+/// Players see the others within this distance (40 m; hub worlds keep
+/// someone seen a few metres farther, so the edge does not blink).
 pub const INTEREST_RADIUS: i32 = 40_000;
-/// Most players one hub world is meant to hold once interest filtering and
-/// deltas carry it (ADR 0057's last step); arrival places are laid out for
-/// this many. Today's cap is `arena::HUB_PLAYER_CAP`.
+/// Arrival places are laid out for this many players: a full hub world
+/// (`arena::HUB_PLAYER_CAP`, checked at compile time).
 pub const MAX_HUB_PLAYERS: usize = 40;
 
 /// A solid round column standing on the plaza.

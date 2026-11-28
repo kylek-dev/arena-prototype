@@ -10,7 +10,7 @@ const HANDLE = /^[A-Za-z][A-Za-z0-9]{2,15}#(?!0000)\d{4}$/;
 /** Most fighters a match has (3v3). */
 const MAX_FIGHTERS = 6;
 /** Most fighters a hub world has (ADR 0057): relays are per engine actor. */
-const MAX_WORLD_FIGHTERS = 16;
+const MAX_WORLD_FIGHTERS = 44;
 /** A relay's length: even up to 3v3 in a match, anything up to a world's. */
 const relayLength = (length: number) =>
   (length >= 2 && length <= MAX_FIGHTERS && length % 2 === 0) ||

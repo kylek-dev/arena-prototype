@@ -165,6 +165,8 @@ pub struct Stats {
     pub queued_min: Option<u8>,
     /// Catch-up inputs not sent after a stall.
     pub skipped_inputs: u64,
+    /// Hub world deltas that did not apply (their base never arrived).
+    pub skipped_deltas: u64,
     /// Fixed steps and inputs sent in the last second, on the browser's clock.
     pub steps_per_second: usize,
     pub sent_per_second: usize,
@@ -261,6 +263,9 @@ pub struct Session {
     members: HashMap<u32, Member>,
     /// Hub worlds: the newest snapshot, to reconcile with.
     newest_world: Option<Snapshot>,
+    /// Hub worlds: the last snapshot received in full or rebuilt from a
+    /// delta, which the next `WorldDelta` applies to.
+    last_world: Option<Snapshot>,
     pub stats: Stats,
 }
 
@@ -438,6 +443,7 @@ impl Session {
             self.tags.clear();
             self.members.clear();
             self.newest_world = None;
+            self.last_world = None;
             if !self.appearances.is_empty() {
                 self.appearances.clear();
                 self.appearances_version += 1;
@@ -493,6 +499,7 @@ impl Session {
                         self.heading_taken = false;
                         self.members.clear();
                         self.newest_world = None;
+                        self.last_world = None;
                     }
                     let count = usize::from(welcome.team_size) * 2;
                     let seat = welcome.seat();
@@ -717,11 +724,31 @@ impl Session {
                     self.members.insert(member.id, *member);
                     self.relay_members();
                 }
+                ServerMessage::WorldDelta(delta) if self.hub => {
+                    // A delta needs the snapshot it was made against; without
+                    // it (a frame lost while paused) wait for a full one.
+                    let rebuilt = self
+                        .last_world
+                        .as_ref()
+                        .and_then(|base| delta.apply(base).ok());
+                    match rebuilt {
+                        Some(snapshot) => {
+                            if let Some(reason) =
+                                self.receive_world(snapshot, now, &mut frame_ticks)
+                            {
+                                rejections.extend(reason);
+                            }
+                        }
+                        None => self.stats.skipped_deltas += 1,
+                    }
+                }
                 ServerMessage::MemberLeft { id } if self.hub => {
                     self.members.remove(&id);
                     self.relay_members();
                 }
-                ServerMessage::Member(_) | ServerMessage::MemberLeft { .. } => {}
+                ServerMessage::Member(_)
+                | ServerMessage::MemberLeft { .. }
+                | ServerMessage::WorldDelta(_) => {}
             }
         }
         self.tick_rate
@@ -1195,10 +1222,10 @@ impl Session {
                 smooth(&mut self.stats.input_ms, (now - sent) * 1000.0);
             }
         }
-        if snapshot
+        let mismatched = snapshot
             .hub_arena()
-            .is_none_or(|world| world.state_hash() != snapshot.hash)
-        {
+            .is_none_or(|world| world.state_hash() != snapshot.hash);
+        if mismatched {
             self.stats.hash_mismatches += 1;
         }
         if snapshot.tick > 0 {
@@ -1277,6 +1304,9 @@ impl Session {
         while self.snapshots.len() > BUFFER {
             self.snapshots.pop_front();
         }
+        // Deltas build only on a snapshot that checked out; otherwise they
+        // wait for the next full one.
+        self.last_world = (!mismatched).then(|| snapshot.clone());
         self.newest_world = Some(snapshot);
         self.relay_members();
         Some(rejections)

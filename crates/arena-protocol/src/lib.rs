@@ -34,7 +34,9 @@ use serde::{Deserialize, Serialize};
 /// 11: `InputFrame.cast_buffer` and `FighterState.buffered_cast` (ADR 0058).
 /// 12: hub worlds (ADR 0057): `Welcome.hub`, `Snapshot.roster`, and the
 ///     `Member`/`MemberLeft` relay of who holds each fighter id.
-pub const PROTOCOL_VERSION: u16 = 12;
+/// 13: `ServerMessage::WorldDelta`: hub world snapshots as deltas against
+///     the previous one sent on the connection (ADR 0057's last step).
+pub const PROTOCOL_VERSION: u16 = 13;
 /// Bumped whenever a rules change could alter a replayed outcome.
 /// 2: rounds end in a draw after twenty minutes (`MAX_ROUND_TICKS`).
 /// 3: time-limit draws are distinct from mutual-elimination draws and round limits are explicit.
@@ -352,6 +354,34 @@ pub enum ServerMessage {
     MemberLeft {
         id: u32,
     },
+    /// Hub worlds: the next snapshot as a delta (`delta::SnapshotDelta`,
+    /// encoded) against the snapshot of tick `base` this connection was
+    /// sent last. A client without that snapshot ignores it until the next
+    /// full one (sent at least once a second).
+    WorldDelta(Box<WorldDelta>),
+}
+
+/// A hub world snapshot as a delta (`ServerMessage::WorldDelta`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorldDelta {
+    /// The tick of the snapshot this applies to.
+    pub base: u64,
+    /// `delta::SnapshotDelta::encode` of the next snapshot against it.
+    pub body: Vec<u8>,
+}
+impl WorldDelta {
+    /// The snapshot this delta makes of `base` (which must be the snapshot
+    /// of tick `self.base`): checked as strictly as a full one.
+    pub fn apply(&self, base: &Snapshot) -> Result<Snapshot, DecodeError> {
+        if base.tick != self.base || base.roster.is_none() {
+            return Err(DecodeError::Malformed);
+        }
+        let next = delta::SnapshotDelta::apply(base, &self.body)?;
+        if next.roster.is_none() {
+            return Err(DecodeError::Malformed);
+        }
+        Ok(next)
+    }
 }
 
 /// Who holds a hub world's fighter id: their handle, tags and look, all set
@@ -1132,6 +1162,7 @@ impl ServerMessage {
             }
             Self::Member(member) if !member.is_valid() => Err(DecodeError::OverLimit),
             Self::MemberLeft { id: 0 } => Err(DecodeError::OverLimit),
+            Self::WorldDelta(delta) if delta.body.is_empty() => Err(DecodeError::OverLimit),
             _ => Ok(message),
         }
     }

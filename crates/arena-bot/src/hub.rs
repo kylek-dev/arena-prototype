@@ -48,6 +48,12 @@ pub struct HubReport {
     pub largest_message: usize,
     /// Snapshots whose hash did not match the world they describe.
     pub hash_mismatches: u64,
+    /// Snapshots that came as deltas, and deltas that did not apply.
+    pub deltas: u64,
+    pub deltas_unapplied: u64,
+    /// What the same snapshots would have cost in full, per bot, bytes per
+    /// second (mean): the saving deltas make.
+    pub full_bytes_per_second_mean: f64,
     pub refusals: Vec<String>,
     pub unexpected_closes: usize,
 }
@@ -61,10 +67,13 @@ impl fmt::Display for HubReport {
         )?;
         writeln!(
             f,
-            "  per bot: {:.0} B/s mean, {:.0} B/s max, {:.1} snapshots/s; largest view {}, largest frame {} B, {} hash mismatches",
+            "  per bot: {:.0} B/s mean ({:.0} B/s in full snapshots), {:.0} B/s max, {:.1} snapshots/s ({} deltas, {} unapplied); largest view {}, largest frame {} B, {} hash mismatches",
             self.bytes_per_second_mean,
+            self.full_bytes_per_second_mean,
             self.bytes_per_second_max,
             self.states_per_second_mean,
+            self.deltas,
+            self.deltas_unapplied,
             self.largest_view,
             self.largest_message,
             self.hash_mismatches
@@ -83,6 +92,7 @@ impl HubReport {
             && self.unexpected_closes == 0
             && self.joined == self.bots
             && self.hash_mismatches == 0
+            && self.deltas_unapplied == 0
     }
 }
 
@@ -113,6 +123,9 @@ struct One {
     largest_view: usize,
     largest_message: usize,
     hash_mismatches: u64,
+    deltas: u64,
+    deltas_unapplied: u64,
+    full_bytes: u64,
     refusals: Vec<String>,
     closed: bool,
 }
@@ -196,6 +209,7 @@ async fn wander(door: String, guest: u128, seed: u64, until: Instant) -> One {
     let mut rng = Rng::new(seed);
     let mut seq = 0u32;
     let mut heading = ([0i16, 0i16], 0u16);
+    let mut last: Option<arena_protocol::Snapshot> = None;
     let mut turn = Instant::now();
     let mut step = Instant::now();
     let tick = Duration::from_nanos(1_000_000_000 / arena_sim::TICKS_PER_SECOND);
@@ -239,10 +253,25 @@ async fn wander(door: String, guest: u128, seed: u64, until: Instant) -> One {
                 Ok(Some(Ok(Message::Binary(frame)))) => {
                     one.bytes += frame.len() as u64;
                     one.largest_message = one.largest_message.max(frame.len());
-                    match ServerMessage::decode(&frame) {
+                    let decoded = match ServerMessage::decode(&frame) {
+                        Ok(ServerMessage::WorldDelta(delta)) => {
+                            one.deltas += 1;
+                            match last.as_ref().map(|base| delta.apply(base)) {
+                                Some(Ok(snapshot)) => Ok(ServerMessage::Snapshot(snapshot)),
+                                _ => {
+                                    one.deltas_unapplied += 1;
+                                    continue;
+                                }
+                            }
+                        }
+                        other => other,
+                    };
+                    match decoded {
                         Ok(ServerMessage::Welcome(_)) => one.welcomed = true,
                         Ok(ServerMessage::Snapshot(snapshot)) => {
                             one.states += 1;
+                            one.full_bytes +=
+                                arena_protocol::delta::full_snapshot_encoded_len(&snapshot) as u64;
                             match snapshot.hub_arena() {
                                 Some(arena) => {
                                     if arena.state_hash() != snapshot.hash {
@@ -253,6 +282,7 @@ async fn wander(door: String, guest: u128, seed: u64, until: Instant) -> One {
                                 }
                                 None => one.hash_mismatches += 1,
                             }
+                            last = Some(snapshot);
                         }
                         Ok(ServerMessage::Error(code)) => {
                             one.refusals.push(format!("{code:?}"));
@@ -326,6 +356,11 @@ pub async fn run(scenario: HubScenario) -> HubReport {
             .max()
             .unwrap_or(0),
         hash_mismatches: bots.iter().map(|one| one.hash_mismatches).sum(),
+        deltas: bots.iter().map(|one| one.deltas).sum(),
+        deltas_unapplied: bots.iter().map(|one| one.deltas_unapplied).sum(),
+        full_bytes_per_second_mean: bots.iter().map(|one| one.full_bytes as f64).sum::<f64>()
+            / count
+            / seconds,
         refusals: bots.iter().flat_map(|one| one.refusals.clone()).collect(),
         unexpected_closes: bots.iter().filter(|one| one.closed).count(),
     }

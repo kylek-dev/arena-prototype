@@ -58,6 +58,9 @@ pub struct WorldLimits {
     /// A world nobody has been in for this long ends (it is disposable: the
     /// next ticket for it starts a fresh one).
     pub idle: u64,
+    /// Snapshots per full one on a connection: the rest go as deltas
+    /// against the one before (1 sends every snapshot in full).
+    pub keyframe_every: u32,
 }
 impl Default for WorldLimits {
     fn default() -> Self {
@@ -65,6 +68,7 @@ impl Default for WorldLimits {
             queue: 32,
             grace: 10 * TICKS_PER_SECOND,
             idle: 60 * TICKS_PER_SECOND,
+            keyframe_every: KEYFRAME_EVERY,
         }
     }
 }
@@ -94,7 +98,20 @@ struct Player {
     over_backlog_since: Option<u64>,
     /// The door no longer stands behind them: they leave at the next tick.
     evicted: bool,
+    /// The last snapshot sent on this connection (what the client has), for
+    /// the next delta; `None` sends the next one in full.
+    sent: Option<Snapshot>,
+    /// Ticks until the next full snapshot (at least one a second).
+    keyframe_in: u32,
+    /// The other players this player sees, by fighter id (never reused, so
+    /// a newcomer in a slot starts unseen), for the interest margin.
+    sees: BTreeSet<u32>,
 }
+
+/// Ticks between full snapshots for a connection: deltas in between.
+pub const KEYFRAME_EVERY: u32 = arena_sim::TICKS_PER_SECOND as u32;
+/// Others stay seen until this much past [`arena_sim::hub::INTEREST_RADIUS`].
+pub const INTEREST_MARGIN: i32 = 4_000;
 
 pub struct World {
     instance: u64,
@@ -173,13 +190,76 @@ impl World {
         a != b && self.blocks.contains(&pair(a, b))
     }
 
-    /// Slots of the players `viewer` must not see.
+    /// Slots of the players `viewer` must not see: those blocked either way.
     fn hidden_from(&self, viewer: u64) -> Vec<usize> {
         self.players
             .iter()
             .filter(|other| self.blocked(viewer, other.id))
             .map(|other| other.slot)
             .collect()
+    }
+
+    /// Slots player `index` is not shown this tick: the blocked, and other
+    /// players beyond [`arena_sim::hub::INTEREST_RADIUS`] (training enemies
+    /// are always shown). Updates who they see, with [`INTEREST_MARGIN`].
+    fn unseen_by(&mut self, index: usize) -> Vec<usize> {
+        let viewer = &self.players[index];
+        let at = self.arena.fighters()[viewer.slot].position;
+        let mut hidden = self.hidden_from(viewer.id);
+        let mut sees = BTreeSet::new();
+        for other in &self.players {
+            if other.id == viewer.id || hidden.contains(&other.slot) {
+                continue;
+            }
+            let there = self.arena.fighters()[other.slot].position;
+            let reach = if viewer.sees.contains(&other.member.id) {
+                arena_sim::hub::INTEREST_RADIUS + INTEREST_MARGIN
+            } else {
+                arena_sim::hub::INTEREST_RADIUS
+            };
+            if at.distance_squared(there) <= i64::from(reach).pow(2) {
+                sees.insert(other.member.id);
+            } else {
+                hidden.push(other.slot);
+            }
+        }
+        self.players[index].sees = sees;
+        hidden
+    }
+
+    /// The connection could not take a frame: its next snapshot is full.
+    pub fn resend_full(&mut self, conn: ConnId) {
+        if let Some(player) = self.players.iter_mut().find(|p| p.conn == Some(conn)) {
+            player.sent = None;
+        }
+    }
+
+    /// `snapshot` for player `index`: a delta against the last one sent when
+    /// there is one, it is not keyframe time and the delta is smaller;
+    /// otherwise in full. Remembers it as sent.
+    fn framed(&mut self, index: usize, snapshot: Snapshot) -> ServerMessage {
+        let player = &mut self.players[index];
+        let delta = match &player.sent {
+            Some(base) if player.keyframe_in > 0 => {
+                arena_protocol::delta::SnapshotDelta::from_pair(base, &snapshot)
+                    .map(|(delta, _)| (base.tick, delta.encode()))
+            }
+            _ => None,
+        };
+        let full_len = arena_protocol::delta::full_snapshot_encoded_len(&snapshot);
+        let message = match delta {
+            Some((base, body)) if body.len() < full_len => {
+                player.keyframe_in -= 1;
+                Metrics::add(&self.metrics.world_deltas, 1);
+                ServerMessage::WorldDelta(Box::new(arena_protocol::WorldDelta { base, body }))
+            }
+            _ => {
+                player.keyframe_in = self.limits.keyframe_every.saturating_sub(1);
+                ServerMessage::Snapshot(snapshot.clone())
+            }
+        };
+        player.sent = Some(snapshot);
+        message
     }
 
     /// A ticket-verified hub connection for `player` arrives. A player
@@ -225,6 +305,7 @@ impl World {
                     });
                 }
                 existing.absent_since = None;
+                existing.sent = None;
                 existing.last_seq = None;
                 existing.ack = 0;
                 existing.pending.clear();
@@ -256,6 +337,9 @@ impl World {
                     pending: VecDeque::new(),
                     over_backlog_since: None,
                     evicted: false,
+                    sent: None,
+                    keyframe_in: 0,
+                    sees: BTreeSet::new(),
                 });
                 self.empty_since = None;
                 // Everyone who may see the newcomer hears who they are
@@ -298,12 +382,11 @@ impl World {
                 });
             }
         }
-        let hidden = self.hidden_from(player);
+        let hidden = self.unseen_by(index);
         if let Some(snapshot) = self.view_for(index, &hidden) {
-            out.push(Out::Send {
-                conn,
-                message: ServerMessage::Snapshot(snapshot),
-            });
+            self.players[index].sent = None;
+            let message = self.framed(index, snapshot);
+            out.push(Out::Send { conn, message });
         }
         out
     }
@@ -497,10 +580,11 @@ impl World {
         Metrics::add(&self.metrics.ticks, 1);
 
         for index in 0..self.players.len() {
-            let player = &self.players[index];
-            let Some(conn) = player.conn else { continue };
-            let hidden = self.hidden_from(player.id);
-            let slot = player.slot;
+            let Some(conn) = self.players[index].conn else {
+                continue;
+            };
+            let hidden = self.unseen_by(index);
+            let slot = self.players[index].slot;
             let mine: Vec<TickEvent> = events
                 .iter()
                 .filter(|event| !names_any(event, &hidden))
@@ -509,10 +593,8 @@ impl World {
                 .collect();
             if let Some(mut snapshot) = self.view_for(index, &hidden) {
                 snapshot.events = mine;
-                out.push(Out::Send {
-                    conn,
-                    message: ServerMessage::Snapshot(snapshot),
-                });
+                let message = self.framed(index, snapshot);
+                out.push(Out::Send { conn, message });
             }
         }
         out

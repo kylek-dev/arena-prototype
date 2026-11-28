@@ -398,13 +398,32 @@ async fn a_full_hub_world_stays_within_its_budget() {
     })
     .await;
     println!("{report}");
+    // The world server's tick cost over the run (ADR 0057's measure).
+    let metrics = server.app.metrics().render();
+    let value = |name: &str| -> f64 {
+        metrics
+            .lines()
+            .find_map(|line| line.strip_prefix(name)?.trim().parse().ok())
+            .unwrap_or(0.0)
+    };
+    let (ticks, total, max, overruns) = (
+        value("arena_ticks_total "),
+        value("arena_tick_microseconds_total "),
+        value("arena_tick_max_microseconds "),
+        value("arena_tick_overruns_total "),
+    );
+    println!(
+        "world server: {ticks} ticks, mean {:.0} µs, slowest {max} µs, {overruns} overruns",
+        total / ticks.max(1.0)
+    );
     assert!(report.healthy(), "{report}");
     assert_eq!(report.instances, 2);
     assert_eq!(report.largest_view, HUB_PLAYER_CAP - 1);
-    // A snapshot every tick; a full world of 16 fighters costs each bot
-    // about 30 KB/s without deltas (ADR 0057 slice 6 measures and cuts it).
+    // A snapshot every tick, mostly as deltas: a full world of 40 players
+    // stays within ADR 0056's budget of 32 KB/s a client, with room.
     assert!(report.states_per_second_mean > 15.0, "{report}");
-    assert!(report.bytes_per_second_max < 64_000.0, "{report}");
+    assert!(report.deltas > report.states / 2, "{report}");
+    assert!(report.bytes_per_second_max < 32_000.0, "{report}");
     door.stop().await.unwrap();
     server.shut_down(Duration::ZERO).await.unwrap();
 }

@@ -103,6 +103,8 @@ pub struct Metrics {
     /// Hub worlds currently hosted (ADR 0057) and the players in them.
     pub worlds_active: AtomicU64,
     pub world_players: AtomicU64,
+    /// World snapshots sent as deltas (the rest went in full).
+    pub world_deltas: AtomicU64,
     /// Matches that reached a rules result: won, draw, time_limit_draw.
     matches_finished: [AtomicU64; 3],
     pub connections_open: AtomicU64,
@@ -252,6 +254,12 @@ impl Metrics {
             "gauge",
             "Players in hub worlds, connected or within their grace.",
             get(&self.world_players),
+        );
+        line(
+            "world_deltas_total",
+            "counter",
+            "Hub world snapshots sent as deltas against the previous one.",
+            get(&self.world_deltas),
         );
         line(
             "connections_open",

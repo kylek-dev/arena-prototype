@@ -452,7 +452,8 @@ async fn session(
                         | ServerMessage::Handles(_)
                         | ServerMessage::Tags(_)
                         | ServerMessage::Member(_)
-                        | ServerMessage::MemberLeft { .. } => {}
+                        | ServerMessage::MemberLeft { .. }
+                        | ServerMessage::WorldDelta(_) => {}
                     }
                 }
                 if !frame_ticks.is_empty() {

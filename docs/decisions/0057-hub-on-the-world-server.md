@@ -1,6 +1,8 @@
 # ADR 0057: The hub runs on the world server, with the arena's rules
 
-Date: 2026-11-26. **Status: accepted** (decided by the user 2026-11-26).
+Date: 2026-11-26. **Status: accepted** (decided by the user 2026-11-26);
+**implemented** in six stacked slices on 2026-11-27 (see Progress; the
+client and page slice awaits human browser review).
 Supersedes the "Where it runs", "Movement and authority" and "Messages"
 parts of [ADR 0056](0056-social-hub.md); its instances, interest, blocks,
 chat, player menu and return-after-a-match rules stay.
@@ -163,4 +165,23 @@ They asked for the better architecture over patching the current one.
   renderer's hub bridge, and the sim's door-only walking. `arena-bot --hub`
   now fills hub worlds through the door and the world server (13 bots: two
   worlds, about 14 KB/s per bot, largest frame 563 B, no hash mismatches).
+- **Slice 6 (scale), 2026-11-27, `auto/hub-world-scale`:** interest per
+  player (the other players within 40 m, kept until 44 m; training enemies
+  always; those out of view shown as vacant slots with no events, still
+  members) and live deltas: `ServerMessage::WorldDelta` (protocol 13)
+  carries `delta::SnapshotDelta` (now with the roster) against the last
+  snapshot sent on the connection, with a full one every second, after a
+  frame the connection could not take, and when the roster's length
+  changes; clients rebuild from their last snapshot and skip a delta whose
+  base they lack. Measured with `arena-bot --hub` through the door and the
+  world server (41 bots, two worlds of 40 and 1, 4 s, test build): about
+  6.4 KB/s per bot (the same snapshots in full: 33 KB/s), at most 6.7 KB/s,
+  largest frame 1,495 B, no hash mismatches or unapplied deltas; world
+  ticks 202 µs mean over both worlds (so roughly twice that for the full
+  one), 924 µs at most, no overruns against 33 ms. `RULES_VERSION` stays 8:
+  hub rules did not change, and protocol 13 already keeps older clients out. Within
+  ADR 0056's 32 KB/s per client, so the cap is raised: `HUB_PLAYER_CAP`
+  40, `MAX_ROSTER` 44 (40 players and four training enemies); the client
+  draws up to 44 fighters (its frame time with 40 players on screen is for
+  the human review). A shared store for several doors stays for later.
 

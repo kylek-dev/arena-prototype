@@ -74,9 +74,20 @@ describe("hub worlds at the engine boundary", () => {
     expect(bad({ roster: [unit(0, "Player"), unit(1, "Team1"), unit(1, "Team2")] })).toThrow();
     expect(bad({ roster: [unit(0, "Player"), unit(2, "Team1"), unit(1, "Team2")] })).toThrow();
     expect(bad({ roster: [unit(0, "Player"), unit(1, "Team1"), unit(2, "Team1")] })).toThrow();
-    expect(bad({ roster: [unit(0, "Player"), unit(16, "Team1")] })).toThrow();
-    expect(bad({ roster: [unit(0, "Player"), unit(1, "Team16")] })).toThrow();
-    expect(bad({ hoveredUnit: "Team16" })).toThrow();
+    expect(bad({ roster: [unit(0, "Player"), unit(44, "Team1")] })).toThrow();
+    expect(bad({ roster: [unit(0, "Player"), unit(1, "Team44")] })).toThrow();
+    expect(bad({ hoveredUnit: "Team44" })).toThrow();
+    // The largest world's tags are fine.
+    expect(() =>
+      adaptSnapshot(
+        world({
+          roster: [unit(0, "Player"), unit(43, "Team39")],
+          selectedActor: null,
+          selected: false,
+          hoveredUnit: "Team39",
+        }),
+      ),
+    ).not.toThrow();
     expect(bad({ selectedActor: 5 })).toThrow(); // a vacant slot
     expect(bad({ spectating: true })).toThrow();
     // A match still refuses a fourth opponent.
