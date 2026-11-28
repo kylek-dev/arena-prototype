@@ -87,8 +87,13 @@ impl MatchSettings {
 /// spectator tickets are distinct variants and never interchangeable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Role {
-    Player { seat: u8 },
+    Player {
+        seat: u8,
+    },
     Spectator,
+    /// A player in hub world `match_id` (ADR 0057): the world server puts
+    /// them in a free slot. `team_size` is `0` and there are no settings.
+    Hub,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,8 +133,12 @@ impl Claims {
     pub fn seat(&self) -> Option<usize> {
         match self.role {
             Role::Player { seat } => Some(usize::from(seat)),
-            Role::Spectator => None,
+            Role::Spectator | Role::Hub => None,
         }
+    }
+    /// Whether this ticket is for a hub world rather than a match.
+    pub fn is_hub(&self) -> bool {
+        matches!(self.role, Role::Hub)
     }
     /// Whether this ticket grants a watch-only spectator role.
     pub fn is_spectator(&self) -> bool {
@@ -138,7 +147,12 @@ impl Claims {
     /// Whether the claims describe a valid seat or spectator role for a match
     /// the rules can run (and respect `settings.allow_spectators`).
     pub fn is_valid(&self) -> bool {
-        if !(1..=MAX_TEAM).contains(&usize::from(self.team_size))
+        let team_size_valid = if self.is_hub() {
+            self.team_size == 0 && self.settings.is_none()
+        } else {
+            (1..=MAX_TEAM).contains(&usize::from(self.team_size))
+        };
+        if !team_size_valid
             || !self.settings.is_none_or(MatchSettings::is_valid)
             || self.account == Some(0)
             || !self.handle.is_none_or(|handle| handle.is_valid())
@@ -149,9 +163,11 @@ impl Claims {
         match self.role {
             Role::Player { seat } => seat < 2 * self.team_size,
             Role::Spectator => self.settings.is_none_or(|s| s.allow_spectators),
+            Role::Hub => true,
         }
     }
-    /// Whether the claims describe a playable seat (never true for spectators).
+    /// Whether the claims describe a playable place: a match seat or a hub
+    /// world (never true for spectators).
     pub fn is_playable(&self) -> bool {
         !self.is_spectator() && self.is_valid()
     }
@@ -303,6 +319,30 @@ pub fn issue_seats(
     })
 }
 
+/// A ticket into hub world `instance` for `player` (the door's stable id
+/// for this person, which block pairs name) and `holder`'s account, handle
+/// and admin tag (dropped as in [`issue_seats`]).
+pub fn issue_hub(
+    key: &TicketKey,
+    instance: u64,
+    player: u64,
+    holder: Holder,
+    expires: u64,
+) -> Vec<u8> {
+    let account = holder.account.filter(|id| *id != 0);
+    key.issue(&Claims {
+        match_id: instance,
+        player,
+        role: Role::Hub,
+        team_size: 0,
+        expires,
+        settings: None,
+        account,
+        handle: holder.handle.filter(Handle::is_valid),
+        admin: holder.admin && account.is_some(),
+    })
+}
+
 pub fn random_u64() -> u64 {
     getrandom::u64().expect("the operating system provides randomness")
 }
@@ -352,6 +392,31 @@ impl TicketKey {
         ticket.extend_from_slice(&mac.finalize().into_bytes());
         debug_assert!(ticket.len() <= MAX_TICKET);
         ticket
+    }
+
+    /// Signs a message between the door and a world server (the instance
+    /// directory, ADR 0057) with the ticket key: HMAC-SHA256 of a domain
+    /// label and the body, hex encoded. The label keeps such tags from ever
+    /// verifying as a ticket or another kind of message.
+    pub fn sign(&self, label: &str, body: &[u8]) -> String {
+        let mut mac = self.mac();
+        mac.update(label.as_bytes());
+        mac.update(&[0]);
+        mac.update(body);
+        to_hex(&mac.finalize().into_bytes())
+    }
+
+    /// Whether `tag` is [`Self::sign`]'s for `label` and `body`
+    /// (constant time).
+    pub fn verify_signed(&self, label: &str, body: &[u8], tag: &str) -> bool {
+        let Some(tag) = from_hex(tag) else {
+            return false;
+        };
+        let mut mac = self.mac();
+        mac.update(label.as_bytes());
+        mac.update(&[0]);
+        mac.update(body);
+        mac.verify_slice(&tag).is_ok()
     }
 
     pub fn verify(&self, ticket: &[u8], now: u64) -> Result<Claims, TicketError> {
@@ -637,5 +702,85 @@ mod tests {
             }
             .is_playable()
         );
+    }
+
+    #[test]
+    fn hub_tickets_name_a_world_and_nothing_of_a_match() {
+        let handle = Handle::new("Rook", 7);
+        let ticket = issue_hub(
+            &key(1),
+            0xAB,
+            42,
+            Holder {
+                account: Some(5),
+                handle,
+                admin: true,
+            },
+            1_000,
+        );
+        let claims = key(1).verify(&ticket, 0).unwrap();
+        assert!(claims.is_hub() && claims.is_valid());
+        assert_eq!(
+            (claims.match_id, claims.player, claims.team_size),
+            (0xAB, 42, 0)
+        );
+        assert_eq!(claims.seat(), None);
+        assert!(!claims.is_spectator());
+        assert!(claims.admin && claims.handle == handle);
+        // Guests are never admins; account 0 is a guest.
+        let guest = issue_hub(
+            &key(1),
+            1,
+            2,
+            Holder {
+                account: Some(0),
+                handle: None,
+                admin: true,
+            },
+            1_000,
+        );
+        let guest = key(1).verify(&guest, 0).unwrap();
+        assert!(guest.account.is_none() && !guest.admin && guest.is_valid());
+        // A hub ticket with a team size or settings is not one the door issues.
+        let hub = Claims {
+            role: Role::Hub,
+            team_size: 0,
+            settings: None,
+            ..CLAIMS
+        };
+        assert!(hub.is_valid());
+        assert!(
+            !Claims {
+                team_size: 1,
+                ..hub
+            }
+            .is_valid()
+        );
+        assert!(
+            !Claims {
+                settings: Some(MatchSettings::default()),
+                ..hub
+            }
+            .is_valid()
+        );
+        // A match ticket still needs a team.
+        assert!(
+            !Claims {
+                team_size: 0,
+                ..CLAIMS
+            }
+            .is_valid()
+        );
+    }
+
+    #[test]
+    fn directory_signatures_bind_the_key_the_label_and_the_body() {
+        let tag = key(1).sign("world-directory", b"{}");
+        assert!(key(1).verify_signed("world-directory", b"{}", &tag));
+        assert!(!key(2).verify_signed("world-directory", b"{}", &tag));
+        assert!(!key(1).verify_signed("other", b"{}", &tag));
+        assert!(!key(1).verify_signed("world-directory", b"{ }", &tag));
+        assert!(!key(1).verify_signed("world-directory", b"{}", "zz"));
+        assert!(!key(1).verify_signed("world-directory", b"{}", &tag[..10]));
     }
 }

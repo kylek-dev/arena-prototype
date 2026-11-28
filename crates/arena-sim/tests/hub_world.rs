@@ -584,3 +584,30 @@ fn plaza_pillars_stand_inside_their_columns() {
         }
     }
 }
+
+#[test]
+fn aims_between_two_players_can_be_dropped() {
+    let next_to = Position {
+        x: NEAR_DUMMY.x + 2_000,
+        z: NEAR_DUMMY.z,
+    };
+    let (mut arena, players) = world(2, &[NEAR_DUMMY, next_to]);
+    let (healer, other) = (players[0], players[1]);
+    arena.advance(&inputs(&[(healer, cast(SpellId::Mend, other))]));
+    assert!(arena.fighters()[healer].active_cast.is_some());
+    assert_eq!(arena.drop_aims(healer, 0), None, "not aimed there");
+    assert!(arena.fighters()[healer].active_cast.is_some());
+    assert_eq!(
+        arena.drop_aims(healer, other),
+        Some(ArenaEvent::CastInterrupted {
+            actor: healer,
+            spell: SpellId::Mend,
+            reason: InterruptReason::TargetDead,
+            by: None,
+        })
+    );
+    assert!(arena.fighters()[healer].active_cast.is_none());
+    assert_eq!(arena.fighters()[healer].gcd_remaining, 0);
+    let mut practice = Arena::practice(match_layout(), 1).unwrap();
+    assert_eq!(practice.drop_aims(0, 1), None);
+}

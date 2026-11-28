@@ -132,7 +132,7 @@ A ticket is the postcard encoding of
 links; `handle` is the `Name#1234` to show: the account's own, or a
 temporary `Guest#NNNN` from the queue, and none for lobby links; `admin`
 marks an account holding the admin role and is never set without one;
-`role` is `Player { seat }` or `Spectator`, so player and spectator credentials are never interchangeable; `expires` in Unix
+`role` is `Player { seat }`, `Spectator` or `Hub` (a place in hub world `match_id`, with `team_size` 0 and no settings; the world server picks the slot, [ADR 0057](decisions/0057-hub-on-the-world-server.md)), so player, spectator and hub credentials are never interchangeable; `expires` in Unix
 seconds; optional versioned `MatchSettings { version: 1, map, round_seconds, allow_spectators }`
 for private custom matches) followed by a 32-byte HMAC-SHA256 tag over those
 bytes, under a key shared by whatever issues tickets and the match servers
@@ -505,3 +505,43 @@ remembered on that device until `?telemetry=on`.
 Clients must show a disconnected fighter as disconnected (greyed unit
 frame and nameplate labelled "Disconnected") and should rejoin by
 themselves: see [client recovery](decisions/0044-authoritative-match-server.md#disconnects-and-recovery).
+
+## Hub worlds and the instance directory
+
+A `Role::Hub` ticket joins hub world `match_id` on the world server, which
+starts it on the first such ticket and ends it after a minute with nobody in
+it (a later ticket starts a fresh one). The player id in the ticket is the
+front door's id for that person: a second connection with it takes the same
+place back (the older one gets `Replaced`), and a player whose connection
+drops keeps their place for 10 s. A full world (12 players) answers
+`MatchFull`.
+
+`POST /worlds/report` on the world server (private network only; Caddy
+routes only `/play` there) is the instance directory. The door sends JSON
+`{now_ms, blocks: [[player, player], ...]}` with header `x-arena-signature`,
+the hex HMAC-SHA256 under the ticket key of `"world-directory"`, a zero byte
+and the body. `now_ms` must be within a minute of the server's clock and
+above the last accepted request's (`401` and `409` otherwise). The answer is
+`{draining, worlds: [{instance: "<16 hex>", players: [player ids], capacity: 12}]}`
+(`draining`: the server is stopping, place nobody new there). The door sends
+`max(now, last + 1)` so a corrected clock is never refused, and reports
+before handing out a ticket whose holder has a new block. The server keeps
+the last accepted list and every new world starts with it.
+The blocks apply at once: blocked players see each other's slots as vacant,
+get `MemberLeft` for each other (and `Member` again when unblocked), never
+see events about each other, and cannot aim spells at each other (a cast at
+a hidden slot is refused as at an empty one, and anything already aimed
+when the block arrives ends); each blocked view carries the hash of the
+world as that player sees it. Presence is not fully hidden: `next_id`, the
+newcomer's slot and a training enemy's health falling without a `Hit` can
+hint that someone unseen is there; identity, place and actions are hidden.
+
+Every `Welcome` starts the member list afresh: the server sends the whole
+list after it, so a page drops what it knew. A `Member` or `MemberLeft` the
+connection's outbox cannot take closes it (they are not repeated, unlike
+snapshots), and the reconnect brings the list again. A reconnect keeps the
+first connection's handle and look. In a world, `connected` only means
+something for player slots; training enemies are never "disconnected".
+Hub tickets expire like match tickets (two hours); the page asks the door
+for a new one to reconnect after that.
+

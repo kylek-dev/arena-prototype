@@ -100,6 +100,9 @@ impl<const N: usize> Histogram<N> {
 pub struct Metrics {
     pub matches_active: AtomicU64,
     pub matches_created: AtomicU64,
+    /// Hub worlds currently hosted (ADR 0057) and the players in them.
+    pub worlds_active: AtomicU64,
+    pub world_players: AtomicU64,
     /// Matches that reached a rules result: won, draw, time_limit_draw.
     matches_finished: [AtomicU64; 3],
     pub connections_open: AtomicU64,
@@ -237,6 +240,18 @@ impl Metrics {
             "counter",
             "Matches created.",
             get(&self.matches_created),
+        );
+        line(
+            "worlds_active",
+            "gauge",
+            "Hub worlds currently hosted.",
+            get(&self.worlds_active),
+        );
+        line(
+            "world_players",
+            "gauge",
+            "Players in hub worlds, connected or within their grace.",
+            get(&self.world_players),
         );
         line(
             "connections_open",
