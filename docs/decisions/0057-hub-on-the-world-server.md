@@ -1,8 +1,9 @@
 # ADR 0057: The hub runs on the world server, with the arena's rules
 
 Date: 2026-11-26. **Status: accepted** (decided by the user 2026-11-26);
-**implemented** in six stacked slices on 2026-11-27 (see Progress; the
-client and page slice awaits human browser review).
+**implemented** in six stacked slices on 2026-11-27 (see Progress; merged
+as PRs #129–#134, and the rendered parts approved by the user the same day,
+see [UI review](../UI-REVIEW.md)).
 Supersedes the "Where it runs", "Movement and authority" and "Messages"
 parts of [ADR 0056](0056-social-hub.md); its instances, interest, blocks,
 chat, player menu and return-after-a-match rules stay.
