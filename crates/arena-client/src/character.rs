@@ -94,7 +94,8 @@ pub struct FallbackActor(pub usize);
 /// Cached glTF scene and animation graph shared across all fighters wearing the same kit.
 pub struct CachedKit {
     pub profile: &'static Profile,
-    pub scene: Handle<WorldAsset>,
+    /// The file's first scene, once the file has loaded ([`resolve_assets`]).
+    pub scene: Option<Handle<WorldAsset>>,
     pub asset: Handle<Gltf>,
     pub graph: Handle<AnimationGraph>,
     pub nodes: Vec<AnimationNodeIndex>,
@@ -113,9 +114,8 @@ impl KitCache {
     }
 
     pub fn insert_from_model(&mut self, model: &CharacterModel) {
-        if let (Some(profile), Some(scene), Some(asset)) =
-            (model.profile, model.scene.clone(), model.asset.clone())
-        {
+        if let (Some(profile), Some(asset)) = (model.profile, model.asset.clone()) {
+            let scene = model.scene.clone();
             self.entries
                 .entry(profile.path.to_owned())
                 .or_insert(CachedKit {
@@ -141,7 +141,7 @@ impl KitCache {
                 let loaded = CharacterModel::load(Some(profile), server, graphs);
                 CachedKit {
                     profile,
-                    scene: loaded.scene.expect("profile always loads a scene"),
+                    scene: loaded.scene,
                     asset: loaded.asset.expect("profile always loads a gltf"),
                     graph: loaded.graph,
                     nodes: loaded.nodes,
@@ -174,7 +174,7 @@ pub struct CharacterModel {
 }
 impl CharacterModel {
     pub fn set_kit_loading(&mut self, cached: &CachedKit) {
-        self.scene = Some(cached.scene.clone());
+        self.scene = cached.scene.clone();
         self.asset = Some(cached.asset.clone());
         self.graph = cached.graph.clone();
         self.nodes = cached.nodes.clone();
@@ -185,7 +185,7 @@ impl CharacterModel {
     }
 
     pub fn set_kit_ready(&mut self, cached: &CachedKit, meshes: usize) {
-        self.scene = Some(cached.scene.clone());
+        self.scene = cached.scene.clone();
         self.asset = Some(cached.asset.clone());
         self.graph = cached.graph.clone();
         self.nodes = cached.nodes.clone();
@@ -194,34 +194,34 @@ impl CharacterModel {
         self.meshes = meshes;
         self.kit = true;
     }
+    /// Starts loading `profile`'s file: the file alone. Its scene and clips
+    /// are taken from the loaded file by [`resolve_assets`], because Bevy
+    /// 0.20 loads the whole file again for each labelled part requested
+    /// before the file has loaded (bevyengine/bevy#10549): the scene and
+    /// ten clips meant twelve downloads and decodes of a 7 MB file. The
+    /// animation graph is made now with placeholder clips, so its node
+    /// indices (which depend only on clip order) are known at once.
     pub fn load(
         profile: Option<&'static Profile>,
         server: &AssetServer,
         graphs: &mut Assets<AnimationGraph>,
     ) -> Self {
-        let scene = profile.map(|p| server.load(GltfAssetLabel::Scene(0).from_asset(p.path)));
         let asset = profile.map(|p| server.load(p.path));
         let (graph, nodes) = if let Some(profile) = profile {
-            let count = if profile.timing.jump_edges.is_some() {
-                Clip::ALL.len()
-            } else {
-                Clip::BASE_COUNT
-            };
-            let (graph, nodes) =
-                AnimationGraph::from_clips(Clip::ALL.into_iter().take(count).map(|clip| {
-                    server.load(GltfAssetLabel::Animation(clip as usize).from_asset(profile.path))
-                }));
+            let (graph, nodes) = AnimationGraph::from_clips(
+                (0..profile.clip_count()).map(|_| Handle::<AnimationClip>::default()),
+            );
             (graphs.add(graph), nodes)
         } else {
             (Handle::default(), Vec::new())
         };
-        let status = if scene.is_some() {
+        let status = if asset.is_some() {
             "loading"
         } else {
             "placeholder"
         };
         Self {
-            scene,
+            scene: None,
             asset,
             graph,
             nodes,
@@ -394,6 +394,83 @@ pub fn on_ready(
     }
     for mut visibility in &mut fallback {
         *visibility = Visibility::Hidden;
+    }
+}
+
+impl Profile {
+    /// Clips this profile's file carries, in [`Clip`] order.
+    pub fn clip_count(&self) -> usize {
+        if self.timing.jump_edges.is_some() {
+            Clip::ALL.len()
+        } else {
+            Clip::BASE_COUNT
+        }
+    }
+}
+
+/// The scene and animation graph of a loaded file: its first scene, and its
+/// clips in [`Clip`] order (a clip the file lacks plays nothing).
+fn parts_of(gltf: &Gltf, profile: &Profile) -> Option<(Handle<WorldAsset>, AnimationGraph)> {
+    let scene = gltf.scenes.first()?.clone();
+    let (graph, _) = AnimationGraph::from_clips(
+        (0..profile.clip_count())
+            .map(|index| gltf.animations.get(index).cloned().unwrap_or_default()),
+    );
+    Some((scene, graph))
+}
+
+/// Once a character file has loaded, takes its scene and clips for the
+/// player's model and every cached kit (filling their animation graphs in
+/// place, so handles already given out stay valid). A legacy single model
+/// gets its scene spawned on the player's body here, as setup did.
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_assets(
+    mut commands: Commands,
+    gltfs: Res<Assets<Gltf>>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
+    mut model: ResMut<CharacterModel>,
+    mut kit_cache: Option<ResMut<KitCache>>,
+    player_bodies: Query<Entity, With<crate::appearance::PlayerBody>>,
+) {
+    if let Some(cache) = kit_cache.as_deref_mut() {
+        for cached in cache.iter_mut() {
+            if cached.scene.is_some() {
+                continue;
+            }
+            let Some((scene, graph)) = gltfs
+                .get(&cached.asset)
+                .and_then(|gltf| parts_of(gltf, cached.profile))
+            else {
+                continue;
+            };
+            let _ = graphs.insert(cached.graph.id(), graph);
+            cached.scene = Some(scene);
+        }
+    }
+    if model.scene.is_some() {
+        return;
+    }
+    let (Some(profile), Some(asset)) = (model.profile, model.asset.clone()) else {
+        return;
+    };
+    let Some((scene, graph)) = gltfs.get(&asset).and_then(|gltf| parts_of(gltf, profile)) else {
+        return;
+    };
+    let _ = graphs.insert(model.graph.id(), graph);
+    model.scene = Some(scene.clone());
+    // Kits spawn per fighter in `appearance::spawn_kits`; a legacy single
+    // model is the player's alone.
+    if !model.kit {
+        for body in &player_bodies {
+            commands.entity(body).with_children(|body| {
+                body.spawn((
+                    WorldAssetRoot(scene.clone()),
+                    profile.transform(),
+                    Visibility::Hidden,
+                ))
+                .observe(on_ready);
+            });
+        }
     }
 }
 
@@ -576,6 +653,148 @@ mod tests {
             assert!(gltf.named_nodes.contains_key("Eyes"));
             assert!(gltf.named_materials.contains_key("Skin"));
         }
+    }
+
+    /// Counts reads of whole files (not their `.meta`), over an in-memory folder.
+    struct CountingReader {
+        inner: bevy::asset::io::memory::MemoryAssetReader,
+        reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl bevy::asset::io::AssetReader for CountingReader {
+        async fn read<'a>(
+            &'a self,
+            path: &'a std::path::Path,
+        ) -> Result<impl bevy::asset::io::Reader + 'a, bevy::asset::io::AssetReaderError> {
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.read(path).await
+        }
+        async fn read_meta<'a>(
+            &'a self,
+            path: &'a std::path::Path,
+        ) -> Result<impl bevy::asset::io::Reader + 'a, bevy::asset::io::AssetReaderError> {
+            self.inner.read_meta(path).await
+        }
+        async fn read_directory<'a>(
+            &'a self,
+            path: &'a std::path::Path,
+        ) -> Result<Box<bevy::asset::io::PathStream>, bevy::asset::io::AssetReaderError> {
+            self.inner.read_directory(path).await
+        }
+        async fn is_directory<'a>(
+            &'a self,
+            path: &'a std::path::Path,
+        ) -> Result<bool, bevy::asset::io::AssetReaderError> {
+            self.inner.is_directory(path).await
+        }
+    }
+
+    #[test]
+    fn each_character_file_is_read_once_and_its_scene_and_clips_come_from_it() {
+        use bevy::asset::io::{AssetSourceBuilder, AssetSourceId, memory::Dir};
+        const PLAYER: Profile = Profile {
+            path: "characters/player.gltf",
+            ..BASE_FEMALE
+        };
+        const KIT: Profile = Profile {
+            path: "characters/kit.gltf",
+            ..QUATERNIUS_FEMALE
+        };
+        // A file with a scene and no clips: before this change the scene and
+        // each clip were separate labelled requests, and each one read the
+        // whole file again.
+        let gltf = r#"{"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"name":"Root"}]}"#;
+        let dir = Dir::default();
+        dir.insert_asset_text(std::path::Path::new(PLAYER.path), gltf);
+        dir.insert_asset_text(std::path::Path::new(KIT.path), gltf);
+        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut app = App::new();
+        let counted = reads.clone();
+        app.register_asset_source(
+            AssetSourceId::Default,
+            AssetSourceBuilder::new(move || {
+                Box::new(CountingReader {
+                    inner: bevy::asset::io::memory::MemoryAssetReader { root: dir.clone() },
+                    reads: counted.clone(),
+                })
+            }),
+        );
+        app.add_plugins((
+            MinimalPlugins,
+            bevy::asset::AssetPlugin::default(),
+            bevy::world_serialization::WorldSerializationPlugin,
+            bevy::mesh::MeshPlugin,
+            AnimationPlugin,
+            bevy::gltf::GltfPlugin::default(),
+        ))
+        .init_asset::<Image>()
+        .add_systems(Update, resolve_assets);
+        app.finish();
+        app.cleanup();
+        let server = app.world().resource::<AssetServer>().clone();
+        let mut cache = KitCache::default();
+        let (model, kit_graph) = {
+            let mut graphs = app.world_mut().resource_mut::<Assets<AnimationGraph>>();
+            let model = CharacterModel::load(Some(&PLAYER), &server, &mut graphs);
+            let kit_graph = cache.get_or_load(&KIT, &server, &mut graphs).graph.clone();
+            (model, kit_graph)
+        };
+        let nodes = model.nodes.clone();
+        assert_eq!(nodes.len(), PLAYER.clip_count());
+        assert!(model.scene.is_none(), "no scene before the file has loaded");
+        app.insert_resource(model).insert_resource(cache);
+        let body = app
+            .world_mut()
+            .spawn((Transform::default(), crate::appearance::PlayerBody))
+            .id();
+        for _ in 0..100_000 {
+            app.update();
+            let resolved = app.world().resource::<CharacterModel>().scene.is_some()
+                && app
+                    .world()
+                    .resource::<KitCache>()
+                    .get(KIT.path)
+                    .unwrap()
+                    .scene
+                    .is_some();
+            if resolved {
+                break;
+            }
+        }
+        // Run on so any stray labelled request would have finished reading.
+        for _ in 0..100 {
+            app.update();
+        }
+        let world = app.world();
+        let model = world.resource::<CharacterModel>();
+        let gltfs = world.resource::<Assets<Gltf>>();
+        let player = gltfs
+            .get(model.asset.as_ref().unwrap())
+            .expect("player file loaded");
+        assert_eq!(model.scene.as_ref(), player.scenes.first());
+        assert_eq!(model.nodes, nodes, "node indices given out stay valid");
+        let graphs = world.resource::<Assets<AnimationGraph>>();
+        assert!(graphs.get(&model.graph).is_some());
+        let cached = world.resource::<KitCache>().get(KIT.path).unwrap();
+        let kit = gltfs.get(&cached.asset).expect("kit file loaded");
+        assert_eq!(cached.scene.as_ref(), kit.scenes.first());
+        assert_eq!(cached.graph, kit_graph);
+        let kit_graph = graphs.get(&cached.graph).unwrap();
+        assert_eq!(
+            kit_graph.nodes().count(),
+            KIT.clip_count() + 1,
+            "the root and one clip per Clip"
+        );
+        // The legacy single model's scene goes on the player's body.
+        let children = world.get::<Children>(body).expect("player scene spawned");
+        assert!(children.iter().any(
+            |child| world.get::<WorldAssetRoot>(child).map(|root| &root.0) == model.scene.as_ref()
+        ));
+        assert_eq!(
+            reads.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "one read per file"
+        );
     }
 
     fn model() -> CharacterModel {

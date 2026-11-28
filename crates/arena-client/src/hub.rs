@@ -648,7 +648,10 @@ pub(crate) fn spawn_kits(
         {
             let profile = crate::appearance::kit_profile(&spec.kit);
             let cached = kit_cache.get_or_load(profile, &server, &mut graphs);
-            let scene = cached.scene.clone();
+            // Not before the kit's file has loaded; this runs again next frame.
+            let Some(scene) = cached.scene.clone() else {
+                continue;
+            };
             commands.entity(entity).with_children(|parent| {
                 parent
                     .spawn((
