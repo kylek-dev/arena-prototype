@@ -102,7 +102,7 @@ it("offers a friend an invitation, a stranger friendship, and says why not other
     ["Invite to group", false],
     ["Add friend", true],
     ["Inspect", true],
-    ["Challenge to a duel", true],
+    ["Challenge to a 1v1", true],
     ["Focus", false],
     ["Edit layout", false],
   ]);
@@ -284,7 +284,7 @@ it("opens from a friendly nameplate (without Edit layout); an enemy's focuses", 
     "Invite to group",
     "Add friend",
     "Inspect",
-    "Challenge to a duel",
+    "Challenge to a 1v1",
     "Focus",
   ]);
   fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
@@ -336,7 +336,7 @@ it("opens on a party member who is not in this match, and offers Leave party on 
     ["Invite to group", true],
     ["Add friend", true],
     ["Inspect", true],
-    ["Challenge to a duel", true],
+    ["Challenge to a 1v1", true],
     ["Focus", true],
     ["Edit layout", false],
   ]);

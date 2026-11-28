@@ -121,6 +121,37 @@ export type Invite = { from: string; kind: "party" | "lobby"; code: string };
 /** Invites kept waiting for an answer at once; older ones give way. */
 export const MAX_INVITES = 3;
 
+/** Another player's challenge to a 1v1 (ADR 0060), answerable until
+ * `deadline` (queue clock); `answering` once accepted, until the match. */
+export type Challenge = { from: string; deadline: number; answering: boolean };
+/** Challenges the door lets a player hold at once. */
+export const MAX_CHALLENGES = 3;
+/** Why a challenge closed without a match. */
+export type ChallengeEnd = "declined" | "expired" | "withdrawn" | "left" | "busy";
+const CHALLENGE_ENDS: readonly string[] = ["declined", "expired", "withdrawn", "left", "busy"];
+/** This player's own challenge: on its way (`sent` false) or waiting
+ * until about `deadline` (queue clock). */
+export type OwnChallenge = { to: string; sent: boolean; deadline: number };
+/** How long the door keeps a challenge open. */
+export const CHALLENGE_TTL_MS = 30_000;
+/** Refusals a challenge request may get ... */
+export const CHALLENGE_REFUSALS: ReadonlySet<string> = new Set([
+  "not_in_hub",
+  "rate_limited",
+  "no_such_player",
+  "party_busy",
+  "in_lobby",
+  "challenge_busy",
+  "challenge_gone",
+]);
+/** ... and those no other request gets. */
+export const CHALLENGE_ONLY_REFUSALS: ReadonlySet<string> = new Set([
+  "challenge_busy",
+  "challenge_gone",
+]);
+/** What to tell about a challenge: an end, or a refusal code. */
+export type ChallengeNotice = { with: string; code: string; mine: boolean };
+
 /** What the door sends. A `match` carries this player's own seat ticket. */
 export type QueueMessage =
   | { type: "party"; party: Party; queue: QueueMode | null }
@@ -159,6 +190,9 @@ export type QueueMessage =
   | { type: "hub_left"; reason: "left" | "match" | "renamed" }
   | { type: "invite"; invite: Invite }
   | { type: "invite_sent"; to: string }
+  | { type: "challenged"; from: string; remainingMs: number }
+  | { type: "challenge_sent"; to: string }
+  | { type: "challenge_ended"; with: string; reason: ChallengeEnd }
   | { type: "friends_changed" }
   | { type: "chat"; line: ChatLine }
   | { type: "error"; code: string };
@@ -332,6 +366,16 @@ export function parseQueueMessage(text: unknown): QueueMessage | null {
     }
     case "invite_sent":
       return isHandle(v.to) ? { type: "invite_sent", to: v.to } : null;
+    case "challenged":
+      return isHandle(v.from) && millis(v.remaining_ms)
+        ? { type: "challenged", from: v.from, remainingMs: v.remaining_ms }
+        : null;
+    case "challenge_sent":
+      return isHandle(v.to) ? { type: "challenge_sent", to: v.to } : null;
+    case "challenge_ended":
+      return isHandle(v.with) && typeof v.reason === "string" && CHALLENGE_ENDS.includes(v.reason)
+        ? { type: "challenge_ended", with: v.with, reason: v.reason as ChallengeEnd }
+        : null;
     case "friends_changed":
       return { type: "friends_changed" };
     case "chat": {
@@ -376,6 +420,10 @@ export const requests = {
     }),
   startLobby: () => JSON.stringify({ type: "start_lobby" }),
   invite: (handle: string) => JSON.stringify({ type: "invite", handle }),
+  challenge: (handle: string) => JSON.stringify({ type: "challenge", handle }),
+  answerChallenge: (from: string, accept: boolean) =>
+    JSON.stringify({ type: "answer_challenge", from, accept }),
+  withdrawChallenge: () => JSON.stringify({ type: "withdraw_challenge" }),
   chat: (channel: Exclude<ChatChannel, "whisper">, text: string) =>
     JSON.stringify({ type: "chat", channel, text }),
   whisper: (to: string, text: string) => JSON.stringify({ type: "whisper", to, text }),
@@ -466,6 +514,12 @@ export type QueueState = {
   inviteError: { from: string; code: string } | null;
   /** Counts the door's `friends_changed` pushes: the list is stale. */
   friendsChanged: number;
+  /** Challenges to a 1v1 from other players, oldest first. */
+  challenges: Challenge[];
+  /** This player's own open challenge. */
+  challenging: OwnChallenge | null;
+  /** The last thing to tell about a challenge. */
+  challengeNotice: ChallengeNotice | null;
 };
 export const IDLE_QUEUE: QueueState = {
   connection: "offline",
@@ -485,6 +539,9 @@ export const IDLE_QUEUE: QueueState = {
   joining: null,
   inviteError: null,
   friendsChanged: 0,
+  challenges: [],
+  challenging: null,
+  challengeNotice: null,
 };
 
 /** `m:ss`, or `h:mm:ss` past an hour. */
@@ -545,6 +602,47 @@ const NOTICES: Record<string, string> = {
   spectators_disabled: "Spectators are disabled in this custom lobby.",
   spectators_occupied: "Move or remove all spectators before disabling spectators.",
 };
+/** What to tell about a challenge between this player and `with`: one's own
+ * (`mine`) or another's. */
+export function challengeText({ with: other, code, mine }: ChallengeNotice) {
+  switch (code) {
+    case "declined":
+      return `${other} declined your challenge.`;
+    case "expired":
+      return mine
+        ? `${other} did not answer your challenge in time.`
+        : `The challenge from ${other} has expired.`;
+    case "withdrawn":
+      return `${other} withdrew the challenge.`;
+    case "left":
+      return `${other} is no longer here, so the challenge has ended.`;
+    case "busy":
+      return mine
+        ? `${other} accepted your challenge while you were searching or in a lobby, so it has ended.`
+        : `${other} is searching or in a lobby, so the challenge has ended.`;
+    case "not_in_hub":
+      return "Challenges are available in the hub.";
+    case "no_such_player":
+      return `${other} cannot be challenged here.`;
+    case "challenge_busy":
+      return `${other} cannot take another challenge at the moment.`;
+    case "challenge_gone":
+      return `The challenge from ${other} is no longer open.`;
+    case "party_busy":
+      return mine
+        ? "You cannot challenge a player while searching for a match."
+        : "You cannot take a challenge while searching for a match.";
+    case "in_lobby":
+      return mine
+        ? "Leave your custom lobby before challenging a player."
+        : "Leave your custom lobby before taking a challenge.";
+    case "rate_limited":
+      return "Too many challenges. Please wait a moment and try again.";
+    default:
+      return "The challenge could not be made.";
+  }
+}
+
 export function endedText(code: string | null) {
   return ENDED[code ?? ""] ?? "Online play stopped.";
 }
