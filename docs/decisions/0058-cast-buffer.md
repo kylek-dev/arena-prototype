@@ -59,6 +59,10 @@ The feature is called the **cast buffer**.
   `Arena::hash_state` covers it, so client hash checks and prediction
   restores stay exact. The bandwidth-measurement delta codec gains
   `MASK_BUFFERED_CAST`.
+- **Prediction.** Movement prediction (`Predictor::reconcile` for matches,
+  `reconcile_hub` for hub worlds) strips held spells along with casts in
+  progress, so a held spell never fires in the replay and the predicted
+  resource and GCD never move (ADR 0048).
 - **Setting.** Settings → Action bars → **Cast buffer**: 0–400 ms in 50 ms
   steps, default 400 ms, saved per profile (`castBufferMs`). The shell sends
   it in milliseconds as input ABI field 22; the client rounds it to ticks.
