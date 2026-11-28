@@ -321,6 +321,15 @@
           "legendFormat": "custom matches / min"
         },
         {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(arena_door_challenge_matches_total[$__rate_interval]) * 60",
+          "legendFormat": "challenge matches / min"
+        },
+        {
           "refId": "C",
           "datasource": {
             "type": "prometheus",
