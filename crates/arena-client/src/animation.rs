@@ -185,7 +185,7 @@ pub(crate) fn animate(
     mut roots: Query<(&mut Animator, &mut Transform), Without<crate::FighterVisual>>,
     mut joints: Query<(&Joint, &mut Transform), (Without<Animator>, Without<crate::FighterVisual>)>,
 ) {
-    let mut poses = [Pose::default(); 6];
+    let mut poses = [Pose::default(); crate::MAX_ACTORS];
     for (mut animator, mut transform) in &mut roots {
         let Some((_, fighter)) = fighters.iter().find(|(f, _)| f.0 == animator.actor) else {
             continue;
@@ -224,6 +224,30 @@ pub(crate) fn animate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hub_world_with_more_than_six_fighters_animates() {
+        // A world of 4 training enemies and 4 players: actor 7 is past a
+        // 3v3's six (it once overran the pose table).
+        let mut world = arena_sim::arena::Arena::hub();
+        for _ in 0..4 {
+            world.join().unwrap();
+        }
+        let mut practice = crate::Practice::new(&arena_map::colosseum(), 1);
+        practice.arena = world;
+        let mut app = App::new();
+        app.init_resource::<Time>()
+            .init_resource::<Settings>()
+            .insert_resource(practice)
+            .add_systems(Update, animate);
+        for actor in [0, 6, 7] {
+            app.world_mut()
+                .spawn((crate::FighterVisual(actor), Transform::default()));
+            app.world_mut()
+                .spawn((Animator::new(actor), Transform::default()));
+        }
+        app.update();
+    }
 
     #[test]
     fn paired_limbs_counter_swing_and_backward_and_strafe_change_axes() {
