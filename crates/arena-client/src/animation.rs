@@ -217,7 +217,12 @@ pub(crate) fn animate(
         poses[actor] = pose;
     }
     for (joint, mut transform) in &mut joints {
-        transform.rotation = joint_rotation(joint, poses[joint.actor], &settings);
+        // Writing only real changes keeps still and hidden bodies (and their
+        // whole hierarchies) out of transform propagation.
+        let rotation = joint_rotation(joint, poses[joint.actor], &settings);
+        if transform.rotation != rotation {
+            transform.rotation = rotation;
+        }
     }
 }
 

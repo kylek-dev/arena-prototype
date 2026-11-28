@@ -42,6 +42,59 @@ use bevy::{asset::AssetMetaCheck, core_pipeline::tonemapping::Tonemapping, prelu
 /// Fighters the client can draw at once: a hub world's roster (ADR 0057),
 /// which is larger than a 3v3.
 pub(crate) const MAX_ACTORS: usize = arena_protocol::MAX_WORLD_FIGHTERS;
+/// Fighter visuals built at startup: a 3v3's. More are built only when a
+/// hub world has more fighters (each is a whole procedural body the
+/// animator poses every frame).
+const STARTING_VISUALS: usize = 6;
+
+/// Builds fighter visuals for a hub world's extra fighters as they first
+/// appear (up to [`MAX_ACTORS`]); they stay for later worlds. Hidden when
+/// not in use, like the starting six.
+fn grow_fighter_visuals(
+    mut commands: Commands,
+    practice: Res<Practice>,
+    visuals: Query<&FighterVisual>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    character_meshes: Option<Res<graphics::CharacterMeshes>>,
+    painted: Option<Res<textures::PaintedTextures>>,
+) {
+    let (Some(character_meshes), Some(painted)) = (character_meshes, painted) else {
+        return;
+    };
+    let wanted = practice.arena.fighters().len().min(MAX_ACTORS);
+    let built = visuals.iter().map(|visual| visual.0 + 1).max().unwrap_or(0);
+    for index in built..wanted {
+        let accent = material(
+            &mut materials,
+            palette::color(if index % 2 == 0 {
+                palette::TEAL_4
+            } else {
+                palette::EMBER_4
+            }),
+        );
+        let humanoid = humanoid::Humanoid::new(
+            humanoid::Appearance::practice(index, accent),
+            &mut materials,
+            &painted,
+        );
+        commands
+            .spawn((
+                FighterVisual(index),
+                Transform::default(),
+                Visibility::Hidden,
+            ))
+            .with_children(|parent| {
+                parent
+                    .spawn((
+                        animation::Animator::new(index),
+                        appearance::FighterBody(index),
+                        Transform::default(),
+                        Visibility::default(),
+                    ))
+                    .with_children(|body| humanoid.spawn(body, &character_meshes, index));
+            });
+    }
+}
 
 #[derive(Resource)]
 struct Practice {
@@ -270,6 +323,7 @@ pub fn run() {
                     // never replays a hidden gap into the fresh practice round.
                     practice_catch_up,
                     network_receive,
+                    grow_fighter_visuals,
                     apply_map_edits,
                     hub::venue,
                     read_controls,
@@ -414,7 +468,9 @@ fn setup(
     let orange = material(&mut materials, palette::color(palette::EMBER_4));
     let character_meshes = graphics::CharacterMeshes::new(&mut meshes);
     let painted = textures::PaintedTextures::new(&mut images);
-    for index in 0..MAX_ACTORS {
+    // A 3v3's fighters now; a hub world's others as they arrive
+    // (`grow_fighter_visuals`), so practice never builds and poses 44.
+    for index in 0..STARTING_VISUALS {
         let accent = if index % 2 == 0 {
             teal.clone()
         } else {
@@ -2467,6 +2523,48 @@ mod tests {
             practice_window_settings(false).unfocused_mode,
             UpdateMode::Reactive { .. }
         ));
+    }
+
+    #[test]
+    fn fighter_visuals_grow_only_when_a_world_has_more_fighters() {
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<Image>>()
+            .insert_resource(Practice::new(&arena_map::colosseum(), 1))
+            .add_systems(Update, grow_fighter_visuals);
+        let meshes = {
+            let mut assets = app.world_mut().resource_mut::<Assets<Mesh>>();
+            graphics::CharacterMeshes::new(&mut assets)
+        };
+        let painted = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            textures::PaintedTextures::new(&mut images)
+        };
+        app.insert_resource(meshes).insert_resource(painted);
+        for index in 0..STARTING_VISUALS {
+            app.world_mut()
+                .spawn((FighterVisual(index), Transform::default()));
+        }
+        let count = |app: &mut App| {
+            app.world_mut()
+                .query::<&FighterVisual>()
+                .iter(app.world())
+                .count()
+        };
+        // Practice (a 1v1) builds nothing more.
+        app.update();
+        assert_eq!(count(&mut app), STARTING_VISUALS);
+        // A world of four training enemies and six players needs ten.
+        let mut world = Arena::hub();
+        for _ in 0..6 {
+            world.join().unwrap();
+        }
+        app.world_mut().resource_mut::<Practice>().arena = world;
+        app.update();
+        assert_eq!(count(&mut app), 10);
+        app.update();
+        assert_eq!(count(&mut app), 10, "built once");
     }
 
     #[test]
