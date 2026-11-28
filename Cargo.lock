@@ -261,8 +261,8 @@ dependencies = [
  "arena-headless",
  "arena-map",
  "arena-protocol",
- "arena-server",
  "arena-sim",
+ "arena-world",
  "futures-util",
  "serde",
  "serde_json",
@@ -322,7 +322,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "arena-server"
+name = "arena-sim"
+version = "0.1.0"
+
+[[package]]
+name = "arena-textures"
+version = "0.1.0"
+dependencies = [
+ "arena-palette",
+ "image",
+]
+
+[[package]]
+name = "arena-world"
 version = "0.1.0"
 dependencies = [
  "arena-map",
@@ -351,18 +363,6 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "arena-sim"
-version = "0.1.0"
-
-[[package]]
-name = "arena-textures"
-version = "0.1.0"
-dependencies = [
- "arena-palette",
- "image",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-//! `arena-server [--bind ADDR] [--dev] [--debug-json] [--drain-seconds N]
+//! `arena-world [--bind ADDR] [--dev] [--debug-json] [--drain-seconds N]
 //!  [--allow-origin URL]... [--any-origin] [--trusted-proxy CIDR]...
 //!  [--connections-per-address N]`
 //!
@@ -25,15 +25,15 @@ use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use arena_server::ingress::{Cidr, Origins};
-use arena_server::ticket::TicketKey;
-use arena_server::{Config, start};
 use arena_sim::TICKS_PER_SECOND;
 use arena_sim::arena::MAX_ROUND_TICKS;
+use arena_world::ingress::{Cidr, Origins};
+use arena_world::ticket::TicketKey;
+use arena_world::{Config, start};
 use tracing::Instrument;
 
 const MAX_ROUND_SECONDS: u64 = MAX_ROUND_TICKS / TICKS_PER_SECOND;
-const USAGE: &str = "usage: arena-server [--bind ADDR] [--dev] [--debug-json] [--drain-seconds N] \
+const USAGE: &str = "usage: arena-world [--bind ADDR] [--dev] [--debug-json] [--drain-seconds N] \
 [--round-seconds N] [--spectator-delay-seconds N] [--max-spectators N] [--allow-origin URL]... \
 [--any-origin] [--trusted-proxy CIDR]... [--connections-per-address N]";
 /// How often a drain reports the matches it is waiting for.
@@ -42,8 +42,8 @@ const DRAIN_REPORT: Duration = Duration::from_secs(10);
 fn main() -> ExitCode {
     // Telemetry starts before and stops after the runtime: the OTLP HTTP
     // exporter blocks, which an async context must not do.
-    let telemetry = arena_server::logging::init("arena-server");
-    let profiler = arena_server::profiling::start("arena-server");
+    let telemetry = arena_world::logging::init("arena-world");
+    let profiler = arena_world::profiling::start("arena-world");
     let code = match tokio::runtime::Runtime::new() {
         Ok(runtime) => {
             let result = runtime.block_on(run());
@@ -51,13 +51,13 @@ fn main() -> ExitCode {
             match result {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(message) => {
-                    tracing::error!(reason = %message, "arena-server failed");
+                    tracing::error!(reason = %message, "arena-world failed");
                     ExitCode::FAILURE
                 }
             }
         }
         Err(error) => {
-            tracing::error!(reason = %error, "arena-server could not start its runtime");
+            tracing::error!(reason = %error, "arena-world could not start its runtime");
             ExitCode::FAILURE
         }
     };
@@ -222,7 +222,7 @@ async fn run() -> Result<(), String> {
         config.connections_per_address = 0;
     }
     let running = start(config).await.map_err(|error| error.to_string())?;
-    tracing::info!(addr = %running.addr, "arena-server listening on ws://{}/play", running.addr);
+    tracing::info!(addr = %running.addr, "arena-world listening on ws://{}/play", running.addr);
     if dev {
         tracing::info!(
             "development mode; create a match with POST http://{}/dev/match?team_size=1",
@@ -230,7 +230,7 @@ async fn run() -> Result<(), String> {
         );
     }
     stop_signal().await;
-    let drain_span = arena_server::control_span!(
+    let drain_span = arena_world::control_span!(
         "server.drain",
         matches = running.active_matches(),
         drain_seconds = drain.as_secs()

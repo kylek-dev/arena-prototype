@@ -8,9 +8,9 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use arena_protocol::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
-use arena_server::door::{self, DoorConfig, QueueMessage};
-use arena_server::ticket::{TicketKey, from_hex};
-use arena_server::{Config, Running, start};
+use arena_world::door::{self, DoorConfig, QueueMessage};
+use arena_world::ticket::{TicketKey, from_hex};
+use arena_world::{Config, Running, start};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
@@ -34,7 +34,7 @@ async fn door_for(server: Option<&Running>, key: TicketKey) -> door::DoorRunning
     });
     let mut config = DoorConfig::new(key, play, "http://localhost:8000/".into());
     config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
-    config.match_status = server.map(|server| format!("http://{}", server.addr));
+    config.world_status = server.map(|server| format!("http://{}", server.addr));
     door::start(config).await.unwrap()
 }
 

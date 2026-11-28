@@ -65,12 +65,12 @@ Pick the highest-priority task in this order:
 2. **Next roadmap issue** in `planning/ROADMAP.md` (`planning/issues/*.md`).
 3. **Critic discovery:** Run [run-critics.sh](./scripts/run-critics.sh) and pick the
    highest-severity defect, missing exploit/boundary test (`arena-sim` /
-   `arena-protocol`), netcode stress edge case (`arena-server` / `arena-bot`), or
+   `arena-protocol`), netcode stress edge case (`arena-world` / `arena-bot`), or
    architecture invariant gap.
 
 Classify and right-size before editing:
 - **Lane A (Autonomous / Machine-Verified):** `arena-sim`, `arena-protocol`,
-  `arena-server`, `arena-bot`, `arena-headless`, deterministic JS/TS domain & unit
+  `arena-world`, `arena-bot`, `arena-headless`, deterministic JS/TS domain & unit
   tests, static asset/palette checks, harness/CI hardening.
 - **Lane B (Human-Reviewed Output):** `arena-client` rendering, camera, animations,
   lighting, HUD layout/visuals, combat feel. Build and verify locally, then append a
@@ -135,7 +135,7 @@ Run the auto-detected gate suite against the PR base branch:
 Exact gate matrix (matches `.github/workflows/ci.yml` & `client-build.yml`):
 - **Always:** `./scripts/check.sh` and `cargo run -p arena-headless --locked`.
 - **When sim, protocol, server, bot, map, palette, or root Cargo manifests changed:**
-  `cargo build -p arena-server -p arena-bot --locked && ./scripts/server-smoke.sh` (`--smoke`).
+  `cargo build -p arena-world -p arena-bot --locked && ./scripts/server-smoke.sh` (`--smoke`).
 - **When `web/`, `package*.json`, `vite.config.ts`, `tsconfig.json`, or `docs/palette.json` changed:**
   `npm run build` (`--web-build`).
 - **When any `scripts/client-build-needed.sh` input (`crates/**`, `**/Cargo.*`, `rust-toolchain*`, `.cargo/**`, `assets/**`, `scripts/**`, `.github/workflows/**`) changed:**

@@ -8,6 +8,7 @@ before editing code so context compounds on disk instead of decaying in long cha
 
 Reusable repo invariants, canonical helpers, and CI traps promoted across iterations:
 
+- **The world server (renamed 2026-11-28):** the match and hub server is `crates/arena-world` (`-p arena-world`, library `arena_world`, binaries `arena-world` and `arena-door`); older entries below say `arena-server`.
 - **Simulation purity:** `arena-sim` must stay pure, fixed-tick, integer-based, and deterministic (no graphics, OS clocks, network I/O, or runtime LLM calls).
 - **Focus-policy tests:** widgets that close on blur inside windows that do not own the keyboard must be tested with `installInput` and `userEvent` (real focus); `fireEvent` never moves focus, so the focus policy handing keys back to the game goes unseen.
 - **Radix trigger stacking:** `Tooltip.Trigger asChild` overrides its child's `data-state`; put tooltips inside tab/toggle triggers, never around them, or the active style disappears (tests on `aria-selected` still pass, so assert `data-state` too).
@@ -1078,3 +1079,14 @@ See [.agents/skills/iterate-game/references/pr-and-log-templates.md](../.agents/
 - **Checks Observed:** see PR. Tests: `tests/ui/challenge.test.tsx` (5), `tests/domain/challenge.test.ts` (3), unit menu tests updated for the new label.
 - **Fresh-Eyes Review:** no Critical. Important (fixed): cards outlived the door's closing of a player's challenges (it tells only the other player): `match`, `hub_left` and `leaveHub` now forget them all; challenges both ways were misread (`challenge_ended` now follows which side each reason reaches, and `expired` picks the challenge due first by deadline); refusal attribution (replayed ignores' refusals checked first, challenge-only codes attributed even after another request, the pending request reset when the connection ends, and a challenge still on its way no longer greys the item for good). Minor (fixed): copy for one's own refused challenge, a clearer notice label. Minor (left): no countdown on the cards.
 - **Next Recommended Slice:** rename the match server to the world server.
+
+## 2026-11-28 — The match server is the world server (rename)
+- **Branch / Commit:** `auto/world-server-rename`
+- **Base / PR:** `auto/challenge-ui` (stacked on PR #140)
+- **Lane:** B (deploy files to run on the user's stack; no rendered change)
+- **Task:** [BACKLOG](BACKLOG.md) — rename the match server to the world server, as ADR 0057 names it.
+- **Changes:** `crates/arena-server` → `crates/arena-world` (package, library and server binary `arena-world`; `arena-door` unchanged); `DoorConfig::{world_server, world_status}` and `--world-server` / `--world-status` (`--match-*` still accepted); Compose service `world`, image `arena-world:local`, Caddy and Alloy upstreams, scrape job and alerts `arena-world`, `world-server-health.json`; CI, `scripts/`, the iteration skill, AGENTS.md and the living docs; ADR 0057 records the rename, DEPLOYMENT.md the one-time `--remove-orphans`. Metric names unchanged.
+- **Checks Observed:** see PR.
+- **Fresh-Eyes Review:** no Critical. Important (fixed): Grafana keeps a provisioned alert rule that leaves the file, so the old `arena-server-down` rule would have fired forever on an existing stack; `alerts.yaml` now deletes it (`deleteRules`). Minor (fixed): a doubled "world server" in ARCHITECTURE.md; the migration note drains the old container first (`stop -t 1230 server`); the roadmap's current row and `issues.json` title. Minor (left): the `--match-*` aliases have no unit test (observed: `arena-door --match-server … --match-status … --help` exits 0, an unknown flag fails); dated issue specs keep the old name.
+- **Learnings:** a case-insensitive "match server" sweep also hits Rust `match server.…` expressions; review code lines (not comments) after any prose sed over source files.
+- **Next Recommended Slice:** Inspect from the unit menu (left out of this run at the user's request), or a critic audit.

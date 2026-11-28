@@ -9,7 +9,7 @@
 # Optional flags:
 #   --auto        Auto-enable --smoke, --web-build, and --wasm based on files changed vs --base
 #   --base <ref>  Base git ref for --auto diff detection (default: main, fallback: origin/main)
-#   --smoke       Build arena-server + arena-bot and run ./scripts/server-smoke.sh
+#   --smoke       Build arena-world + arena-bot and run ./scripts/server-smoke.sh
 #   --web-build   Run `npm run build` (matches CI `browser` job)
 #   --wasm        Run wasm32-unknown-unknown Clippy check on arena-client
 #   --all         Enable --smoke, --web-build, and --wasm
@@ -72,7 +72,7 @@ if $auto_detect; then
   all_changed="$(printf '%s\n%s\n%s\n%s\n' "$committed_files" "$unstaged_files" "$staged_files" "$untracked_files" | sed '/^$/d' | sort -u)"
 
   # Matches crates participating in CI `rust` server-smoke job.
-  if grep -Eq '^(crates/(arena-sim|arena-protocol|arena-server|arena-bot|arena-map|arena-palette)/|Cargo\.toml$|Cargo\.lock$)' <<<"$all_changed"; then
+  if grep -Eq '^(crates/(arena-sim|arena-protocol|arena-world|arena-bot|arena-map|arena-palette)/|Cargo\.toml$|Cargo\.lock$)' <<<"$all_changed"; then
     run_smoke=true
   fi
   # Matches inputs to CI `browser` `npm run build`.
@@ -94,8 +94,8 @@ echo "==> [critic:headless] cargo run -p arena-headless --locked"
 cargo run -p arena-headless --locked
 
 if $run_smoke; then
-  echo "==> [critic:smoke] building arena-server & arena-bot + running ./scripts/server-smoke.sh"
-  cargo build -p arena-server -p arena-bot --locked
+  echo "==> [critic:smoke] building arena-world & arena-bot + running ./scripts/server-smoke.sh"
+  cargo build -p arena-world -p arena-bot --locked
   ./scripts/server-smoke.sh
 fi
 

@@ -1,4 +1,4 @@
-//! Process logs for `arena-server` and `arena-door` (ADR 0054).
+//! Process logs for `arena-world` and `arena-door` (ADR 0054).
 //!
 //! Every line is a `tracing` event on stderr. `ARENA_LOG_FORMAT` picks the
 //! shape: `pretty` (the default) for a terminal, `json` (one object per line,
@@ -6,7 +6,7 @@
 //! access log. `RUST_LOG` filters as usual and defaults to `info`.
 //!
 //! Lifecycle events carry the same field names everywhere, so one match or
-//! connection can be followed from the front door to the match server:
+//! connection can be followed from the front door to the world server:
 //! `match_id` (16 hex digits, as the lobby shows it), `seat`, `conn_id`,
 //! `team_size`, `mode`, `error_code` and `reason`.
 //!
@@ -109,7 +109,7 @@ impl Telemetry {
 /// HTTP request spans, whatever `RUST_LOG` says about log lines.
 fn exported_spans() -> Targets {
     Targets::new()
-        .with_target("arena_server", Level::INFO)
+        .with_target("arena_world", Level::INFO)
         .with_target("arena_door", Level::INFO)
         .with_target("tower_http", Level::INFO)
 }
@@ -277,7 +277,7 @@ mod tests {
             with_quiet_agents("debug,pyroscope=info"),
             "debug,pyroscope=info"
         );
-        assert!(EnvFilter::try_new(with_quiet_agents("arena_server=debug")).is_ok());
+        assert!(EnvFilter::try_new(with_quiet_agents("arena_world=debug")).is_ok());
     }
 
     #[test]

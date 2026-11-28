@@ -1,4 +1,4 @@
-//! The front door against a production-mode match server sharing its key:
+//! The front door against a production-mode world server sharing its key:
 //! links it hands out start and join a match; origins, request shape and
 //! the per-address creation limit are enforced.
 
@@ -6,10 +6,10 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use arena_protocol::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
-use arena_server::door::{self, CreatedMatch, DoorConfig};
-use arena_server::ingress::Origins;
-use arena_server::ticket::{TicketKey, from_hex};
-use arena_server::{Config, start};
+use arena_world::door::{self, CreatedMatch, DoorConfig};
+use arena_world::ingress::Origins;
+use arena_world::ticket::{TicketKey, from_hex};
+use arena_world::{Config, start};
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -259,7 +259,7 @@ async fn links_from_the_front_door_start_and_join_a_match() {
 
 mod queue {
     use super::*;
-    use arena_server::door::QueueMessage;
+    use arena_world::door::QueueMessage;
     use futures_util::stream::{SplitSink, SplitStream};
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -391,7 +391,7 @@ mod queue {
         }
     }
 
-    async fn door_and_server(ready: Duration) -> (door::DoorRunning, arena_server::Running) {
+    async fn door_and_server(ready: Duration) -> (door::DoorRunning, arena_world::Running) {
         let key = TicketKey::random();
         let mut server_config = Config::new(key.clone());
         server_config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
@@ -404,7 +404,7 @@ mod queue {
         (door::start(config).await.unwrap(), server)
     }
 
-    /// Joins the match server with a seat ticket; returns the actor welcomed.
+    /// Joins the world server with a seat ticket; returns the actor welcomed.
     async fn join_match(server: &str, ticket: &str) -> (Socket, u8) {
         let (mut socket, _) = connect_async(server).await.unwrap();
         let hello = ClientMessage::Hello {
@@ -826,7 +826,7 @@ mod queue {
                 }
                 assert_eq!(
                     view.members[2].slot,
-                    arena_server::matchmaker::LobbySlot::Spectator
+                    arena_world::matchmaker::LobbySlot::Spectator
                 );
             }
             other => panic!("expected lobby for spectator, got {other:?}"),
@@ -892,7 +892,7 @@ mod queue {
             other => panic!("expected spectator match ticket, got {other:?}"),
         };
 
-        // Connecting to the real match server verifies the signed custom round time limit
+        // Connecting to the real world server verifies the signed custom round time limit
         // AND accepts the signed spectator ticket as watch-only!
         let mut live_sockets = Vec::new();
         for (seat, ticket) in [(0u8, host_ticket), (1u8, guest_ticket)] {
@@ -915,7 +915,7 @@ mod queue {
                     assert_eq!(
                         welcome.round_ticks,
                         300 * arena_sim::TICKS_PER_SECOND,
-                        "custom 5-minute round limit must be enforced by the match server"
+                        "custom 5-minute round limit must be enforced by the world server"
                     );
                 }
                 other => panic!("expected Welcome, got {other:?}"),

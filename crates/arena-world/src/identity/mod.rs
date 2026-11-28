@@ -4,7 +4,7 @@
 //! PostgreSQL database, holds the session in a signed cookie, and signs the
 //! account id into match tickets. Guests keep playing without any of it.
 //!
-//! The match server never sees this module: it trusts the ticket alone.
+//! The world server never sees this module: it trusts the ticket alone.
 
 pub mod cookie;
 pub mod friends;

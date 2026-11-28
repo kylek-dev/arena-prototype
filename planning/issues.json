@@ -31,7 +31,7 @@
   },
   {
     "key": "remote-playtests",
-    "title": "Deploy the match server for remote playtests",
+    "title": "Deploy the world server for remote playtests",
     "body_file": "planning/issues/remote-playtests.md"
   },
   {

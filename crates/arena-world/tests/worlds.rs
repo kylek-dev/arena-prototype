@@ -5,11 +5,9 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use arena_protocol::{ClientMessage, ErrorCode, PROTOCOL_VERSION, ServerMessage, Snapshot};
-use arena_server::ticket::{Holder, TicketKey, issue_hub};
-use arena_server::worlds::{
-    DIRECTORY_LABEL, DIRECTORY_SIGNATURE, DirectoryReply, DirectoryRequest,
-};
-use arena_server::{Config, Running, start};
+use arena_world::ticket::{Holder, TicketKey, issue_hub};
+use arena_world::worlds::{DIRECTORY_LABEL, DIRECTORY_SIGNATURE, DirectoryReply, DirectoryRequest};
+use arena_world::{Config, Running, start};
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
@@ -282,7 +280,7 @@ async fn bad_directory_requests_are_refused() {
     assert_eq!(raw_report(server.addr, None, b"{}".to_vec()).await, 401);
     let tag = key.sign(DIRECTORY_LABEL, &body);
     assert_eq!(raw_report(server.addr, Some(tag), body).await, 400);
-    let huge = vec![b' '; arena_server::worlds::MAX_DIRECTORY_BODY + 1];
+    let huge = vec![b' '; arena_world::worlds::MAX_DIRECTORY_BODY + 1];
     let tag = key.sign(DIRECTORY_LABEL, &huge);
     assert_eq!(raw_report(server.addr, Some(tag), huge).await, 413);
 }
@@ -323,7 +321,7 @@ async fn an_empty_world_ends_and_the_same_id_starts_a_fresh_one() {
     config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
     config.tick = Duration::from_millis(2);
     config.connections_per_address = 0;
-    config.world_limits = arena_server::world::WorldLimits {
+    config.world_limits = arena_world::world::WorldLimits {
         queue: 32,
         grace: 2,
         idle: 5,

@@ -126,7 +126,7 @@ describe("queue messages", () => {
 
   it("names a guest as the door does, from the guest id", () => {
     // The same vectors as `guest_names_follow_the_guest_id` in
-    // crates/arena-server/src/door/auth.rs.
+    // crates/arena-world/src/door/auth.rs.
     const hex = (n: bigint) => n.toString(16).padStart(32, "0");
     for (const [id, handle] of [
       [0n, "Guest#0001"],

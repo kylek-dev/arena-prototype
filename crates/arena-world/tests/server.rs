@@ -8,8 +8,8 @@ use arena_protocol::{
     ClientMessage, ErrorCode, FighterState, InputFrame, PROTOCOL_VERSION, ServerMessage, Snapshot,
     Welcome, WireEvent, WireRejection, WireResult,
 };
-use arena_server::ticket::{Claims, TicketKey, from_hex};
-use arena_server::{Config, NewMatch, Running, start};
+use arena_world::ticket::{Claims, TicketKey, from_hex};
+use arena_world::{Config, NewMatch, Running, start};
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -270,7 +270,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
             Message::binary(hello(signed(Claims {
                 match_id: created.match_id,
                 player: 1,
-                role: arena_server::ticket::Role::Player { seat: 0 },
+                role: arena_world::ticket::Role::Player { seat: 0 },
                 team_size: 1,
                 expires: 1,
                 settings: None,
@@ -285,7 +285,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
             Message::binary(hello(signed(Claims {
                 match_id: created.match_id,
                 player: 1,
-                role: arena_server::ticket::Role::Player { seat: 2 },
+                role: arena_world::ticket::Role::Player { seat: 2 },
                 team_size: 1,
                 expires: far_future,
                 settings: None,
@@ -300,7 +300,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
             Message::binary(hello(signed(Claims {
                 match_id: created.match_id ^ 1,
                 player: 1,
-                role: arena_server::ticket::Role::Player { seat: 0 },
+                role: arena_world::ticket::Role::Player { seat: 0 },
                 team_size: 4,
                 expires: far_future,
                 settings: None,
@@ -315,12 +315,12 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
             Message::binary(hello(signed(Claims {
                 match_id: created.match_id ^ 2,
                 player: 1,
-                role: arena_server::ticket::Role::Player { seat: 0 },
+                role: arena_world::ticket::Role::Player { seat: 0 },
                 team_size: 1,
                 expires: far_future,
-                settings: Some(arena_server::ticket::MatchSettings {
-                    version: arena_server::ticket::MATCH_SETTINGS_VERSION + 1,
-                    map: arena_server::ticket::MapId::Colosseum,
+                settings: Some(arena_world::ticket::MatchSettings {
+                    version: arena_world::ticket::MATCH_SETTINGS_VERSION + 1,
+                    map: arena_world::ticket::MapId::Colosseum,
                     round_seconds: 600,
                     allow_spectators: true,
                 }),
@@ -335,12 +335,12 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
             Message::binary(hello(signed(Claims {
                 match_id: created.match_id ^ 3,
                 player: 1,
-                role: arena_server::ticket::Role::Player { seat: 0 },
+                role: arena_world::ticket::Role::Player { seat: 0 },
                 team_size: 1,
                 expires: far_future,
-                settings: Some(arena_server::ticket::MatchSettings {
-                    version: arena_server::ticket::MATCH_SETTINGS_VERSION,
-                    map: arena_server::ticket::MapId::Colosseum,
+                settings: Some(arena_world::ticket::MatchSettings {
+                    version: arena_world::ticket::MATCH_SETTINGS_VERSION,
+                    map: arena_world::ticket::MapId::Colosseum,
                     round_seconds: 123,
                     allow_spectators: true,
                 }),
@@ -355,12 +355,12 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
             Message::binary(hello(signed(Claims {
                 match_id: created.match_id ^ 4,
                 player: 1,
-                role: arena_server::ticket::Role::Spectator,
+                role: arena_world::ticket::Role::Spectator,
                 team_size: 1,
                 expires: far_future,
-                settings: Some(arena_server::ticket::MatchSettings {
-                    version: arena_server::ticket::MATCH_SETTINGS_VERSION,
-                    map: arena_server::ticket::MapId::Colosseum,
+                settings: Some(arena_world::ticket::MatchSettings {
+                    version: arena_world::ticket::MATCH_SETTINGS_VERSION,
+                    map: arena_world::ticket::MapId::Colosseum,
                     round_seconds: 600,
                     allow_spectators: false,
                 }),
@@ -375,7 +375,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
             Message::binary(hello(TicketKey::random().issue(&Claims {
                 match_id: created.match_id,
                 player: 1,
-                role: arena_server::ticket::Role::Player { seat: 0 },
+                role: arena_world::ticket::Role::Player { seat: 0 },
                 team_size: 1,
                 expires: far_future,
                 settings: None,
@@ -437,7 +437,7 @@ async fn hostile_connections_get_the_right_error_and_never_a_seat() {
     assert_eq!(metrics.errors(ErrorCode::HelloTimeout), 1);
     // Refused tickets never start a match; only the valid one did.
     assert_eq!(
-        arena_server::metrics::Metrics::get(&metrics.matches_created),
+        arena_world::metrics::Metrics::get(&metrics.matches_created),
         1
     );
     running.shut_down(Duration::ZERO).await.unwrap();
@@ -694,11 +694,10 @@ async fn upgrade_status(addr: SocketAddr, headers: &[(&str, &str)]) -> u16 {
 #[tokio::test]
 async fn only_allowed_pages_connect_and_each_address_holds_a_few_connections() {
     let mut guarded = config(false);
-    guarded.origins =
-        arena_server::ingress::Origins::Only(vec!["https://arena.example.com".into()]);
+    guarded.origins = arena_world::ingress::Origins::Only(vec!["https://arena.example.com".into()]);
     guarded.connections_per_address = 2;
     // Connections from loopback are a proxy forwarding for players.
-    guarded.trusted_proxies = vec![arena_server::ingress::Cidr::parse("127.0.0.1").unwrap()];
+    guarded.trusted_proxies = vec![arena_world::ingress::Cidr::parse("127.0.0.1").unwrap()];
     let running = start(guarded).await.unwrap();
     let addr = running.addr;
     let page = ("origin", "https://arena.example.com");
@@ -1059,7 +1058,7 @@ async fn malformed_frames_and_invalid_intents_mid_match_isolate_offender_without
         spawn_pos
     );
     assert!(
-        arena_server::metrics::Metrics::get(&running.app.metrics().inputs_stale) >= 2,
+        arena_world::metrics::Metrics::get(&running.app.metrics().inputs_stale) >= 2,
         "stale/regressed inputs must be counted and dropped"
     );
 
@@ -1612,9 +1611,9 @@ async fn next_handles(client: &mut Client) -> Vec<Option<arena_protocol::Handle>
 #[tokio::test]
 async fn seats_show_the_handles_their_tickets_name() {
     use arena_protocol::Handle;
-    use arena_server::ticket::{Holder, issue_seats, to_hex};
+    use arena_world::ticket::{Holder, issue_seats, to_hex};
     let mut config = config(false);
-    config.origins = arena_server::ingress::Origins::Any;
+    config.origins = arena_world::ingress::Origins::Any;
     let key = config.key.clone();
     let running = start(config).await.unwrap();
     let addr = running.addr;
@@ -1672,13 +1671,13 @@ async fn seats_show_the_handles_their_tickets_name() {
     let same_match_unnamed = {
         let mut claims = key
             .verify(
-                &arena_server::ticket::from_hex(&other.tickets[0]).unwrap(),
+                &arena_world::ticket::from_hex(&other.tickets[0]).unwrap(),
                 0,
             )
             .unwrap();
         let original = key
             .verify(
-                &arena_server::ticket::from_hex(&created.tickets[0]).unwrap(),
+                &arena_world::ticket::from_hex(&created.tickets[0]).unwrap(),
                 0,
             )
             .unwrap();

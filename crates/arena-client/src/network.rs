@@ -1,4 +1,4 @@
-//! Networked play against `arena-server` (ADR 0044, Phase 5).
+//! Networked play against `arena-world` (ADR 0044, Phase 5).
 //!
 //! The browser's TypeScript runtime owns the WebSocket and greets the server
 //! itself on every new socket, so a background tab (whose engine is paused

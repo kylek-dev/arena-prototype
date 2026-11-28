@@ -612,7 +612,7 @@ mod tests {
         )
     }
 
-    /// A stand-in server applying one input per tick, as `arena-server` does.
+    /// A stand-in server applying one input per tick, as `arena-world` does.
     fn server_tick(server: &mut Arena, input: Option<ActorInput>) {
         server.advance(&[input.unwrap_or_default()]);
     }

@@ -1,7 +1,7 @@
 //! The front door (ADR 0045): a stateless HTTP service that creates matches
 //! for remote players. It signs one join ticket per seat with the key it
-//! shares with the match servers and returns a join link per seat; the match
-//! starts on the match server when the first link is opened. No accounts:
+//! shares with the world servers and returns a join link per seat; the match
+//! starts on the world server when the first link is opened. No accounts:
 //! whoever creates a match hands the links out.
 //!
 //! - `POST /api/matches` with `{"team_size": 1..=3}` returns the links.
@@ -56,14 +56,14 @@ use crate::ticket::{self, TicketKey};
 pub struct DoorConfig {
     pub bind: SocketAddr,
     pub key: TicketKey,
-    /// The `ws://` or `wss://` URL of the match server's `/play` endpoint,
+    /// The `ws://` or `wss://` URL of the world server's `/play` endpoint,
     /// as players reach it.
-    pub match_server: String,
-    /// The match server's base URL on the private network (for example
-    /// `http://server:8080`). When set, the door asks it which matches have
+    pub world_server: String,
+    /// The world server's base URL on the private network (for example
+    /// `http://world:8080`). When set, the door asks it which matches have
     /// ended and clears their players' in-match state at once, instead of
     /// waiting out the 21-minute window.
-    pub match_status: Option<String>,
+    pub world_status: Option<String>,
     /// How often the door asks about the matches it seated.
     pub match_check_every: Duration,
     /// The game page join links open, as players reach it.
@@ -94,12 +94,12 @@ pub struct DoorConfig {
     pub news: Option<std::path::PathBuf>,
 }
 impl DoorConfig {
-    pub fn new(key: TicketKey, match_server: String, page: String) -> Self {
+    pub fn new(key: TicketKey, world_server: String, page: String) -> Self {
         Self {
             bind: SocketAddr::from(([127, 0, 0, 1], 8090)),
             key,
-            match_server,
-            match_status: None,
+            world_server,
+            world_status: None,
             match_check_every: Duration::from_secs(5),
             page,
             origins: Origins::Any,
@@ -202,8 +202,8 @@ struct Door {
     reports: RatePerAddress,
     metrics: DoorMetrics,
     queue: mpsc::Sender<queue::Command>,
-    /// Asks the match server which seated matches ended (`match_status`).
-    match_status: Option<reqwest::Client>,
+    /// Asks the world server which seated matches ended (`world_status`).
+    world_status: Option<reqwest::Client>,
     queue_open: Arc<OpenPerAddress>,
     next_conn: AtomicU64,
     shutdown: watch::Sender<bool>,
@@ -326,7 +326,7 @@ async fn create(
             team: if seat % 2 == 0 { "A" } else { "B" }.into(),
             link: join_link(
                 &door.config.page,
-                &door.config.match_server,
+                &door.config.world_server,
                 ticket,
                 expires,
             ),
@@ -589,7 +589,7 @@ async fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
         None => None,
     };
     let (commands, receiver) = mpsc::channel(1024);
-    let match_status = match &config.match_status {
+    let world_status = match &config.world_status {
         Some(_) => {
             // Plain HTTP on the private network; the TLS provider is only
             // needed for the client to build.
@@ -605,7 +605,7 @@ async fn build(config: DoorConfig) -> io::Result<(Router, Arc<Door>)> {
         None => None,
     };
     let door = Arc::new(Door {
-        match_status,
+        world_status,
         identity,
         auth_rate: RatePerAddress::new(config.auth_burst, Duration::from_secs(6)),
         // A burst of 10 requests, then one every 6 minutes (10 an hour).

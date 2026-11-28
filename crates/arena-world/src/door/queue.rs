@@ -405,7 +405,7 @@ pub(super) enum Command {
         generation: u64,
         reply: Option<crate::worlds::DirectoryReply>,
     },
-    /// The match server reports these matches ended: their players and
+    /// The world server reports these matches ended: their players and
     /// spectators are no longer in a match (presence, whispers, chat).
     MatchesEnded {
         ids: Vec<u64>,
@@ -601,7 +601,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 ));
                 out
             }
-            _ = directory_tick.tick(), if door.match_status.is_some() => {
+            _ = directory_tick.tick(), if door.world_status.is_some() => {
                 if worlds.is_empty()
                     && directory.held.is_empty()
                     && !directory.draining
@@ -625,7 +625,7 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                 }
                 Vec::new()
             }
-            _ = check.tick(), if door.match_status.is_some() => {
+            _ = check.tick(), if door.world_status.is_some() => {
                 // Past the in-match window a seat counts for nothing: forget
                 // it rather than ask about its match forever.
                 for id in chat.stale_matches(now) {
@@ -887,11 +887,11 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                             Metrics::add(&door.metrics.tickets, 1);
                             let message = ToClient::World {
                                 instance: format!("{instance:016x}"),
-                                server: door.config.match_server.clone(),
+                                server: door.config.world_server.clone(),
                                 ticket: ticket::to_hex(&pass),
                                 expires,
                             };
-                            if door.match_status.is_some() {
+                            if door.world_status.is_some() {
                                 // Tell the world server about blocks first.
                                 directory.hold(conn, message, now.into_std());
                                 directory.start(&door, &worlds, |a, b| hidden(&chat, &holders, a, b));
@@ -1244,7 +1244,7 @@ pub(super) enum Presence {
     Online,
     Searching,
     InLobby,
-    /// Got a match ticket within [`IN_MATCH`] and the match server has not
+    /// Got a match ticket within [`IN_MATCH`] and the world server has not
     /// reported the match ended (shown unless searching right now).
     InMatch,
 }
@@ -1262,8 +1262,8 @@ impl Presence {
 }
 
 /// How long after a match ticket a player counts as in a match at most: a
-/// round (20 min) and a little. Sooner when the match server reports the
-/// match ended (`--match-status`); this is the fallback without an answer.
+/// round (20 min) and a little. Sooner when the world server reports the
+/// match ended (`--world-status`); this is the fallback without an answer.
 const IN_MATCH: Duration = Duration::from_secs(21 * 60);
 
 /// Drops `conn` from the account index.
@@ -1283,11 +1283,11 @@ fn unindex(
     }
 }
 
-/// Asks the match server about each seated match and reports those that
+/// Asks the world server about each seated match and reports those that
 /// ended. Unknown matches (no one has joined yet, or a restarted server)
 /// stay seated until the in-match window runs out.
 async fn check_matches(door: Arc<Door>, ids: Vec<u64>) {
-    let (Some(client), Some(base)) = (&door.match_status, &door.config.match_status) else {
+    let (Some(client), Some(base)) = (&door.world_status, &door.config.world_status) else {
         return;
     };
     let base = base.trim_end_matches('/');
@@ -1341,7 +1341,7 @@ fn warn_unanswered(failed: usize) {
     {
         tracing::warn!(
             failed,
-            "the match server did not answer match checks; check --match-status"
+            "the world server did not answer match checks; check --world-status"
         );
     }
 }
@@ -2010,7 +2010,7 @@ impl DirectoryState {
             return;
         }
         let (Some(client), Some(base)) =
-            (door.match_status.clone(), door.config.match_status.clone())
+            (door.world_status.clone(), door.config.world_status.clone())
         else {
             return;
         };
@@ -2091,7 +2091,7 @@ fn warn_directory_unanswered() {
             .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
             .is_ok()
     {
-        tracing::warn!("the world server did not answer the hub directory; check --match-status");
+        tracing::warn!("the world server did not answer the hub directory; check --world-status");
     }
 }
 
@@ -2228,7 +2228,7 @@ fn start_match(
                 match_id: format!("{:016x}", created.match_id),
                 seat,
                 spectator: false,
-                server: door.config.match_server.clone(),
+                server: door.config.world_server.clone(),
                 ticket,
                 expires,
             });
@@ -2310,7 +2310,7 @@ fn start_custom_match(
                 match_id: match_id.clone(),
                 seat,
                 spectator: false,
-                server: door.config.match_server.clone(),
+                server: door.config.world_server.clone(),
                 ticket,
                 expires,
             });
@@ -2323,7 +2323,7 @@ fn start_custom_match(
                 match_id: match_id.clone(),
                 seat: 0,
                 spectator: true,
-                server: door.config.match_server.clone(),
+                server: door.config.world_server.clone(),
                 ticket,
                 expires,
             });

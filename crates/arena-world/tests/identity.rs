@@ -8,14 +8,14 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use arena_server::door::{self, DoorConfig, Me, QueueMessage};
-use arena_server::identity::IdentityConfig;
-use arena_server::identity::cookie::{SessionKey, base64url, pkce_challenge};
-use arena_server::identity::names::Blocklist;
-use arena_server::identity::store::test_database;
-use arena_server::identity::workos::WorkOs;
-use arena_server::ingress::Origins;
-use arena_server::ticket::{Claims, TicketKey, from_hex};
+use arena_world::door::{self, DoorConfig, Me, QueueMessage};
+use arena_world::identity::IdentityConfig;
+use arena_world::identity::cookie::{SessionKey, base64url, pkce_challenge};
+use arena_world::identity::names::Blocklist;
+use arena_world::identity::store::test_database;
+use arena_world::identity::workos::WorkOs;
+use arena_world::ingress::Origins;
+use arena_world::ticket::{Claims, TicketKey, from_hex};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{delete, post};
@@ -1097,10 +1097,8 @@ async fn admins_come_from_configuration_and_alone_may_store_maps() {
     }
     let fake = Fake::default();
     let provider = fake_provider(fake.clone()).await;
-    let directory = std::env::temp_dir().join(format!(
-        "arena-admin-{}",
-        arena_server::ticket::random_u64()
-    ));
+    let directory =
+        std::env::temp_dir().join(format!("arena-admin-{}", arena_world::ticket::random_u64()));
     std::fs::create_dir_all(&directory).unwrap();
     // Both doors share one database, as a restart would.
     let database = test_database().await.unwrap();
@@ -1410,7 +1408,7 @@ async fn whispers_reach_friends_and_admins_mute_while_blocks_silence() {
     let fake = Fake::default();
     let provider = fake_provider(fake.clone()).await;
     let directory =
-        std::env::temp_dir().join(format!("arena-chat-{}", arena_server::ticket::random_u64()));
+        std::env::temp_dir().join(format!("arena-chat-{}", arena_world::ticket::random_u64()));
     std::fs::create_dir_all(&directory).unwrap();
     // Both doors share one database, as a restart would.
     let database = test_database().await.unwrap();
@@ -1719,19 +1717,19 @@ async fn hub_worlds_follow_friends_carry_chat_and_hide_blocked_players() {
     let provider = fake_provider(fake.clone()).await;
     // A world server sharing the door's ticket key, which the door asks.
     let key = TicketKey::random();
-    let mut server_config = arena_server::Config::new(key.clone());
+    let mut server_config = arena_world::Config::new(key.clone());
     server_config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
     server_config.tick = Duration::from_millis(5);
     server_config.connections_per_address = 0;
-    let server = arena_server::start(server_config).await.unwrap();
+    let server = arena_world::start(server_config).await.unwrap();
     let (door, _) = door_tuned(
         Origins::Only(vec!["https://arena.example.com".into()]),
         provider,
         |config| {
             config.auth_burst = 1000;
             config.key = key.clone();
-            config.match_server = format!("ws://{}/play", server.addr);
-            config.match_status = Some(format!("http://{}", server.addr));
+            config.world_server = format!("ws://{}/play", server.addr);
+            config.world_status = Some(format!("http://{}", server.addr));
         },
     )
     .await;

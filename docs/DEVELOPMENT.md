@@ -1,6 +1,6 @@
 # Developer setup from a fresh machine
 
-This guide is for a developer cloning and modifying the project. Install the tools below once; Cargo and npm then download the pinned project dependencies. There is no separate Bevy/editor installation, database, asset download, or AI service requirement. The optional match server is built from this workspace (see below).
+This guide is for a developer cloning and modifying the project. Install the tools below once; Cargo and npm then download the pinned project dependencies. There is no separate Bevy/editor installation, database, asset download, or AI service requirement. The optional world server is built from this workspace (see below).
 
 ## Prerequisites
 
@@ -112,24 +112,24 @@ Open http://localhost:8000. Keep that terminal running; Ctrl+C stops the server.
 - Headless combat telemetry (deterministic zero-network Arena batches with duration, draw rate, LOS blocks, spell/interrupt counts, and `Arena::advance` tick compute time):
   `cargo run --release -p arena-headless -- --matches 20 --team-size 2 --json` (pass `--per-match` for individual match records and `--map assets/maps/colosseum.json` for custom layouts).
 
-### Match server (no browser client yet)
+### World server (no browser client yet)
 
-The authoritative match server ([ADR 0044](decisions/0044-authoritative-match-server.md), [protocol](PROTOCOL.md)) runs locally without accounts:
+The authoritative world server ([ADR 0044](decisions/0044-authoritative-match-server.md), [protocol](PROTOCOL.md)) runs locally without accounts:
 
 ```sh
-cargo run -p arena-server -- --dev            # ws://127.0.0.1:8080/play
+cargo run -p arena-world -- --dev            # ws://127.0.0.1:8080/play
 curl -X POST 'http://127.0.0.1:8080/dev/match?team_size=1'   # match id and one hex ticket per seat (the match starts when the first one connects)
 curl http://127.0.0.1:8080/metrics            # Prometheus text counters
 ```
 
-`--dev` generates a random ticket key and enables `POST /dev/match`; it refuses non-loopback `--bind` addresses. Without `--dev`, set `ARENA_TICKET_KEY` to at least 32 bytes of hex shared with whatever issues tickets. `--debug-json` logs every message as JSON on stderr. With `--dev`, Ctrl+C stops at once (players receive `ServerShutdown`). Pass `--drain-seconds N` to drain instead: readiness (`/readyz`) fails, no new match starts, and running matches continue for up to N seconds (progress every 10 s). A second Ctrl+C or SIGTERM stops immediately. Without `--dev`, `--drain-seconds` is required; see ADR 0044 for choosing it. Without `--dev`, `--allow-origin URL` (the game page's origin, repeatable) or `--any-origin` is also required. Behind a reverse proxy, `--trusted-proxy CIDR` makes the per-address connection limit (`--connections-per-address`, default 12, unlimited with `--dev`) count players rather than the proxy. Server tests: `cargo test -p arena-server`.
+`--dev` generates a random ticket key and enables `POST /dev/match`; it refuses non-loopback `--bind` addresses. Without `--dev`, set `ARENA_TICKET_KEY` to at least 32 bytes of hex shared with whatever issues tickets. `--debug-json` logs every message as JSON on stderr. With `--dev`, Ctrl+C stops at once (players receive `ServerShutdown`). Pass `--drain-seconds N` to drain instead: readiness (`/readyz`) fails, no new match starts, and running matches continue for up to N seconds (progress every 10 s). A second Ctrl+C or SIGTERM stops immediately. Without `--dev`, `--drain-seconds` is required; see ADR 0044 for choosing it. Without `--dev`, `--allow-origin URL` (the game page's origin, repeatable) or `--any-origin` is also required. Behind a reverse proxy, `--trusted-proxy CIDR` makes the per-address connection limit (`--connections-per-address`, default 12, unlimited with `--dev`) count players rather than the proxy. Server tests: `cargo test -p arena-world`.
 
-To try queues and parties ([ADR 0046](decisions/0046-queues-parties-and-home-screen.md)), run `./scripts/dev-door.sh`, which starts a development match server and `arena-door` sharing a fresh key. Serve the client with `npm run serve` (which forwards `/api` to the door) and open http://localhost:8000. Then use Play online on the home screen, or in the game menu. To fill the other seats, queue bots: `cargo run -p arena-bot -- --queue 2v2 --door 127.0.0.1:8090 --bots 3 --seconds 900` (`1v1`, `2v2` or `3v3`; bots queue alone and accept every match). Accept the match in the window that appears ([ADR 0047](decisions/0047-accepting-matches-and-queue-status.md)). To test a party, open the invite link in a second browser profile or a private window, which gets its own guest id. The link lobby from [ADR 0045](decisions/0045-front-door-and-playtest-deployment.md) is still at http://127.0.0.1:8090/lobby/. To load the hub ([ADR 0056](decisions/0056-social-hub.md)), run `cargo run -p arena-bot -- --hub --door 127.0.0.1:8090 --bots 41 --seconds 30`: the bots join and wander, and the report gives bytes and states per bot per second, the largest view and the instances used (41 bots fill one instance and open a second; `--dev` doors allow 64 queue connections per address). To deploy for remote players, see [DEPLOYMENT.md](DEPLOYMENT.md).
+To try queues and parties ([ADR 0046](decisions/0046-queues-parties-and-home-screen.md)), run `./scripts/dev-door.sh`, which starts a development world server and `arena-door` sharing a fresh key. Serve the client with `npm run serve` (which forwards `/api` to the door) and open http://localhost:8000. Then use Play online on the home screen, or in the game menu. To fill the other seats, queue bots: `cargo run -p arena-bot -- --queue 2v2 --door 127.0.0.1:8090 --bots 3 --seconds 900` (`1v1`, `2v2` or `3v3`; bots queue alone and accept every match). Accept the match in the window that appears ([ADR 0047](decisions/0047-accepting-matches-and-queue-status.md)). To test a party, open the invite link in a second browser profile or a private window, which gets its own guest id. The link lobby from [ADR 0045](decisions/0045-front-door-and-playtest-deployment.md) is still at http://127.0.0.1:8090/lobby/. To load the hub ([ADR 0056](decisions/0056-social-hub.md)), run `cargo run -p arena-bot -- --hub --door 127.0.0.1:8090 --bots 41 --seconds 30`: the bots join and wander, and the report gives bytes and states per bot per second, the largest view and the instances used (41 bots fill one instance and open a second; `--dev` doors allow 64 queue connections per address). To deploy for remote players, see [DEPLOYMENT.md](DEPLOYMENT.md).
 
 To play a network match in the browser, start the server and the client, then create a match and open one printed link per seat, each in its own tab or browser:
 
 ```sh
-cargo run -p arena-server -- --dev        # terminal 1
+cargo run -p arena-world -- --dev        # terminal 1
 npm run serve                              # terminal 2 (after ./scripts/build-web.sh)
 ./scripts/dev-match.sh 1                   # team size 1–3; prints one join link per seat
 ```
@@ -146,7 +146,7 @@ cargo run --release -p arena-bot -- --matches 167 --team-size 3 --seconds 30 --r
 cargo run --release -p arena-bot -- --rtt 100 --reconnect-every 5 --seconds 20   # drop out and rejoin
 ```
 
-`./scripts/server-smoke.sh` runs the same short (about 5 s) server-and-bots smoke test that CI runs (after `cargo build -p arena-server -p arena-bot`). Pass `--interp-delay-ms MS` (default `100`) to set a fixed remote view delay or `--adaptive-interp` to match the browser client's adaptive `InterpDelay` estimator ([ADR 0049](decisions/0049-bounded-targeting-lag-comp-and-adaptive-interp.md)), and `--server-pid PID` (Linux) to profile user/kernel/match-tick CPU, peak RSS, and context switches. `--json` prints the report as JSON, including deduplicated `outcomes` (wins and draw rate), `round_duration`, `combat` (LOS blocks, hits, damage, heals, casts, interrupts), `targeting_fairness` (range/LoS disagreement rates, lag-compensated saves, and distance errors), `bandwidth` (live 30 Hz full vs lossless delta and 20/15 Hz estimates), `server_metrics.tick_mean_microseconds`, and `server_profile`. The bot exits non-zero on any error, unexpected close, state hash mismatch or failed rejoin. See the [load baseline](research/match-server-load.md) and [2026-11-21 netcode measurements](research/netcode-measurements-2026-11-21.md).
+`./scripts/server-smoke.sh` runs the same short (about 5 s) server-and-bots smoke test that CI runs (after `cargo build -p arena-world -p arena-bot`). Pass `--interp-delay-ms MS` (default `100`) to set a fixed remote view delay or `--adaptive-interp` to match the browser client's adaptive `InterpDelay` estimator ([ADR 0049](decisions/0049-bounded-targeting-lag-comp-and-adaptive-interp.md)), and `--server-pid PID` (Linux) to profile user/kernel/match-tick CPU, peak RSS, and context switches. `--json` prints the report as JSON, including deduplicated `outcomes` (wins and draw rate), `round_duration`, `combat` (LOS blocks, hits, damage, heals, casts, interrupts), `targeting_fairness` (range/LoS disagreement rates, lag-compensated saves, and distance errors), `bandwidth` (live 30 Hz full vs lossless delta and 20/15 Hz estimates), `server_metrics.tick_mean_microseconds`, and `server_profile`. The bot exits non-zero on any error, unexpected close, state hash mismatch or failed rejoin. See the [load baseline](research/match-server-load.md) and [2026-11-21 netcode measurements](research/netcode-measurements-2026-11-21.md).
 
 ## VS Code tasks
 

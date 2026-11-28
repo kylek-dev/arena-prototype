@@ -48,7 +48,7 @@ export function scrubPage(href: string): string {
 }
 
 /** Whitespace that ends a redacted query or fragment: the same set the
- * door uses (`crates/arena-server/src/door/browser.rs`). */
+ * door uses (`crates/arena-world/src/door/browser.rs`). */
 const WHITESPACE = " \\t\\n\\r\\u000b\\u000c";
 
 /** Removes anything that could carry a credential from free text: URL

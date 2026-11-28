@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Starts a development match server and front door sharing a fresh signing
+# Starts a development world server and front door sharing a fresh signing
 # key (ADR 0045, 0046). Serve the client separately (`npm run serve`, which
 # forwards /api to the door), then open http://localhost:8000 and use
 # Menu → Play online to queue. To fill a queue with bots:
@@ -11,14 +11,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 page="${1:-http://localhost:8000/}"
-cargo build -q -p arena-server --bin arena-server --bin arena-door
+cargo build -q -p arena-world --bin arena-world --bin arena-door
 ARENA_TICKET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 export ARENA_TICKET_KEY
-target/debug/arena-server --dev --bind 127.0.0.1:8080 &
+target/debug/arena-world --dev --bind 127.0.0.1:8080 &
 server=$!
 target/debug/arena-door --dev --bind 127.0.0.1:8090 \
-  --match-server ws://127.0.0.1:8080/play --page "$page" \
-  --match-status http://127.0.0.1:8080 &
+  --world-server ws://127.0.0.1:8080/play --page "$page" \
+  --world-status http://127.0.0.1:8080 &
 door=$!
 trap 'kill -INT "$server" "$door" 2>/dev/null; wait' INT TERM EXIT
 wait -n "$server" "$door"

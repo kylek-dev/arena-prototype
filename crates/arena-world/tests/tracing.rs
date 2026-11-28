@@ -7,9 +7,9 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use arena_protocol::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
-use arena_server::door::{self, DoorConfig, QueueMessage};
-use arena_server::ticket::{TicketKey, from_hex};
-use arena_server::{Config, start};
+use arena_world::door::{self, DoorConfig, QueueMessage};
+use arena_world::ticket::{TicketKey, from_hex};
+use arena_world::{Config, start};
 use futures_util::{SinkExt, StreamExt};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
@@ -233,7 +233,7 @@ async fn control_plane_steps_are_traced_and_carry_no_tickets() {
             "{}",
             summary()
         );
-        // The match server's span for the same match.
+        // The world server's span for the same match.
         let hello = named("ws.hello")
             .find(|hello| attribute(hello, "match_id").as_deref() == Some(match_id.as_str()))
             .unwrap_or_else(|| panic!("no hello for {match_id}: {}", summary()));

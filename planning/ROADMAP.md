@@ -21,7 +21,7 @@ In recommended order (2026-11-15):
 
 | Order | Item | Stage | Definition |
 | --- | --- | --- | --- |
-| 1 | Deploy the match server for remote playtests (tooling done; a public host and playtest remain) | 2 | [remote-playtests](issues/remote-playtests.md) |
+| 1 | Deploy the world server for remote playtests (tooling done; a public host and playtest remain) | 2 | [remote-playtests](issues/remote-playtests.md) |
 | done | Queue for 1v1, 2v2 and 3v3 from inside the game, accepting found matches (browser review pending) | 4 | [matchmaking-queues](issues/matchmaking-queues.md) |
 | done | Queue premade parties in 2v2 and 3v3 (pulled forward by the user; browser review pending) | 4 | [party-queues](issues/party-queues.md) |
 | done | Show every player's chosen look in matches (moved up by the user; browser review pending) | 4 | [networked-appearance](issues/networked-appearance.md) |

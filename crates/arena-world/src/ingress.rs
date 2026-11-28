@@ -1,6 +1,6 @@
 //! Who is asking, and whether they may: the client's address (behind a
 //! trusted reverse proxy), the page origin a browser reports, and
-//! per-address limits. Shared by the match server and the front door.
+//! per-address limits. Shared by the world server and the front door.
 //! Clocks are passed in so the limits are deterministic in tests.
 
 use std::collections::HashMap;

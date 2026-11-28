@@ -185,4 +185,12 @@ They asked for the better architecture over patching the current one.
   40, `MAX_ROSTER` 44 (40 players and four training enemies); the client
   draws up to 44 fighters (its frame time with 40 players on screen is for
   the human review). A shared store for several doors stays for later.
-
+- **The rename, 2026-11-28, `auto/world-server-rename`:** the crate is
+  `arena-world` (library `arena_world`), its server binary `arena-world`
+  (the door stays `arena-door`, in the same crate); the door's
+  `--world-server` and `--world-status` (the old `--match-server` and
+  `--match-status` still accepted); the Compose service, image, scrape job
+  and log label `world` / `arena-world` / `arena-world`; the dashboard
+  `world-server-health.json` (uid `arena-world-health`). Metric names keep
+  their `arena_` prefix and are unchanged. Dated records (decisions,
+  research, logs) keep the old name.

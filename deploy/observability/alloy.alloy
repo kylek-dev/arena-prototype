@@ -1,4 +1,4 @@
-// Grafana Alloy on the game host (ADR 0054): ships what arena-server,
+// Grafana Alloy on the game host (ADR 0054): ships what arena-world,
 // arena-door and Caddy produce to an LGTM stack, the same way locally and in
 // production. Destinations come from the environment, so a remote LGTM, a
 // dedicated observability VPS or a managed service needs no change here:
@@ -13,7 +13,7 @@
 
 prometheus.scrape "arena" {
   targets = [
-    {"__address__" = "server:8080", "job" = "arena-server"},
+    {"__address__" = "world:8080", "job" = "arena-world"},
     {"__address__" = "door:8090", "job" = "arena-door"},
   ]
   scrape_interval = "15s"
@@ -44,7 +44,7 @@ discovery.relabel "arena" {
   }
   rule {
     source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
-    regex         = "server|door|caddy"
+    regex         = "world|door|caddy"
     action        = "keep"
   }
   rule {
