@@ -255,3 +255,133 @@ async fn following_a_stranger_is_refused() {
     .await;
     assert_eq!(code, "not_friends");
 }
+
+/// Places `socket`'s player in a world and enters it.
+async fn in_world(socket: &mut Socket) -> WorldSocket {
+    let (_, play, ticket) = world_ticket(socket).await;
+    let mut world = enter(&play, &ticket).await;
+    let _ = next_world(&mut world).await;
+    world
+}
+
+async fn refusal(socket: &mut Socket) -> String {
+    until(socket, |m| match m {
+        QueueMessage::Refused { code } => Some(code),
+        _ => None,
+    })
+    .await
+}
+
+#[tokio::test]
+async fn an_accepted_challenge_takes_both_players_into_a_1v1() {
+    let key = TicketKey::random();
+    let server = world_server(key.clone()).await;
+    let door = door_for(Some(&server), key).await;
+    // Guests 21 and 22 are Guest#0022 and Guest#0023.
+    let mut ann = connect(door.addr, 21).await;
+    let mut bo = connect(door.addr, 22).await;
+    let mut cy = connect(door.addr, 23).await;
+    let _ann_world = in_world(&mut ann).await;
+    let _bo_world = in_world(&mut bo).await;
+    // The next directory exchange confirms both placements.
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+
+    // Only from the hub, and only someone in one's world.
+    say(
+        &mut cy,
+        r#"{"type":"challenge","handle":"Guest#0022"}"#.into(),
+    )
+    .await;
+    assert_eq!(refusal(&mut cy).await, "not_in_hub");
+    say(
+        &mut bo,
+        r#"{"type":"challenge","handle":"Guest#0024"}"#.into(),
+    )
+    .await;
+    assert_eq!(refusal(&mut bo).await, "no_such_player");
+
+    // Declined: the challenger is told.
+    say(
+        &mut ann,
+        r#"{"type":"challenge","handle":"Guest#0023"}"#.into(),
+    )
+    .await;
+    until(&mut bo, |m| {
+        matches!(m, QueueMessage::Challenged { .. }).then_some(())
+    })
+    .await;
+    say(
+        &mut bo,
+        r#"{"type":"answer_challenge","from":"Guest#0022","accept":false}"#.into(),
+    )
+    .await;
+    let (with, reason) = until(&mut ann, |m| match m {
+        QueueMessage::ChallengeEnded { with, reason } => Some((with, reason)),
+        _ => None,
+    })
+    .await;
+    assert_eq!((with.as_str(), reason.as_str()), ("Guest#0023", "declined"));
+    // One attempt per 2 s (the door's loop clock may read up to a 250 ms
+    // tick early).
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
+
+    // Named in any case.
+    say(
+        &mut ann,
+        r#"{"type":"challenge","handle":"guest#0023"}"#.into(),
+    )
+    .await;
+    let to = until(&mut ann, |m| match m {
+        QueueMessage::ChallengeSent { to } => Some(to),
+        QueueMessage::Refused { code } => panic!("refused: {code}"),
+        _ => None,
+    })
+    .await;
+    assert_eq!(to, "Guest#0023");
+    let (from, remaining) = until(&mut bo, |m| match m {
+        QueueMessage::Challenged { from, remaining_ms } => Some((from, remaining_ms)),
+        _ => None,
+    })
+    .await;
+    assert_eq!(from, "Guest#0022");
+    assert!((1..=30_000).contains(&remaining));
+
+    say(
+        &mut bo,
+        r#"{"type":"answer_challenge","from":"Guest#0022","accept":true}"#.into(),
+    )
+    .await;
+    let mut seats = Vec::new();
+    for socket in [&mut ann, &mut bo] {
+        let (mode, seat, match_id) = until(socket, |m| match m {
+            QueueMessage::Match {
+                mode,
+                seat,
+                spectator: false,
+                match_id,
+                ..
+            } => Some((mode, seat, match_id)),
+            _ => None,
+        })
+        .await;
+        assert_eq!(mode, "1v1");
+        seats.push((seat, match_id));
+        let reason = until(socket, |m| match m {
+            QueueMessage::HubLeft { reason } => Some(reason),
+            _ => None,
+        })
+        .await;
+        assert_eq!(reason, "match");
+    }
+    assert_eq!(seats[0].0, 0, "the challenger takes seat 0");
+    assert_eq!(seats[1].0, 1);
+    assert_eq!(seats[0].1, seats[1].1, "one match");
+
+    // Answered once only.
+    say(
+        &mut bo,
+        r#"{"type":"answer_challenge","from":"Guest#0022","accept":true}"#.into(),
+    )
+    .await;
+    assert_eq!(refusal(&mut bo).await, "challenge_gone");
+}

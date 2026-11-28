@@ -72,6 +72,8 @@ const STATUS_EVERY: Duration = Duration::from_secs(2);
 const TICK_EVERY: Duration = Duration::from_millis(250);
 /// Messages buffered per connection; status updates are skipped when full.
 const OUTBOUND_QUEUE: usize = 32;
+/// Longest `Name#1234` a challenge names: anything longer names nobody.
+const MAX_HANDLE_TEXT: usize = 32;
 
 /// Empty structs rather than unit variants, so extra fields are refused.
 #[derive(Debug, Deserialize)]
@@ -149,6 +151,18 @@ enum FromClient {
     },
     /// Leave the hub world (the page closes its world connection).
     WorldLeave {},
+    /// Challenge the player named `handle` (`Name#1234`) in this player's
+    /// hub world to a 1v1 (ADR 0060).
+    Challenge {
+        handle: String,
+    },
+    /// Answer the challenge from the player named `from`.
+    AnswerChallenge {
+        from: String,
+        accept: bool,
+    },
+    /// Take back this player's open challenge.
+    WithdrawChallenge {},
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -242,6 +256,22 @@ pub enum ToClient {
         server: String,
         ticket: String,
         expires: u64,
+    },
+    /// `from` challenges this player to a 1v1; answer within
+    /// `remaining_ms` (ADR 0060).
+    Challenged {
+        from: String,
+        remaining_ms: u64,
+    },
+    /// The challenge reached `to`.
+    ChallengeSent {
+        to: String,
+    },
+    /// The challenge between this player and `with` closed without a match:
+    /// `declined`, `expired`, `withdrawn`, `left` or `busy`.
+    ChallengeEnded {
+        with: String,
+        reason: String,
     },
     /// Friend requests or friendships changed: fetch `/api/friends`.
     FriendsChanged {},
@@ -355,6 +385,18 @@ pub(super) enum Command {
         account: Option<u64>,
     },
     WorldLeave {
+        conn: QueueConn,
+    },
+    Challenge {
+        conn: QueueConn,
+        handle: String,
+    },
+    AnswerChallenge {
+        conn: QueueConn,
+        from: String,
+        accept: bool,
+    },
+    WithdrawChallenge {
         conn: QueueConn,
     },
     /// The world server's instance directory answered exchange
@@ -550,7 +592,15 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
         let mut queued_conn = None;
         let out = tokio::select! {
             _ = stop.wait_for(|stop| *stop) => break,
-            _ = tick.tick() => mm.tick(now),
+            _ = tick.tick() => {
+                let mut out = mm.tick(now);
+                // A challenge stands only while both players share a world.
+                out.extend(mm.prune_challenges(
+                    |a, b| together(&worlds, &chat, &holders, a, b),
+                    |conn| worlds.instance_of(conn).is_some(),
+                ));
+                out
+            }
             _ = directory_tick.tick(), if door.match_status.is_some() => {
                 if worlds.is_empty()
                     && directory.held.is_empty()
@@ -860,6 +910,17 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     }
                     Vec::new()
                 }
+                Some(Command::Challenge { conn, handle }) => {
+                    challenge(&mut mm, &worlds, &conns, &holders, &chat, now, conn, &handle)
+                }
+                Some(Command::AnswerChallenge { conn, from, accept }) => mm.answer_challenge(
+                    conn,
+                    &from,
+                    accept,
+                    |a, b| together(&worlds, &chat, &holders, a, b),
+                    now,
+                ),
+                Some(Command::WithdrawChallenge { conn }) => mm.withdraw_challenge(conn),
                 Some(Command::Directory { generation, reply }) => {
                     if let Some(reply) = &reply {
                         directory.draining = reply.draining;
@@ -968,7 +1029,8 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     directory.drop_held(conn);
                 }
                 Out::Start { mode, seats } => {
-                    let match_id = start_match(&door, &conns, &holders, mode, &seats);
+                    let match_id =
+                        start_match(&door, &conns, &holders, mode, &seats, Formed::Queue);
                     for (seat, conn) in seats.iter().enumerate() {
                         matched_at.insert(*conn, now);
                         chat.seat(
@@ -982,6 +1044,51 @@ pub(super) async fn run(door: Arc<Door>, mut commands: mpsc::Receiver<Command>) 
                     }
                     for conn in seats {
                         searches.matched(conn, match_id);
+                        leave_hub_for_match(&mut worlds, &mut directory, &conns, conn);
+                    }
+                }
+                Out::Challenged {
+                    conn,
+                    from,
+                    remaining,
+                } => send(
+                    &conns,
+                    conn,
+                    ToClient::Challenged {
+                        from,
+                        remaining_ms: remaining.as_millis() as u64,
+                    },
+                ),
+                Out::ChallengeSent { conn, to } => {
+                    send(&conns, conn, ToClient::ChallengeSent { to })
+                }
+                Out::ChallengeEnded { conn, with, reason } => send(
+                    &conns,
+                    conn,
+                    ToClient::ChallengeEnded {
+                        with,
+                        reason: reason.code().into(),
+                    },
+                ),
+                Out::StartChallenge { seats } => {
+                    let match_id = start_match(
+                        &door,
+                        &conns,
+                        &holders,
+                        Mode::Duel,
+                        &seats,
+                        Formed::Challenge,
+                    );
+                    for (seat, conn) in seats.into_iter().enumerate() {
+                        matched_at.insert(conn, now);
+                        chat.seat(
+                            conn,
+                            ChatSeat {
+                                match_id,
+                                team: Some((seat % 2) as u8),
+                                at: now,
+                            },
+                        );
                         leave_hub_for_match(&mut worlds, &mut directory, &conns, conn);
                     }
                 }
@@ -1726,6 +1833,81 @@ fn invite(
     out
 }
 
+/// Sends `conn`'s challenge to the one player named `handle` in its hub
+/// world (ADR 0060). Nobody else can be challenged: a player elsewhere, a
+/// name two players in the world share, or a player either side blocked
+/// all get `no_such_player`, as a missing one does.
+#[allow(clippy::too_many_arguments)]
+fn challenge(
+    mm: &mut Matchmaker,
+    worlds: &Worlds,
+    conns: &Senders,
+    holders: &HashMap<QueueConn, Holder>,
+    chat: &ChatState,
+    now: Instant,
+    conn: QueueConn,
+    handle: &str,
+) -> Vec<Out> {
+    let name = |conn: &QueueConn| {
+        holders
+            .get(conn)
+            .and_then(|holder| holder.handle)
+            .map(|handle| handle.to_string())
+    };
+    if worlds.instance_of(conn).is_none() {
+        send(
+            conns,
+            conn,
+            ToClient::Refused {
+                code: "not_in_hub".into(),
+            },
+        );
+        return Vec::new();
+    }
+    // Before the search through the world, so a flood costs nothing.
+    if !mm.challenge_turn(conn, now) {
+        send(
+            conns,
+            conn,
+            ToClient::Refused {
+                code: "rate_limited".into(),
+            },
+        );
+        return Vec::new();
+    }
+    let mut found = worlds.members(conn).into_iter().filter(|other| {
+        *other != conn
+            && name(other).is_some_and(|other| other.eq_ignore_ascii_case(handle))
+            && !hidden(chat, holders, conn, *other)
+    });
+    let (Some(from), Some(to), None) = (name(&conn), found.next(), found.next()) else {
+        send(
+            conns,
+            conn,
+            ToClient::Refused {
+                code: "no_such_player".into(),
+            },
+        );
+        return Vec::new();
+    };
+    let to_handle = name(&to).expect("matched by name");
+    mm.challenge(conn, to, from, to_handle, now)
+}
+
+/// Whether a challenge between two connections may stand (ADR 0060): both
+/// in one hub world, neither having blocked the other since it was sent.
+fn together(
+    worlds: &Worlds,
+    chat: &ChatState,
+    holders: &HashMap<QueueConn, Holder>,
+    a: QueueConn,
+    b: QueueConn,
+) -> bool {
+    worlds.instance_of(a).is_some()
+        && worlds.instance_of(a) == worlds.instance_of(b)
+        && !hidden(chat, holders, a, b)
+}
+
 /// Whether either of two connections' accounts blocked the other's: such
 /// players never see each other in the hub (ADR 0056).
 fn hidden(
@@ -1987,13 +2169,22 @@ fn leave_hub_for_match(
     }
 }
 
-/// Issues a queue match's tickets; returns its id.
+/// Where a match without custom settings came from.
+#[derive(Clone, Copy)]
+enum Formed {
+    Queue,
+    /// An accepted 1v1 challenge (ADR 0060).
+    Challenge,
+}
+
+/// Issues a queue (or challenge) match's tickets; returns its id.
 fn start_match(
     door: &Door,
     conns: &Senders,
     holders: &HashMap<QueueConn, Holder>,
     mode: Mode,
     seats: &[QueueConn],
+    formed: Formed,
 ) -> u64 {
     let expires = unix_now() + door.config.ticket_ttl.as_secs();
     let seat_accounts: Vec<Holder> = seats
@@ -2010,14 +2201,26 @@ fn start_match(
     )
     .expect("queue modes have playable team sizes");
     Metrics::add(&door.metrics.issued, 1);
-    Metrics::add(&door.metrics.queue_matches, 1);
     Metrics::add(&door.metrics.tickets, created.tickets.len() as u64);
-    tracing::info!(
-        match_id = %MatchId(created.match_id),
-        mode = mode.id(),
-        team_size = mode.team_size(),
-        "match formed from the queue"
-    );
+    match formed {
+        Formed::Queue => {
+            Metrics::add(&door.metrics.queue_matches, 1);
+            tracing::info!(
+                match_id = %MatchId(created.match_id),
+                mode = mode.id(),
+                team_size = mode.team_size(),
+                "match formed from the queue"
+            );
+        }
+        Formed::Challenge => {
+            Metrics::add(&door.metrics.challenge_matches, 1);
+            tracing::info!(
+                match_id = %MatchId(created.match_id),
+                mode = mode.id(),
+                "match started from a challenge"
+            );
+        }
+    }
     for (seat, (conn, ticket)) in seats.iter().zip(created.tickets).enumerate() {
         if let Some(sender) = conns.get(conn) {
             let _ = sender.try_send(ToClient::Match {
@@ -2268,6 +2471,23 @@ fn command(conn: QueueConn, message: FromClient) -> Result<Command, &'static str
         // Needs the store to find a friend; checked by the connection first.
         FromClient::WorldJoin { .. } => return Err("Join the hub through the connection."),
         FromClient::WorldLeave {} => Command::WorldLeave { conn },
+        // No handle is longer; such a name matches nobody.
+        FromClient::Challenge { handle } if handle.len() <= MAX_HANDLE_TEXT => {
+            Command::Challenge { conn, handle }
+        }
+        FromClient::Challenge { .. } => Command::Challenge {
+            conn,
+            handle: String::new(),
+        },
+        FromClient::AnswerChallenge { from, accept } if from.len() <= MAX_HANDLE_TEXT => {
+            Command::AnswerChallenge { conn, from, accept }
+        }
+        FromClient::AnswerChallenge { accept, .. } => Command::AnswerChallenge {
+            conn,
+            from: String::new(),
+            accept,
+        },
+        FromClient::WithdrawChallenge {} => Command::WithdrawChallenge { conn },
     })
 }
 
@@ -2722,6 +2942,44 @@ mod tests {
             ))
             .unwrap(),
             r#"{"type":"party","code":"K7P2QX","members":2,"leader":true,"queue":"2v2","mates":["Rook#0042"]}"#
+        );
+        // Challenges (ADR 0060): strict fields; an overlong name names nobody.
+        assert!(matches!(
+            command(7, parse(r#"{"type":"challenge","handle":"Rook#0042"}"#).unwrap()),
+            Ok(Command::Challenge { conn: 7, handle }) if handle == "Rook#0042"
+        ));
+        let long = format!(r#"{{"type":"challenge","handle":"{}"}}"#, "x".repeat(400));
+        assert!(matches!(
+            command(7, parse(&long).unwrap()),
+            Ok(Command::Challenge { handle, .. }) if handle.is_empty()
+        ));
+        assert!(matches!(
+            command(
+                7,
+                parse(r#"{"type":"answer_challenge","from":"Rook#0042","accept":false}"#).unwrap()
+            ),
+            Ok(Command::AnswerChallenge { accept: false, from, .. }) if from == "Rook#0042"
+        ));
+        assert!(matches!(
+            command(7, parse(r#"{"type":"withdraw_challenge"}"#).unwrap()),
+            Ok(Command::WithdrawChallenge { conn: 7 })
+        ));
+        for bad in [
+            r#"{"type":"withdraw_challenge","handle":"Rook#0042"}"#,
+            r#"{"type":"challenge"}"#,
+            r#"{"type":"challenge","handle":"Rook#0042","mode":"2v2"}"#,
+            r#"{"type":"answer_challenge","from":"Rook#0042"}"#,
+            r#"{"type":"answer_challenge","from":"Rook#0042","accept":"yes"}"#,
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            serde_json::to_string(&ToClient::ChallengeEnded {
+                with: "Rook#0042".into(),
+                reason: "declined".into(),
+            })
+            .unwrap(),
+            r#"{"type":"challenge_ended","with":"Rook#0042","reason":"declined"}"#
         );
         // Custom lobby requests parse strictly and reject free-form map/mode fields.
         assert!(matches!(

@@ -153,6 +153,8 @@ struct DoorMetrics {
     hub_instances: AtomicU64,
     queue_matches: AtomicU64,
     custom_matches: AtomicU64,
+    /// Matches started from accepted 1v1 challenges (ADR 0060).
+    challenge_matches: AtomicU64,
     /// Copied from the matchmaker's running totals.
     checks_started: AtomicU64,
     checks_completed: AtomicU64,
@@ -415,6 +417,11 @@ fn render_door_metrics(metrics: &DoorMetrics) -> String {
             "door_custom_matches_total",
             "Matches started from private custom lobbies.",
             &metrics.custom_matches,
+        ),
+        (
+            "door_challenge_matches_total",
+            "1v1 matches started from accepted hub challenges.",
+            &metrics.challenge_matches,
         ),
         (
             "door_matches_issued_total",

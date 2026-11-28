@@ -33,6 +33,10 @@ use tokio::time::Instant;
 
 use crate::ticket::MatchSettings;
 
+#[path = "matchmaker_challenge.rs"]
+mod challenge;
+use challenge::Challenge;
+pub use challenge::{CHALLENGE_GAP, CHALLENGE_TTL, ChallengeEnded, MAX_INCOMING};
 #[path = "matchmaker_custom.rs"]
 mod custom;
 use custom::CustomLobby;
@@ -138,6 +142,12 @@ pub enum Refused {
     SpectatorsDisabled,
     /// Cannot disable spectator slots while spectators are in the lobby.
     SpectatorsOccupied,
+    /// No such player to challenge (or oneself).
+    NoSuchPlayer,
+    /// The challenged player already holds as many challenges as they may.
+    ChallengeBusy,
+    /// The challenge was answered, withdrawn or expired.
+    ChallengeGone,
 }
 impl Refused {
     pub fn code(self) -> &'static str {
@@ -158,6 +168,9 @@ impl Refused {
             Refused::InvalidSettings => "invalid_settings",
             Refused::SpectatorsDisabled => "spectators_disabled",
             Refused::SpectatorsOccupied => "spectators_occupied",
+            Refused::NoSuchPlayer => "no_such_player",
+            Refused::ChallengeBusy => "challenge_busy",
+            Refused::ChallengeGone => "challenge_gone",
         }
     }
 }
@@ -266,6 +279,29 @@ pub enum Out {
         seats: Vec<QueueConn>,
         spectators: Vec<QueueConn>,
     },
+    /// `from` challenges this player to a 1v1 (ADR 0060), for `remaining`.
+    Challenged {
+        conn: QueueConn,
+        from: String,
+        remaining: std::time::Duration,
+    },
+    /// The challenge reached `to`.
+    ChallengeSent {
+        conn: QueueConn,
+        to: String,
+    },
+    /// The challenge between this player and `with` closed without a match.
+    ChallengeEnded {
+        conn: QueueConn,
+        with: String,
+        reason: ChallengeEnded,
+    },
+    /// A challenge was accepted: issue a 1v1's tickets, `seats[0]` (the
+    /// challenger) on one team and `seats[1]` on the other. Both stay in
+    /// their parties, no longer searching.
+    StartChallenge {
+        seats: [QueueConn; 2],
+    },
     Close {
         conn: QueueConn,
         reason: Closed,
@@ -352,6 +388,10 @@ pub struct Matchmaker {
     lobbies: HashMap<u64, CustomLobby>,
     lobby_codes: HashMap<String, u64>,
     in_lobby: HashMap<QueueConn, u64>,
+    /// Open 1v1 challenges by challenger (one each), and when each player
+    /// last sent one.
+    challenges: HashMap<QueueConn, Challenge>,
+    challenge_sent: HashMap<QueueConn, Instant>,
     forming: HashMap<u64, Forming>,
     next_id: u64,
     /// Each connection's party.
@@ -377,6 +417,8 @@ impl Matchmaker {
             lobbies: HashMap::new(),
             lobby_codes: HashMap::new(),
             in_lobby: HashMap::new(),
+            challenges: HashMap::new(),
+            challenge_sent: HashMap::new(),
             forming: HashMap::new(),
             next_id: 0,
             of: HashMap::new(),
@@ -594,7 +636,9 @@ impl Matchmaker {
 
     /// The connection went away.
     pub fn disconnect(&mut self, conn: QueueConn, now: Instant) -> Vec<Out> {
-        let mut out = self.remove_from_lobby(conn, None);
+        let mut out = self.drop_challenges(conn);
+        self.challenge_sent.remove(&conn);
+        out.extend(self.remove_from_lobby(conn, None));
         out.extend(self.remove_member(conn, now));
         out
     }
@@ -956,10 +1000,11 @@ impl Matchmaker {
         self.fail(check, now)
     }
 
-    /// Fails ready checks whose time is up.
+    /// Fails ready checks, and ends challenges, whose time is up.
     pub fn tick(&mut self, now: Instant) -> Vec<Out> {
+        let mut out = self.expire_challenges(now);
         if !self.forming.values().any(|forming| now >= forming.deadline) {
-            return Vec::new();
+            return out;
         }
         let expired: Vec<u64> = self
             .forming
@@ -967,10 +1012,10 @@ impl Matchmaker {
             .filter(|(_, forming)| now >= forming.deadline)
             .map(|(id, _)| *id)
             .collect();
-        expired
-            .into_iter()
-            .flat_map(|id| self.fail(id, now))
-            .collect()
+        for id in expired {
+            out.extend(self.fail(id, now));
+        }
+        out
     }
 
     /// Ends a ready check that cannot complete. Parties whose members all
