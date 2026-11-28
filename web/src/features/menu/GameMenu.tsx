@@ -1,3 +1,4 @@
+import { inMatch as inMatchOf } from "../../domain/network";
 import { Button, Text } from "@radix-ui/themes";
 import { setMode, setPanel, selectedLayout } from "../../state/session";
 import { engine } from "../../state/session";
@@ -15,12 +16,13 @@ const NO_LINK = createStore<LinkState>({ phase: "idle", attempt: 0, ended: null,
 
 export function GameMenu() {
   const link = useStore(networkLink, (l) => l);
-  const phase = useStore(link?.state ?? NO_LINK, (s) => s.phase);
+  const inMatch = useStore(link?.state ?? NO_LINK, inMatchOf);
+  const inWorld = useStore(engine, (s) => Boolean(s?.hub));
   const seat = useStore(link?.state ?? NO_LINK, (s) => s.status?.seat ?? null);
   const statusSpectator = useStore(link?.state ?? NO_LINK, (s) => Boolean(s.status?.spectator));
   const engineSpectating = useStore(engine, (s) => Boolean(s?.spectating));
   const spectating = statusSpectator || engineSpectating;
-  const inMatch = phase !== "idle" && phase !== "ended";
+
   const remembered = !inMatch ? link?.remembered() : null;
   // Admins only (decided 2026-11-26); the door keeps map storage admin-only too.
   const mapEditor = useMapEditorAllowed();
@@ -31,9 +33,23 @@ export function GameMenu() {
           ? spectating
             ? "Spectating"
             : `Network match${seat === null ? "" : `, seat ${seat + 1}`}`
-          : "Practice"}
+          : inWorld
+            ? "Hub"
+            : "Practice"}
       </Text>
       <Button onClick={() => setPanel(null)}>Resume</Button>
+      {inWorld && (
+        <Button
+          variant="soft"
+          color="gray"
+          onClick={() => {
+            setPanel(null);
+            leaveHub();
+          }}
+        >
+          Leave the hub
+        </Button>
+      )}
       {inMatch && link && (
         <Button
           variant="soft"

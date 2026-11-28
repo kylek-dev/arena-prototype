@@ -95,10 +95,10 @@ it("covers the arena until Enter, which starts a practice round and asks for the
   );
   fireEvent.click(screen.getByRole("button", { name: "Enter the game" }));
   expect(beforeMatch.get()).toBe(false);
-  // Into the hub (ADR 0056), with the saved look.
+  // Into a hub world (ADR 0057): the door is asked for a place.
   expect(fake.queue.hub.get().status).toBe("joining");
   fake.open();
-  expect(fake.sent().at(-1)?.type).toBe("hub_join");
+  expect(fake.sent().at(-1)?.type).toBe("world_join");
   expect(blocksGameplay()).toBe(false);
   expect(reset).toHaveBeenCalledWith("reset");
   expect(screen.queryByRole("region", { name: "Launcher" })).toBeNull();

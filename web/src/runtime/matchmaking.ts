@@ -40,17 +40,7 @@ import {
   type ChatTab,
 } from "../domain/chat";
 import { createStore } from "../state/store";
-import type { Appearance } from "../domain/appearance";
-import {
-  HUB_REFUSALS,
-  OUT_OF_HUB,
-  applyHubMessage,
-  clampIntent,
-  hubRequests,
-  parseHubMessage,
-  wireAppearance,
-  type HubState,
-} from "../domain/hub";
+import { HUB_REFUSALS, OUT_OF_HUB, hubRequests, type HubState } from "../domain/hub";
 
 type TextSocket = {
   readyState: number;
@@ -71,6 +61,9 @@ export type QueueDeps = {
   randomBytes(count: number): Uint8Array;
   /** Joins the seat the queue found. */
   onMatch(ticket: MatchTicket): void;
+  /** The door took this page out of its hub world (the world connection
+   * ended, or it never connected): close the world link. */
+  onWorldLeft?(): void;
 };
 
 const GUEST_KEY = "arena.guest";
@@ -122,7 +115,7 @@ export function createQueue(deps: QueueDeps) {
    * of it yet: its end is not news to the player (no "lost" bar). */
   let background = false;
   const update = (patch: Partial<QueueState>) => state.set({ ...state.get(), ...patch });
-  // The hub (ADR 0056), in a store of its own: it changes 10 times a second.
+  // The hub (ADR 0057): whether the door has placed this page in a world.
   const hub = createStore<HubState>(OUT_OF_HUB);
   const drop = () => {
     if (!socket) return;
@@ -188,14 +181,6 @@ export function createQueue(deps: QueueDeps) {
     };
   };
   const receive = (data: unknown) => {
-    // Hub messages (the door writes the type first) skip the queue's parser.
-    if (typeof data === "string" && data.startsWith('{"type":"hub')) {
-      const hubMessage = parseHubMessage(data);
-      if (hubMessage) {
-        hub.set(applyHubMessage(hub.get(), hubMessage));
-        return;
-      }
-    }
     const message = parseQueueMessage(data);
     if (!message) return;
     const current = state.get();
@@ -286,6 +271,18 @@ export function createQueue(deps: QueueDeps) {
         update({ phase: "idle", since: null, readyCheck: null, notice: null });
         deps.onMatch(message.ticket);
         break;
+      case "world":
+        // Joined like a match: the world server runs the hub (ADR 0057).
+        if (hub.get().status === "out") break;
+        hub.set({ status: "in", instance: message.instance, notice: null });
+        deps.onMatch(message.ticket);
+        break;
+      case "hub_left":
+        hub.set({ ...OUT_OF_HUB, notice: message.reason });
+        // A new name needs a new place: ask again.
+        if (message.reason === "renamed") api.joinHub();
+        else if (message.reason === "left") deps.onWorldLeft?.();
+        break;
       case "lobby":
         update({ lobby: message.lobby, notice: null, joining: null });
         break;
@@ -321,19 +318,18 @@ export function createQueue(deps: QueueDeps) {
   const api = {
     state,
     guest,
-    /** The hub as the door last described it (ADR 0056). */
+    /** Whether the door has placed this page in a hub world (ADR 0057). */
     hub,
-    /** Enters the hub with this look, beside a friend or party member when
-     * named; `false` when the look cannot be sent. */
-    joinHub(look: Appearance, friend?: string) {
-      const wire = wireAppearance(look);
-      if (!wire) return false;
+    /** Asks the door for a place in a hub world, beside a friend or party
+     * member when named; the `world` ticket it answers is joined like a
+     * match (`onMatch`). The look goes to the world server in `Hello`. */
+    joinHub(friend?: string) {
       if (hub.get().status !== "out") return true;
       hub.set({ ...OUT_OF_HUB, status: "joining" });
       // Entering the game asks for the hub on the way: a door that cannot
       // be reached (local practice without one) is no news.
       const quiet = !socket;
-      request(hubRequests.join(wire, friend), "hub");
+      request(hubRequests.join(friend), "hub");
       if (quiet) background = true;
       return true;
     },
@@ -341,17 +337,6 @@ export function createQueue(deps: QueueDeps) {
       if (hub.get().status === "out") return;
       hub.set(OUT_OF_HUB);
       request(hubRequests.leave());
-    },
-    /** One hub tick of the renderer's walk (numbered by the renderer,
-     * which replays the moves the door has not applied yet). Moves go
-     * straight onto the open socket: they are never refused in a way the
-     * page answers, so they leave the refusal bookkeeping alone. */
-    moveHub(seq: number, x: number, z: number, facing: number, jump = false) {
-      if (!Number.isInteger(seq) || seq < 1 || seq > 2 ** 32 - 1) return;
-      if (hub.get().status !== "in") return;
-      if (socket?.readyState !== OPEN || state.get().connection !== "online") return;
-      const intent = clampIntent(x, z, facing);
-      socket.send(hubRequests.move(seq, intent.x, intent.z, intent.facing, jump === true));
     },
     /** The clock search times are measured on. */
     now: deps.now,
@@ -525,7 +510,7 @@ export function createQueue(deps: QueueDeps) {
 }
 export type Queue = ReturnType<typeof createQueue>;
 
-export function browserQueue(onMatch: (ticket: MatchTicket) => void) {
+export function browserQueue(onMatch: (ticket: MatchTicket) => void, onWorldLeft?: () => void) {
   let storage: StorageLike | null = null;
   try {
     storage = window.localStorage;
@@ -539,6 +524,7 @@ export function browserQueue(onMatch: (ticket: MatchTicket) => void) {
     storage,
     randomBytes: (count) => crypto.getRandomValues(new Uint8Array(count)),
     onMatch,
+    onWorldLeft,
   });
 }
 

@@ -30,9 +30,6 @@ import { QueueBar } from "../features/queue/QueueBar";
 import { Loading } from "../features/loading/Loading";
 import { Diagnostics } from "../features/diagnostics/Diagnostics";
 import { MapEditor } from "../features/map-editor/MapEditor";
-import { HubNameplates } from "../features/hub/HubNameplates";
-import { OUT_OF_HUB } from "../domain/hub";
-import { matchQueue } from "../state/network";
 import { Customizer } from "../features/customizer/Customizer";
 import { beforeMatch, customizerVisible } from "../state/appearance";
 import { LauncherPage } from "../features/launcher-page/LauncherPage";
@@ -50,9 +47,6 @@ import { saveMessage, useConfigSelector } from "../state/config";
 import { useStore } from "../state/store";
 import { pendingBinding } from "../state/binding-capture";
 import { label } from "../domain/bindings/model";
-import { createStore } from "../state/store";
-
-const NO_HUB = createStore(OUT_OF_HUB);
 
 export function App() {
   const mode = useStore(interaction, (s) => s);
@@ -64,9 +58,8 @@ export function App() {
   const spectating = useStore(engine, (s) => Boolean(s?.spectating));
   const lobbyOpen = useStore(customLobbyVisible, (v) => v);
   const boardOpen = useStore(scoreboardVisible, (v) => v);
-  // The hub is a social place (ADR 0056): no combat HUD there.
-  const queue = useStore(matchQueue, (q) => q);
-  const inHub = useStore(queue?.hub ?? NO_HUB, (h) => h.status === "in");
+  // A hub world (ADR 0057) has the whole HUD; only rounds are missing.
+  const inHub = useStore(engine, (s) => Boolean(s?.hub));
   // The Play and Friends windows belong to the arena: a full-screen overlay
   // (customizer, launcher page, custom lobby, scoreboard) closes them.
   useEffect(() => {
@@ -112,15 +105,9 @@ export function App() {
               Open game menu
             </button>
             <span className="menu-hint">{menuKey ? label(menuKey) : "Shift+Tab"} · Menu</span>
-            {inHub ? (
-              <HubNameplates />
-            ) : (
-              <>
-                <Nameplates />
-                <CombatText />
-              </>
-            )}
-            {inHub ? null : spectating ? (
+            <Nameplates />
+            <CombatText />
+            {spectating ? (
               <SpectatorHud />
             ) : (
               <>

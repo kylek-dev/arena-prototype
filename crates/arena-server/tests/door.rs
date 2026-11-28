@@ -1042,105 +1042,51 @@ mod queue {
         server.stop().await.unwrap();
     }
 
-    const LOOK: &str = r#"{"ancestry":"human","body":"female","skin_tone":"s1","hair_color":"h1","facial_hair_color":"h1","eyes":"e1","build":0,"groups":[["hair","bob"]],"variants":[]}"#;
-
     impl Player {
-        /// Joins the hub; returns the instance and this player's hub id.
-        async fn enter_hub(&mut self, friend: Option<&str>) -> Result<(u32, u32), String> {
-            let friend = friend.map_or(String::new(), |name| format!(r#","friend":"{name}""#));
-            self.say(&format!(
-                r#"{{"type":"hub_join","appearance":{LOOK}{friend}}}"#
-            ))
-            .await;
+        /// Asks for a hub world; returns its instance (hex).
+        async fn enter_world(&mut self) -> Result<String, String> {
+            self.say(r#"{"type":"world_join"}"#).await;
             loop {
                 match self.next().await {
-                    Some(QueueMessage::Hub(joined)) => return Ok((joined.instance, joined.you)),
+                    Some(QueueMessage::World { instance, .. }) => return Ok(instance),
                     Some(QueueMessage::Refused { code }) => return Err(code),
-                    Some(QueueMessage::HubState(_) | QueueMessage::Party { .. }) => {}
-                    other => panic!("expected to join the hub, got {other:?}"),
-                }
-            }
-        }
-        /// The next hub state.
-        async fn hub_state(&mut self) -> arena_server::door::HubState {
-            loop {
-                match self.next().await {
-                    Some(QueueMessage::HubState(state)) => return state,
                     Some(_) => {}
-                    None => panic!("closed while waiting for a hub state"),
+                    None => panic!("closed while asking for a hub world"),
                 }
             }
         }
     }
 
     #[tokio::test]
-    async fn players_meet_in_the_hub_move_chat_and_leave_for_a_match() {
+    async fn players_share_a_hub_world_and_leave_it_for_a_match() {
         let (door, server) = door_and_server(Duration::from_secs(5)).await;
         let mut a = Player::hello(door.addr, 1).await;
         let mut b = Player::hello(door.addr, 2).await;
-        // Moving before joining is refused; so is following a stranger.
+        // The door's own hub is gone: its messages are refused.
         a.say(r#"{"type":"hub_move","seq":1,"x":1000,"z":0,"facing":0}"#)
             .await;
+        loop {
+            match a.next().await {
+                Some(QueueMessage::Error { code, .. }) => {
+                    assert_eq!(code, "bad_request");
+                    break;
+                }
+                Some(QueueMessage::Refused { code }) => {
+                    assert_eq!(code, "bad_request");
+                    break;
+                }
+                Some(_) => {}
+                None => break,
+            }
+        }
+        let mut a = Player::hello(door.addr, 1).await;
+        let instance = a.enter_world().await.unwrap();
         assert_eq!(
-            a.next_event().await,
-            Some(QueueMessage::Refused {
-                code: "not_in_hub".into()
-            })
+            b.enter_world().await.unwrap(),
+            instance,
+            "the fullest world"
         );
-        assert_eq!(
-            a.enter_hub(Some("Guest#0003")).await,
-            Err("not_friends".into())
-        );
-        let (instance, a_id) = a.enter_hub(None).await.unwrap();
-        let (b_instance, b_id) = b.enter_hub(None).await.unwrap();
-        assert_eq!((instance, b_instance), (1, 1));
-        assert_eq!(a.enter_hub(None).await, Err("in_hub".into()));
-        // Each sees the other arrive with their guest name and look.
-        let state = loop {
-            let state = a.hub_state().await;
-            if !state.enter.is_empty() {
-                break state;
-            }
-        };
-        assert_eq!(state.enter[0].id, b_id);
-        assert_eq!(state.enter[0].handle, "Guest#0003");
-        assert_eq!(state.enter[0].appearance.body, "female");
-        // B walks east; A sees it, and B's own state acknowledges the move.
-        let start = state.players[0];
-        b.say(r#"{"type":"hub_move","seq":5,"x":1000,"z":0,"facing":16384}"#)
-            .await;
-        loop {
-            let state = a.hub_state().await;
-            let (id, x, _, facing, _, _) = state.players[0];
-            if x > start.1 {
-                assert_eq!((id, facing), (b_id, 16384));
-                break;
-            }
-        }
-        loop {
-            if b.hub_state().await.ack == 5 {
-                break;
-            }
-        }
-        // A flood of moves is dropped, not answered by closing.
-        for seq in 6..60 {
-            b.say(&format!(
-                r#"{{"type":"hub_move","seq":{seq},"x":0,"z":0,"facing":0}}"#
-            ))
-            .await;
-        }
-        assert!(b.hub_state().await.tick > 0, "still connected");
-        // Guests cannot speak in hub chat (no account to mute or block);
-        // logged-in hub chat is in tests/identity.rs.
-        b.say(r#"{"type":"chat","channel":"hub","text":"hello hub"}"#)
-            .await;
-        loop {
-            if let Some(QueueMessage::Refused { code }) = b.next().await {
-                assert_eq!(code, "log_in");
-                break;
-            }
-        }
-
+        assert_eq!(a.enter_world().await, Err("in_hub".into()));
         // Queueing into a 1v1 takes both out of the hub when the match starts.
         a.queue("1v1").await;
         b.queue("1v1").await;
@@ -1168,11 +1114,9 @@ mod queue {
                 }
             }
         }
-        // Back after the match: the same instance, a new hub id.
-        let (again, a_again) = a.enter_hub(None).await.unwrap();
-        assert_eq!(again, 1);
-        assert_ne!(a_again, a_id);
-        a.say(r#"{"type":"hub_leave"}"#).await;
+        // Back after the match: the world they were last in.
+        assert_eq!(a.enter_world().await.unwrap(), instance);
+        a.say(r#"{"type":"world_leave"}"#).await;
         loop {
             if let Some(QueueMessage::HubLeft { reason }) = a.next().await {
                 assert_eq!(reason, "left");
@@ -1180,7 +1124,7 @@ mod queue {
             }
         }
         let metrics = request(door.addr, "GET", "/metrics", "", "").await.body;
-        assert!(metrics.contains("arena_door_hub_ticks_total "), "{metrics}");
+        assert!(metrics.contains("arena_door_hub_players "), "{metrics}");
         door.stop().await.unwrap();
         server.stop().await.unwrap();
     }
@@ -1189,20 +1133,14 @@ mod queue {
     async fn malformed_hub_messages_are_refused() {
         let (door, server) = door_and_server(Duration::from_secs(5)).await;
         for bad in [
-            // Out-of-range axes.
-            r#"{"type":"hub_move","seq":1,"x":1001,"z":0,"facing":0}"#,
             // An unknown field.
-            r#"{"type":"hub_leave","now":1}"#,
-            // A path in the look.
-            &format!(
-                r#"{{"type":"hub_join","appearance":{}}}"#,
-                LOOK.replace("female", "../x")
-            ),
+            r#"{"type":"world_leave","now":1}"#,
+            // A friend that is not a name.
+            r#"{"type":"world_join","friend":7}"#,
+            // The door's own hub, retired.
+            r#"{"type":"hub_leave"}"#,
         ] {
             let mut player = Player::hello(door.addr, 9).await;
-            if bad.contains("hub_move") {
-                player.enter_hub(None).await.unwrap();
-            }
             player.say(bad).await;
             loop {
                 match player.next().await {

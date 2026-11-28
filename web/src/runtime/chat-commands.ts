@@ -1,3 +1,4 @@
+import { inMatch as inMatchOf } from "../domain/network";
 // The slash-command registry (planning/issues/chat.md): every command the
 // chat box knows, what it does, and its help line (`domain/commands.ts`
 // builds `/help` from this list). Panels open as their launcher and menu buttons do;
@@ -332,12 +333,11 @@ export function runSlash(text: string, ctx: CommandContext): boolean {
 export function pageCommandContext(queue: Queue): CommandContext {
   // As the game menu decides them.
   const link = networkLink.get()?.state.get();
-  const phase = link?.phase ?? "idle";
   const snapshot = engine.get();
   return {
     queue,
     admin: !!accountService.get()?.state.get().me?.admin,
-    inMatch: phase !== "idle" && phase !== "ended",
+    inMatch: link ? inMatchOf(link) : false,
     spectating: !!link?.status?.spectator || !!snapshot?.spectating,
     say: (text) => queue.system(text),
     fetch: (url, init) => fetch(new URL(url, window.location.origin), init),

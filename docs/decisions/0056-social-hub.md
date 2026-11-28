@@ -6,6 +6,8 @@ answered provisionally below, for the user to confirm). **Partly
 superseded by [ADR 0057](0057-hub-on-the-world-server.md)** (2026-11-26):
 the hub moves to the world server with the arena's rules and full HUD;
 where it runs, movement and the movement messages below give way to it.
+The door's own hub described here was removed on 2026-11-27 (ADR 0057
+slice 5).
 
 Builds on [ADR 0046](0046-queues-parties-and-home-screen.md) (the queue
 connection, parties), [ADR 0050](0050-spectating-and-anti-ghosting-delay.md)

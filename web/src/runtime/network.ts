@@ -16,6 +16,7 @@ import {
   encodeHello,
   endsLink,
   isAppearances,
+  isMemberRelay,
   isExpired,
   isHandles,
   isTags,
@@ -180,9 +181,14 @@ export function createLink(deps: LinkDeps) {
       if (queue.length > MAX_QUEUED) {
         const oldest = queue.findIndex(
           (queued) =>
-            !isWelcome(queued) && !isAppearances(queued) && !isHandles(queued) && !isTags(queued),
+            !isWelcome(queued) &&
+            !isAppearances(queued) &&
+            !isHandles(queued) &&
+            !isTags(queued) &&
+            !isMemberRelay(queued),
         );
-        queue.splice(Math.max(oldest, 0), 1);
+        // When every queued frame must be kept, none is dropped.
+        if (oldest >= 0) queue.splice(oldest, 1);
       }
     };
     next.onclose = next.onerror = () => {
@@ -210,13 +216,17 @@ export function createLink(deps: LinkDeps) {
       end(null);
       ticket = next;
       lockedLook = next.spectator ? null : (deps.appearance?.() ?? null);
-      store(deps.tab, TAB_KEY, next);
-      store(deps.device, DEVICE_KEY, next);
+      // A hub world is never resumed: the door places each page afresh.
+      if (!next.world) {
+        store(deps.tab, TAB_KEY, next);
+        store(deps.device, DEVICE_KEY, next);
+      }
       update({
         phase: "connecting",
         attempt: 0,
         ended: null,
         spectator: Boolean(next.spectator),
+        world: Boolean(next.world),
         status: null,
       });
       connect();

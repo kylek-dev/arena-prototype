@@ -1,4 +1,5 @@
 import { act } from "@testing-library/react";
+import type { MatchTicket } from "../../web/src/domain/network";
 import { createQueue } from "../../web/src/runtime/matchmaking";
 
 type Fake = {
@@ -16,6 +17,9 @@ type Fake = {
 /** A real queue over fake sockets, clock and storage, for social tests. */
 export function fakeQueue(clock: () => number = () => 1000) {
   const sockets: Fake[] = [];
+  /** Tickets handed to `onMatch` (matches and hub worlds). */
+  const tickets: MatchTicket[] = [];
+  let worldsLeft = 0;
   const queue = createQueue({
     url: "ws://door.test/api/queue",
     createSocket: () => {
@@ -40,12 +44,17 @@ export function fakeQueue(clock: () => number = () => 1000) {
     now: clock,
     storage: null,
     randomBytes: (count) => new Uint8Array(count).fill(7),
-    onMatch: () => {},
+    onMatch: (ticket) => tickets.push(ticket),
+    onWorldLeft: () => {
+      worldsLeft += 1;
+    },
   });
   const latest = () => sockets[sockets.length - 1];
   return {
     queue,
     sockets,
+    tickets,
+    worldsLeft: () => worldsLeft,
     latest,
     sent: () => (latest()?.sent ?? []).map((text) => JSON.parse(text)),
     open: () =>

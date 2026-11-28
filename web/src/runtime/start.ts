@@ -40,7 +40,6 @@ import { installTelemetry } from "./telemetry";
 import { matchQueue, networkLink, remoteHandles, remoteTags } from "../state/network";
 import { parseHandles, parseTags, withHandles, withTags } from "../domain/handles";
 import { clearPostMatchScoreboard, syncPostMatchScoreboard } from "../state/scoreboard";
-import { onHubIntent, onHubScreen, readHub } from "../state/hub-render";
 export function startRuntime(canvas: HTMLCanvasElement) {
   const pointer = installPointer(canvas, () => router.cancel());
   const router = installInput(canvas, pointer.end);
@@ -63,14 +62,21 @@ export function startRuntime(canvas: HTMLCanvasElement) {
   networkLink.set(link);
   // A seat found by the queue is joined like any other, leaving the home
   // screen if the player is still there.
-  const queue = browserQueue((ticket) => {
-    clearPostMatchScoreboard();
-    customLobbyVisible.set(false);
-    interaction.set({ panel: null, quick: false, layout: false, hovered: null, capture: null });
-    if (beforeMatch.get() || customizerVisible.get()) enterArena(() => {});
-    queue.system("Joining the match.");
-    link.join(ticket);
-  });
+  const queue = browserQueue(
+    (ticket) => {
+      clearPostMatchScoreboard();
+      customLobbyVisible.set(false);
+      interaction.set({ panel: null, quick: false, layout: false, hovered: null, capture: null });
+      if (beforeMatch.get() || customizerVisible.get()) enterArena(() => {});
+      // A hub world (ADR 0057) is joined like a match.
+      if (!ticket.world) queue.system("Joining the match.");
+      link.join(ticket);
+    },
+    // The door took the page out of its world: close that connection.
+    () => {
+      if (link.state.get().world) link.leave();
+    },
+  );
   matchQueue.set(queue);
   // Who is logged in, if this door offers login (ADR 0055).
   const { account, stop: stopAccount } = browserAccount();
@@ -107,9 +113,6 @@ export function startRuntime(canvas: HTMLCanvasElement) {
     onAppearances,
     onHandles: (raw) => remoteHandles.set(parseHandles(raw)),
     onTags: (raw) => remoteTags.set(parseTags(raw)),
-    readHub,
-    onHubIntent,
-    onHubScreen,
     readInput: router.sample,
     readHover: unitHover.read,
     readGraphics,
