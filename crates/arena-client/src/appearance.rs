@@ -363,10 +363,14 @@ pub fn switch_kit(
         }
         let profile = kit_profile(&spec.kit);
         let cached = kit_cache.get_or_load(profile, &server, &mut graphs);
-        let scene = cached.scene.clone();
         if actor == 0 && model.profile.map(|p| p.path) != Some(profile.path) {
             model.set_kit_loading(cached);
         }
+        // Not before the kit's file has loaded (`character::resolve_assets`);
+        // this runs again next frame.
+        let Some(scene) = cached.scene.clone() else {
+            continue;
+        };
         commands.entity(body_entity).with_children(|parent| {
             parent
                 .spawn((
@@ -926,12 +930,23 @@ mod tests {
             app.world_mut().spawn(FighterBody(actor));
         }
         app.update();
-        let world = app.world_mut();
         assert_eq!(
-            world.resource::<KitCache>().len(),
+            app.world().resource::<KitCache>().len(),
             2,
             "6 fighters across 2 kits reuse only 2 cached GLB/AnimationGraph entries"
         );
+        let world = app.world_mut();
+        assert_eq!(
+            world.query::<&KitInstance>().iter(world).count(),
+            0,
+            "nothing spawns before the kits' files have loaded"
+        );
+        // As `character::resolve_assets` does once each file has loaded.
+        for cached in app.world_mut().resource_mut::<KitCache>().iter_mut() {
+            cached.scene = Some(Handle::default());
+        }
+        app.update();
+        let world = app.world_mut();
         let mut spawned_actors: Vec<usize> = world
             .query::<&KitInstance>()
             .iter(world)

@@ -336,7 +336,7 @@ pub fn run() {
             Update,
             (
                 rebuild_venue.run_if(resource_changed::<ActiveMap>),
-                character::check_loading,
+                (character::resolve_assets, character::check_loading).chain(),
                 appearance::switch_kit,
                 appearance::apply,
                 held_weapon::read,
@@ -447,12 +447,8 @@ fn setup(
     if character.kit {
         kit_cache.insert_from_model(&character);
     }
-    let kit_instance = kit.as_ref().map(|spec| spec.kit.path.clone());
-    let player_scene = character.scene.clone();
-    let player_transform = character
-        .profile
-        .map(character::Profile::transform)
-        .unwrap_or_default();
+    // The player's model is spawned once its file has loaded: a kit by
+    // `appearance::switch_kit`, a single model by `character::resolve_assets`.
     commands.insert_resource(character);
     commands.insert_resource(kit_cache);
     // The venue itself is spawned (and respawned after edits) from the
@@ -506,19 +502,6 @@ fn setup(
                         ));
                     }
                     humanoid.spawn(body, &character_meshes, index);
-                    if let Some(scene) = &player_scene
-                        && index == 0
-                    {
-                        let mut root = body.spawn((
-                            WorldAssetRoot(scene.clone()),
-                            player_transform,
-                            Visibility::Hidden,
-                        ));
-                        if let Some(path) = &kit_instance {
-                            root.insert(appearance::KitInstance::new_for(0, path));
-                        }
-                        root.observe(character::on_ready);
-                    }
                 });
             });
     }
