@@ -15,6 +15,9 @@ export type MatchTicket = {
   expires: number;
   /** True when this ticket is a watch-only spectator pass. */
   spectator?: boolean;
+  /** True for a place in a hub world (ADR 0057): never resumed after a
+   * reload, since the door places each page afresh. */
+  world?: boolean;
 };
 
 /** What Rust reports about the match through `onNetwork`. */
@@ -60,9 +63,18 @@ export type LinkState = {
   ended: string | null;
   /** True when the active or just-ended link was opened with a spectator ticket. */
   spectator?: boolean;
+  /** True when the link is (or was) to a hub world (ADR 0057). */
+  world?: boolean;
   /** The latest status Rust reported, if any. */
   status: NetworkStatus | null;
 };
+
+/** Whether the link holds a match (seated or watching): open or on its way,
+ * and not a hub world (ADR 0057), where queueing, practice and the rest of
+ * the page stay available. */
+export function inMatch(state: Pick<LinkState, "phase" | "world">) {
+  return state.phase !== "idle" && state.phase !== "ended" && !state.world;
+}
 
 /** What the match banner says and offers. `null` when nothing needs saying. */
 export type MatchMessage = {
@@ -86,6 +98,25 @@ export function matchMessage(
   attendance: Attendance | null = null,
   lastResult: RoundResult | null = null,
 ): MatchMessage | null {
+  // A hub world speaks for itself: only its connection is news.
+  if (state.world && state.phase !== "idle") {
+    switch (state.phase) {
+      case "connecting":
+        return { text: "Entering the hub…", tone: "info", action: null };
+      case "reconnecting":
+        return {
+          text: `Connection to the hub lost · reconnecting${state.attempt > 1 ? ` (attempt ${state.attempt})` : ""}…`,
+          tone: "warning",
+          action: null,
+        };
+      case "open":
+        return !state.status || state.status.phase === "connecting"
+          ? { text: "Entering the hub…", tone: "info", action: null }
+          : null;
+      default:
+        return null;
+    }
+  }
   switch (state.phase) {
     case "idle":
       return rememberedMatch
@@ -167,7 +198,7 @@ export function endsLink(error: string | null) {
 // same bytes; everything else is decoded by the engine.
 
 /** Must match `arena_protocol::PROTOCOL_VERSION`. */
-export const PROTOCOL_VERSION = 11;
+export const PROTOCOL_VERSION = 13;
 /** `ServerMessage::Error` codes in declaration order (`[3, index]`). */
 export const ERROR_CODES = [
   "VersionMismatch",
@@ -267,6 +298,13 @@ export function isHandles(frame: Uint8Array) {
 /** Whether a frame is the server's `Tags` relay (variant 6). */
 export function isTags(frame: Uint8Array) {
   return frame.length > 0 && frame[0] === 6;
+}
+
+/** `ServerMessage::Member` (variant 7) or `MemberLeft` (8): a hub world's
+ * relay of who holds each fighter id. Each adds to what came before, so
+ * none may be dropped or merged while the engine is paused. */
+export function isMemberRelay(frame: Uint8Array) {
+  return frame.length > 0 && (frame[0] === 7 || frame[0] === 8);
 }
 
 /** Delay before reconnect attempt `attempt` (0-based): 0.5 s doubling to 8 s. */

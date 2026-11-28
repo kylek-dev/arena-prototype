@@ -82,6 +82,36 @@ pub enum Out {
     },
 }
 
+/// Folds one input frame into a tick's slot, as matches and hub worlds
+/// both do: merges the intent, acknowledges its `seq`, and derives the cast
+/// rewind from its `view_tick`, clamped to at most `post_tick` and never
+/// below the highest seen before (`max_view_tick`, so no tick-shopping).
+pub(crate) fn apply_frame(
+    ack: &mut u32,
+    max_view_tick: &mut u64,
+    slot: &mut ActorInput,
+    frame: InputFrame,
+    post_tick: u64,
+) {
+    frame.merge_into(slot);
+    *ack = frame.seq;
+    let rewind = if frame.view_tick == 0 {
+        0
+    } else {
+        let clamped = frame.view_tick.min(post_tick);
+        let effective = clamped.max(*max_view_tick);
+        *max_view_tick = effective;
+        post_tick
+            .saturating_sub(effective)
+            .min(u64::from(MAX_LAG_COMP_TICKS)) as u8
+    };
+    match frame.action {
+        WireAction::Cast { .. } => slot.rewind_ticks = rewind,
+        WireAction::CancelCast => slot.rewind_ticks = 0,
+        WireAction::None => {}
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     Waiting,
@@ -355,6 +385,7 @@ impl Session {
                 rules: RULES_VERSION,
                 map: self.map,
                 spectator: false,
+                hub: false,
             }),
         });
         out.push(Out::Send {
@@ -447,6 +478,7 @@ impl Session {
                 rules: RULES_VERSION,
                 map: self.map,
                 spectator: true,
+                hub: false,
             }),
         });
         match self.phase {
@@ -629,6 +661,7 @@ impl Session {
                             result,
                             &fighters[..count],
                             scoreboard,
+                            None,
                             (!has_rejections).then_some(shared_events.as_slice()),
                         );
                         let mut seat_events = Vec::new();
@@ -659,6 +692,7 @@ impl Session {
                             result,
                             fighters: fighters[..count].to_vec(),
                             scoreboard: scoreboard.map(|s| s.to_vec()),
+                            roster: None,
                             events: shared_events,
                         };
                         self.enqueue_spectator_snapshot(snap);
@@ -754,23 +788,13 @@ impl Session {
                 let mut folded = 0u64;
                 let mut arrivals = [0u64; 5];
                 let apply_frame = |seat: &mut Seat, slot: &mut ActorInput, frame: InputFrame| {
-                    frame.merge_into(slot);
-                    seat.ack = frame.seq;
-                    let rewind = if frame.view_tick == 0 {
-                        0
-                    } else {
-                        let clamped = frame.view_tick.min(post_tick);
-                        let effective = clamped.max(seat.max_view_tick);
-                        seat.max_view_tick = effective;
-                        post_tick
-                            .saturating_sub(effective)
-                            .min(u64::from(MAX_LAG_COMP_TICKS)) as u8
-                    };
-                    match frame.action {
-                        WireAction::Cast { .. } => slot.rewind_ticks = rewind,
-                        WireAction::CancelCast => slot.rewind_ticks = 0,
-                        WireAction::None => {}
-                    }
+                    apply_frame(
+                        &mut seat.ack,
+                        &mut seat.max_view_tick,
+                        slot,
+                        frame,
+                        post_tick,
+                    );
                 };
                 for (seat, slot) in self.seats.iter_mut().zip(&mut inputs[..count]) {
                     // One input per tick, in order, so a client can
@@ -992,6 +1016,7 @@ impl Session {
                 result,
                 fighters: fighters.clone(),
                 scoreboard: scoreboard.clone(),
+                roster: None,
                 events: public_events.clone(),
             });
         }
@@ -1019,6 +1044,7 @@ impl Session {
                         result,
                         fighters: fighters.clone(),
                         scoreboard: scoreboard.clone(),
+                        roster: None,
                         events,
                     }),
                 })

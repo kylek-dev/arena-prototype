@@ -9,7 +9,8 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use arena_protocol::MAX_FIGHTERS;
+/// One look per fighter the client can draw (a hub world's roster).
+use crate::MAX_ACTORS as MAX_FIGHTERS;
 use bevy::{gltf::GltfMaterialName, mesh::morph::MorphWeights, prelude::*};
 
 use crate::character::{
@@ -198,53 +199,40 @@ pub fn kit_profile(kit: &KitRef) -> &'static Profile {
 }
 
 /// The last per-fighter specs received from the browser.
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct Desired {
     revision: Option<f64>,
     specs: [Option<Spec>; MAX_FIGHTERS],
     /// Bumped per actor whenever that actor's spec changes, so only that fighter re-applies.
     generations: [u64; MAX_FIGHTERS],
-    /// Hub players' specs by actor (`hub::HUB_ACTOR_BASE` and up), with
-    /// their generation.
-    hub: HashMap<usize, (Spec, u64)>,
-    hub_generation: u64,
+}
+
+impl Default for Desired {
+    fn default() -> Self {
+        Self {
+            revision: None,
+            specs: std::array::from_fn(|_| None),
+            generations: [0; MAX_FIGHTERS],
+        }
+    }
 }
 
 impl Desired {
     pub fn spec_for(&self, actor: usize) -> Option<&Spec> {
-        if actor >= crate::hub::HUB_ACTOR_BASE {
-            return self.hub.get(&actor).map(|(spec, _)| spec);
-        }
         self.specs.get(actor).and_then(Option::as_ref)
     }
 
     pub fn generation_for(&self, actor: usize) -> u64 {
-        if actor >= crate::hub::HUB_ACTOR_BASE {
-            return self
-                .hub
-                .get(&actor)
-                .map_or(0, |(_, generation)| *generation);
-        }
         self.generations.get(actor).copied().unwrap_or(0)
     }
 
-    /// A hub player's spec (`None` once they are gone or have none).
-    pub fn set_hub(&mut self, actor: usize, spec: Option<Spec>) {
-        match spec {
-            Some(spec) => {
-                if self.hub.get(&actor).map(|(known, _)| known) != Some(&spec) {
-                    self.hub_generation += 1;
-                    self.hub.insert(actor, (spec, self.hub_generation));
-                }
-            }
-            None => {
-                self.hub.remove(&actor);
-            }
-        }
-    }
-
-    pub fn set_roster(&mut self, next: [Option<Spec>; MAX_FIGHTERS]) {
-        for (actor, spec) in next.into_iter().enumerate() {
+    /// Each actor's look, in order; actors past the end have none.
+    pub fn set_roster(&mut self, next: impl IntoIterator<Item = Option<Spec>>) {
+        let next = next
+            .into_iter()
+            .chain(std::iter::repeat(None))
+            .take(MAX_FIGHTERS);
+        for (actor, spec) in next.enumerate() {
             if self.specs[actor] != spec {
                 self.specs[actor] = spec;
                 self.generations[actor] += 1;
@@ -614,8 +602,13 @@ mod tests {
         assert!(single[1].is_none());
         // Empty or over-max roster arrays are rejected.
         assert!(parse_roster(r#"{"specs":[]}"#).is_none());
-        let seven = format!(r#"{{"specs":[{SPEC},{SPEC},{SPEC},{SPEC},{SPEC},{SPEC},{SPEC}]}}"#);
-        assert!(parse_roster(&seven).is_none());
+        // A hub world's roster fits; one more does not.
+        let specs = |count: usize| {
+            let list: Vec<&str> = std::iter::repeat_n(SPEC, count).collect();
+            format!(r#"{{"specs":[{}]}}"#, list.join(","))
+        };
+        assert!(parse_roster(&specs(crate::MAX_ACTORS)).is_some());
+        assert!(parse_roster(&specs(crate::MAX_ACTORS + 1)).is_none());
     }
 
     #[test]

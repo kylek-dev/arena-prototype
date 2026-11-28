@@ -17,6 +17,8 @@ pub mod metrics;
 pub mod profiling;
 pub mod session;
 pub mod ticket;
+pub mod world;
+pub mod worlds;
 
 use std::collections::HashMap;
 use std::io;
@@ -76,6 +78,8 @@ pub struct Config {
     pub limits: Limits,
     /// Total ticks in a round before a time-limit draw (`1..=MAX_ROUND_TICKS`).
     pub round_ticks: u64,
+    /// Hub world limits (ADR 0057).
+    pub world_limits: world::WorldLimits,
     pub key: TicketKey,
 }
 impl Config {
@@ -94,6 +98,7 @@ impl Config {
             connections_per_address: 12,
             limits: Limits::default(),
             round_ticks: MAX_ROUND_TICKS,
+            world_limits: world::WorldLimits::default(),
             key,
         }
     }
@@ -165,6 +170,12 @@ pub struct App {
     config: Config,
     metrics: Arc<Metrics>,
     matches: Mutex<Registry>,
+    worlds: Mutex<worlds::Worlds>,
+    /// The newest accepted directory request's clock (ADR 0057).
+    directory_last: AtomicU64,
+    /// The newest accepted block list, for worlds that start before the
+    /// next report.
+    directory_blocks: Mutex<(world::BlockSet, world::Allowed)>,
     open: Arc<OpenPerAddress>,
     next_conn: AtomicU64,
     draining: AtomicBool,
@@ -202,6 +213,9 @@ impl App {
             config,
             metrics: Arc::default(),
             matches: Mutex::default(),
+            worlds: Mutex::default(),
+            directory_last: AtomicU64::new(0),
+            directory_blocks: Mutex::default(),
             next_conn: AtomicU64::new(1),
             draining: AtomicBool::new(false),
             shutdown: watch::Sender::new(false),
@@ -728,6 +742,13 @@ pub fn router(app: Arc<App>) -> Router {
         // For the front door on the private network (Caddy routes only
         // /play here): whether a match is live, ended, or unknown.
         .route("/matches/{id}", get(match_status))
+        // For the front door too: the hub worlds' instance directory.
+        .route(
+            "/worlds/report",
+            post(worlds::directory).layer(axum::extract::DefaultBodyLimit::max(
+                worlds::MAX_DIRECTORY_BODY,
+            )),
+        )
         .route("/metrics", get(render_metrics));
     if app.config.dev {
         router = router.route("/dev/match", post(dev_match));
@@ -736,7 +757,13 @@ pub fn router(app: Arc<App>) -> Router {
 }
 
 /// Paths scraped or probed every few seconds: no span each time.
-const UNTRACED_PATHS: [&str; 4] = ["/metrics", "/healthz", "/readyz", "/matches/{id}"];
+const UNTRACED_PATHS: [&str; 5] = [
+    "/metrics",
+    "/healthz",
+    "/readyz",
+    "/matches/{id}",
+    "/worlds/report",
+];
 
 /// One `http.request` span per request (a WebSocket's is its upgrade), with
 /// the method, the route (never the query; `unmatched` for unknown paths, so
@@ -1041,10 +1068,14 @@ async fn connection(socket: &mut WebSocket, app: Arc<App>) {
                 "hello"
             );
         }
-        let commands = app.match_for(&claims)?;
-        Ok((claims, appearance, commands))
+        let link = if claims.is_hub() {
+            Link::World(app.world_for(&claims)?)
+        } else {
+            Link::Match(app.match_for(&claims)?)
+        };
+        Ok((claims, appearance, link))
     });
-    let (claims, appearance, commands) = match admitted {
+    let (claims, appearance, link) = match admitted {
         Ok(admitted) => {
             hello_span.record("outcome", "admitted");
             admitted
@@ -1063,25 +1094,50 @@ async fn connection(socket: &mut WebSocket, app: Arc<App>) {
     } else {
         None
     };
-    let attach = match claims.role {
-        ticket::Role::Player { seat } => Command::Attach {
-            seat: usize::from(seat),
-            conn,
-            appearance: appearance.map(Box::new),
-            handle: claims.handle,
-            tags: arena_protocol::Tags {
-                admin: claims.admin,
-            },
-            out: out_sender,
-        },
-        ticket::Role::Spectator => Command::AttachSpectator {
-            player: claims.player,
-            conn,
-            out: out_sender,
-        },
+    let attached = match &link {
+        Link::World(world) => {
+            let attach = worlds::WorldCommand::Attach {
+                player: claims.player,
+                conn,
+                handle: claims.handle,
+                tags: arena_protocol::Tags {
+                    admin: claims.admin,
+                },
+                appearance: appearance.map(Box::new),
+                out: out_sender,
+            };
+            world.send(attach).await.is_ok()
+        }
+        Link::Match(commands) => {
+            let attach = match claims.role {
+                ticket::Role::Hub => return reject(socket, &app, ErrorCode::BadTicket).await,
+                ticket::Role::Player { seat } => Command::Attach {
+                    seat: usize::from(seat),
+                    conn,
+                    appearance: appearance.map(Box::new),
+                    handle: claims.handle,
+                    tags: arena_protocol::Tags {
+                        admin: claims.admin,
+                    },
+                    out: out_sender,
+                },
+                ticket::Role::Spectator => Command::AttachSpectator {
+                    player: claims.player,
+                    conn,
+                    out: out_sender,
+                },
+            };
+            commands.send(attach).await.is_ok()
+        }
     };
-    if commands.send(attach).await.is_err() {
-        return reject(socket, &app, ErrorCode::MatchOver).await;
+    if !attached {
+        // A match that ended is over; a world that ended is replaced by a
+        // fresh one on the next try.
+        let code = match link {
+            Link::World(_) => ErrorCode::ServerShutdown,
+            Link::Match(_) => ErrorCode::MatchOver,
+        };
+        return reject(socket, &app, code).await;
     }
 
     loop {
@@ -1139,11 +1195,19 @@ async fn connection(socket: &mut WebSocket, app: Arc<App>) {
                 }
                 match message {
                     ClientMessage::Input(frame) => {
-                        // Watch-only spectators never act: inputs are strictly ignored.
-                        let Some(seat) = claims.seat() else {
-                            continue;
+                        let sent = match &link {
+                            Link::World(world) => {
+                                world.send(worlds::WorldCommand::Input { conn, frame }).await.is_ok()
+                            }
+                            // Watch-only spectators never act: inputs are strictly ignored.
+                            Link::Match(commands) => match claims.seat() {
+                                Some(seat) => {
+                                    commands.send(Command::Input { seat, conn, frame }).await.is_ok()
+                                }
+                                None => continue,
+                            },
                         };
-                        if commands.send(Command::Input { seat, conn, frame }).await.is_err() {
+                        if !sent {
                             // The match task has ended; it queued its last
                             // word (usually `MatchOver`) before exiting.
                             while let Some(outgoing) = outbound.recv().await {
@@ -1179,14 +1243,27 @@ async fn connection(socket: &mut WebSocket, app: Arc<App>) {
             },
         }
     }
-    let detach = match claims.role {
-        ticket::Role::Player { seat } => Command::Detach {
-            seat: usize::from(seat),
-            conn,
-        },
-        ticket::Role::Spectator => Command::DetachSpectator { conn },
-    };
-    let _ = commands.send(detach).await;
+    match link {
+        Link::World(world) => {
+            let _ = world.send(worlds::WorldCommand::Detach { conn }).await;
+        }
+        Link::Match(commands) => {
+            let detach = match claims.role {
+                ticket::Role::Player { seat } => Command::Detach {
+                    seat: usize::from(seat),
+                    conn,
+                },
+                ticket::Role::Spectator | ticket::Role::Hub => Command::DetachSpectator { conn },
+            };
+            let _ = commands.send(detach).await;
+        }
+    }
+}
+
+/// Where a connection's commands go: its match, or its hub world.
+enum Link {
+    Match(mpsc::Sender<Command>),
+    World(mpsc::Sender<worlds::WorldCommand>),
 }
 
 /// A started server. Dropping it leaves the server running until the

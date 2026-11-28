@@ -12,7 +12,8 @@ pub mod prediction;
 
 use arena_sim::arena::{
     ActiveCastState, ActorInput, Arena, ArenaEvent, Axes, BufferedCast, CastAction, Combatant,
-    InterruptReason, MAX_CAST_BUFFER_TICKS, MAX_ROUND_TICKS, Position, Rejection, RoundResult,
+    InterruptReason, MAX_CAST_BUFFER_TICKS, MAX_ROSTER, MAX_ROUND_TICKS, Occupant, Position,
+    Rejection, RoundResult, Rules, Slot,
 };
 use arena_sim::spells::SpellId;
 use serde::{Deserialize, Serialize};
@@ -31,7 +32,11 @@ use serde::{Deserialize, Serialize};
 /// 9: `ServerMessage::Handles`: each seat's server-set `Name#1234` handle.
 /// 10: `ServerMessage::Tags`: each seat's server-set tags (the admin tag).
 /// 11: `InputFrame.cast_buffer` and `FighterState.buffered_cast` (ADR 0058).
-pub const PROTOCOL_VERSION: u16 = 11;
+/// 12: hub worlds (ADR 0057): `Welcome.hub`, `Snapshot.roster`, and the
+///     `Member`/`MemberLeft` relay of who holds each fighter id.
+/// 13: `ServerMessage::WorldDelta`: hub world snapshots as deltas against
+///     the previous one sent on the connection (ADR 0057's last step).
+pub const PROTOCOL_VERSION: u16 = 13;
 /// Bumped whenever a rules change could alter a replayed outcome.
 /// 2: rounds end in a draw after twenty minutes (`MAX_ROUND_TICKS`).
 /// 3: time-limit draws are distinct from mutual-elimination draws and round limits are explicit.
@@ -47,9 +52,12 @@ pub const MAX_CLIENT_FRAME: usize = 1024;
 pub const MAX_SERVER_FRAME: usize = 16 * 1024;
 /// Largest join ticket accepted in `Hello`.
 pub const MAX_TICKET: usize = 512;
-/// Most fighters a snapshot may describe (3v3).
+/// Most fighters a match snapshot may describe (3v3).
 pub const MAX_FIGHTERS: usize = 6;
 const _: () = assert!(MAX_FIGHTERS == arena_sim::map::MAX_TEAM * 2);
+/// Most fighters a hub world's snapshot may describe (ADR 0057).
+pub const MAX_WORLD_FIGHTERS: usize = MAX_ROSTER;
+const _: () = assert!(MAX_WORLD_FIGHTERS <= u8::MAX as usize);
 /// Most events one snapshot may carry; the server sends more snapshots
 /// rather than exceed it.
 pub const MAX_EVENTS: usize = 256;
@@ -335,6 +343,67 @@ pub enum ServerMessage {
     /// Per-seat tags in server actor order (`2..=MAX_FIGHTERS`, even), sent
     /// with `Handles` whenever any seat has one.
     Tags(Vec<Tags>),
+    /// Hub worlds: who holds fighter id `member.id` (ADR 0057). Sent for
+    /// everyone present when a connection is welcomed and for each arrival,
+    /// before the snapshot that first shows them. Matches use `Handles`,
+    /// `Tags` and `Appearances` instead. Boxed so every other message stays
+    /// small; the wire bytes are the same.
+    Member(Box<Member>),
+    /// Hub worlds: fighter id `id` has left; its slot may hold someone else
+    /// (with a new id) from the next snapshot on.
+    MemberLeft {
+        id: u32,
+    },
+    /// Hub worlds: the next snapshot as a delta (`delta::SnapshotDelta`,
+    /// encoded) against the snapshot of tick `base` this connection was
+    /// sent last. A client without that snapshot ignores it until the next
+    /// full one (sent at least once a second).
+    WorldDelta(Box<WorldDelta>),
+}
+
+/// A hub world snapshot as a delta (`ServerMessage::WorldDelta`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorldDelta {
+    /// The tick of the snapshot this applies to.
+    pub base: u64,
+    /// `delta::SnapshotDelta::encode` of the next snapshot against it.
+    pub body: Vec<u8>,
+}
+impl WorldDelta {
+    /// The snapshot this delta makes of `base` (which must be the snapshot
+    /// of tick `self.base`): checked as strictly as a full one.
+    pub fn apply(&self, base: &Snapshot) -> Result<Snapshot, DecodeError> {
+        if base.tick != self.base || base.roster.is_none() {
+            return Err(DecodeError::Malformed);
+        }
+        let next = delta::SnapshotDelta::apply(base, &self.body)?;
+        if next.roster.is_none() {
+            return Err(DecodeError::Malformed);
+        }
+        Ok(next)
+    }
+}
+
+/// Who holds a hub world's fighter id: their handle, tags and look, all set
+/// by the world server from their ticket and `Hello`. Training enemies have
+/// no member entry.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Member {
+    /// `Slot::id` of the fighter (never `0`).
+    pub id: u32,
+    pub handle: Option<Handle>,
+    pub tags: Tags,
+    pub appearance: Option<WireAppearance>,
+}
+impl Member {
+    pub fn is_valid(&self) -> bool {
+        self.id != 0
+            && self.handle.as_ref().is_none_or(Handle::is_valid)
+            && self
+                .appearance
+                .as_ref()
+                .is_none_or(WireAppearance::is_valid)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -352,6 +421,11 @@ pub struct Welcome {
     pub map: u64,
     /// `true` for a watch-only spectator connection with no seat.
     pub spectator: bool,
+    /// `true` for a hub world (ADR 0057): `actor` is this player's slot,
+    /// `team_size` is `0`, there is no round clock (`round_ticks` is
+    /// `MAX_ROUND_TICKS` and never runs out), and every snapshot carries a
+    /// `roster`. Never with `spectator`.
+    pub hub: bool,
 }
 impl Welcome {
     /// The seat this connection controls, or `None` when spectating.
@@ -390,7 +464,91 @@ pub struct Snapshot {
     /// Always `None` while the match is running; populated on the final
     /// snapshot (`result.is_some()`). Not part of `hash`.
     pub scoreboard: Option<Vec<FighterScore>>,
+    /// A hub world's slots, one per fighter (ADR 0057); `None` for a match.
+    /// Part of `hash`.
+    pub roster: Option<WireRoster>,
     pub events: Vec<TickEvent>,
+}
+
+/// Who holds a hub world slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WireOccupant {
+    Vacant,
+    Player,
+    TrainingEnemy,
+}
+impl From<Occupant> for WireOccupant {
+    fn from(occupant: Occupant) -> Self {
+        match occupant {
+            Occupant::Vacant => Self::Vacant,
+            Occupant::Player => Self::Player,
+            Occupant::TrainingEnemy => Self::TrainingEnemy,
+        }
+    }
+}
+impl From<WireOccupant> for Occupant {
+    fn from(occupant: WireOccupant) -> Self {
+        match occupant {
+            WireOccupant::Vacant => Self::Vacant,
+            WireOccupant::Player => Self::Player,
+            WireOccupant::TrainingEnemy => Self::TrainingEnemy,
+        }
+    }
+}
+
+/// A hub world slot on the wire ([`Slot`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireSlot {
+    pub occupant: WireOccupant,
+    pub id: u32,
+    pub home: [i32; 2],
+    pub home_facing: u16,
+    pub respawn_at: Option<u64>,
+}
+impl From<Slot> for WireSlot {
+    fn from(slot: Slot) -> Self {
+        Self {
+            occupant: slot.occupant.into(),
+            id: slot.id,
+            home: [slot.home.x, slot.home.z],
+            home_facing: slot.home_facing,
+            respawn_at: slot.respawn_at,
+        }
+    }
+}
+impl From<WireSlot> for Slot {
+    fn from(slot: WireSlot) -> Self {
+        Self {
+            occupant: slot.occupant.into(),
+            id: slot.id,
+            home: Position {
+                x: slot.home[0],
+                z: slot.home[1],
+            },
+            home_facing: slot.home_facing,
+            respawn_at: slot.respawn_at,
+        }
+    }
+}
+
+/// A hub world's roster: its slots in actor order and the next fighter id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireRoster {
+    pub slots: Vec<WireSlot>,
+    pub next_id: u32,
+}
+impl WireRoster {
+    /// The roster of `arena`, or `None` for a match.
+    pub fn of(arena: &Arena) -> Option<Self> {
+        (arena.rules() == Rules::Hub).then(|| Self {
+            slots: arena.slots().iter().map(|&slot| slot.into()).collect(),
+            next_id: arena.next_id(),
+        })
+    }
+
+    pub fn slots(&self) -> Vec<Slot> {
+        self.slots.iter().map(|&slot| slot.into()).collect()
+    }
 }
 
 impl Snapshot {
@@ -414,8 +572,21 @@ impl Snapshot {
                 })
                 .collect(),
             scoreboard: None,
+            roster: WireRoster::of(arena),
             events,
         }
+    }
+
+    /// Rebuilds the hub world this snapshot shows (`None` for a match or an
+    /// inconsistent roster), as a client predicting in a hub does.
+    pub fn hub_arena(&self) -> Option<Arena> {
+        let roster = self.roster.as_ref()?;
+        Arena::restore_hub(
+            self.tick,
+            roster.slots(),
+            self.fighters.iter().map(FighterState::combatant).collect(),
+            roster.next_id,
+        )
     }
 
     /// Attaches authoritative per-seat end-of-match totals to this snapshot.
@@ -658,7 +829,11 @@ impl WireEvent {
     /// fighter state, so `Moved` is not sent; other players' rejections and
     /// events naming a nonexistent actor are withheld.
     pub fn for_recipient(event: &ArenaEvent, recipient: usize) -> Option<Self> {
-        let actor = |index: usize| u8::try_from(index).ok().filter(|_| index < MAX_FIGHTERS);
+        let actor = |index: usize| {
+            u8::try_from(index)
+                .ok()
+                .filter(|_| index < MAX_WORLD_FIGHTERS)
+        };
         let opt_actor = |index: Option<usize>| match index {
             None => Some(None),
             Some(i) => Some(Some(actor(i)?)),
@@ -842,6 +1017,13 @@ impl ClientMessage {
 }
 
 fn valid_welcome(welcome: &Welcome) -> bool {
+    if welcome.hub {
+        return !welcome.spectator
+            && welcome.team_size == 0
+            && usize::from(welcome.actor) < MAX_WORLD_FIGHTERS
+            && welcome.tick_rate > 0
+            && welcome.round_ticks == MAX_ROUND_TICKS;
+    }
     let team_size = usize::from(welcome.team_size);
     let actor_valid = if welcome.spectator {
         welcome.actor == 0
@@ -864,21 +1046,44 @@ fn valid_result(result: WireResult) -> bool {
 
 fn valid_snapshot(snapshot: &Snapshot) -> bool {
     let count = snapshot.fighters.len();
-    if !(2..=MAX_FIGHTERS).contains(&count)
-        || !count.is_multiple_of(2)
-        || snapshot.events.len() > MAX_EVENTS
-        || !snapshot.result.is_none_or(valid_result)
-    {
+    if snapshot.events.len() > MAX_EVENTS {
         return false;
     }
-    if let Some(scores) = &snapshot.scoreboard
-        && (snapshot.result.is_none() || scores.len() != count)
-    {
-        return false;
-    }
-    for fighter in &snapshot.fighters {
-        if !fighter.combatant().is_valid(count) {
+    if let Some(roster) = &snapshot.roster {
+        // A hub world: no round, no scoreboard, a roster the rules could
+        // have produced (the sim's own check).
+        let fighters: Vec<Combatant> = snapshot
+            .fighters
+            .iter()
+            .map(FighterState::combatant)
+            .collect();
+        if !(1..=MAX_WORLD_FIGHTERS).contains(&count)
+            || snapshot.result.is_some()
+            || snapshot.scoreboard.is_some()
+            || !arena_sim::arena::valid_hub_roster(&roster.slots(), &fighters, roster.next_id)
+            || snapshot
+                .events
+                .iter()
+                .any(|item| matches!(item.event, WireEvent::Finished(_)))
+        {
             return false;
+        }
+    } else {
+        if !(2..=MAX_FIGHTERS).contains(&count)
+            || !count.is_multiple_of(2)
+            || !snapshot.result.is_none_or(valid_result)
+        {
+            return false;
+        }
+        if let Some(scores) = &snapshot.scoreboard
+            && (snapshot.result.is_none() || scores.len() != count)
+        {
+            return false;
+        }
+        for fighter in &snapshot.fighters {
+            if !fighter.combatant().is_valid(count) {
+                return false;
+            }
         }
     }
     let valid_actor = |a: u8| usize::from(a) < count;
@@ -955,6 +1160,9 @@ impl ServerMessage {
             {
                 Err(DecodeError::OverLimit)
             }
+            Self::Member(member) if !member.is_valid() => Err(DecodeError::OverLimit),
+            Self::MemberLeft { id: 0 } => Err(DecodeError::OverLimit),
+            Self::WorldDelta(delta) if delta.body.is_empty() => Err(DecodeError::OverLimit),
             _ => Ok(message),
         }
     }
@@ -980,13 +1188,13 @@ pub fn peek_hello_protocol(frame: &[u8]) -> Option<u16> {
 }
 
 /// Pre-encoded common fields of one tick's [`Snapshot`] (`hash`, `result`,
-/// `fighters`, `scoreboard`, and optionally shared `events`) so a server
+/// `fighters`, `scoreboard`, `roster`, and optionally shared `events`) so a server
 /// encodes them once per tick instead of once per connected seat.
 #[derive(Clone, Debug)]
 pub struct EncodedSnapshotBody {
     tick: u64,
-    /// Postcard bytes for `(hash, result, fighters, scoreboard)` or
-    /// `(hash, result, fighters, scoreboard, events)` when `includes_events` is true.
+    /// Postcard bytes for `(hash, result, fighters, scoreboard, roster)`,
+    /// followed by `events` when `includes_events` is true.
     tail: Vec<u8>,
     includes_events: bool,
 }
@@ -1001,14 +1209,16 @@ impl EncodedSnapshotBody {
         result: Option<WireResult>,
         fighters: &[FighterState],
         scoreboard: Option<&[FighterScore]>,
+        roster: Option<&WireRoster>,
         shared_events: Option<&[TickEvent]>,
     ) -> Self {
         let mut tail = Vec::with_capacity(
             18 + fighters.len() * 32
                 + scoreboard.map_or(0, |s| s.len() * 12 + 2)
+                + roster.map_or(1, |r| r.slots.len() * 16 + 6)
                 + shared_events.map_or(0, |e| e.len() * 10 + 1),
         );
-        tail = postcard::to_extend(&(hash, result, fighters, scoreboard), tail)
+        tail = postcard::to_extend(&(hash, result, fighters, scoreboard, roster), tail)
             .expect("snapshot body always encodes");
         let includes_events = if let Some(events) = shared_events {
             tail = postcard::to_extend(events, tail).expect("snapshot events always encode");

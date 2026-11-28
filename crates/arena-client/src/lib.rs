@@ -39,6 +39,63 @@ use arena_sim::spells::{
 };
 use bevy::{asset::AssetMetaCheck, core_pipeline::tonemapping::Tonemapping, prelude::*};
 
+/// Fighters the client can draw at once: a hub world's roster (ADR 0057),
+/// which is larger than a 3v3.
+pub(crate) const MAX_ACTORS: usize = arena_protocol::MAX_WORLD_FIGHTERS;
+/// Fighter visuals built at startup: a 3v3's. More are built only when a
+/// hub world has more fighters (each is a whole procedural body the
+/// animator poses every frame).
+const STARTING_VISUALS: usize = 6;
+
+/// Builds fighter visuals for a hub world's extra fighters as they first
+/// appear (up to [`MAX_ACTORS`]); they stay for later worlds. Hidden when
+/// not in use, like the starting six.
+fn grow_fighter_visuals(
+    mut commands: Commands,
+    practice: Res<Practice>,
+    visuals: Query<&FighterVisual>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    character_meshes: Option<Res<graphics::CharacterMeshes>>,
+    painted: Option<Res<textures::PaintedTextures>>,
+) {
+    let (Some(character_meshes), Some(painted)) = (character_meshes, painted) else {
+        return;
+    };
+    let wanted = practice.arena.fighters().len().min(MAX_ACTORS);
+    let built = visuals.iter().map(|visual| visual.0 + 1).max().unwrap_or(0);
+    for index in built..wanted {
+        let accent = material(
+            &mut materials,
+            palette::color(if index % 2 == 0 {
+                palette::TEAL_4
+            } else {
+                palette::EMBER_4
+            }),
+        );
+        let humanoid = humanoid::Humanoid::new(
+            humanoid::Appearance::practice(index, accent),
+            &mut materials,
+            &painted,
+        );
+        commands
+            .spawn((
+                FighterVisual(index),
+                Transform::default(),
+                Visibility::Hidden,
+            ))
+            .with_children(|parent| {
+                parent
+                    .spawn((
+                        animation::Animator::new(index),
+                        appearance::FighterBody(index),
+                        Transform::default(),
+                        Visibility::default(),
+                    ))
+                    .with_children(|body| humanoid.spawn(body, &character_meshes, index));
+            });
+    }
+}
+
 #[derive(Resource)]
 struct Practice {
     arena: Arena,
@@ -266,22 +323,21 @@ pub fn run() {
                     // never replays a hidden gap into the fresh practice round.
                     practice_catch_up,
                     network_receive,
+                    grow_fighter_visuals,
                     apply_map_edits,
-                    hub::read,
+                    hub::venue,
                     read_controls,
-                    hub::steer,
                 )
                     .chain(),
             ),
         )
-        .add_systems(FixedUpdate, (simulate, hub::fixed_step))
+        .add_systems(FixedUpdate, simulate)
         .add_systems(
             Update,
             (
                 rebuild_venue.run_if(resource_changed::<ActiveMap>),
                 (character::resolve_assets, character::check_loading).chain(),
                 appearance::switch_kit,
-                hub::spawn_kits,
                 appearance::apply,
                 held_weapon::read,
                 held_weapon::attach,
@@ -290,7 +346,6 @@ pub fn run() {
                 textures::mip_character_textures,
                 sky::attach,
                 startup::update,
-                hub::advance,
                 present,
                 animation::animate,
                 character_animation::animate,
@@ -305,9 +360,6 @@ pub fn run() {
             PostUpdate,
             (
                 publish
-                    .after(bevy::transform::TransformSystems::Propagate)
-                    .after(bevy::camera::CameraUpdateSystems),
-                hub::screen
                     .after(bevy::transform::TransformSystems::Propagate)
                     .after(bevy::camera::CameraUpdateSystems),
                 // This frame's animated hand, before visibility is resolved.
@@ -412,7 +464,9 @@ fn setup(
     let orange = material(&mut materials, palette::color(palette::EMBER_4));
     let character_meshes = graphics::CharacterMeshes::new(&mut meshes);
     let painted = textures::PaintedTextures::new(&mut images);
-    for index in 0..6 {
+    // A 3v3's fighters now; a hub world's others as they arrive
+    // (`grow_fighter_visuals`), so practice never builds and poses 44.
+    for index in 0..STARTING_VISUALS {
         let accent = if index % 2 == 0 {
             teal.clone()
         } else {
@@ -652,8 +706,17 @@ fn read_controls(
     update_movement(&mut practice, &orbit, &input);
     update_selection(&mut practice, &input);
     if input.click.is_some() || input.focus_click.is_some() {
-        let blockers = cached_blockers.get_or_insert_with(|| hover::pillar_blockers(&map.0));
+        // The arena's pillars hide units in a match; the plaza is open.
+        let open: Vec<prism::Prism> = Vec::new();
+        let blockers = if practice.arena.slots().is_empty() {
+            cached_blockers.get_or_insert_with(|| hover::pillar_blockers(&map.0))
+        } else {
+            &open
+        };
         let actor_count = practice.arena.fighters().len();
+        let present: Vec<bool> = (0..actor_count)
+            .map(|actor| actor_present(&practice.arena, actor))
+            .collect();
         let pick = |cursor| {
             cameras.single().ok().and_then(|(camera, view)| {
                 camera.viewport_to_world(view, cursor).ok().and_then(|ray| {
@@ -661,7 +724,7 @@ fn read_controls(
                         ray,
                         visuals
                             .iter()
-                            .filter(|(unit, _)| unit.0 < actor_count)
+                            .filter(|(unit, _)| present.get(unit.0).copied().unwrap_or(false))
                             .map(|(unit, transform)| (unit.0, transform.translation())),
                         blockers,
                     )
@@ -669,7 +732,10 @@ fn read_controls(
             })
         };
         if let Some(unit) = update_world_clicks(&mut practice, &input, pick) {
-            platform::focus_unit(unit);
+            let tags = unit_tags(&practice.arena);
+            if let Some(tag) = tags.get(unit).filter(|tag| !tag.is_empty()) {
+                platform::focus_unit(tag);
+            }
         }
     }
     if let Some(spell) = input.cast.or(input.attack.then_some(SpellId::Pulse)) {
@@ -713,10 +779,9 @@ fn update_selection(practice: &mut Practice, input: &Input) {
         practice.selected = Some(0);
         practice.feedback = "Player selected";
     }
-    if let Some(actor) = input
-        .select_actor
-        .filter(|actor| *actor < practice.arena.fighters().len())
-    {
+    if let Some(actor) = input.select_actor.filter(|actor| {
+        *actor < practice.arena.fighters().len() && actor_present(&practice.arena, *actor)
+    }) {
         practice.selected = Some(actor);
     }
     if input.clear {
@@ -735,11 +800,15 @@ fn update_movement(practice: &mut Practice, orbit: &Orbit, input: &Input) {
     practice.movement = Vec2::new(movement.x, movement.z);
 }
 
-fn resolve_cast_target(spell: SpellId, selected: Option<usize>) -> Option<usize> {
+fn resolve_cast_target(arena: &Arena, spell: SpellId, selected: Option<usize>) -> Option<usize> {
     match spell {
-        // Friendly heals auto-self-cast when targeting an enemy or nobody.
+        // Friendly heals auto-self-cast when targeting an enemy or nobody:
+        // friends are the player's team (actor parity in a match, the
+        // slot's team in a hub world).
         SpellId::Mend => match selected {
-            Some(actor) if actor.is_multiple_of(2) => Some(actor),
+            Some(actor) if arena.team(actor).is_some() && arena.team(actor) == arena.team(0) => {
+                Some(actor)
+            }
             _ => Some(0),
         },
         SpellId::Pulse | SpellId::RiftBolt | SpellId::Quell => selected,
@@ -754,7 +823,7 @@ fn simulate(mut practice: ResMut<Practice>, mut net: ResMut<Net>) {
         let jump = std::mem::take(&mut practice.jump);
         let mut action = take_stop_cast(&mut practice);
         if let Some(spell) = std::mem::take(&mut practice.cast) {
-            if let Some(target) = resolve_cast_target(spell, practice.selected) {
+            if let Some(target) = resolve_cast_target(&practice.arena, spell, practice.selected) {
                 action = Some(CastAction::Cast {
                     spell,
                     target: Some(target),
@@ -790,7 +859,7 @@ fn simulate(mut practice: ResMut<Practice>, mut net: ResMut<Net>) {
         cast_buffer_ticks: practice.cast_buffer_ticks,
     };
     if let Some(spell) = std::mem::take(&mut practice.cast) {
-        if let Some(target) = resolve_cast_target(spell, practice.selected) {
+        if let Some(target) = resolve_cast_target(&practice.arena, spell, practice.selected) {
             input.action = Some(CastAction::Cast {
                 spell,
                 target: Some(target),
@@ -959,7 +1028,7 @@ fn apply_practice_events(practice: &mut Practice, events: Vec<ArenaEvent>) {
 }
 /// The action bar's status for the local player (actor 0) casting `spell`.
 fn spell_status(arena: &Arena, spell: SpellId, target: Option<usize>) -> &'static str {
-    let resolved = resolve_cast_target(spell, target);
+    let resolved = resolve_cast_target(arena, spell, target);
     let Some(target) = resolved else {
         return "Select a target";
     };
@@ -1137,7 +1206,31 @@ fn network_receive(
             view.fighters[0].momentum = predicted.momentum;
             view.fighters[0].facing = predicted.facing;
         }
-        if practice.arena.tick() != view.tick
+        if let Some((slots, next_id)) = view.world.clone() {
+            // A hub world (ADR 0057): its own rules and plaza.
+            if practice.arena.tick() != view.tick
+                || practice.arena.slots() != slots.as_slice()
+                || practice.arena.fighters() != view.fighters.as_slice()
+            {
+                // The session keeps only rosters the rules accept; keep the
+                // last world if one ever is not.
+                if let Some(world) =
+                    Arena::restore_hub(view.tick, slots, view.fighters.clone(), next_id)
+                {
+                    // A target whose slot someone else now holds is not
+                    // kept: the newcomer was never picked.
+                    let held = |arena: &Arena, actor: usize| arena.slots().get(actor).map(|s| s.id);
+                    if practice
+                        .selected
+                        .is_some_and(|actor| held(&practice.arena, actor) != held(&world, actor))
+                    {
+                        practice.selected = None;
+                    }
+                    practice.arena = world;
+                }
+            }
+        } else if practice.arena.tick() != view.tick
+            || practice.arena.rules() != arena_sim::arena::Rules::Match
             || practice.arena.max_round_ticks() != session.round_ticks()
             || practice.arena.fighters() != view.fighters.as_slice()
             || practice.arena.result() != view.result
@@ -1146,6 +1239,12 @@ fn network_receive(
                 Arena::restore(map.0.layout.clone(), view.tick, view.fighters, view.result)
                     .and_then(|arena| arena.with_round_limit(session.round_ticks()))
                     .expect("the session only keeps complete rosters and valid round limits");
+        }
+        if practice
+            .selected
+            .is_some_and(|actor| !actor_present(&practice.arena, actor))
+        {
+            practice.selected = None;
         }
         let count = view.positions.len();
         if session.is_spectator() {
@@ -1246,19 +1345,8 @@ fn present(
         .as_ref()
         .and_then(|net| net.session.as_ref())
         .is_some_and(network::Session::is_spectator);
-    let mut positions = [Vec3::ZERO; arena_protocol::MAX_FIGHTERS];
-    // In the hub the local player walks the plaza alone; the arena's other
-    // fighters are not drawn (ADR 0056).
-    let walk = hub.as_ref().and_then(|hub| {
-        hub.walk
-            .as_ref()
-            .map(|walk| walk.shown(fixed.overstep_fraction()))
-    });
+    let mut positions = [Vec3::ZERO; MAX_ACTORS];
     let count = match &practice.remote {
-        _ if walk.is_some() && !spectating => {
-            positions[0] = walk.expect("checked");
-            1
-        }
         // In a network match the player's own fighter is predicted, drawn
         // part-way through the current fixed tick like local practice.
         Some(remote) => {
@@ -1288,8 +1376,8 @@ fn present(
     let positions = &positions[..count];
     let obstacles_changed =
         !added_obstacles.is_empty() || removed_obstacles.read().next().is_some();
-    // In the hub the boom meets only the plaza, never the hidden arena.
-    let in_hub = walk.is_some();
+    // In a hub world the boom meets only the plaza, never the hidden arena.
+    let in_hub = hub.as_ref().is_some_and(|hub| hub.active());
     if obstacles_changed
         || *cached_for_hub != in_hub
         || (cached_obstacles.is_empty() && !obstacles.is_empty())
@@ -1368,7 +1456,10 @@ fn present(
         }
     }
     for (fighter, mut transform, mut visibility) in &mut fighters {
-        *visibility = if fighter.0 < positions.len() && hidden_actor != Some(fighter.0) {
+        *visibility = if fighter.0 < positions.len()
+            && hidden_actor != Some(fighter.0)
+            && actor_present(&practice.arena, fighter.0)
+        {
             Visibility::Inherited
         } else {
             Visibility::Hidden
@@ -1431,6 +1522,9 @@ fn publish(
         .and_then(|net| net.session.as_ref())
         .is_some_and(network::Session::is_spectator);
     let fighters = practice.arena.fighters();
+    // A hub world (ADR 0057): tags by team, vacant slots left out.
+    let in_world = !practice.arena.slots().is_empty();
+    let tags = unit_tags(&practice.arena);
     let player = fighters[0];
     let target = fighters[1];
     let selected_target = fighters[practice.selected.unwrap_or(1)];
@@ -1449,9 +1543,12 @@ fn publish(
                 .ok()
         })
         .unwrap_or(Vec2::splat(-1.0));
-    let mut visual_positions = [None::<Vec3>; arena_protocol::MAX_FIGHTERS];
+    let mut visual_positions = [None::<Vec3>; MAX_ACTORS];
     for (unit, transform) in &visuals {
-        if unit.0 < fighters.len() && unit.0 < visual_positions.len() {
+        if unit.0 < fighters.len()
+            && unit.0 < visual_positions.len()
+            && actor_present(&practice.arena, unit.0)
+        {
             visual_positions[unit.0] = Some(transform.translation());
         }
     }
@@ -1464,7 +1561,12 @@ fn publish(
                 .and_then(|(camera, transform)| camera.viewport_to_world(transform, cursor).ok())
         })
         .and_then(|ray| {
-            let blockers = cached_blockers.get_or_insert_with(|| hover::pillar_blockers(&map.0));
+            let open: Vec<prism::Prism> = Vec::new();
+            let blockers: &[prism::Prism] = if in_world {
+                &open
+            } else {
+                cached_blockers.get_or_insert_with(|| hover::pillar_blockers(&map.0))
+            };
             hover::pick(
                 ray,
                 visual_positions
@@ -1478,9 +1580,10 @@ fn publish(
     json.clear();
     let _ = write!(
         json,
-        r#"{{"startup":{},"spectating":{},"spectatorFollow":"#,
+        r#"{{"startup":{},"spectating":{},"hub":{},"spectatorFollow":"#,
         startup.json(),
         spectating,
+        in_world,
     );
     match spec_cam
         .follow
@@ -1491,10 +1594,11 @@ fn publish(
         }
         None => json.push_str("null"),
     }
+    // A world has no team size; the page lays its frames out as for 3v3.
     let _ = write!(
         json,
         r#","teamSize":{},"selectedActor":"#,
-        fighters.len() / 2,
+        if in_world { 3 } else { fighters.len() / 2 },
     );
     match practice.selected {
         Some(actor) => {
@@ -1503,15 +1607,20 @@ fn publish(
         None => json.push_str("null"),
     }
     json.push_str(r#","roster":["#);
+    let mut first_unit = true;
     for (actor, fighter) in fighters.iter().enumerate() {
-        if actor > 0 {
+        if tags[actor].is_empty() {
+            continue;
+        }
+        if !first_unit {
             json.push(',');
         }
+        first_unit = false;
         let _ = write!(
             json,
             r#"{{"actor":{},"tag":"{}","health":{},"resource":{},"gcdRemaining":{},"lockoutRemaining":{},"cast":"#,
             actor,
-            unit_tag_str(actor),
+            tags[actor],
             fighter.health,
             fighter.resource,
             fighter.gcd_remaining,
@@ -1564,10 +1673,10 @@ fn publish(
         practice.selected == Some(0),
     );
     match hovered {
-        Some(actor) => {
-            let _ = write!(json, r#""{}""#, unit_tag_str(actor));
+        Some(actor) if !tags[actor].is_empty() => {
+            let _ = write!(json, r#""{}""#, tags[actor]);
         }
-        None => json.push_str("null"),
+        _ => json.push_str("null"),
     }
     let _ = write!(
         json,
@@ -1617,9 +1726,7 @@ fn publish(
             let _ = write!(
                 json,
                 r#"{{"tag":"{}","x":{},"y":{}}}"#,
-                unit_tag_str(actor),
-                point.x,
-                point.y
+                tags[actor], point.x, point.y
             );
         }
     }
@@ -1643,7 +1750,7 @@ fn publish(
                 json,
                 r#"{{"id":{},"source":"Player","target":"{}","delta":{},"x":{},"y":{},"progress":{}}}"#,
                 entry.id,
-                unit_tag_str(entry.target),
+                tags.get(entry.target).map_or("", String::as_str),
                 entry.delta,
                 point.x,
                 point.y,
@@ -1821,6 +1928,50 @@ fn cast_buffer_ticks(ms: Option<f64>) -> Option<u8> {
     Some(ticks.min(f64::from(arena_sim::arena::MAX_CAST_BUFFER_TICKS)) as u8)
 }
 
+/// Whether `actor` is someone to draw and list: always in a match; in a hub
+/// world, unless the slot is vacant.
+fn actor_present(arena: &Arena, actor: usize) -> bool {
+    arena
+        .slots()
+        .get(actor)
+        .is_none_or(|slot| slot.occupant != arena_sim::arena::Occupant::Vacant)
+}
+
+/// Each local actor's unit tag for the page: in a match by parity (local
+/// `2k` is `Team{k}`, `2k + 1` is `Opponent{k + 1}`); in a hub world by
+/// team, counting the players (`Team1`, `Team2`, …) and the training
+/// enemies (`Opponent1`, …) in local order, and empty for a vacant slot.
+fn unit_tags(arena: &Arena) -> Vec<String> {
+    if arena.slots().is_empty() {
+        return (0..arena.fighters().len()).map(unit_tag_string).collect();
+    }
+    let (mut friends, mut enemies) = (0, 0);
+    (0..arena.fighters().len())
+        .map(|actor| match (actor, arena.team(actor)) {
+            (0, _) => "Player".to_owned(),
+            (_, Some(0)) => {
+                friends += 1;
+                format!("Team{friends}")
+            }
+            (_, Some(_)) => {
+                enemies += 1;
+                format!("Opponent{enemies}")
+            }
+            (_, None) => String::new(),
+        })
+        .collect()
+}
+
+fn unit_tag_string(actor: usize) -> String {
+    if actor == 0 {
+        "Player".into()
+    } else if actor.is_multiple_of(2) {
+        format!("Team{}", actor / 2)
+    } else {
+        format!("Opponent{}", actor / 2 + 1)
+    }
+}
+
 fn unit_tag_str(actor: usize) -> &'static str {
     match actor {
         0 => "Player",
@@ -1830,17 +1981,6 @@ fn unit_tag_str(actor: usize) -> &'static str {
         4 => "Team2",
         5 => "Opponent3",
         _ => "Opponent3",
-    }
-}
-
-#[cfg(any(target_arch = "wasm32", test))]
-fn unit_tag(actor: usize) -> String {
-    if actor == 0 {
-        "Player".into()
-    } else if actor.is_multiple_of(2) {
-        format!("Team{}", actor / 2)
-    } else {
-        format!("Opponent{}", actor / 2 + 1)
     }
 }
 
@@ -1877,7 +2017,7 @@ mod platform {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::*;
     #[wasm_bindgen(
-        inline_js = "export function arena_character() { const id = globalThis.arenaShell.characterModel; return typeof id === 'string' ? id : undefined; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(tag) { globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); } export function arena_map() { return globalThis.arenaShell.readMap?.() ?? []; } export function arena_map_status(json) { globalThis.arenaShell.onMapStatus?.(JSON.parse(json)); } export function arena_appearance() { return globalThis.arenaShell.readAppearance?.() ?? []; } export function arena_preview() { return globalThis.arenaShell.readPreview?.() ?? []; } export function arena_network() { return globalThis.arenaShell.readNetwork?.() ?? []; } export function arena_network_send(frame) { globalThis.arenaShell.sendNetwork?.(frame.slice()); } export function arena_network_status(json) { globalThis.arenaShell.onNetwork?.(JSON.parse(json)); } export function arena_network_appearances(json) { globalThis.arenaShell.onAppearances?.(JSON.parse(json)); } export function arena_network_handles(json) { globalThis.arenaShell.onHandles?.(JSON.parse(json)); } export function arena_network_tags(json) { globalThis.arenaShell.onTags?.(JSON.parse(json)); } export function arena_hub() { return globalThis.arenaShell.readHub?.() ?? []; } export function arena_hub_intent(seq, x, z, facing, jump) { globalThis.arenaShell.onHubIntent?.(seq, x, z, facing, jump); } export function arena_hub_screen(json) { globalThis.arenaShell.onHubScreen?.(json); }"
+        inline_js = "export function arena_character() { const id = globalThis.arenaShell.characterModel; return typeof id === 'string' ? id : undefined; } export function arena_input() { return globalThis.arenaShell.readInput(); } export function arena_hover() { return globalThis.arenaShell.readHover?.() ?? []; } export function arena_graphics() { return globalThis.arenaShell.readGraphics?.() ?? []; } export function arena_weapons() { return globalThis.arenaShell.readWeapons?.() ?? []; } export function arena_lighting() { return globalThis.arenaShell.readLighting?.() ?? []; } export function arena_focus(tag) { globalThis.arenaShell.onFocusUnit?.(tag); } export function arena_state(json) { globalThis.arenaShell.onState(JSON.parse(json)); } export function arena_map() { return globalThis.arenaShell.readMap?.() ?? []; } export function arena_map_status(json) { globalThis.arenaShell.onMapStatus?.(JSON.parse(json)); } export function arena_appearance() { return globalThis.arenaShell.readAppearance?.() ?? []; } export function arena_preview() { return globalThis.arenaShell.readPreview?.() ?? []; } export function arena_network() { return globalThis.arenaShell.readNetwork?.() ?? []; } export function arena_network_send(frame) { globalThis.arenaShell.sendNetwork?.(frame.slice()); } export function arena_network_status(json) { globalThis.arenaShell.onNetwork?.(JSON.parse(json)); } export function arena_network_appearances(json) { globalThis.arenaShell.onAppearances?.(JSON.parse(json)); } export function arena_network_handles(json) { globalThis.arenaShell.onHandles?.(JSON.parse(json)); } export function arena_network_tags(json) { globalThis.arenaShell.onTags?.(JSON.parse(json)); }"
     )]
     extern "C" {
         fn arena_character() -> Option<String>;
@@ -1898,21 +2038,6 @@ mod platform {
         fn arena_network_appearances(json: &str);
         fn arena_network_handles(json: &str);
         fn arena_network_tags(json: &str);
-        fn arena_hub() -> js_sys::Array;
-        fn arena_hub_intent(seq: u32, x: i16, z: i16, facing: u16, jump: bool);
-        fn arena_hub_screen(json: &str);
-    }
-    /// The page's hub (ADR 0056) as `[revision, json]`; older shells send none.
-    pub fn read_hub() -> Option<(f64, String)> {
-        let values = arena_hub();
-        let revision = values.get(0).as_f64().filter(|r| r.is_finite())?;
-        Some((revision, values.get(1).as_string()?))
-    }
-    pub fn hub_intent(seq: u32, x: i16, z: i16, facing: u16, jump: bool) {
-        arena_hub_intent(seq, x, z, facing, jump);
-    }
-    pub fn hub_screen(json: &str) {
-        arena_hub_screen(json);
     }
     /// The runtime's match feed as `[generation, ...frames]`; `None` when
     /// there is no match (older shells send nothing).
@@ -2010,7 +2135,9 @@ mod platform {
             select_actor: a
                 .get(17)
                 .as_f64()
-                .filter(|n| n.is_finite() && *n >= 0.0 && *n < 6.0 && n.fract() == 0.0)
+                .filter(|n| {
+                    n.is_finite() && *n >= 0.0 && *n < super::MAX_ACTORS as f64 && n.fract() == 0.0
+                })
                 .map(|n| n as usize),
             x: number(0),
             z: number(1),
@@ -2054,8 +2181,8 @@ mod platform {
             cast_buffer_ticks: super::cast_buffer_ticks(a.get(22).as_f64()),
         }
     }
-    pub fn focus_unit(unit: usize) {
-        arena_focus(&super::unit_tag(unit));
+    pub fn focus_unit(tag: &str) {
+        arena_focus(tag);
     }
     pub fn publish(json: &str) {
         arena_state(json);
@@ -2382,6 +2509,108 @@ mod tests {
     }
 
     #[test]
+    fn fighter_visuals_grow_only_when_a_world_has_more_fighters() {
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<StandardMaterial>>()
+            .init_resource::<Assets<Image>>()
+            .insert_resource(Practice::new(&arena_map::colosseum(), 1))
+            .add_systems(Update, grow_fighter_visuals);
+        let meshes = {
+            let mut assets = app.world_mut().resource_mut::<Assets<Mesh>>();
+            graphics::CharacterMeshes::new(&mut assets)
+        };
+        let painted = {
+            let mut images = app.world_mut().resource_mut::<Assets<Image>>();
+            textures::PaintedTextures::new(&mut images)
+        };
+        app.insert_resource(meshes).insert_resource(painted);
+        for index in 0..STARTING_VISUALS {
+            app.world_mut()
+                .spawn((FighterVisual(index), Transform::default()));
+        }
+        let count = |app: &mut App| {
+            app.world_mut()
+                .query::<&FighterVisual>()
+                .iter(app.world())
+                .count()
+        };
+        // Practice (a 1v1) builds nothing more.
+        app.update();
+        assert_eq!(count(&mut app), STARTING_VISUALS);
+        // A world of four training enemies and six players needs ten.
+        let mut world = Arena::hub();
+        for _ in 0..6 {
+            world.join().unwrap();
+        }
+        app.world_mut().resource_mut::<Practice>().arena = world;
+        app.update();
+        assert_eq!(count(&mut app), 10);
+        app.update();
+        assert_eq!(count(&mut app), 10, "built once");
+    }
+
+    #[test]
+    fn mend_goes_to_friends_by_team_and_otherwise_to_oneself() {
+        // A match: even actors are friends.
+        let practice = Arena::practice(arena_map::colosseum().layout, 3).unwrap();
+        assert_eq!(
+            resolve_cast_target(&practice, SpellId::Mend, Some(2)),
+            Some(2)
+        );
+        assert_eq!(
+            resolve_cast_target(&practice, SpellId::Mend, Some(1)),
+            Some(0)
+        );
+        assert_eq!(
+            resolve_cast_target(&practice, SpellId::Pulse, Some(1)),
+            Some(1)
+        );
+        // A hub world: other players at odd locals are friends too, and a
+        // training enemy at an even one is not.
+        let mut world = Arena::hub();
+        let me = world.join().unwrap();
+        let other = world.join().unwrap();
+        let order = network::world_order(me, world.fighters().len());
+        let slots: Vec<_> = order.iter().map(|&slot| world.slots()[slot]).collect();
+        let fighters: Vec<_> = order.iter().map(|&slot| world.fighters()[slot]).collect();
+        let local = Arena::restore_hub(0, slots, fighters, world.next_id()).unwrap();
+        let friend = order.iter().position(|&slot| slot == other).unwrap();
+        assert_eq!(friend % 2, 1, "an odd local index");
+        assert_eq!(
+            resolve_cast_target(&local, SpellId::Mend, Some(friend)),
+            Some(friend)
+        );
+        assert_eq!(resolve_cast_target(&local, SpellId::Mend, Some(2)), Some(0));
+    }
+
+    #[test]
+    fn hub_worlds_tag_units_by_team_and_hide_vacant_slots() {
+        let mut world = Arena::hub();
+        let me = world.join().unwrap();
+        let other = world.join().unwrap();
+        let gone = world.join().unwrap();
+        world.leave(gone).unwrap();
+        // Local order puts this player first; the rest by slot.
+        let order = network::world_order(me, world.fighters().len());
+        let slots: Vec<_> = order.iter().map(|&slot| world.slots()[slot]).collect();
+        let fighters: Vec<_> = order.iter().map(|&slot| world.fighters()[slot]).collect();
+        let local = Arena::restore_hub(0, slots, fighters, world.next_id()).unwrap();
+        let tags = unit_tags(&local);
+        assert_eq!(tags[0], "Player");
+        // Training enemies are the opponents, other players the team.
+        assert_eq!(
+            &tags[1..5],
+            &["Opponent1", "Opponent2", "Opponent3", "Opponent4"]
+        );
+        let at = |slot: usize| order.iter().position(|&s| s == slot).unwrap();
+        assert_eq!(tags[at(other)], "Team1");
+        assert_eq!(tags[at(gone)], "", "a vacant slot has no tag");
+        assert!(!actor_present(&local, at(gone)));
+        assert!(actor_present(&local, at(other)));
+    }
+
+    #[test]
     fn practice_rosters_present_all_active_actors_and_hide_unused_models() {
         let mut app = App::new();
         app.init_resource::<Practice>()
@@ -2445,10 +2674,10 @@ mod tests {
                     );
                 }
             }
-            assert_eq!(unit_tag(0), "Player");
+            assert_eq!(unit_tag_string(0), "Player");
             for actor in 1..size * 2 {
                 assert_eq!(
-                    unit_tag(actor),
+                    unit_tag_string(actor),
                     if actor.is_multiple_of(2) {
                         format!("Team{}", actor / 2)
                     } else {
@@ -2498,6 +2727,7 @@ mod tests {
                 rules: arena_protocol::RULES_VERSION,
                 map: network::fnv1a(arena_map::COLOSSEUM_JSON.as_bytes()),
                 spectator: false,
+                hub: false,
             })
             .encode(),
         ];
@@ -3185,96 +3415,6 @@ mod tests {
     }
 
     #[test]
-    fn the_hub_replaces_the_venue_walks_the_player_and_shows_the_others() {
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-            .init_asset::<Mesh>()
-            .init_asset::<StandardMaterial>()
-            .init_asset::<AnimationGraph>()
-            .init_resource::<Practice>()
-            .init_resource::<hub::Hub>()
-            .init_resource::<appearance::Desired>()
-            .init_resource::<character::KitCache>()
-            // Every frame is a hub tick and a bit, so each one steps.
-            .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
-                std::time::Duration::from_millis(110),
-            ))
-            .add_systems(
-                Update,
-                (
-                    hub::read,
-                    hub::steer,
-                    hub::fixed_step,
-                    hub::spawn_kits,
-                    hub::advance,
-                )
-                    .chain(),
-            );
-        let venue = app
-            .world_mut()
-            .spawn((venue::VenueEntity, Visibility::Inherited))
-            .id();
-        platform::HUB_INTENTS.lock().unwrap().clear();
-        *platform::HUB.lock().unwrap() = Some((
-            1.0,
-            r#"{"x":-5250,"z":24000,"y":0,"vy":0,"mx":0,"mz":0,"tick":1,"ack":0,"players":[{"id":7,"x":0,"z":30000,"facing":0,"height":0,"vy":0,"admin":false,"spec":null}]}"#.into(),
-        ));
-        app.update();
-        app.update();
-        let world = app.world_mut();
-        assert_eq!(world.get::<Visibility>(venue), Some(&Visibility::Hidden));
-        let plaza = world
-            .query_filtered::<(), (With<hub::Plaza>, Without<hub::PlazaObstacle>)>()
-            .iter(world)
-            .count();
-        assert_eq!(plaza, 1 + arena_sim::hub::COLUMNS.len());
-        // The camera meets the plaza's floor and columns.
-        let obstacles = world
-            .query_filtered::<(), (With<hub::PlazaObstacle>, With<camera::Obstacle>)>()
-            .iter(world)
-            .count();
-        assert_eq!(obstacles, 1 + arena_sim::hub::COLUMNS.len());
-        let avatars: Vec<hub::HubAvatar> = world
-            .query::<&hub::HubAvatar>()
-            .iter(world)
-            .copied()
-            .collect();
-        assert_eq!(avatars, vec![hub::HubAvatar { id: 7, slot: 0 }]);
-        // Without a look to show, a plain body stands in.
-        assert_eq!(world.query::<&hub::StandIn>().iter(world).count(), 1);
-        // Walking east: the intent goes to the page, the arena gets none.
-        {
-            let mut practice = world.resource_mut::<Practice>();
-            practice.movement = Vec2::new(1.0, 0.0);
-            practice.facing = 0.0;
-        }
-        // Standing still sent nothing; walking sends numbered steps.
-        assert!(platform::HUB_INTENTS.lock().unwrap().is_empty());
-        app.update();
-        assert_eq!(
-            platform::HUB_INTENTS.lock().unwrap().first().copied(),
-            Some((1, 1000, 0, 0, false))
-        );
-        assert_eq!(app.world().resource::<Practice>().movement, Vec2::ZERO);
-        assert!(app.world().resource::<hub::Hub>().active());
-        // Leaving: the plaza and the others go, the venue comes back.
-        *platform::HUB.lock().unwrap() = Some((2.0, "null".into()));
-        app.update();
-        let world = app.world_mut();
-        assert_eq!(world.get::<Visibility>(venue), Some(&Visibility::Inherited));
-        assert_eq!(
-            world
-                .query_filtered::<(), With<hub::Plaza>>()
-                .iter(world)
-                .count(),
-            0
-        );
-        assert_eq!(world.query::<&hub::HubAvatar>().iter(world).count(), 0);
-        assert!(!world.resource::<hub::Hub>().active());
-        *platform::HUB.lock().unwrap() = None;
-    }
-
-    #[test]
     fn spectator_free_camera_clamps_inside_venue_bounds() {
         let map = arena_map::colosseum();
         let mut cam = SpectatorCamera::default();
@@ -3327,7 +3467,7 @@ mod platform {
         super::Input::default()
     }
     pub fn publish(_: &str) {}
-    pub fn focus_unit(_: usize) {}
+    pub fn focus_unit(_: &str) {}
     /// Tests stand in for the browser's socket through these: the feed's
     /// frames are consumed when read.
     pub static NETWORK: std::sync::Mutex<Option<super::network::Feed>> =
@@ -3372,19 +3512,4 @@ mod platform {
     /// worker threads, so these are process-wide rather than thread-local.
     pub static MAP: std::sync::Mutex<Option<(f64, String)>> = std::sync::Mutex::new(None);
     pub static STATUS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-    /// Tests stand in for the page's hub through these.
-    pub static HUB: std::sync::Mutex<Option<(f64, String)>> = std::sync::Mutex::new(None);
-    /// One hub move: sequence number, axes, facing and jump.
-    pub type HubMove = (u32, i16, i16, u16, bool);
-    pub static HUB_INTENTS: std::sync::Mutex<Vec<HubMove>> = std::sync::Mutex::new(Vec::new());
-    pub static HUB_SCREEN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
-    pub fn read_hub() -> Option<(f64, String)> {
-        HUB.lock().unwrap().clone()
-    }
-    pub fn hub_intent(seq: u32, x: i16, z: i16, facing: u16, jump: bool) {
-        HUB_INTENTS.lock().unwrap().push((seq, x, z, facing, jump));
-    }
-    pub fn hub_screen(json: &str) {
-        *HUB_SCREEN.lock().unwrap() = Some(json.to_owned());
-    }
 }

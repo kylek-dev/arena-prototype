@@ -369,33 +369,61 @@ async fn bots_measure_spectator_bandwidth_and_privacy_with_zero_mismatches() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_full_hub_instance_stays_within_its_budget() {
+async fn a_full_hub_world_stays_within_its_budget() {
     use arena_bot::hub::{self, HubScenario};
     use arena_server::door::{self, DoorConfig};
+    use arena_sim::arena::HUB_PLAYER_CAP;
     let key = arena_server::ticket::TicketKey::random();
+    // A world server and a door that asks its directory (ADR 0057).
+    let mut server_config = Config::new(key.clone());
+    server_config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
+    server_config.connections_per_address = 0;
+    let server = start(server_config).await.unwrap();
     let mut config = DoorConfig::new(
         key,
-        "ws://127.0.0.1:1/play".into(),
+        format!("ws://{}/play", server.addr),
         "http://localhost:8000/".into(),
     );
     config.bind = SocketAddr::from(([127, 0, 0, 1], 0));
+    config.match_status = Some(format!("http://{}", server.addr));
     // Every bot connects from this one address.
     config.queue_per_address = 64;
     let door = door::start(config).await.unwrap();
-    // One more than an instance holds: the last bot opens a second one.
+    // One more than a world holds: the last bot opens a second one.
     let report = hub::run(HubScenario {
         door: door.addr.to_string(),
-        bots: arena_sim::hub::MAX_HUB_PLAYERS + 1,
-        duration: Duration::from_secs(3),
+        bots: HUB_PLAYER_CAP + 1,
+        duration: Duration::from_secs(4),
         seed: 7,
     })
     .await;
     println!("{report}");
+    // The world server's tick cost over the run (ADR 0057's measure).
+    let metrics = server.app.metrics().render();
+    let value = |name: &str| -> f64 {
+        metrics
+            .lines()
+            .find_map(|line| line.strip_prefix(name)?.trim().parse().ok())
+            .unwrap_or(0.0)
+    };
+    let (ticks, total, max, overruns) = (
+        value("arena_ticks_total "),
+        value("arena_tick_microseconds_total "),
+        value("arena_tick_max_microseconds "),
+        value("arena_tick_overruns_total "),
+    );
+    println!(
+        "world server: {ticks} ticks, mean {:.0} µs, slowest {max} µs, {overruns} overruns",
+        total / ticks.max(1.0)
+    );
     assert!(report.healthy(), "{report}");
     assert_eq!(report.instances, 2);
-    assert_eq!(report.largest_view, arena_sim::hub::MAX_HUB_PLAYERS - 1);
-    // About 10 states a second, within the ADR's 32 KB/s per client.
-    assert!(report.states_per_second_mean > 6.0, "{report}");
+    assert_eq!(report.largest_view, HUB_PLAYER_CAP - 1);
+    // A snapshot every tick, mostly as deltas: a full world of 40 players
+    // stays within ADR 0056's budget of 32 KB/s a client, with room.
+    assert!(report.states_per_second_mean > 15.0, "{report}");
+    assert!(report.deltas > report.states / 2, "{report}");
     assert!(report.bytes_per_second_max < 32_000.0, "{report}");
     door.stop().await.unwrap();
+    server.shut_down(Duration::ZERO).await.unwrap();
 }

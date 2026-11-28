@@ -9,6 +9,12 @@ import type { Snapshot } from "../bridge/snapshot";
 const HANDLE = /^[A-Za-z][A-Za-z0-9]{2,15}#(?!0000)\d{4}$/;
 /** Most fighters a match has (3v3). */
 const MAX_FIGHTERS = 6;
+/** Most fighters a hub world has (ADR 0057): relays are per engine actor. */
+const MAX_WORLD_FIGHTERS = 44;
+/** A relay's length: even up to 3v3 in a match, anything up to a world's. */
+const relayLength = (length: number) =>
+  (length >= 2 && length <= MAX_FIGHTERS && length % 2 === 0) ||
+  (length >= 1 && length <= MAX_WORLD_FIGHTERS);
 
 export function isHandle(value: unknown): value is string {
   return typeof value === "string" && HANDLE.test(value);
@@ -18,8 +24,7 @@ export function isHandle(value: unknown): value is string {
  * otherwise one handle per actor, or `null` for a seat not joined yet or
  * joined by a lobby link. Guest handles (`Guest#…`) may repeat. */
 export function parseHandles(raw: unknown): (string | null)[] | null {
-  if (!Array.isArray(raw) || raw.length < 2 || raw.length > MAX_FIGHTERS || raw.length % 2)
-    return null;
+  if (!Array.isArray(raw) || !relayLength(raw.length)) return null;
   return raw.every((entry) => entry === null || isHandle(entry))
     ? (raw as (string | null)[])
     : null;
@@ -31,8 +36,7 @@ export type SeatTags = { admin: boolean };
  * tag, or when malformed; otherwise `{admin}` per actor. Set by the server
  * from deploy configuration, never by a client. */
 export function parseTags(raw: unknown): SeatTags[] | null {
-  if (!Array.isArray(raw) || raw.length < 2 || raw.length > MAX_FIGHTERS || raw.length % 2)
-    return null;
+  if (!Array.isArray(raw) || !relayLength(raw.length)) return null;
   const valid = raw.every(
     (entry) =>
       entry !== null &&
@@ -41,6 +45,12 @@ export function parseTags(raw: unknown): SeatTags[] | null {
       typeof (entry as SeatTags).admin === "boolean",
   );
   return valid ? (raw as SeatTags[]).map((entry) => ({ admin: entry.admin })) : null;
+}
+
+/** Whether a per-actor relay of `length` entries fits `roster`: one entry
+ * per unit in a match, and in a hub world at least up to its last actor. */
+function fits(roster: readonly { actor: number }[], length: number) {
+  return roster.length === length || roster.every((unit) => unit.actor < length);
 }
 
 /** The name part of a handle, for tight spaces such as nameplates. */
@@ -59,17 +69,27 @@ export function withHandles(
   handles: readonly (string | null)[] | null,
 ): Snapshot {
   const roster = snapshot.roster;
-  if (!snapshot.networked || !roster || !handles || handles.length !== roster.length)
-    return snapshot;
-  const named = roster.map((unit, actor) => {
-    const handle = handles[actor];
+  if (!snapshot.networked || !roster || !handles || !fits(roster, handles.length)) return snapshot;
+  // Relays are per engine actor; a hub world's roster leaves vacant slots
+  // out, so each unit takes its own actor's entry.
+  const named = roster.map((unit) => {
+    const handle = handles[unit.actor];
     return handle ? { ...unit, name: handle, handle } : unit;
   });
+  const of = (actor: number) => named.find((unit) => unit.actor === actor);
   return {
     ...snapshot,
     roster: named,
-    player: { ...snapshot.player, name: named[0].name, handle: named[0].handle },
-    target: { ...snapshot.target, name: named[1].name, handle: named[1].handle },
+    player: {
+      ...snapshot.player,
+      name: of(0)?.name ?? snapshot.player.name,
+      handle: of(0)?.handle,
+    },
+    target: {
+      ...snapshot.target,
+      name: of(1)?.name ?? snapshot.target.name,
+      handle: of(1)?.handle,
+    },
   };
 }
 
@@ -78,13 +98,14 @@ export function withHandles(
  * changes nothing outside a network match or for a relay that does not fit. */
 export function withTags(snapshot: Snapshot, tags: readonly SeatTags[] | null): Snapshot {
   const roster = snapshot.roster;
-  if (!snapshot.networked || !roster || !tags || tags.length !== roster.length) return snapshot;
+  if (!snapshot.networked || !roster || !tags || !fits(roster, tags.length)) return snapshot;
   if (!tags.some((tag) => tag.admin)) return snapshot;
-  const tagged = roster.map((unit, actor) => (tags[actor].admin ? { ...unit, admin: true } : unit));
+  const tagged = roster.map((unit) => (tags[unit.actor].admin ? { ...unit, admin: true } : unit));
+  const of = (actor: number) => tagged.find((unit) => unit.actor === actor);
   return {
     ...snapshot,
     roster: tagged,
-    player: { ...snapshot.player, admin: tagged[0].admin },
-    target: { ...snapshot.target, admin: tagged[1].admin },
+    player: { ...snapshot.player, admin: of(0)?.admin },
+    target: { ...snapshot.target, admin: of(1)?.admin },
   };
 }

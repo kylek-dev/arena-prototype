@@ -65,13 +65,16 @@ yet.
 
 | Message | Fields | Notes |
 | --- | --- | --- |
-| `Welcome` | `protocol`, `actor: u8`, `team_size: u8`, `tick: u64`, `tick_rate: u8`, `round_ticks: u64`, `rules: u32`, `map: u64`, `spectator: bool` | When `spectator` is `true`, `actor` is `0`, `tick` is the latest already-eligible delayed tick (or `0`, never the live tick), and the connection is watch-only. `round_ticks` is the round's tick limit (`1..=MAX_ROUND_TICKS`, default 20 minutes), `rules` is the rules version and `map` a digest of the layout, so the remaining clock, replays and mismatches are explainable. |
-| `Snapshot` | `tick: u64`, `ack: u32`, `queued: u8`, `hash: u64`, `result`, `fighters` (≤ 6), `scoreboard` (`Option<Vec<FighterScore>>`), `events` (≤ 256) | `ack` is the last input `seq` applied, and `queued` how many of the recipient's inputs are still waiting. `hash` is `Arena::state_hash()`. `result` is `None` while running, or `Won { team }`, `Draw` (simultaneous elimination) or `TimeLimitDraw` (round clock expired with both teams standing). `fighters` carries each fighter's full rule state in actor order (position, height, vertical velocity, momentum, health, resource, `gcd_remaining`, `lockout_remaining`, per-spell `cooldowns`, `active_cast`, facing, `buffered_cast`), so a client can rebuild the arena and check `hash`, plus `connected`: whether that fighter's player is attached (not part of the rules or `hash`). `scoreboard` is `None` while the match runs (1 byte on the wire) and `Some(scores)` in server actor order on the final snapshot (`result.is_some()`), with one `FighterScore` (`damage_done`, `damage_taken`, `healing_done`, `healing_received`, `killing_blows`) per seat accumulated authoritatively by the match server (not part of `hash`). `events` are tick-tagged events since the previous snapshot: `Jumped`, `CastStarted`, `CastCompleted`, `CastInterrupted`, `Hit`, `Healed`, `Finished`, and `Rejected` only for the actor it names. `Moved` is not sent because positions show it. |
+| `Welcome` | `protocol`, `actor: u8`, `team_size: u8`, `tick: u64`, `tick_rate: u8`, `round_ticks: u64`, `rules: u32`, `map: u64`, `spectator: bool`, `hub: bool` | `hub` is `true` for a hub world ([ADR 0057](decisions/0057-hub-on-the-world-server.md)): `actor` is the player's slot (`< 44`), `team_size` is `0`, `round_ticks` is `MAX_ROUND_TICKS` (a world has no clock), never with `spectator`. When `spectator` is `true`, `actor` is `0`, `tick` is the latest already-eligible delayed tick (or `0`, never the live tick), and the connection is watch-only. `round_ticks` is the round's tick limit (`1..=MAX_ROUND_TICKS`, default 20 minutes), `rules` is the rules version and `map` a digest of the layout, so the remaining clock, replays and mismatches are explainable. |
+| `Snapshot` | `tick: u64`, `ack: u32`, `queued: u8`, `hash: u64`, `result`, `fighters` (≤ 6 in a match, ≤ 44 in a hub world), `scoreboard` (`Option<Vec<FighterScore>>`), `roster` (`Option<WireRoster>`), `events` (≤ 256) | `roster` is `None` in a match and, in a hub world, one `WireSlot` per fighter (`occupant`: `Vacant`, `Player` or `TrainingEnemy`; `id`, the fighter id, never reused in that world, `0` when vacant; `home: [i32; 2]`, `home_facing`, `respawn_at: Option<u64>`) plus `next_id`. A world snapshot has any number of fighters `1..=44`, no `result`, no `scoreboard` and no `Finished` event, and its roster must pass `arena_sim::arena::valid_hub_roster` (the rules' own check: vacant slots exactly as the rules leave them, training enemies with no cast or held spell and standing still (no height, vertical speed or momentum), distinct ids, nothing aimed at a vacant slot); the roster is part of `hash`. A hub world sends most snapshots as `WorldDelta` (below). `ack` is the last input `seq` applied, and `queued` how many of the recipient's inputs are still waiting. `hash` is `Arena::state_hash()`. `result` is `None` while running, or `Won { team }`, `Draw` (simultaneous elimination) or `TimeLimitDraw` (round clock expired with both teams standing). `fighters` carries each fighter's full rule state in actor order (position, height, vertical velocity, momentum, health, resource, `gcd_remaining`, `lockout_remaining`, per-spell `cooldowns`, `active_cast`, facing, `buffered_cast`), so a client can rebuild the arena and check `hash`, plus `connected`: whether that fighter's player is attached (not part of the rules or `hash`). `scoreboard` is `None` while the match runs (1 byte on the wire) and `Some(scores)` in server actor order on the final snapshot (`result.is_some()`), with one `FighterScore` (`damage_done`, `damage_taken`, `healing_done`, `healing_received`, `killing_blows`) per seat accumulated authoritatively by the match server (not part of `hash`). `events` are tick-tagged events since the previous snapshot: `Jumped`, `CastStarted`, `CastCompleted`, `CastInterrupted`, `Hit`, `Healed`, `Finished`, and `Rejected` only for the actor it names. `Moved` is not sent because positions show it. |
 | `Pong` | `nonce: u32` | |
 | `Error` | `code` | Sent before the server closes: `VersionMismatch`, `BadTicket`, `MatchFull`, `MatchOver`, `RateLimited`, `Malformed`, `HelloTimeout`, `ServerShutdown`, `Replaced` (a newer connection with the same ticket took the seat). Stays variant 3 (`[3, code]`). |
 | `Appearances` | `Vec<Option<WireAppearance>>` (`2..=6`, even) | Sent on join (when any seat has a locked look) and broadcast whenever a seat locks a new look on first join, in server actor order. Never carries paths; clients validate against their local kit catalog and fall back to defaults. |
 | `Handles` | `Vec<Option<Handle>>` (`2..=6`, even) | Each seat's `Name#1234` from the first ticket for that seat that names one, in server actor order; `None` for a seat not joined yet or joined by a lobby link. Guest handles are not unique: two guests may share one. Sent on join (when any seat has one) to the new connection and spectators, and broadcast when a seat's handle is first locked. A `Handle` is 16 name bytes (3–16 ASCII letters and digits starting with a letter, zero-padded) and a `u16` number `1..=9999`; anything else fails decoding. Clients never name themselves. |
 | `Tags` | `Vec<Tags>` (`2..=6`, even; `Tags { admin: bool }`) | Each seat's tags from the same ticket as its handle, in server actor order. Sent right after `Handles` whenever any seat has a tag. The door sets `admin` from deploy configuration. |
+| `Member` | `id: u32` (not `0`), `handle: Option<Handle>`, `tags: Tags`, `appearance: Option<WireAppearance>` | Hub worlds only, in place of `Appearances`, `Handles` and `Tags`: who holds fighter id `id`, from their ticket and `Hello`. Sent for everyone present when a connection is welcomed and to everyone for each arrival, before the snapshot that first shows them; keyed by id, so a slot reused by someone new is never shown with the leaver's name or look. Training enemies have none. |
+| `MemberLeft` | `id: u32` (not `0`) | Hub worlds only: fighter id `id` left; its slot may show someone else, with a new id, from the next snapshot. |
+| `WorldDelta` | `base: u64`, `body: bytes` (not empty) | Hub worlds only: the next snapshot as `delta::SnapshotDelta` bytes (per-field changes, timers predicted to count down, the roster when it changed, events) against the snapshot of tick `base` this connection was sent last. A client rebuilds it from its last snapshot (full or rebuilt) with `WorldDelta::apply`, checked as strictly as a full one, and ignores a delta whose base it does not have; a full snapshot comes at least once a second, after any frame the connection could not take, and whenever the world's roster changed length. |
 
 Snapshots go out every tick to start with. Live `PROTOCOL_VERSION = 3` combat
 measurements ([netcode-measurements-2026-11-21.md](research/netcode-measurements-2026-11-21.md))
@@ -83,8 +86,9 @@ complexity or rate reduction (which degrades targeting fairness):
   still ≤ 20 bytes); snapshots average
   **64.0 B** in 1v1 (1.92 KB/s), **110.5 B** in 2v2 (3.31 KB/s), and
   **156.6 B** in 3v3 (**4.70 KB/s** = 37.6 kbit/s per player, 140–190 B range).
-- Offline lossless field-mask + timer-decay delta encoding
-  (`arena_protocol::delta::SnapshotDelta`) cuts 3v3 payload bandwidth by 57.9%
+- Lossless field-mask + timer-decay delta encoding
+  (`arena_protocol::delta::SnapshotDelta`; offline for matches, live for hub
+  worlds as `WorldDelta` since protocol 13) cuts 3v3 payload bandwidth by 57.9%
   (to 1.98 KB/s keeping `hash`), providing a verified option if future Effects
   or larger rosters push full snapshots higher.
 - A worst-case snapshot (6 fighters, 256 events, maximal integers) stays well
@@ -101,7 +105,7 @@ complexity or rate reduction (which degrades targeting fairness):
 | Outgoing frames queued per connection | 64 | Drop the frame and count it (snapshots carry full state) |
 | `Hello` deadline | 5 s | Close |
 | Undecodable message (truncated, unknown variant, invalid tag, trailing bytes) | — | Close with `Malformed` |
-| Over a field limit (ticket, `Welcome` team/seat/rate/`round_ticks`, fighters, `scoreboard` present without `result` or length ≠ fighters, events, result team, or combat/cast invariants) | — | Close with `Malformed` |
+| Over a field limit (ticket, `Welcome` team/seat/rate/`round_ticks`/hub fields, fighters, `scoreboard` present without `result` or length ≠ fighters, a hub `roster` the rules could not produce, a `Member` or `MemberLeft` id `0`, events, result team, or combat/cast invariants) | — | Close with `Malformed` |
 
 Closing completes the WebSocket close handshake: after its `Error` and Close
 frames the server keeps reading, and discards, whatever the client had
@@ -112,7 +116,7 @@ connection, which can discard the `Error` before the client reads it.
 
 ## Versioning
 
-`PROTOCOL_VERSION` (currently 11: `InputFrame.cast_buffer` and `FighterState.buffered_cast`, [ADR 0058](decisions/0058-cast-buffer.md); 10 added `ServerMessage::Tags`; 9 added `ServerMessage::Handles`; 8 gave `WireAppearance` `facial_hair_color` and 24 part groups for the armour slots, [ADR 0053](decisions/0053-finished-character-kits.md)) changes with any
+`PROTOCOL_VERSION` (currently 13: `WorldDelta`; 12: hub worlds, `Welcome.hub`, `Snapshot.roster`, `Member` and `MemberLeft`, [ADR 0057](decisions/0057-hub-on-the-world-server.md); 11: `InputFrame.cast_buffer` and `FighterState.buffered_cast`, [ADR 0058](decisions/0058-cast-buffer.md); 10 added `ServerMessage::Tags`; 9 added `ServerMessage::Handles`; 8 gave `WireAppearance` `facial_hair_color` and 24 part groups for the armour slots, [ADR 0053](decisions/0053-finished-character-kits.md)) changes with any
 incompatible layout change; the golden-frame test fails until it is bumped
 deliberately.
 `RULES_VERSION` (currently 8: cast intents shortly before the GCD or a cast ends
@@ -120,7 +124,7 @@ are held and fired when it ends, [ADR 0058](decisions/0058-cast-buffer.md); 7: a
 timed cast that does not complete refunds the GCD it started; 6 charged timed casts' resource and health costs on completion
 instead of at cast start; [ADR 0048](decisions/0048-server-authoritative-casting-and-resources.md))
 changes when a rules change
-could alter a replayed outcome. `Welcome.map` identifies the layout.
+could alter a replayed outcome, in a match or in a hub world (clients predict with both). `Welcome.map` identifies the layout.
 
 ## Join tickets
 
@@ -130,7 +134,7 @@ A ticket is the postcard encoding of
 links; `handle` is the `Name#1234` to show: the account's own, or a
 temporary `Guest#NNNN` from the queue, and none for lobby links; `admin`
 marks an account holding the admin role and is never set without one;
-`role` is `Player { seat }` or `Spectator`, so player and spectator credentials are never interchangeable; `expires` in Unix
+`role` is `Player { seat }`, `Spectator` or `Hub` (a place in hub world `match_id`, with `team_size` 0 and no settings; the world server picks the slot, [ADR 0057](decisions/0057-hub-on-the-world-server.md)), so player, spectator and hub credentials are never interchangeable; `expires` in Unix
 seconds; optional versioned `MatchSettings { version: 1, map, round_seconds, allow_spectators }`
 for private custom matches) followed by a 32-byte HMAC-SHA256 tag over those
 bytes, under a key shared by whatever issues tickets and the match servers
@@ -368,50 +372,34 @@ Rules:
   guest id) or blocked (per account). An admin can mute an account; the
   mute holds on tabs that log out.
 
-## Hub
+## Hub worlds through the door
 
-The hub ([ADR 0056](decisions/0056-social-hub.md), proposed; `door/hub.rs`,
-rules in `arena_sim::hub`) also rides on the queue WebSocket:
+Since [ADR 0057](decisions/0057-hub-on-the-world-server.md) the hub is a
+world on the world server; the door only places players (`door/worlds.rs`):
 
 | Direction | Message | Meaning |
 | --- | --- | --- |
-| client → door | `hub_join {appearance, friend?}` | Enter an instance with this look (a `WireAppearance` as JSON, checked as in the match protocol), beside a friend or party-mate (`Name#number`) when given. |
-| client → door | `hub_move {seq, x, z, facing, jump?}` | One hub tick of walking (and a jump when `jump` is true): `x`, `z` in −1000..1000 (normalized as arena movement), `facing` a binary angle, `seq` increasing. Sent once per tick while walking or turning. |
-| client → door | `hub_leave {}` | Leave the hub. |
-| door → client | `hub {instance, you, x, z}` | Joined: the instance number, this player's hub id and place (millimetres). |
-| door → client | `hub_state {tick, ack, x, z, y, vy, mx, mz, players, enter?, exit?}` | Every third hub tick (10 a second): the last move applied (`ack`), this player's body (place, height `y`, upward speed `vy` per arena tick, jump momentum `mx`, `mz`), `[id, x, z, facing, height, vy]` per player in view (40 m), `enter` (`{id, handle, admin, appearance}` for players new in view or renamed) and `exit` (ids gone from view). |
-| door → client | `hub_left {reason}` | Out of the hub: `left`, or `match` when a seat or spectator ticket was issued. |
+| client → door | `world_join {friend?}` | Enter a hub world beside a friend or party-mate (`Name#number`) when given. The look goes to the world server in `Hello`. |
+| client → door | `world_leave {}` | Leave the hub world (the page closes its world connection). |
+| door → client | `world {instance, server, ticket, expires}` | A place in hub world `instance` (16 hex digits): connect to `server` (the world server's `/play`) and send `Hello` with `ticket` (hex, a `Role::Hub` ticket) before `expires` (Unix seconds). Sent once the directory exchange after the placement has answered, so the world server already knows the newcomer's blocks. |
+| door → client | `hub_left {reason}` | Out of the hub world: `left` (asked, or the world server stopped showing them: their world connection ended, or they never connected within 20 s), or `match` when a seat or spectator ticket was issued. |
 
-Rules:
-- The door integrates moves; clients never send positions. It applies the
-  waiting moves one per hub tick (30 a second, the arena's), each once and in order (at most 24 wait;
-  older ones are dropped, as are repeated or older `seq`), and a player
-  without one stands (or keeps flying through a jump). Walking and jumping are the arena's own code (`arena_sim::motion`), tick for tick: only the walls differ. Clients send a move every tick while airborne. Clients predict with the same rules and, on each
-  state, start from the door's place and replay their moves after `ack`.
-  Bodies pass through each other; the plaza edge, fountain and columns are
-  solid.
-- An instance holds 40 players. Joining picks a followed friend's instance
-  (refused `not_in_hub`, `hub_full`, or `not_friends` for anyone who is not
-  an accepted friend or party-mate), else a party-mate's, else the
-  connection's last one, else the fullest with room, else a new one.
-  `in_hub` refuses a second join, `not_in_hub` a move outside the hub, and
-  `no_name` a connection without a handle.
-- One `hub_state` per player per tick. A view change (including a player
-  back under a new id, or renamed) counts as delivered only when the
-  connection's outbox accepted that state; otherwise the next state carries
-  it again. States never take the outbox's last 12 slots, kept for
-  tickets, ready checks and chat.
-- `hub_move` has its own budget of 40 a second (this amends the single
-  10-a-second budget above): moves over it are dropped without closing the
-  connection, up to 160 a second, past which it closes (`rate_limited`).
-  Clients send at most one per tick (30 a second). Following a friend shares the
-  per-account invite budget.
-- A player never sees, nor is seen by, nor hears in `hub` chat, a player
-  either of them blocked; a block made meanwhile takes effect on the next
-  tick. Blocks are between accounts, so guests are never hidden. A friend
-  who is not on gets `not_in_hub`; anyone else not followable, `not_friends`.
-- `/metrics`: `arena_door_hub_players`, `arena_door_hub_instances`,
-  `arena_door_hub_ticks_total`, `arena_door_hub_tick_microseconds_total`.
+Placement follows the rules below (beside a followed friend, else a
+party-mate's world, else the connection's last world, else the fullest with
+room, else a new world), with 40 players a world; players the world still
+holds (within their reconnect grace) count toward its room. Refusals are the
+same codes, plus `hub_unavailable` while the world server is draining. The
+door asks the directory once a second while anyone is placed (and at once
+after a placement), sending the blocked pairs among players sharing a world;
+the `hub` chat channel reaches the speaker's world (only placements the
+world has confirmed listen). Tickets are released only by an answer; when
+the world server does not answer, they wait and are refused
+(`hub_unavailable`) after 20 s, and unconfirmed placements end then too. A
+rename or logout takes the player out of their world (`hub_left
+{reason: "renamed"}`) so the page asks again with the new name; one more
+exchange after the last player leaves tells the world server. Each queue connection
+keeps one ticket player id while it is open, so the page reconnecting to its
+world takes its own place back.
 
 ## News
 
@@ -503,3 +491,51 @@ remembered on that device until `?telemetry=on`.
 Clients must show a disconnected fighter as disconnected (greyed unit
 frame and nameplate labelled "Disconnected") and should rejoin by
 themselves: see [client recovery](decisions/0044-authoritative-match-server.md#disconnects-and-recovery).
+
+## Hub worlds and the instance directory
+
+A `Role::Hub` ticket joins hub world `match_id` on the world server, which
+starts it on the first such ticket and ends it after a minute with nobody in
+it (a later ticket starts a fresh one). The player id in the ticket is the
+front door's id for that person: a second connection with it takes the same
+place back (the older one gets `Replaced`), and a player whose connection
+drops keeps their place for 10 s. A full world (40 players) answers
+`MatchFull`.
+
+`POST /worlds/report` on the world server (private network only; Caddy
+routes only `/play` there) is the instance directory. The door sends JSON
+`{now_ms, blocks: [[player, player], ...], players?: [player, ...]}` with header `x-arena-signature`,
+the hex HMAC-SHA256 under the ticket key of `"world-directory"`, a zero byte
+and the body. `now_ms` must be within a minute of the server's clock and
+above the last accepted request's (`401` and `409` otherwise). The answer is
+`{draining, worlds: [{instance: "<16 hex>", players: [player ids], capacity: 40}]}`
+(`draining`: the server is stopping, place nobody new there). The door sends
+`max(now, last + 1)` so a corrected clock is never refused, and reports
+before handing out a ticket whose holder has a new block. The server keeps
+the last accepted lists and every new world starts with them. `players`, when
+given, lists every player id the door has placed: nobody else may join a
+world (`BadTicket`) or stay in one (closed with `MatchOver`), since a ticket
+outlives the placement it was issued for (leaving the hub, taking a match,
+a rename or logout, the door forgetting a placement).
+Each player sees the other players within 40 m (`arena_sim::hub::INTEREST_RADIUS`,
+kept until 44 m so someone at the edge does not blink) and every training
+enemy; those farther away are shown as vacant slots, exactly as blocked
+players are below, with no events about them, but stay members (no
+`MemberLeft`). The blocks apply at once: blocked players see each other's slots as vacant,
+get `MemberLeft` for each other (and `Member` again when unblocked), never
+see events about each other, and cannot aim spells at each other (a cast at
+a hidden slot is refused as at an empty one, and anything already aimed
+when the block arrives ends); each blocked view carries the hash of the
+world as that player sees it. Presence is not fully hidden: `next_id`, the
+newcomer's slot and a training enemy's health falling without a `Hit` can
+hint that someone unseen is there; identity, place and actions are hidden.
+
+Every `Welcome` starts the member list afresh: the server sends the whole
+list after it, so a page drops what it knew. A `Member` or `MemberLeft` the
+connection's outbox cannot take closes it (they are not repeated, unlike
+snapshots), and the reconnect brings the list again. A reconnect keeps the
+first connection's handle and look. In a world, `connected` only means
+something for player slots; training enemies are never "disconnected".
+Hub tickets expire like match tickets (two hours); the page asks the door
+for a new one to reconnect after that.
+

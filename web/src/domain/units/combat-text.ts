@@ -26,6 +26,6 @@ export function ownOutgoingText(entries: CombatTextProjection[]) {
     (entry) =>
       validCombatText(entry) &&
       entry.source === "Player" &&
-      /^(Opponent|Team)[1-3]$/.test(entry.target),
+      /^(Opponent|Team)([1-9]|[1-3]\d|4[0-3])$/.test(entry.target),
   );
 }

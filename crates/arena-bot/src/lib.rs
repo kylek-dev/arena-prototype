@@ -1121,6 +1121,7 @@ mod tests {
             result: Some(WireResult::TimeLimitDraw),
             fighters: Vec::new(),
             scoreboard: Some(vec![FighterScore::default(); 2]),
+            roster: None,
             events: vec![
                 TickEvent {
                     tick: 44,
@@ -1186,6 +1187,7 @@ mod tests {
             result: None,
             fighters: Vec::new(),
             scoreboard: None,
+            roster: None,
             events: Vec::new(),
         };
         let regular_snap = Snapshot {
@@ -1196,6 +1198,7 @@ mod tests {
             result: None,
             fighters: Vec::new(),
             scoreboard: None,
+            roster: None,
             events: vec![TickEvent {
                 tick: 45,
                 event: WireEvent::Hit {
@@ -1223,6 +1226,7 @@ mod tests {
                 result: None,
                 fighters: Vec::new(),
                 scoreboard: None,
+                roster: None,
                 events: Vec::new(),
             };
             shared.observe_snapshot(9, 30, &s);
@@ -1235,6 +1239,7 @@ mod tests {
             result: None,
             fighters: Vec::new(),
             scoreboard: None,
+            roster: None,
             events: vec![TickEvent {
                 tick: 0,
                 event: WireEvent::Hit {

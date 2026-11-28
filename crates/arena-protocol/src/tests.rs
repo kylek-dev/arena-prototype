@@ -135,6 +135,72 @@ fn busy_snapshot() -> Snapshot {
     snapshot
 }
 
+/// A full hub world at its largest: every player slot taken but one left
+/// vacant, a fallen training enemy, casts between players, worst-case varints.
+fn busy_world() -> Snapshot {
+    let mut arena = Arena::hub();
+    let players: Vec<usize> = (0..arena_sim::arena::HUB_PLAYER_CAP)
+        .map(|_| arena.join().unwrap())
+        .collect();
+    arena.leave(players[0]).unwrap();
+    let mut snapshot = Snapshot::capture(&arena, u32::MAX, Vec::new(), &[true; MAX_WORLD_FIGHTERS]);
+    let roster = snapshot.roster.as_mut().unwrap();
+    roster.slots[0].respawn_at = Some(u64::MAX);
+    snapshot.fighters[0].health = 0;
+    for &player in &players[1..] {
+        let fighter = &mut snapshot.fighters[player];
+        fighter.x = i32::MIN;
+        fighter.z = i32::MAX;
+        fighter.gcd_remaining = u32::MAX;
+        fighter.lockout_remaining = u32::MAX;
+        fighter.cooldowns = [u32::MAX; SpellId::COUNT];
+        fighter.active_cast = Some(WireCast {
+            spell: WireSpell::Mend,
+            target: Some(players[1] as u8),
+            remaining_ticks: 45,
+            total_ticks: 45,
+        });
+    }
+    snapshot.hash = snapshot.hub_arena().unwrap().state_hash();
+    // The most events a snapshot carries, naming the last slots.
+    snapshot.events = (0..MAX_EVENTS)
+        .map(|index| TickEvent {
+            tick: u64::MAX - index as u64,
+            event: WireEvent::CastInterrupted {
+                actor: (MAX_WORLD_FIGHTERS - 1 - index % 4) as u8,
+                spell: WireSpell::Mend,
+                reason: WireInterruptReason::TargetDead,
+                by: Some((MAX_WORLD_FIGHTERS - 1) as u8),
+            },
+        })
+        .collect();
+    snapshot
+}
+
+fn hub_welcome() -> Welcome {
+    Welcome {
+        protocol: PROTOCOL_VERSION,
+        actor: (MAX_WORLD_FIGHTERS - 1) as u8,
+        team_size: 0,
+        tick: u64::MAX,
+        tick_rate: 30,
+        round_ticks: MAX_ROUND_TICKS,
+        rules: RULES_VERSION,
+        map: u64::MAX,
+        spectator: false,
+        hub: true,
+    }
+}
+
+fn sample_member() -> Member {
+    Member {
+        id: u32::MAX,
+        handle: Handle::new("abcdefghijklmnop", 9999),
+        tags: Tags { admin: true },
+        appearance: Some(sample_appearance()),
+    }
+}
+
 fn server_samples() -> Vec<ServerMessage> {
     vec![
         ServerMessage::Welcome(Welcome {
@@ -147,6 +213,7 @@ fn server_samples() -> Vec<ServerMessage> {
             rules: RULES_VERSION,
             map: u64::MAX,
             spectator: false,
+            hub: false,
         }),
         ServerMessage::Welcome(Welcome {
             protocol: PROTOCOL_VERSION,
@@ -158,6 +225,7 @@ fn server_samples() -> Vec<ServerMessage> {
             rules: RULES_VERSION,
             map: 1,
             spectator: true,
+            hub: false,
         }),
         ServerMessage::Snapshot(Snapshot::capture(
             &colosseum(1),
@@ -174,6 +242,21 @@ fn server_samples() -> Vec<ServerMessage> {
         ServerMessage::Handles(vec![Handle::new("Rook7", 42), None]),
         ServerMessage::Handles(vec![Handle::new("abcdefghijklmnop", 9999); MAX_FIGHTERS]),
         ServerMessage::Tags(vec![Tags { admin: true }, Tags::default()]),
+        ServerMessage::Welcome(hub_welcome()),
+        ServerMessage::Snapshot(Snapshot::capture(&Arena::hub(), 0, Vec::new(), &[])),
+        ServerMessage::Snapshot(busy_world()),
+        ServerMessage::Member(Box::new(sample_member())),
+        ServerMessage::Member(Box::new(Member {
+            id: 1,
+            handle: None,
+            tags: Tags::default(),
+            appearance: None,
+        })),
+        ServerMessage::MemberLeft { id: 7 },
+        ServerMessage::WorldDelta(Box::new(WorldDelta {
+            base: u64::MAX,
+            body: vec![1, 0, 0, 0, 0, 0, 0, 0, 0],
+        })),
     ]
 }
 
@@ -208,15 +291,15 @@ fn ordinary_traffic_is_small() {
 #[test]
 fn the_wire_layout_is_pinned() {
     // Golden frames: changing them requires a PROTOCOL_VERSION bump.
-    assert_eq!(PROTOCOL_VERSION, 11);
+    assert_eq!(PROTOCOL_VERSION, 13);
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 11,
+            protocol: 13,
             ticket: vec![0xAB, 0xCD],
             appearance: None,
         }
         .encode(),
-        [0, 11, 2, 0xAB, 0xCD, 0]
+        [0, 13, 2, 0xAB, 0xCD, 0]
     );
     let compact = WireAppearance {
         ancestry: "elf".into(),
@@ -231,13 +314,13 @@ fn the_wire_layout_is_pinned() {
     };
     assert_eq!(
         ClientMessage::Hello {
-            protocol: 11,
+            protocol: 13,
             ticket: vec![0xAB, 0xCD],
             appearance: Some(Box::new(compact)),
         }
         .encode(),
         [
-            0, 11, 2, 0xAB, 0xCD, 1, // Hello variant 0, protocol 11, ticket, Some
+            0, 13, 2, 0xAB, 0xCD, 1, // Hello variant 0, protocol 13, ticket, Some
             3, b'e', b'l', b'f', // ancestry
             4, b'm', b'a', b'l', b'e', // body
             4, b'f', b'a', b'i', b'r', // skin_tone
@@ -262,11 +345,35 @@ fn the_wire_layout_is_pinned() {
             rules: RULES_VERSION,
             map: 1,
             spectator: true,
+            hub: false,
         })
         .encode(),
         // variant 0, protocol 7, actor 0, team_size 2, tick 10, tick_rate 30,
-        // round_ticks 600 (0xD8 0x04), rules 8, map 1, spectator true (1).
-        [0, 7, 0, 2, 10, 30, 0xD8, 0x04, 8, 1, 1]
+        // round_ticks 600 (0xD8 0x04), rules 8, map 1, spectator true (1),
+        // hub false (0).
+        [0, 7, 0, 2, 10, 30, 0xD8, 0x04, 8, 1, 1, 0]
+    );
+    // Hub worlds (12): the member relay is variants 7 and 8.
+    assert_eq!(
+        ServerMessage::Member(Box::new(Member {
+            id: 300,
+            handle: None,
+            tags: Tags { admin: true },
+            appearance: None,
+        }))
+        .encode(),
+        // variant 7, id 300 (varint), no handle, admin, no look.
+        [7, 0xAC, 0x02, 0, 1, 0]
+    );
+    assert_eq!(ServerMessage::MemberLeft { id: 7 }.encode(), [8, 7]);
+    // 13: a world delta is variant 9, its base tick, then the delta bytes.
+    assert_eq!(
+        ServerMessage::WorldDelta(Box::new(WorldDelta {
+            base: 300,
+            body: vec![1, 2],
+        }))
+        .encode(),
+        [9, 0xAC, 0x02, 2, 1, 2]
     );
     assert_eq!(
         ClientMessage::Input(InputFrame {
@@ -282,12 +389,13 @@ fn the_wire_layout_is_pinned() {
             1, 0xAC, 0x02, 0xCF, 0x0F, 0x86, 0x0B, 0x80, 0x80, 0x03, 1, 1, 0, 1, 3, 120, 12
         ]
     );
-    // Scoreboard golden suffix: `scoreboard: None, events: []` ends in `[0, 0]`;
-    // `scoreboard: Some([s0, s1]), events: []` pins exact `FighterScore` field order.
+    // Scoreboard golden suffix: `scoreboard: None, roster: None, events: []`
+    // ends in `[0, 0, 0]`; `scoreboard: Some([s0, s1])` pins exact
+    // `FighterScore` field order.
     let mut base_finished = Snapshot::capture(&colosseum(1), 0, Vec::new(), &[true, true]);
     base_finished.result = Some(WireResult::Won { team: 0 });
     let without_board = ServerMessage::Snapshot(base_finished.clone()).encode();
-    assert_eq!(&without_board[without_board.len() - 2..], &[0, 0]);
+    assert_eq!(&without_board[without_board.len() - 3..], &[0, 0, 0]);
     let with_board = ServerMessage::Snapshot(base_finished.with_scoreboard(vec![
         FighterScore {
             damage_done: 125,
@@ -305,12 +413,37 @@ fn the_wire_layout_is_pinned() {
         },
     ]))
     .encode();
-    let prefix_len = without_board.len() - 2;
+    let prefix_len = without_board.len() - 3;
     assert_eq!(&with_board[..prefix_len], &without_board[..prefix_len]);
     assert_eq!(
         &with_board[prefix_len..],
-        &[1, 2, 125, 40, 30, 0, 1, 40, 125, 0, 0, 0, 0]
+        &[1, 2, 125, 40, 30, 0, 1, 40, 125, 0, 0, 0, 0, 0]
     );
+    // A hub world's roster sits between `scoreboard` and `events`.
+    let roster = WireRoster {
+        slots: vec![WireSlot {
+            occupant: WireOccupant::TrainingEnemy,
+            id: 1,
+            home: [-3, 2],
+            home_facing: 0x8000,
+            respawn_at: Some(5),
+        }],
+        next_id: 2,
+    };
+    // One slot: occupant 2, id 1, home -3 / 2 (zigzag 5, 4), facing 0x8000
+    // (varint), respawn Some(5); next id 2.
+    assert_eq!(
+        postcard::to_allocvec(&roster).unwrap(),
+        [1, 2, 1, 5, 4, 0x80, 0x80, 0x02, 1, 5, 2]
+    );
+    let world = ServerMessage::Snapshot(Snapshot::capture(&Arena::hub(), 0, Vec::new(), &[]));
+    let world = world.encode();
+    let roster = postcard::to_allocvec(&WireRoster::of(&Arena::hub()).unwrap()).unwrap();
+    // ..., scoreboard None (0), roster Some (1), the roster, events [] (0).
+    let mut suffix = vec![0, 1];
+    suffix.extend_from_slice(&roster);
+    suffix.push(0);
+    assert_eq!(&world[world.len() - suffix.len()..], suffix.as_slice());
     // The browser runtime reads these two-byte error frames itself (so a
     // tab whose engine is paused still stops on a final error); its tests
     // pin the same table in web/src/domain/network.ts.
@@ -535,6 +668,7 @@ fn malformed_frames_are_rejected_not_trusted() {
             rules: RULES_VERSION,
             map: 1,
             spectator: false,
+            hub: false,
         });
         assert_eq!(
             ServerMessage::decode(&bad_welcome.encode()),
@@ -1015,6 +1149,9 @@ fn encoded_snapshot_body_matches_full_server_message_bytes() {
             .collect(),
     );
     snapshots.push(with_queued);
+    // Hub worlds: the roster sits between the scoreboard and the events.
+    snapshots.push(Snapshot::capture(&Arena::hub(), 0, Vec::new(), &[]));
+    snapshots.push(busy_world());
 
     for snapshot in snapshots {
         let expected = ServerMessage::Snapshot(snapshot.clone()).encode();
@@ -1024,6 +1161,7 @@ fn encoded_snapshot_body_matches_full_server_message_bytes() {
             snapshot.result,
             &snapshot.fighters,
             snapshot.scoreboard.as_deref(),
+            snapshot.roster.as_ref(),
             Some(&snapshot.events),
         );
         assert_eq!(
@@ -1036,6 +1174,7 @@ fn encoded_snapshot_body_matches_full_server_message_bytes() {
             snapshot.result,
             &snapshot.fighters,
             snapshot.scoreboard.as_deref(),
+            snapshot.roster.as_ref(),
             None,
         );
         assert_eq!(
@@ -1057,6 +1196,7 @@ fn welcome_and_snapshot_bounds_reject_invalid_teams_actors_and_results() {
         rules: RULES_VERSION,
         map: 1,
         spectator: false,
+        hub: false,
     };
     let bad_welcomes = [
         Welcome {
@@ -1461,11 +1601,19 @@ fn fuzz_client_and_server_frames_preserve_all_wire_invariants() {
         }
     }
 
+    let mut hub_seen = 0u32;
     for round in 0..12_000 {
         let frame = mutate(&server_seeds, MAX_SERVER_FRAME, round, &mut next);
         if let Ok(message) = ServerMessage::decode(&frame) {
             assert!(frame.len() <= MAX_SERVER_FRAME);
             match &message {
+                ServerMessage::Welcome(welcome) if welcome.hub => {
+                    assert!(!welcome.spectator);
+                    assert_eq!(welcome.team_size, 0);
+                    assert!(usize::from(welcome.actor) < MAX_WORLD_FIGHTERS);
+                    assert!(welcome.tick_rate > 0);
+                    assert_eq!(welcome.round_ticks, MAX_ROUND_TICKS);
+                }
                 ServerMessage::Welcome(welcome) => {
                     assert!((1..=MAX_FIGHTERS / 2).contains(&usize::from(welcome.team_size)));
                     assert!(usize::from(welcome.actor) < usize::from(welcome.team_size) * 2);
@@ -1474,7 +1622,14 @@ fn fuzz_client_and_server_frames_preserve_all_wire_invariants() {
                 }
                 ServerMessage::Snapshot(snapshot) => {
                     let count = snapshot.fighters.len();
-                    assert!((2..=MAX_FIGHTERS).contains(&count) && count.is_multiple_of(2));
+                    if snapshot.roster.is_some() {
+                        hub_seen += 1;
+                        assert!((1..=MAX_WORLD_FIGHTERS).contains(&count));
+                        assert!(snapshot.result.is_none() && snapshot.scoreboard.is_none());
+                        assert!(snapshot.hub_arena().is_some(), "a decoded world restores");
+                    } else {
+                        assert!((2..=MAX_FIGHTERS).contains(&count) && count.is_multiple_of(2));
+                    }
                     assert!(snapshot.events.len() <= MAX_EVENTS);
                     if let Some(WireResult::Won { team }) = snapshot.result {
                         assert!(team <= 1);
@@ -1526,6 +1681,7 @@ fn fuzz_client_and_server_frames_preserve_all_wire_invariants() {
                         snapshot.result,
                         &snapshot.fighters,
                         snapshot.scoreboard.as_deref(),
+                        snapshot.roster.as_ref(),
                         Some(&snapshot.events),
                     );
                     assert_eq!(
@@ -1545,6 +1701,9 @@ fn fuzz_client_and_server_frames_preserve_all_wire_invariants() {
                     let count = tags.len();
                     assert!((2..=MAX_FIGHTERS).contains(&count) && count.is_multiple_of(2));
                 }
+                ServerMessage::Member(member) => assert!(member.is_valid()),
+                ServerMessage::MemberLeft { id } => assert_ne!(*id, 0),
+                ServerMessage::WorldDelta(delta) => assert!(!delta.body.is_empty()),
                 ServerMessage::Handles(handles) => {
                     let count = handles.len();
                     assert!((2..=MAX_FIGHTERS).contains(&count) && count.is_multiple_of(2));
@@ -1558,6 +1717,7 @@ fn fuzz_client_and_server_frames_preserve_all_wire_invariants() {
             assert!(serde_json::from_str::<serde_json::Value>(&message.to_debug_json()).is_ok());
         }
     }
+    assert!(hub_seen > 0, "hub world snapshots were exercised");
 }
 
 #[test]

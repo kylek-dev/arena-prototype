@@ -152,6 +152,11 @@ export type QueueMessage =
     }
   | { type: "lobby"; lobby: CustomLobby }
   | { type: "lobby_left"; reason: "left" | "kicked" }
+  /** A place in a hub world (ADR 0057): join it like a match. */
+  | { type: "world"; instance: string; ticket: MatchTicket }
+  /** Out of the hub world: `left`, `match` (a ticket took them) or
+   * `renamed` (ask again for a place under the new name). */
+  | { type: "hub_left"; reason: "left" | "match" | "renamed" }
   | { type: "invite"; invite: Invite }
   | { type: "invite_sent"; to: string }
   | { type: "friends_changed" }
@@ -232,6 +237,16 @@ export function parseQueueMessage(text: unknown): QueueMessage | null {
       return word(v.reason) ? { type: "stopped", reason: v.reason } : null;
     case "refused":
       return word(v.code) ? { type: "refused", code: v.code } : null;
+    case "world": {
+      const ticket = parseTicket(v);
+      if (!ticket || typeof v.instance !== "string" || !/^[0-9a-f]{16}$/.test(v.instance))
+        return null;
+      return { type: "world", instance: v.instance, ticket: { ...ticket, world: true } };
+    }
+    case "hub_left":
+      return v.reason === "left" || v.reason === "match" || v.reason === "renamed"
+        ? { type: "hub_left", reason: v.reason }
+        : null;
     case "match": {
       const ticket = parseTicket(v);
       if (!ticket || !isQueueMode(v.mode) || !count(v.seat)) return null;

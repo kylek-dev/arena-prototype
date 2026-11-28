@@ -321,61 +321,26 @@ pub(crate) fn animate(
     practice: Res<crate::Practice>,
     model: Res<crate::character::CharacterModel>,
     fighters: Query<(&crate::FighterVisual, &Transform)>,
-    hub_avatars: Query<(&crate::hub::HubAvatar, &Transform)>,
-    hub_state: Option<Res<crate::hub::Hub>>,
     mut players: Query<(
         &mut Controller,
         &mut AnimationPlayer,
         &mut AnimationTransitions,
     )>,
 ) {
-    let mut transforms = [None::<Transform>; arena_protocol::MAX_FIGHTERS];
+    let mut transforms = [None::<Transform>; crate::MAX_ACTORS];
     for (visual, transform) in &fighters {
         if visual.0 < transforms.len() {
             transforms[visual.0] = Some(*transform);
         }
     }
     let roster = practice.arena.fighters();
-    // Hub players (ADR 0056) stand and walk; they never jump or cast.
-    let hub: std::collections::HashMap<usize, Transform> = hub_avatars
-        .iter()
-        .map(|(avatar, transform)| (crate::hub::HUB_ACTOR_BASE + avatar.slot, *transform))
-        .collect();
-    // A hub body's jump (height and upward speed), as a fighter.
-    let flying = |(height, vertical): (i32, i32)| {
-        let mut fighter =
-            arena_sim::arena::Combatant::new(arena_sim::arena::Position { x: 0, z: 0 }, 0);
-        fighter.height = height;
-        fighter.vertical_velocity = vertical;
-        fighter
-    };
-    let in_hub = hub_state.as_ref().is_some_and(|hub| hub.active());
     for (mut controller, mut player, mut transitions) in &mut players {
         let actor = controller.actor;
-        let (fighter, transform) = if actor >= crate::hub::HUB_ACTOR_BASE {
-            let Some(transform) = hub.get(&actor).copied() else {
-                continue;
-            };
-            let slot = actor - crate::hub::HUB_ACTOR_BASE;
-            let air = hub_state
-                .as_ref()
-                .map_or((0, 0), |hub| hub.airborne(Some(slot)));
-            (flying(air), transform)
-        } else {
-            let Some(&fighter) = roster.get(actor) else {
-                continue;
-            };
-            let Some(transform) = transforms.get(actor).copied().flatten() else {
-                continue;
-            };
-            // In the hub the local player's body is the walk's, not the
-            // arena's standing fighter.
-            if actor == 0 && in_hub {
-                let air = hub_state.as_ref().map_or((0, 0), |hub| hub.airborne(None));
-                (flying(air), transform)
-            } else {
-                (fighter, transform)
-            }
+        let Some(&fighter) = roster.get(actor) else {
+            continue;
+        };
+        let Some(transform) = transforms.get(actor).copied().flatten() else {
+            continue;
         };
         let playback = controller.step(Sample {
             position: transform.translation,

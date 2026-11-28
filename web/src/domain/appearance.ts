@@ -422,13 +422,16 @@ export function practiceAppearances(kits: Kit[], count = 5, seed = 0x51a7_2026):
   return Array.from({ length: count }, () => randomAppearance(kits, random));
 }
 
-const VALID_ROSTER_COUNTS = new Set([2, 4, 6]);
+/** A match's looks relay has one look per seat (2, 4 or 6); a hub world's
+ * (ADR 0057) one per engine actor, up to 44. */
+const validRosterCount = (count: number) =>
+  [2, 4, 6].includes(count) || (count >= 1 && count <= 44);
 
 /** Parses `onAppearances` relayed from Rust (`null` when not in a network match,
  * otherwise an even-length `2 | 4 | 6` array of validated looks or `null` fallbacks). */
 export function parseNetworkAppearances(raw: unknown): (Appearance | null)[] | null {
   if (raw === null || raw === undefined) return null;
-  if (!Array.isArray(raw) || !VALID_ROSTER_COUNTS.has(raw.length)) return null;
+  if (!Array.isArray(raw) || !validRosterCount(raw.length)) return null;
   return raw.map((entry) => parseAppearance(entry));
 }
 

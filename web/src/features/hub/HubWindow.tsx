@@ -1,7 +1,8 @@
+import { inMatch as inMatchOf } from "../../domain/network";
 import { Button } from "@radix-ui/themes";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo } from "react";
 import { invitable } from "../../domain/friends";
-import { OUT_OF_HUB, hubNoticeText, type HubPlayer } from "../../domain/hub";
+import { OUT_OF_HUB, hubNoticeText } from "../../domain/hub";
 import { IDLE_QUEUE } from "../../domain/matchmaking";
 import { LOADING_ACCOUNT } from "../../runtime/account";
 import { NO_FRIENDS } from "../../runtime/friends";
@@ -10,8 +11,9 @@ import { accountService, friendsService } from "../../state/account";
 import { requestChat } from "../../state/chat";
 import { matchQueue, networkLink } from "../../state/network";
 import type { LinkState } from "../../domain/network";
+import { engine } from "../../state/session";
 import { createStore, useStore } from "../../state/store";
-import { hubFocus, hubWindowVisible } from "../../state/windows";
+import { hubWindowVisible } from "../../state/windows";
 import { AdminTag } from "../../ui/AdminTag";
 import { DockWindow } from "../../ui/DockWindow";
 import { Hint } from "../../ui/Tooltip";
@@ -24,11 +26,10 @@ const NO_ACCOUNT = createStore(LOADING_ACCOUNT);
 const NO_LIST = createStore(NO_FRIENDS);
 const NO_LINK = createStore<LinkState>({ phase: "idle", attempt: 0, ended: null, status: null });
 
-/** Metres between two places in millimetres, rounded. */
-const metres = (a: { x: number; z: number }, b: { x: number; z: number }) =>
-  Math.round(Math.hypot(a.x - b.x, a.z - b.z) / 1000);
+/** Someone else in this hub world, as the world server relays them. */
+type HubPlayer = { id: string; handle: string; admin: boolean };
 
-/** H: the hub's players around you (ADR 0056), nearest first, each with
+/** H: the other players in this hub world (ADR 0057), by name, each with
  * Whisper and Invite to group (friends who are on), Add friend (others) and
  * Block in a ⋮ menu. */
 export function HubWindow() {
@@ -36,35 +37,27 @@ export function HubWindow() {
   const hub = useStore(queue?.hub ?? NO_HUB, (h) => h);
   const inviting = useStore(queue?.state ?? NO_QUEUE, (s) => !!s.inviting);
   const link = useStore(networkLink, (l) => l);
-  const phase = useStore(link?.state ?? NO_LINK, (s) => s.phase);
-  const inMatch = phase !== "idle" && phase !== "ended";
+  const inMatch = useStore(link?.state ?? NO_LINK, inMatchOf);
+
   const account = useStore(accountService, (a) => a);
   const me = useStore(account?.state ?? NO_ACCOUNT, (s) => s.me);
   const friends = useStore(friendsService, (f) => f);
   const list = useStore(friends?.state ?? NO_LIST, (s) => s.list);
   const loggedIn = !!me?.account && !!me.handle;
-  // A nameplate picked in the world opens that player's menu here.
-  const focus = useStore(hubFocus, (f) => f);
-  const body = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!focus) return;
-    const trigger = [...(body.current?.querySelectorAll("button") ?? [])].find(
-      (button) => button.getAttribute("aria-label") === `Actions for ${focus.handle}`,
-    );
-    // The player may still be arriving in the list: try again when it
-    // changes, and give up once they are gone from the hub.
-    if (trigger) trigger.click();
-    else if (![...hub.players.values()].some((p) => p.handle === focus.handle)) hubFocus.set(null);
-    else return;
-    hubFocus.set(null);
-  }, [focus, hub]);
+  // Everyone else the world shows: its players, named by the relay.
+  const roster = useStore(engine, (s) => (s?.hub ? s.roster : undefined));
+  const players: HubPlayer[] = useMemo(
+    () =>
+      (roster ?? [])
+        .filter((unit) => unit.tag.startsWith("Team") && unit.handle)
+        .map((unit) => ({ id: unit.id, handle: unit.handle as string, admin: !!unit.admin }))
+        .sort((a, b) => a.handle.localeCompare(b.handle)),
+    [roster],
+  );
   // Friends decide what the menus offer: read the list when the window opens.
   useEffect(() => {
     if (loggedIn && friends) void friends.refresh();
   }, [loggedIn, friends]);
-  const players = [...hub.players.values()].sort(
-    (a, b) => metres(a, hub) - metres(b, hub) || a.handle.localeCompare(b.handle),
-  );
   const actions = (player: HubPlayer): Action[] => {
     const friend = list?.friends.find(
       (entry) =>
@@ -105,25 +98,20 @@ export function HubWindow() {
       className="hub-window"
     >
       {hub.status === "in" ? (
-        <div className="hub-panel" role="group" aria-label="Hub" ref={body}>
+        <div className="hub-panel" role="group" aria-label="Hub">
           <p className="hub-status" role="status">
-            Hub {hub.instance}.{" "}
             {players.length === 0
-              ? "Nobody else is nearby."
+              ? "Nobody else is here."
               : players.length === 1
-                ? "1 player is nearby."
-                : `${players.length} players are nearby.`}
+                ? "1 other player is here."
+                : `${players.length} other players are here.`}
           </p>
           {players.length > 0 && (
-            <ul className="friend-list" aria-label="Players nearby">
+            <ul className="friend-list" aria-label="Players here">
               {players.map((player) => {
                 const menu = actions(player);
                 return (
-                  <Row
-                    key={player.id}
-                    handle={player.handle}
-                    status={`${metres(player, hub)} m away`}
-                  >
+                  <Row key={player.id} handle={player.handle} status="In the hub">
                     {player.admin && <AdminTag />}
                     {menu.length > 0 && <RowMenu handle={player.handle} actions={menu} />}
                   </Row>

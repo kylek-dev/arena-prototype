@@ -1,17 +1,18 @@
-//! Offline/diagnostic lossless delta codec for [`Snapshot`] streams.
+//! Lossless delta codec for [`Snapshot`] streams.
 //!
-//! This module does **not** alter [`crate::PROTOCOL_VERSION`] or any live wire
-//! message. It provides a lossless, round-trip-verified field-mask +
-//! timer-decay-predicted delta representation so `arena-bot` can measure exact
-//! `postcard` bandwidth savings of delta encoding and lower snapshot rates on
-//! live combat traffic before deciding whether to change the wire protocol.
+//! A field-mask + timer-decay-predicted delta of one snapshot against the
+//! previous one. Matches use it offline only (`arena-bot` measures what it
+//! would save); hub worlds send it live inside
+//! [`crate::ServerMessage::WorldDelta`] (ADR 0057's last step), where a
+//! world's snapshots, filtered per player, are the larger stream.
 
 use arena_sim::spells::SpellId;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    DecodeError, FighterScore, FighterState, MAX_EVENTS, MAX_FIGHTERS, MAX_SERVER_FRAME, Snapshot,
-    TickEvent, WireBufferedCast, WireCast, WireResult, valid_snapshot,
+    DecodeError, FighterScore, FighterState, MAX_EVENTS, MAX_FIGHTERS, MAX_SERVER_FRAME,
+    MAX_WORLD_FIGHTERS, Snapshot, TickEvent, WireBufferedCast, WireCast, WireResult, WireRoster,
+    valid_snapshot,
 };
 
 /// Bitmask flags for [`FighterDelta`]. Most frequently changing fields occupy
@@ -108,6 +109,8 @@ pub struct SnapshotDelta {
     pub hash: u64,
     pub result_changed: Option<Option<WireResult>>,
     pub scoreboard_changed: Option<Option<Vec<FighterScore>>>,
+    /// A hub world's roster, when it changed (someone came, went or fell).
+    pub roster_changed: Option<Option<WireRoster>>,
     pub fighters: Vec<FighterDelta>,
     pub events: Vec<TickEvent>,
 }
@@ -160,14 +163,22 @@ fn expected_cast(prev: Option<WireCast>, tick_delta: u64) -> Option<WireCast> {
 impl SnapshotDelta {
     /// Builds a lossless delta from `prev` to `curr` and returns per-field
     /// change counts. Returns `None` if `curr.tick < prev.tick`, the roster
-    /// size changed, or the fighter count is outside `2..=MAX_FIGHTERS` (or odd)
-    /// — caller must send a full keyframe instead.
+    /// size changed, one is a hub world's and the other not, or the fighter
+    /// count is out of bounds (`2..=MAX_FIGHTERS` and even for a match,
+    /// `1..=MAX_WORLD_FIGHTERS` for a world) — caller must send a full
+    /// keyframe instead.
     pub fn from_pair(prev: &Snapshot, curr: &Snapshot) -> Option<(Self, FieldChangeCounts)> {
         let count = curr.fighters.len();
+        let world = curr.roster.is_some();
+        let bounded = if world {
+            (1..=MAX_WORLD_FIGHTERS).contains(&count)
+        } else {
+            (2..=MAX_FIGHTERS).contains(&count) && count.is_multiple_of(2)
+        };
         if curr.tick < prev.tick
+            || prev.roster.is_some() != world
             || count != prev.fighters.len()
-            || !(2..=MAX_FIGHTERS).contains(&count)
-            || !count.is_multiple_of(2)
+            || !bounded
         {
             return None;
         }
@@ -176,6 +187,7 @@ impl SnapshotDelta {
         let result_changed = (curr.result != prev.result).then_some(curr.result);
         let scoreboard_changed =
             (curr.scoreboard != prev.scoreboard).then(|| curr.scoreboard.clone());
+        let roster_changed = (curr.roster != prev.roster).then(|| curr.roster.clone());
 
         let mut counts = FieldChangeCounts::default();
         let mut fighters = Vec::with_capacity(curr.fighters.len());
@@ -293,6 +305,7 @@ impl SnapshotDelta {
                 hash: curr.hash,
                 result_changed,
                 scoreboard_changed,
+                roster_changed,
                 fighters,
                 events: curr.events.clone(),
             },
@@ -313,6 +326,7 @@ impl SnapshotDelta {
                 self.hash,
                 self.result_changed,
                 &self.scoreboard_changed,
+                &self.roster_changed,
                 self.fighters.len() as u8,
             ),
             out,
@@ -379,6 +393,7 @@ impl SnapshotDelta {
             self.hash,
             self.result_changed,
             &self.scoreboard_changed,
+            &self.roster_changed,
             self.fighters.len() as u8,
         ));
         let hash_bytes = postcard_len(&self.hash);
@@ -456,6 +471,7 @@ impl SnapshotDelta {
                 hash,
                 result_changed,
                 scoreboard_changed,
+                roster_changed,
                 count,
             ),
             mut rest,
@@ -467,6 +483,7 @@ impl SnapshotDelta {
             u64,
             Option<Option<WireResult>>,
             Option<Option<Vec<FighterScore>>>,
+            Option<Option<WireRoster>>,
             u8,
         )>(frame)
         .map_err(|_| DecodeError::Malformed)?;
@@ -474,8 +491,18 @@ impl SnapshotDelta {
             return Err(DecodeError::Malformed);
         }
         let count = usize::from(count);
-        if count != prev.fighters.len() || count > MAX_FIGHTERS {
+        let limit = if prev.roster.is_some() {
+            MAX_WORLD_FIGHTERS
+        } else {
+            MAX_FIGHTERS
+        };
+        if count != prev.fighters.len() || count > limit {
             return Err(DecodeError::OverLimit);
+        }
+        let roster = roster_changed.unwrap_or_else(|| prev.roster.clone());
+        // A world stays a world, and a match a match.
+        if roster.is_some() != prev.roster.is_some() {
+            return Err(DecodeError::Malformed);
         }
         let tick = prev
             .tick
@@ -617,6 +644,7 @@ impl SnapshotDelta {
             result,
             fighters,
             scoreboard,
+            roster,
             events,
         };
         if !valid_snapshot(&snapshot) {

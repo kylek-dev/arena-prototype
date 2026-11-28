@@ -519,8 +519,56 @@ impl Predictor {
     }
 }
 
+impl Predictor {
+    /// [`Self::reconcile`] for a hub world (ADR 0057): rebuilds from the
+    /// snapshot's roster and fighters (`Snapshot::hub_arena`, so the same
+    /// checks as the wire) and replays the unacknowledged inputs of the
+    /// player in slot `actor`. Casts are stripped as in a match: only
+    /// movement is predicted. `None` for a snapshot without a roster, an
+    /// inconsistent one, or an `actor` slot no player holds.
+    pub fn reconcile_hub(&mut self, snapshot: &crate::Snapshot, actor: usize) -> Option<u64> {
+        while self
+            .pending
+            .front()
+            .is_some_and(|(seq, _)| *seq <= snapshot.ack)
+        {
+            self.pending.pop_front();
+        }
+        let before = self.predicted();
+        let mut stripped = snapshot.clone();
+        stripped.events.clear();
+        // Movement only: no cast in progress and no held spell may fire in
+        // the replay (ADR 0048).
+        for fighter in &mut stripped.fighters {
+            fighter.active_cast = None;
+            fighter.buffered_cast = None;
+        }
+        let Some(mut arena) = stripped.hub_arena() else {
+            self.arena = None;
+            return None;
+        };
+        if arena.slots().get(actor).map(|slot| slot.occupant)
+            != Some(arena_sim::arena::Occupant::Player)
+        {
+            self.arena = None;
+            return None;
+        }
+        for (_, input) in &self.pending {
+            step(&mut arena, actor, *input);
+        }
+        let after = arena.fighters()[actor];
+        self.arena = Some(arena);
+        self.actor = actor;
+        let moved = before.map(|before| distance(before, after))?;
+        if moved > 0 {
+            self.corrections += 1;
+        }
+        Some(moved)
+    }
+}
+
 fn step(arena: &mut Arena, actor: usize, input: ActorInput) {
-    let mut slots = [ActorInput::default(); crate::MAX_FIGHTERS];
+    let mut slots = [ActorInput::default(); crate::MAX_WORLD_FIGHTERS];
     if let Some(slot) = slots.get_mut(actor) {
         *slot = input;
         arena.advance(&slots[..=actor]);

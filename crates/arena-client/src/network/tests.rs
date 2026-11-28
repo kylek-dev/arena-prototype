@@ -21,6 +21,7 @@ fn welcome_with_limit(actor: u8, team_size: u8, round_ticks: u64) -> Vec<u8> {
         rules: arena_protocol::RULES_VERSION,
         map: 7,
         spectator: false,
+        hub: false,
     })
     .encode()
 }
@@ -1029,6 +1030,7 @@ fn finished_scoreboard_is_renumbered_into_local_order_and_cleared_on_rematch() {
         rules: arena_protocol::RULES_VERSION,
         map: 7,
         spectator: false,
+        hub: false,
     })
     .encode();
     session.receive(&feed(2, vec![rematch_welcome]), 2.0, &layout());
@@ -1117,6 +1119,7 @@ fn spectator_session_keeps_server_order_never_sends_inputs_and_reports_spectator
         rules: arena_protocol::RULES_VERSION,
         map: 7,
         spectator: true,
+        hub: false,
     })
     .encode();
     let arena = Arena::practice(layout(), 2).unwrap();
@@ -1212,4 +1215,204 @@ fn relayed_tags_renumber_into_local_order() {
         r#"[{"admin":false},{"admin":true},{"admin":true},{"admin":false}]"#
     );
     assert_eq!(super::tags_json(&[]), "null");
+}
+
+// Hub worlds (ADR 0057).
+
+fn hub_welcome(slot: u8) -> Vec<u8> {
+    ServerMessage::Welcome(Welcome {
+        protocol: PROTOCOL_VERSION,
+        actor: slot,
+        team_size: 0,
+        tick: 0,
+        tick_rate: 30,
+        round_ticks: arena_sim::arena::MAX_ROUND_TICKS,
+        rules: arena_protocol::RULES_VERSION,
+        map: 7,
+        spectator: false,
+        hub: true,
+    })
+    .encode()
+}
+
+fn member(arena: &Arena, slot: usize, name: &str) -> Vec<u8> {
+    ServerMessage::Member(Box::new(arena_protocol::Member {
+        id: arena.slots()[slot].id,
+        handle: Handle::new(name, 1),
+        tags: Tags::default(),
+        appearance: None,
+    }))
+    .encode()
+}
+
+fn world_snapshot(arena: &Arena, ack: u32) -> Vec<u8> {
+    snapshot(arena, ack, Vec::new(), &[true; 16])
+}
+
+#[test]
+fn a_hub_world_puts_this_player_first_and_relays_who_holds_each_slot() {
+    let mut world = Arena::hub();
+    let first = world.join().unwrap();
+    let me = world.join().unwrap();
+    world.advance(&[]);
+    let mut session = Session::default();
+    session.receive(
+        &feed(
+            1,
+            vec![
+                hub_welcome(me as u8),
+                member(&world, first, "Ann"),
+                member(&world, me, "Bo"),
+                world_snapshot(&world, 0),
+            ],
+        ),
+        0.0,
+        &layout(),
+    );
+    assert!(session.is_hub());
+    assert_eq!(session.phase, Phase::Playing);
+    assert_eq!(session.stats.hash_mismatches, 0);
+    let view = session.view(0.0, 0.0).unwrap();
+    let (slots, _) = view.world.as_ref().unwrap();
+    // Local 0 is this player; the rest follow in slot order.
+    assert_eq!(slots[0].id, world.slots()[me].id);
+    assert_eq!(world_order(me, world.fighters().len())[0], me);
+    assert_eq!(view.fighters[0], world.fighters()[me]);
+    // Handles follow the local order; training enemies have none.
+    let handles = session.handles();
+    assert_eq!(handles[0], Handle::new("Bo", 1));
+    let ann = world_order(me, world.fighters().len())
+        .iter()
+        .position(|&slot| slot == first)
+        .unwrap();
+    assert_eq!(handles[ann], Handle::new("Ann", 1));
+    assert_eq!(handles[1], None, "a training enemy");
+    // Someone leaving: their entry goes.
+    session.receive(
+        &feed(
+            1,
+            vec![
+                ServerMessage::MemberLeft {
+                    id: world.slots()[first].id,
+                }
+                .encode(),
+            ],
+        ),
+        0.0,
+        &layout(),
+    );
+    assert_eq!(session.handles()[ann], None);
+}
+
+#[test]
+fn a_hub_world_predicts_movement_and_casts_at_local_targets() {
+    let mut world = Arena::hub();
+    let me = world.join().unwrap();
+    world.advance(&[]);
+    let mut session = Session::default();
+    session.receive(
+        &feed(1, vec![hub_welcome(me as u8), world_snapshot(&world, 0)]),
+        0.0,
+        &layout(),
+    );
+    // Walking is predicted at once.
+    let before = session.predicted().unwrap().position;
+    session.input([1_000, 0], 0, false, None, 0.1).unwrap();
+    assert_ne!(session.predicted().unwrap().position, before);
+    // A cast at local 1 (the first training enemy, slot 0) names slot 0.
+    let frame = session.input([0, 0], 0, false, Some(1), 0.2).unwrap();
+    let Ok(ClientMessage::Input(input)) = ClientMessage::decode(&frame) else {
+        panic!("an input");
+    };
+    assert_eq!(input.action, InputFrame::pulse(0));
+}
+
+#[test]
+fn a_reused_slot_is_drawn_where_its_new_holder_stands() {
+    let mut world = Arena::hub();
+    let me = world.join().unwrap();
+    let other = world.join().unwrap();
+    world.advance(&[]);
+    let mut session = Session::default();
+    session.receive(
+        &feed(1, vec![hub_welcome(me as u8), world_snapshot(&world, 0)]),
+        0.0,
+        &layout(),
+    );
+    // The other player walks away, leaves, and a newcomer takes the slot.
+    let mut fighters = world.fighters().to_vec();
+    fighters[other].position.x += 20_000;
+    let moved = Arena::restore_hub(
+        world.tick(),
+        world.slots().to_vec(),
+        fighters,
+        world.next_id(),
+    )
+    .unwrap();
+    session.receive(&feed(1, vec![world_snapshot(&moved, 0)]), 0.0, &layout());
+    let mut world = moved;
+    world.leave(other).unwrap();
+    assert_eq!(world.join(), Some(other));
+    world.advance(&[]);
+    world.advance(&[]);
+    session.receive(&feed(1, vec![world_snapshot(&world, 0)]), 1.0, &layout());
+    let local = world_order(me, world.fighters().len())
+        .iter()
+        .position(|&slot| slot == other)
+        .unwrap();
+    // Halfway between the two snapshots, the newcomer is not drawn gliding
+    // from where the leaver stood.
+    for _ in 0..5 {
+        if let Some(view) = session.view(0.02, 1.0) {
+            let at = view.positions[local];
+            let home = place(&world.fighters()[other]);
+            if view.world.as_ref().unwrap().0[local].id == world.slots()[other].id {
+                assert!(at.distance(home) < 0.01, "{at:?} vs {home:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn world_deltas_apply_to_the_last_snapshot_and_wait_for_a_full_one_otherwise() {
+    use arena_protocol::delta::SnapshotDelta;
+    let mut world = Arena::hub();
+    let me = world.join().unwrap();
+    world.advance(&[]);
+    let first = Snapshot::capture(&world, 0, Vec::new(), &[true; 16]);
+    let mut session = Session::default();
+    session.receive(
+        &feed(
+            1,
+            vec![
+                hub_welcome(me as u8),
+                ServerMessage::Snapshot(first.clone()).encode(),
+            ],
+        ),
+        0.0,
+        &layout(),
+    );
+    let mut inputs = vec![ActorInput::default(); world.fighters().len()];
+    inputs[me].movement = Some(Axes { x: 1_000, z: 0 });
+    world.advance(&inputs);
+    let second = Snapshot::capture(&world, 1, Vec::new(), &[true; 16]);
+    let (delta, _) = SnapshotDelta::from_pair(&first, &second).unwrap();
+    let frame = |base: u64, body: Vec<u8>| {
+        ServerMessage::WorldDelta(Box::new(arena_protocol::WorldDelta { base, body })).encode()
+    };
+    session.receive(
+        &feed(1, vec![frame(first.tick, delta.encode())]),
+        0.1,
+        &layout(),
+    );
+    assert_eq!(session.stats.skipped_deltas, 0);
+    assert_eq!(session.stats.hash_mismatches, 0);
+    assert_eq!(session.snapshots.back().unwrap().tick, second.tick);
+    // A delta whose base this client never had waits for a full one.
+    session.receive(
+        &feed(1, vec![frame(first.tick, delta.encode())]),
+        0.2,
+        &layout(),
+    );
+    assert_eq!(session.stats.skipped_deltas, 1);
 }
