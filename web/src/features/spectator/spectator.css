@@ -61,15 +61,16 @@
   border-radius: var(--radius-3);
 }
 
-.spectator-unit-entry:hover .unit-frame,
-.spectator-unit-entry:focus-visible .unit-frame {
-  border-color: var(--accent-9);
+/* Like the player's own lists: the frame art's outline lights up. */
+.spectator-unit-entry:hover .unit-frame::before,
+.spectator-unit-entry:focus-visible .unit-frame::before {
+  filter: drop-shadow(0 0 3px var(--accent-9));
 }
 
-.spectator-unit-entry.following .unit-frame,
-.spectator-unit-entry[aria-pressed="true"] .unit-frame {
-  border-color: var(--pal-gold-4);
-  box-shadow: 0 0 0 1px var(--pal-gold-4);
+.spectator-unit-entry.following .unit-frame::before,
+.spectator-unit-entry[aria-pressed="true"] .unit-frame::before {
+  filter: drop-shadow(0 0 2px var(--pal-gold-4))
+    drop-shadow(0 0 6px color-mix(in srgb, var(--pal-gold-4) 60%, transparent));
 }
 
 .spectator-bar {

@@ -29,7 +29,7 @@
   "families": [
     {
       "name": "night",
-      "role": "Cool blue-black neutrals: deepest shadow, outlines, HUD panels, text and the backdrop. Also the Radix gray scale, step for step.",
+      "role": "Cool blue-black neutrals: deepest shadow, outlines, the backdrop and the 3D scene. (The interface draws its neutrals from obsidian.)",
       "swatches": [
         { "id": "night-1", "hex": "#0a1118", "use": "Ink: page background, text shadows, overlays, darkest metal and grips" },
         { "id": "night-2", "hex": "#111a23", "use": "Arena base slab, panel background, nameplate border" },
@@ -43,6 +43,31 @@
         { "id": "night-10", "hex": "#6e7a8a", "use": "Hovered neutral control" },
         { "id": "night-11", "hex": "#aab3bf", "use": "Secondary text" },
         { "id": "night-12", "hex": "#e9eef3", "use": "Primary text, eye whites, cloud bodies, highlights in place of pure white" }
+      ]
+    },
+    {
+      "name": "obsidian",
+      "role": "Black volcanic glass with a faint violet sheen, neither blue nor brown: the interface's neutrals (windows, panels, menus, controls, text). Also the Radix gray scale, step for step.",
+      "swatches": [
+        { "id": "obsidian-1", "hex": "#09080b", "use": "Ink: the interface's deepest black, text shadows and outlines" },
+        { "id": "obsidian-2", "hex": "#100f13", "use": "Panel ground: windows, dialogs and menus" },
+        { "id": "obsidian-3", "hex": "#16151a", "use": "Raised panel: the light end of a panel's gradient, hovered rows" },
+        { "id": "obsidian-4", "hex": "#1c1b21", "use": "Control ground: fields, tracks and wells" },
+        { "id": "obsidian-5", "hex": "#232229", "use": "Control hover" },
+        { "id": "obsidian-6", "hex": "#2b2a32", "use": "Hairline borders and dividers" },
+        { "id": "obsidian-7", "hex": "#37363f", "use": "Borders of controls" },
+        { "id": "obsidian-8", "hex": "#4a4954", "use": "Strong borders, focus outlines at rest" },
+        { "id": "obsidian-9", "hex": "#5c5b66", "use": "Muted icons and placeholders" },
+        { "id": "obsidian-10", "hex": "#6c6b76", "use": "Muted icons on hover" },
+        { "id": "obsidian-11", "hex": "#a9a8b2", "use": "Secondary text" },
+        { "id": "obsidian-12", "hex": "#e8e7ec", "use": "Primary text" }
+      ]
+    },
+    {
+      "name": "ash",
+      "role": "True neutral greys, without the night family's blue: HUD bar tracks.",
+      "swatches": [
+        { "id": "ash-1", "hex": "#292929", "use": "The empty track of health and resource bars" }
       ]
     },
     {
@@ -93,6 +118,20 @@
         { "id": "gold-4", "hex": "#ffc257", "use": "Venue gold trim, yellow weapons" },
         { "id": "gold-5", "hex": "#ffdb75", "use": "Gold highlight, selection, damage text, warnings" },
         { "id": "gold-6", "hex": "#f7e3a6", "use": "Cream heraldic accent" }
+      ]
+    },
+    {
+      "name": "ochre",
+      "role": "Olive yellow-gold for HUD fills: the cast bar.",
+      "swatches": [
+        { "id": "ochre-1", "hex": "#c3af32", "use": "Cast bar fill" }
+      ]
+    },
+    {
+      "name": "cerulean",
+      "role": "Deep cyan-blue for HUD tags: the admin tag.",
+      "swatches": [
+        { "id": "cerulean-1", "hex": "#0288ad", "use": "Admin tag background" }
       ]
     },
     {
@@ -194,9 +233,14 @@
     "note": "Radix Themes draws the HUD's menus and dialogs. These maps replace the Radix scales the UI uses with palette swatches, so third-party components follow the palette too. Each alpha step is [swatch, opacity percent].",
     "scales": {
       "slate": {
-        "solid": ["night-1", "night-2", "night-3", "night-4", "night-5", "night-6", "night-7", "night-8", "night-9", "night-10", "night-11", "night-12"],
-        "alpha": [["night-12", 0], ["night-12", 3], ["night-12", 8], ["night-12", 11], ["night-12", 15], ["night-12", 19], ["night-12", 25], ["night-12", 36], ["night-12", 43], ["night-12", 48], ["night-12", 71], ["night-12", 94]],
-        "contrast": "night-12"
+        "solid": ["obsidian-1", "obsidian-2", "obsidian-3", "obsidian-4", "obsidian-5", "obsidian-6", "obsidian-7", "obsidian-8", "obsidian-9", "obsidian-10", "obsidian-11", "obsidian-12"],
+        "alpha": [["obsidian-12", 0], ["obsidian-12", 3], ["obsidian-12", 8], ["obsidian-12", 11], ["obsidian-12", 15], ["obsidian-12", 19], ["obsidian-12", 25], ["obsidian-12", 36], ["obsidian-12", 43], ["obsidian-12", 48], ["obsidian-12", 71], ["obsidian-12", 94]],
+        "contrast": "obsidian-12"
+      },
+      "gold": {
+        "solid": ["obsidian-1", "obsidian-2", "obsidian-3", "obsidian-4", "obsidian-5", "obsidian-6", "gold-3", "gold-3", "gold-4", "gold-5", "gold-5", "gold-6"],
+        "alpha": [["gold-4", 0], ["gold-4", 4], ["gold-4", 8], ["gold-4", 12], ["gold-4", 16], ["gold-4", 22], ["gold-4", 40], ["gold-4", 58], ["gold-4", 90], ["gold-4", 92], ["gold-5", 100], ["gold-6", 100]],
+        "contrast": "obsidian-1"
       },
       "indigo": {
         "solid": ["night-1", "night-2", "sky-1", "sky-1", "sky-1", "sky-2", "sky-2", "sky-3", "sky-3", "sky-4", "sky-6", "sky-7"],

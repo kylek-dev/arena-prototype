@@ -21,12 +21,13 @@
 }
 .dock-window {
   display: flex;
-  flex: 0 1 320px;
+  /* Sized by the interface scale (their Radix contents follow --scaling). */
+  flex: 0 1 calc(400px * var(--ui-scale, 1));
   flex-direction: column;
   box-sizing: border-box;
-  width: 320px;
+  width: calc(400px * var(--ui-scale, 1));
   min-width: 220px;
-  height: min(460px, calc(100dvh - 160px));
+  height: min(calc(680px * var(--ui-scale, 1)), calc(100dvh - 160px));
   color: var(--gray-12);
   background: var(--pal-night-2);
   border: 1px solid var(--gray-6);

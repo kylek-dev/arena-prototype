@@ -5,22 +5,65 @@
   pointer-events: none;
 }
 
+/* The nameplate is its own recessed health track, styled like the unit
+   frames' bars: the fill, spark, heal wave, hit trail, low-health pulse
+   and cast endings share their rules (unit-frames.css). */
+/* Anchored at its bottom centre, and sized by the interface scale. */
 button.nameplate {
   position: absolute;
-  transform: translate(-50%, -100%);
+  transform: translate(-50%, -100%) scale(var(--ui-scale, 1));
+  transform-origin: 50% 100%;
   width: 92px;
   height: 12px;
   padding: 0;
-  border: 1px solid var(--pal-night-2);
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--pal-night-4) 87%, transparent);
-  box-shadow: 0 1px 3px color-mix(in srgb, var(--pal-night-1) 60%, transparent);
+  border: 1px solid var(--pal-night-1);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--pal-ash-1) 80%, transparent);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--pal-night-12) 7%, transparent),
+    0 1px 3px color-mix(in srgb, var(--pal-night-1) 60%, transparent);
   overflow: visible;
   touch-action: none;
 }
+button.nameplate::after,
+.nameplate-cast::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  border-radius: inherit;
+  box-shadow: inset 0 1px 3px color-mix(in srgb, var(--pal-night-1) 85%, transparent);
+  pointer-events: none;
+}
 
+/* The targeted unit's nameplate: a light orbits its edge, as on the
+   targeted team or opponent frame. */
 button.nameplate[aria-pressed="true"] {
-  border-color: var(--pal-sand-5);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--pal-gold-4) 25%, transparent),
+    0 1px 3px color-mix(in srgb, var(--pal-night-1) 60%, transparent);
+}
+button.nameplate[aria-pressed="true"]::before {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  z-index: 4;
+  padding: 1px;
+  border-radius: 4px;
+  background: conic-gradient(
+    from var(--orbit),
+    transparent 0 55%,
+    var(--pal-gold-4) 76%,
+    var(--pal-night-12) 84%,
+    var(--pal-gold-4) 92%,
+    transparent 100%
+  );
+  mask:
+    linear-gradient(var(--pal-night-1) 0 0) content-box exclude,
+    linear-gradient(var(--pal-night-1) 0 0);
+  filter: drop-shadow(0 0 2px var(--pal-gold-4));
+  animation: unit-orbit 2.6s linear infinite;
+  pointer-events: none;
 }
 
 .nameplate-name {
@@ -40,10 +83,32 @@ button.nameplate[aria-pressed="true"] {
   pointer-events: none;
 }
 
-.nameplate-fill {
+.nameplate-fill,
+.nameplate-cast-fill {
+  position: relative;
   display: block;
   height: 100%;
-  background: var(--pal-ember-3);
+  border-radius: 2px;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bar-color) 90%, var(--pal-night-12)) 0%,
+    var(--bar-color) 45%,
+    color-mix(in srgb, var(--bar-color) 65%, var(--pal-night-1)) 100%
+  );
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--pal-night-12) 15%, transparent);
+  pointer-events: none;
+}
+.nameplate-fill {
+  --bar-color: var(--pal-ember-3);
+  --spark: var(--pal-ember-5);
+}
+.nameplate-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: url("/assets/textures/ground-sand.png") center / 64px;
+  mix-blend-mode: overlay;
   pointer-events: none;
 }
 
@@ -53,35 +118,60 @@ button.nameplate[aria-pressed="true"] {
 }
 
 .nameplate.friendly .nameplate-fill {
-  background: var(--pal-leaf-4);
+  --bar-color: var(--pal-leaf-4);
+  --spark: var(--pal-leaf-6);
+}
+.nameplate.healing .nameplate-fill {
+  transition: width 400ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+/* Low health: a friend's bar turns ember too, and the plate pulses. */
+.nameplate.low-health .nameplate-fill {
+  --bar-color: var(--pal-ember-3);
+  --spark: var(--pal-ember-5);
+}
+.nameplate.low-health {
+  animation: health-low-pulse 1.1s ease-in-out infinite;
+}
+.nameplate.low-health .nameplate-name {
+  color: var(--pal-ember-6);
 }
 
-.nameplate-cast {
+/* A smaller spark for the small bars. */
+.nameplate .bar-spark {
+  width: 28px;
+}
+.nameplate .bar-spark::before {
+  height: 1.5px;
+}
+.nameplate .bar-spark::after {
+  width: 1px;
+  height: calc(100% + 6px);
+}
+
+/* The cast bar art's frame (unit-frames.css), a little wider than the
+   plate so its trough lines up with the health bar. */
+button.nameplate .nameplate-cast {
+  --cast-h: 19px;
   position: absolute;
-  left: -1px;
-  right: -1px;
+  left: -5px;
+  right: -6px;
   top: calc(100% + 2px);
-  height: 13px;
-  border: 1px solid var(--pal-gold-4);
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--pal-night-2) 92%, transparent);
-  overflow: hidden;
   pointer-events: none;
 }
 
 .nameplate-cast-fill {
-  display: block;
-  height: 100%;
-  background: var(--pal-gold-3);
+  --bar-color: var(--pal-ochre-1);
+  --spark: var(--pal-gold-6);
 }
 
 .nameplate-cast-label {
   position: absolute;
   inset: 0;
+  z-index: 3;
   display: grid;
   place-items: center;
   color: var(--pal-night-12);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 600;
   line-height: 1;
   text-shadow: 0 1px 2px var(--pal-night-1);
@@ -101,4 +191,12 @@ button.nameplate[aria-pressed="true"] {
   text-shadow: 0 1px 2px var(--pal-night-1);
   white-space: nowrap;
   pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nameplate .bar-spark,
+  .nameplate.low-health,
+  button.nameplate[aria-pressed="true"]::before {
+    animation: none;
+  }
 }

@@ -13,6 +13,7 @@ import {
   nameplateScene,
 } from "../../web/src/state/session";
 import { input } from "../../web/src/runtime/commands";
+import { clearCastEndings, observeCastEnds } from "../../web/src/runtime/cast-endings";
 import { snapshot, teamSnapshot } from "./fixtures";
 
 beforeEach(() => {
@@ -179,4 +180,47 @@ it("renders an overhead cast bar while casting and a locked indicator when silen
   const lockedBar = screen.getByRole("button", { name: /Enemy Bot health 75\/100\./ });
   expect(lockedBar.querySelector(".nameplate-cast")).toBeNull();
   expect(lockedBar.querySelector(".nameplate-lockout")?.textContent).toBe("Locked");
+});
+
+it("shares the frames' health and cast reactions: hit trail, heal wave, low pulse, cast endings", () => {
+  clearCastEndings();
+  const plate = { tag: "Opponent1" as const, x: 0.4, y: 0.3 };
+  const scene = (target: Partial<ReturnType<typeof snapshot>["target"]>) =>
+    snapshot({ nameplates: [plate], target: { ...snapshot().target, ...target } });
+  act(() =>
+    nameplateScene.set(
+      scene({ health: 80, cast: { spell: "rift_bolt", remainingTicks: 9, totalTicks: 45 } }),
+    ),
+  );
+  const { container } = render(<Nameplates />);
+  const bar = () => container.querySelector<HTMLElement>("button.nameplate")!;
+  expect(bar().querySelector(".nameplate-fill .bar-spark")).toBeTruthy();
+  expect(bar().querySelector(".nameplate-cast .bar-spark")).toBeTruthy();
+
+  act(() => nameplateScene.set(scene({ health: 60, cast: null, lockoutRemaining: 30 })));
+  const trail = bar().querySelector<HTMLElement>(".health-trail")!;
+  expect([trail.style.left, trail.style.width]).toEqual(["60%", "20%"]);
+  act(() =>
+    observeCastEnds(
+      snapshot({
+        castEnds: [
+          { id: 1, unit: "practice-opponent", spell: "rift_bolt", outcome: "interrupted" },
+        ],
+      }),
+    ),
+  );
+  // The interrupt plays before the lockout label.
+  expect(bar().querySelector(".nameplate-cast.cast-ending.interrupted")?.textContent).toBe(
+    "Interrupted",
+  );
+  expect(bar().querySelector(".nameplate-lockout")).toBeNull();
+  act(() => clearCastEndings());
+  expect(bar().querySelector(".nameplate-lockout")).toBeTruthy();
+
+  act(() => nameplateScene.set(scene({ health: 20 })));
+  expect(bar().classList).toContain("low-health");
+  act(() => nameplateScene.set(scene({ health: 50 })));
+  expect(bar().classList).toContain("healing");
+  expect(bar().classList).not.toContain("low-health");
+  expect(bar().querySelector(".health-heal-wave")).toBeTruthy();
 });

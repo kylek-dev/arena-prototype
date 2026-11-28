@@ -11,7 +11,8 @@ export function SpellDragPreview() {
     <div
       className="action-slot spell-drag-preview"
       aria-hidden="true"
-      style={{ left: preview.x + 12, top: preview.y + 12 }}
+      // Centred on the pointer (the stylesheet shifts it by half its size).
+      style={{ left: preview.x, top: preview.y }}
     >
       <SpellIcon spell={spell} />
       <small>{spell.name}</small>

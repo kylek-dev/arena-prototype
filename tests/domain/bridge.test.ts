@@ -19,6 +19,44 @@ describe("engine snapshot boundary", () => {
       expect(() => adaptSnapshot(invalid)).toThrow();
   });
 
+  it("names each cast ending's unit by entity id and rejects malformed endings", () => {
+    const team = { ...teamSnapshot(2), maxHealth: 100 };
+    const end = { id: 4, actor: 3, spell: "mend", outcome: "interrupted" };
+    expect(adaptSnapshot({ ...team, castEnds: [end] }).castEnds).toEqual([
+      { id: 4, unit: "practice-actor-3", spell: "mend", outcome: "interrupted" },
+    ]);
+    // Without a roster, actors 0 and 1 are the player and the opponent.
+    const practice = { ...snapshot(), maxHealth: 100 };
+    expect(
+      adaptSnapshot({
+        ...practice,
+        castEnds: [
+          { id: 1, actor: 0, spell: "rift_bolt", outcome: "completed" },
+          { id: 2, actor: 1, spell: "mend", outcome: "cancelled" },
+        ],
+      }).castEnds?.map((e) => e.unit),
+    ).toEqual(["practice-player", "practice-opponent"]);
+    expect(adaptSnapshot(practice).castEnds).toBeUndefined();
+    // Regression: an instant interrupt (Quell) reports completing; it has no
+    // cast bar and must never fail the snapshot.
+    expect(
+      adaptSnapshot({
+        ...team,
+        castEnds: [{ id: 5, actor: 0, spell: "quell", outcome: "completed" }, end],
+      }).castEnds?.map((e) => e.spell),
+    ).toEqual(["mend"]);
+    for (const castEnds of [
+      {},
+      [{ ...end, actor: 9 }],
+      [{ ...end, id: 0 }],
+      [end, end],
+      [{ ...end, spell: "fireball" }],
+      [{ ...end, outcome: "fizzled" }],
+      Array.from({ length: 33 }, (_, i) => ({ ...end, id: i + 1 })),
+    ])
+      expect(() => adaptSnapshot({ ...team, castEnds })).toThrow();
+  });
+
   it("adds left team placement to old profiles without moving existing frames", () => {
     const old = defaultConfig();
     const { team: _team, ...frames } = old.frames;

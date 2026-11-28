@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import { Modal } from "../../web/src/ui/Dialog";
 import { UnitFrame } from "../../web/src/features/unit-frames/UnitFrame";
 import { ActionSlot } from "../../web/src/features/action-bars/ActionSlot";
+import { ActionBars } from "../../web/src/features/action-bars/ActionBars";
 import { Spellbook } from "../../web/src/features/spellbook/Spellbook";
 import { BindingsEditor, BindingConflict } from "../../web/src/features/keybindings/BindingsEditor";
 import { ProfileSettings } from "../../web/src/features/settings/ProfileSettings";
@@ -339,6 +340,76 @@ it("edits visibility and scale, previews hidden frames and resets selected layou
   expect(preferences.get().profiles[0].config.frames.player.visible).toBe(true);
   await user.click(screen.getByRole("button", { name: "Done" }));
   expect(interaction.get().layout).toBe(false);
+});
+
+it("sizes every HUD frame by the interface scale without changing their own", async () => {
+  const user = userEvent.setup();
+  render(
+    <Tooltip.Provider>
+      <LayoutSettings />
+      <Frames />
+      <ActionBars />
+    </Tooltip.Provider>,
+  );
+  await user.click(screen.getByRole("button", { name: "Edit on canvas" }));
+  const player = screen.getByRole("button", { name: "Edit player" });
+  const bar = screen.getByRole("button", { name: "Edit bar-1" });
+  expect(player.style.transform).toBe("scale(1)");
+  fireEvent.change(screen.getByLabelText(/Interface scale/), { target: { value: "1.25" } });
+  expect(preferences.get().profiles[0].config.uiScale).toBe(1.25);
+  expect(player.style.transform).toBe("scale(1.25)");
+  expect(bar.style.transform).toBe("scale(1.25)");
+  // A frame's own scale multiplies with it, and is saved as its own.
+  await user.click(player);
+  fireEvent.change(screen.getByLabelText(/^Scale/), { target: { value: "1.2" } });
+  expect(preferences.get().profiles[0].config.frames.player.scale).toBe(1.2);
+  expect(player.style.transform).toBe("scale(1.5)");
+});
+
+it("hides and shows each unit frame's portrait from the layout editor", async () => {
+  const user = userEvent.setup();
+  render(
+    <>
+      <LayoutSettings />
+      <Frames />
+    </>,
+  );
+  await user.click(screen.getByRole("button", { name: "Edit on canvas" }));
+  const target = screen.getByRole("button", { name: "Edit target" });
+  await user.click(target);
+  const toggle = screen.getByLabelText("Show portrait") as HTMLInputElement;
+  expect(toggle.checked).toBe(true);
+  await user.click(toggle);
+  expect(preferences.get().profiles[0].config.frames.target.portrait).toBe(false);
+  expect(preferences.get().profiles[0].config.frames.player.portrait).toBe(true);
+  expect(target.querySelector(".unit-frame")?.classList).toContain("bare");
+  await user.click(screen.getByRole("button", { name: "Reset selected" }));
+  expect(preferences.get().profiles[0].config.frames.target.portrait).toBe(true);
+});
+
+it("fades action bar backgrounds in the layout editor; unit frames wear their art", async () => {
+  const user = userEvent.setup();
+  render(
+    <Tooltip.Provider>
+      <LayoutSettings />
+      <Frames />
+      <ActionBars />
+    </Tooltip.Provider>,
+  );
+  await user.click(screen.getByRole("button", { name: "Edit on canvas" }));
+  await user.click(screen.getByRole("button", { name: "Edit player" }));
+  expect(screen.queryByLabelText(/Background opacity/)).toBeNull();
+  const bar = screen.getByRole("button", { name: "Edit bar-1" });
+  expect(bar.style.getPropertyValue("--hud-background")).toBe("0%");
+  expect(bar.dataset.background).toBe("none");
+  await user.click(bar);
+  fireEvent.change(screen.getByLabelText(/Background opacity/), { target: { value: "0.2" } });
+  expect(preferences.get().profiles[0].config.bars[0].layout.background).toBe(0.2);
+  expect(bar.style.getPropertyValue("--hud-background")).toBe("20%");
+  expect(bar.dataset.background).toBeUndefined();
+  await user.click(screen.getByRole("button", { name: "Reset selected" }));
+  expect(preferences.get().profiles[0].config.bars[0].layout.background).toBe(0);
+  expect(bar.dataset.background).toBe("none");
 });
 
 it("shows sample frames without selection/focus and drags the whole selected frame", () => {

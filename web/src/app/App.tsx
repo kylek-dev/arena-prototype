@@ -79,6 +79,7 @@ export function App() {
     }
   }, [spectating]);
   const menuBindings = useConfigSelector((c) => c.bindings.menu);
+  const uiScale = useConfigSelector((c) => c.uiScale);
   const menuKey = menuBindings?.find(Boolean);
   const title = mode.panel === "menu" ? "Game menu" : "Settings";
 
@@ -87,10 +88,14 @@ export function App() {
       id="overlay-theme"
       className="overlay-theme"
       appearance="dark"
-      accentColor="indigo"
+      accentColor="gold"
       grayColor="slate"
       radius="medium"
       panelBackground="solid"
+      // The interface scale: HUD frames multiply it into their own scale,
+      // nameplates and dock windows read --ui-scale, and Radix windows,
+      // menus and tooltips size by its --scaling.
+      style={{ ["--ui-scale" as string]: uiScale, ["--scaling" as string]: uiScale }}
     >
       <TooltipProvider disabled={dragging || mode.quick || mode.layout || !!mode.capture}>
         {save && (

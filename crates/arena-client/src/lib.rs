@@ -3,6 +3,7 @@
 mod animation;
 mod appearance;
 mod camera;
+mod cast_ends;
 mod character;
 mod character_animation;
 mod combat_text;
@@ -21,6 +22,7 @@ mod prism;
 mod props;
 mod sky;
 mod startup;
+mod target_marker;
 mod textures;
 mod venue;
 mod weapons;
@@ -116,6 +118,8 @@ struct Practice {
     zaps: Vec<lightning::Zap>,
     frames: u32,
     combat_text: combat_text::CombatText,
+    /// How each unit's timed cast just ended, for the frames' cast bars.
+    cast_ends: cast_ends::CastEnds,
     /// In a network match: interpolated authoritative positions to draw,
     /// replacing the local fixed-step interpolation.
     remote: Option<Vec<Vec3>>,
@@ -153,6 +157,7 @@ impl Practice {
             zaps: Vec::new(),
             frames: 0,
             combat_text: default(),
+            cast_ends: default(),
             remote: None,
             connected: None,
             scoreboard: None,
@@ -347,6 +352,7 @@ pub fn run() {
                 sky::attach,
                 startup::update,
                 present,
+                target_marker::place,
                 animation::animate,
                 character_animation::animate,
                 weapons::fit_to_body,
@@ -508,6 +514,7 @@ fn setup(
     commands.insert_resource(character_meshes);
     commands.insert_resource(painted);
     lightning::spawn(&mut commands, &mut meshes, &mut materials);
+    target_marker::spawn(&mut commands, &mut meshes, &mut materials);
     commands.spawn((
         lighting::ArenaLight::Key,
         DirectionalLight {
@@ -996,10 +1003,23 @@ fn apply_practice_events(practice: &mut Practice, events: Vec<ArenaEvent>) {
                     practice.feedback = heal_feedback(amount);
                 }
             }
+            ArenaEvent::CastCompleted { actor, spell, .. } => {
+                practice
+                    .cast_ends
+                    .record(actor, spell, cast_ends::Outcome::Completed);
+            }
             ArenaEvent::CastInterrupted {
-                actor: 0, reason, ..
+                actor,
+                spell,
+                reason,
+                ..
             } => {
-                practice.feedback = interrupt_feedback(reason);
+                practice
+                    .cast_ends
+                    .record(actor, spell, cast_ends::Outcome::interrupted(reason));
+                if actor == 0 {
+                    practice.feedback = interrupt_feedback(reason);
+                }
             }
             ArenaEvent::Finished(arena_sim::arena::RoundResult::TimeLimitDraw) => {
                 practice.feedback = "Time's up · draw · reset to play again";
@@ -1291,10 +1311,25 @@ fn network_receive(
                         practice.feedback = heal_feedback(amount);
                     }
                 }
+                network::Shown::CastCompleted { actor, spell, .. } => {
+                    practice
+                        .cast_ends
+                        .record(actor, spell, cast_ends::Outcome::Completed);
+                }
                 network::Shown::CastInterrupted {
-                    actor: 0, reason, ..
+                    actor,
+                    spell,
+                    reason,
+                    ..
                 } => {
-                    practice.feedback = interrupt_feedback(reason);
+                    practice.cast_ends.record(
+                        actor,
+                        spell,
+                        cast_ends::Outcome::interrupted(reason),
+                    );
+                    if actor == 0 {
+                        practice.feedback = interrupt_feedback(reason);
+                    }
                 }
                 network::Shown::Finished { outcome } => {
                     practice.feedback = match outcome {
@@ -1306,10 +1341,7 @@ fn network_receive(
                         }
                     };
                 }
-                network::Shown::Jumped { .. }
-                | network::Shown::CastStarted { .. }
-                | network::Shown::CastCompleted { .. }
-                | network::Shown::CastInterrupted { .. } => {}
+                network::Shown::Jumped { .. } | network::Shown::CastStarted { .. } => {}
             }
         }
     }
@@ -1392,6 +1424,7 @@ fn present(
         );
     }
     practice.combat_text.advance(time.delta_secs());
+    practice.cast_ends.advance(time.delta_secs());
     let mut hidden_actor: Option<usize> = None;
     if let Ok(mut camera) = cameras.single_mut()
         && preview.open
@@ -1758,8 +1791,34 @@ fn publish(
             );
         }
     }
+    json.push_str(r#"],"castEnds":["#);
+    write_cast_ends_json(&mut json, &practice.cast_ends, &tags);
     json.push_str("]}");
     platform::publish(&json);
+}
+
+/// The recent cast endings of units the page shows (a vacant world slot
+/// has no tag), oldest first: `{"id","actor","spell","outcome"}`.
+fn write_cast_ends_json(json: &mut String, ends: &cast_ends::CastEnds, tags: &[String]) {
+    use std::fmt::Write;
+    let mut first = true;
+    for entry in &ends.entries {
+        if tags.get(entry.actor).is_none_or(String::is_empty) {
+            continue;
+        }
+        if !first {
+            json.push(',');
+        }
+        first = false;
+        let _ = write!(
+            json,
+            r#"{{"id":{},"actor":{},"spell":"{}","outcome":"{}"}}"#,
+            entry.id,
+            entry.actor,
+            spell_key_str(entry.spell),
+            entry.outcome.as_str(),
+        );
+    }
 }
 
 fn round_result_json(result: Option<arena_sim::arena::RoundResult>) -> &'static str {
@@ -2857,6 +2916,74 @@ mod tests {
         assert_eq!(practice.arena.fighters()[0].facing, 0xC000);
         // Opponents keep their rule-owned spawn heading.
         assert_eq!(practice.arena.fighters()[1].facing, 0x8000);
+    }
+
+    #[test]
+    fn every_units_cast_endings_reach_the_page_and_only_the_players_set_feedback() {
+        use arena_sim::arena::InterruptReason;
+        let mut practice = Practice::new(&arena_map::colosseum(), 2);
+        let feedback = practice.feedback;
+        apply_practice_events(
+            &mut practice,
+            vec![
+                ArenaEvent::CastCompleted {
+                    actor: 1,
+                    spell: SpellId::RiftBolt,
+                    target: Some(0),
+                },
+                // An instant interrupt reports CastCompleted: no cast bar.
+                ArenaEvent::CastCompleted {
+                    actor: 0,
+                    spell: SpellId::Quell,
+                    target: Some(3),
+                },
+                ArenaEvent::CastInterrupted {
+                    actor: 3,
+                    spell: SpellId::Mend,
+                    reason: InterruptReason::Interrupted,
+                    by: Some(0),
+                },
+                ArenaEvent::CastInterrupted {
+                    actor: 2,
+                    spell: SpellId::RiftBolt,
+                    reason: InterruptReason::Moved,
+                    by: None,
+                },
+            ],
+        );
+        // Another unit's interrupt is not the player's feedback.
+        assert_eq!(practice.feedback, feedback);
+        let mut json = String::new();
+        write_cast_ends_json(&mut json, &practice.cast_ends, &unit_tags(&practice.arena));
+        assert_eq!(
+            json,
+            concat!(
+                r#"{"id":1,"actor":1,"spell":"rift_bolt","outcome":"completed"},"#,
+                r#"{"id":2,"actor":3,"spell":"mend","outcome":"interrupted"},"#,
+                r#"{"id":3,"actor":2,"spell":"rift_bolt","outcome":"cancelled"}"#,
+            )
+        );
+        apply_practice_events(
+            &mut practice,
+            vec![ArenaEvent::CastInterrupted {
+                actor: 0,
+                spell: SpellId::RiftBolt,
+                reason: InterruptReason::Moved,
+                by: None,
+            }],
+        );
+        assert_eq!(practice.feedback, "Cast cancelled by movement");
+        // A vacant world slot has no tag and no ending on the page.
+        json.clear();
+        write_cast_ends_json(
+            &mut json,
+            &practice.cast_ends,
+            &["Player".to_owned(), String::new()],
+        );
+        assert_eq!(
+            json,
+            r#"{"id":4,"actor":0,"spell":"rift_bolt","outcome":"cancelled"}"#
+        );
     }
 
     #[test]

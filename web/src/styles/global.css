@@ -4,6 +4,8 @@
 @import "../ui/placement.css";
 @import "../features/nameplates/nameplates.css";
 @import "../features/combat-text/combat-text.css";
+@import "../features/unit-frames/unit-frame-art.css";
+@import "../features/unit-frames/cast-bar-art.css";
 @import "../features/unit-frames/unit-frames.css";
 @import "../features/cast-bar/cast-bar.css";
 @import "../features/action-bars/action-bars.css";
@@ -17,4 +19,6 @@
 @import "../ui/tooltip.css";
 @import "../features/diagnostics/diagnostics.css";
 @import "../features/loading/loading.css";
+@import "./window-art.css";
+@import "./obsidian.css";
 @import "./overrides.css";

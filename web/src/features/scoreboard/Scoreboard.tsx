@@ -1,4 +1,3 @@
-import { AdminTag } from "../../ui/AdminTag";
 import { Button } from "@radix-ui/themes";
 import { useEffect, useState } from "react";
 import { IDLE_QUEUE, modeLabel, noticeText, queueBlocked } from "../../domain/matchmaking";
@@ -58,7 +57,6 @@ function TeamRows({
         >
           <th scope="row" className="scoreboard-player">
             <span className="scoreboard-player-name">{row.name}</span>
-            {row.admin && <AdminTag />}
             {row.isLocalPlayer && <span className="scoreboard-badge you">You</span>}
             {row.disconnected && <span className="scoreboard-badge dc">Disconnected</span>}
           </th>

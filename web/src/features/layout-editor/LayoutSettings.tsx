@@ -1,6 +1,7 @@
 import { Button, Text } from "@radix-ui/themes";
-import { layout, type Layout } from "../../domain/layout/model";
+import { barLayout, type Layout } from "../../domain/layout/model";
 import {
+  UI_SCALE,
   CHAT_SIZE,
   clampChatSize,
   defaultConfig,
@@ -17,6 +18,7 @@ export function LayoutSettings() {
   const castBarAttached = useConfigSelector((c) => c.castBarAttached);
   const chatSize = useConfigSelector((c) => c.chatSize);
   const chatAttached = useConfigSelector((c) => c.chatAttached);
+  const uiScale = useConfigSelector((c) => c.uiScale);
   const resizeChat = (next: ChatSize) =>
     updateConfig((c) => ({
       ...c,
@@ -77,6 +79,30 @@ export function LayoutSettings() {
               onChange={(e) => change({ ...value, scale: +e.target.value })}
             />
           </label>
+          {value.portrait !== undefined && (
+            <label>
+              <input
+                type="checkbox"
+                checked={value.portrait}
+                onChange={(e) => change({ ...value, portrait: e.target.checked })}
+              />
+              Show portrait
+            </label>
+          )}
+          {/* Unit frames wear their art; only action bars have a background to fade. */}
+          {!isFrame && value.background !== undefined && (
+            <label>
+              Background opacity {Math.round(value.background * 100)}%
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={value.background}
+                onChange={(e) => change({ ...value, background: +e.target.value })}
+              />
+            </label>
+          )}
           {selected === "chat" && (
             <>
               <label>
@@ -114,7 +140,7 @@ export function LayoutSettings() {
           <Button
             variant="soft"
             onClick={() => {
-              change(isFrame ? defaultConfig().frames[selected as FrameRole] : layout(0.5, 0.92));
+              change(isFrame ? defaultConfig().frames[selected as FrameRole] : barLayout());
               if (selected === "chat")
                 updateConfig((c) => ({
                   ...c,
@@ -134,6 +160,17 @@ export function LayoutSettings() {
         </Text>
       )}
       <label>
+        Interface scale {Math.round(uiScale * 100)}%
+        <input
+          type="range"
+          min={UI_SCALE.min}
+          max={UI_SCALE.max}
+          step={UI_SCALE.step}
+          value={uiScale}
+          onChange={(e) => updateConfig((c) => ({ ...c, uiScale: +e.target.value }))}
+        />
+      </label>
+      <label>
         <input
           type="checkbox"
           checked={castBarAttached}
@@ -152,7 +189,7 @@ export function LayoutSettings() {
           updateConfig((c) => ({
             ...c,
             frames: defaultConfig().frames,
-            bars: c.bars.map((b) => ({ ...b, layout: layout(0.5, 0.92) })),
+            bars: c.bars.map((b) => ({ ...b, layout: barLayout() })),
           }))
         }
       >

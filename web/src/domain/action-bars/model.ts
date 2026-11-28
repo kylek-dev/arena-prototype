@@ -1,4 +1,4 @@
-import { layout, type Layout } from "../layout/model";
+import { barLayout, type Layout } from "../layout/model";
 export type AbilityId = "pulse" | "rift_bolt" | "quell" | "mend";
 export const ABILITY_IDS: readonly AbilityId[] = ["pulse", "rift_bolt", "quell", "mend"];
 export function isAbilityId(value: unknown): value is AbilityId {
@@ -17,7 +17,7 @@ export function newBar(id: string): Bar {
     })),
     rows: 1,
     vertical: false,
-    layout: layout(0.5, 0.92),
+    layout: barLayout(),
   };
 }
 export type Placement = { ability: AbilityId; source?: string; copy?: boolean };

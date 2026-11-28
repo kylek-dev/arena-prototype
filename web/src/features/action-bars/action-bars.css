@@ -1,11 +1,21 @@
+/* The background's opacity is the bar's own layout setting
+   (`--hud-background`; none by default, Layout editor). */
 .action-bar {
   display: grid;
   gap: 4px;
   padding: 5px;
-  background: color-mix(in srgb, var(--gray-2) 92%, transparent);
-  border: 1px solid var(--gray-6);
+  background: color-mix(in srgb, var(--gray-2) var(--hud-background, 0%), transparent);
+  border: 1px solid color-mix(in srgb, var(--gray-6) var(--hud-background, 0%), transparent);
   border-radius: var(--radius-3);
   box-shadow: var(--shadow-3);
+}
+.placed[data-background="none"] .action-bar {
+  box-shadow: none;
+}
+/* Settings → Action bars: empty slots keep their place in the grid but
+   show only while a spell is dragged. */
+.action-bar.hide-empty .action-slot.empty {
+  visibility: hidden;
 }
 .action-slot {
   position: relative;
@@ -144,6 +154,10 @@
 .spell-drag-preview {
   position: fixed;
   z-index: 60;
+  /* Its left/top are the pointer: centre the icon on it, at the
+     interface scale like the bars it is dropped on. */
+  translate: -50% -50%;
+  scale: var(--ui-scale, 1);
   pointer-events: none !important;
   text-align: center;
   opacity: 0.85;

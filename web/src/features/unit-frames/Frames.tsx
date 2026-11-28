@@ -24,6 +24,7 @@ function TaggedFrame({
   editing,
   selected,
   showCast = true,
+  portrait = true,
 }: {
   tag: UnitTag;
   role: ComponentProps<typeof UnitFrame>["role"];
@@ -31,6 +32,7 @@ function TaggedFrame({
   editing: boolean;
   selected: boolean;
   showCast?: boolean;
+  portrait?: boolean;
 }) {
   const hovered = useStore(hoveredFrame, (s) => s === tag);
   useEffect(
@@ -39,7 +41,7 @@ function TaggedFrame({
     },
     [tag, unit?.id],
   );
-  const frame = <UnitFrame role={role} unit={unit} showCast={showCast} />;
+  const frame = <UnitFrame role={role} unit={unit} showCast={showCast} portrait={portrait} />;
   if (editing) return frame;
   return (
     <button
@@ -84,10 +86,10 @@ function TaggedFrame({
 
 /** A party member who is not in this match: shown with the team, greyed,
  * and not a target. */
-function PartyMate({ handle }: { handle: string | null }) {
+function PartyMate({ handle, portrait }: { handle: string | null; portrait: boolean }) {
   return (
     <section
-      className="unit-frame teammate party-away"
+      className={`unit-frame teammate party-away${portrait ? "" : " bare"}`}
       aria-label={`${handle ?? "Party member"} status`}
       // The same menu as the live frames (by handle: they have no unit here).
       onContextMenu={(e) => {
@@ -100,8 +102,16 @@ function PartyMate({ handle }: { handle: string | null }) {
         <span className="unit-name">
           <strong title={handle ?? undefined}>{handle ?? "Party member"}</strong>
         </span>
-        <span className="unit-status">Not in this match</span>
+        {!portrait && <span className="unit-status">Not in this match</span>}
       </div>
+      {portrait && (
+        <span className="unit-socket">
+          <span className="unit-status">Not in this match</span>
+        </span>
+      )}
+      {/* Empty bars fill the art's troughs. */}
+      <div className="health-track" aria-hidden="true" />
+      <div className="resource-track" aria-hidden="true" />
     </section>
   );
 }
@@ -177,6 +187,7 @@ export function Frames() {
               editing={editing}
               selected={!!unit && unit.id === selectedId}
               showCast={role !== "player" || castBarAttached}
+              portrait={frames[role].portrait !== false}
             />
           </Placed>
         );
@@ -220,10 +231,15 @@ export function Frames() {
                   unit={unit}
                   editing={editing}
                   selected={unit.id === selectedId}
+                  portrait={frames[side].portrait !== false}
                 />
               ))}
               {away.map((mate, index) => (
-                <PartyMate key={`party-${index}-${mate}`} handle={mate} />
+                <PartyMate
+                  key={`party-${index}-${mate}`}
+                  handle={mate}
+                  portrait={frames[side].portrait !== false}
+                />
               ))}
             </div>
           </Placed>

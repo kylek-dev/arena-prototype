@@ -30,7 +30,6 @@ import { NO_FRIENDS } from "../../runtime/friends";
 import { LOADING_ACCOUNT } from "../../runtime/account";
 import { pageCommandContext, runSlash } from "../../runtime/chat-commands";
 import { parseSlash, unescapeSlash } from "../../domain/commands";
-import { AdminTag } from "../../ui/AdminTag";
 import { OUT_OF_HUB } from "../../domain/hub";
 import { Placed } from "../../ui/Placed";
 import "./chat.css";
@@ -103,10 +102,11 @@ function Line({
   // One's own whisper names the recipient; other lines name the sender.
   const who = message.to ?? message.from;
   const own = !!me && message.to === null && message.from.toLowerCase() === me.toLowerCase();
+  const prefix = chatPrefix(message);
   return (
     <li className={`chat-line ${message.channel}`}>
       {own ? (
-        <span className="chat-name">{chatPrefix(message)}</span>
+        <span className="chat-name">{prefix}</span>
       ) : (
         <button
           type="button"
@@ -115,10 +115,9 @@ function Line({
           aria-label={`${chatPrefix(message)}: options`}
           onClick={() => setMenu(menu ? null : message.id)}
         >
-          {chatPrefix(message)}
+          {prefix}
         </button>
       )}
-      {message.admin && message.to === null && <AdminTag compact />}
       <span className="chat-text">: {message.text}</span>
       {menu && (
         <NameMenu queue={queue} handle={who} ignored={ignored(who)} close={() => setMenu(null)} />
@@ -620,10 +619,13 @@ export function ChatBox() {
   const custom = useConfigSelector((c) => c.chatSizeCustom);
   const heightCustom = useConfigSelector((c) => c.chatHeightCustom);
   const launcher = useConfigSelector((c) => c.frames.launcher);
+  // The box is drawn at its own scale times the interface scale.
+  const zoom = useConfigSelector((c) => c.uiScale);
+  const drawn = { ...saved, scale: saved.scale * zoom };
   const bars = useConfigSelector((c) => c.bars);
   // Attached: measured beside the launcher (bottoms aligned), as wide as
   // the space up to the action bar unless the player sized it.
-  const beside = useBesideLauncher(attached, heightCustom ? savedSize.height : null, saved.scale, [
+  const beside = useBesideLauncher(attached, heightCustom ? savedSize.height : null, drawn.scale, [
     launcher,
     bars,
   ]);
@@ -653,13 +655,16 @@ export function ChatBox() {
   const value = draft
     ? { ...keep(draft), scale: saved.scale }
     : beside
-      ? anchorAt(
-          saved,
-          beside.left,
-          beside.top,
-          { width: innerWidth - 24, height: innerHeight - 24 },
-          size,
-        )
+      ? {
+          ...anchorAt(
+            drawn,
+            beside.left,
+            beside.top,
+            { width: innerWidth - 24, height: innerHeight - 24 },
+            size,
+          ),
+          scale: saved.scale,
+        }
       : saved;
   const shown = !!queue && (saved.visible || editing);
   useEffect(() => {

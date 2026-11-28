@@ -202,7 +202,7 @@ it("shows handles in full on unit frames and by name on nameplates", () => {
   expect(screen.getByText("Guest · Disconnected")).toBeTruthy();
 });
 
-it("tags admins beside their names in frames and on nameplates", () => {
+it("shows admins like everyone else in frames and on nameplates (no tag)", () => {
   const named = withTags(withHandles(networkSnapshot(), ["Rook#0042", "Ash#1000", null, null]), [
     { admin: false },
     { admin: true },
@@ -217,8 +217,9 @@ it("tags admins beside their names in frames and on nameplates", () => {
       <Nameplates />
     </>,
   );
-  expect(screen.getAllByText("Admin").length).toBeGreaterThanOrEqual(2);
-  expect(screen.getByRole("button", { name: /Ash#1000 \(admin\) health/ })).toBeTruthy();
+  expect(screen.queryByText("Admin")).toBeNull();
+  expect(screen.getAllByText(/^Ash/).length).toBeGreaterThanOrEqual(2);
+  expect(screen.getByRole("button", { name: /^Ash#1000 health/ })).toBeTruthy();
 });
 
 it("greys out disconnected unit frames and nameplates with a label", () => {

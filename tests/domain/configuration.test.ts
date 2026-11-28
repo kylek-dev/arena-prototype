@@ -206,6 +206,70 @@ describe("preferences and profiles", () => {
     }
   });
 
+  it("gives unit frames and bars a background opacity, none by default", () => {
+    const fresh = initial().profiles[0].config;
+    expect(fresh.frames.player.background).toBe(0);
+    expect(fresh.frames.opponents.background).toBe(0);
+    expect(fresh.bars[0].layout.background).toBe(0);
+    // Frames that draw no background carry no setting.
+    expect(fresh.frames.chat.background).toBeUndefined();
+    expect(fresh.frames.castBar.background).toBeUndefined();
+    // Profiles from before the setting take the new defaults.
+    const old = JSON.parse(JSON.stringify(fresh));
+    delete old.frames.player.background;
+    delete old.bars[0].layout.background;
+    const migrated = validateConfig(old);
+    expect(migrated.frames.player.background).toBe(0);
+    expect(migrated.bars[0].layout.background).toBe(0);
+    // Saved values stay, within 0-1.
+    old.frames.target.background = 0.8;
+    old.frames.focus.background = 7;
+    old.bars[0].layout.background = 0.3;
+    old.frames.chat.background = 0.4;
+    const saved = validateConfig(old);
+    expect(saved.frames.target.background).toBe(0.8);
+    expect(saved.frames.focus.background).toBe(1);
+    expect(saved.bars[0].layout.background).toBe(0.3);
+    expect(saved.frames.chat.background).toBeUndefined();
+  });
+  it("moves a target frame still at an old default beside the wider player frame", () => {
+    const old = initial().profiles[0].config;
+    for (const x of [0.19, 0.55]) {
+      old.frames.target = { ...old.frames.target, x, y: 0.04 };
+      expect(validateConfig(old).frames.target).toEqual(initial().profiles[0].config.frames.target);
+    }
+    // One the player placed stays.
+    old.frames.target = { ...old.frames.target, x: 0.2 };
+    expect(validateConfig(old).frames.target.x).toBe(0.2);
+  });
+  it("shows unit frame portraits unless the profile hid them, per frame", () => {
+    const config = initial().profiles[0].config;
+    for (const role of ["player", "target", "focus", "team", "opponents"] as const)
+      expect(config.frames[role].portrait).toBe(true);
+    expect(config.frames.chat.portrait).toBeUndefined();
+    const old = JSON.parse(JSON.stringify(config));
+    delete old.frames.player.portrait;
+    old.frames.target.portrait = false;
+    old.frames.chat.portrait = false;
+    const loaded = validateConfig(old);
+    expect(loaded.frames.player.portrait).toBe(true);
+    expect(loaded.frames.target.portrait).toBe(false);
+    expect(loaded.frames.chat.portrait).toBeUndefined();
+  });
+  it("keeps the interface scale within 60-160%, 100% by default", () => {
+    const config = initial().profiles[0].config;
+    expect(config.uiScale).toBe(1);
+    expect(validateConfig({ ...config, uiScale: undefined }).uiScale).toBe(1);
+    expect(validateConfig({ ...config, uiScale: 1.25 }).uiScale).toBe(1.25);
+    expect(validateConfig({ ...config, uiScale: 9 }).uiScale).toBe(1.6);
+    expect(validateConfig({ ...config, uiScale: "big" }).uiScale).toBe(1);
+  });
+  it("shows empty action bar slots unless the profile turned them off", () => {
+    const config = initial().profiles[0].config;
+    expect(config.showEmptySlots).toBe(true);
+    expect(validateConfig({ ...config, showEmptySlots: undefined }).showEmptySlots).toBe(true);
+    expect(validateConfig({ ...config, showEmptySlots: false }).showEmptySlots).toBe(false);
+  });
   it("does not steal a custom Escape binding while adding the menu action", () => {
     const old = initial().profiles[0].config;
     delete old.bindings.menu;

@@ -1,7 +1,33 @@
-export type Layout = { x: number; y: number; scale: number; visible: boolean; locked: boolean };
+export type Layout = {
+  x: number;
+  y: number;
+  scale: number;
+  visible: boolean;
+  locked: boolean;
+  /** The frame's background opacity (0 = none, 1 = solid), for frames that
+   * draw one (unit frames and action bars); absent for the others. */
+  background?: number;
+  /** Whether a unit frame shows its round portrait socket; absent for
+   * other frames. */
+  portrait?: boolean;
+};
+/** Unit frames' default background opacity: none (the bars carry them). */
+export const FRAME_BACKGROUND = 0;
+/** Action bars draw no background by default. */
+export const BAR_BACKGROUND = 0;
 export const clamp = (n: number, min: number, max: number) => Math.min(max, Math.max(min, n));
-export function layout(x = 0.04, y = 0.18): Layout {
-  return { x, y, scale: 1, visible: true, locked: false };
+export function layout(x = 0.04, y = 0.18, background?: number): Layout {
+  const l: Layout = { x, y, scale: 1, visible: true, locked: false };
+  if (background !== undefined) l.background = background;
+  return l;
+}
+/** A unit frame's default place, with its portrait shown. */
+export function unitFrameLayout(x: number, y: number): Layout {
+  return { ...layout(x, y, FRAME_BACKGROUND), portrait: true };
+}
+/** An action bar's default place: centred at the bottom, no background. */
+export function barLayout(): Layout {
+  return layout(0.5, 0.92, BAR_BACKGROUND);
 }
 // x/y are normalized fractions of the available top-left travel, not the viewport.
 export function position(

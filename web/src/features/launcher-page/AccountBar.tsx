@@ -14,7 +14,6 @@ import { LOADING_ACCOUNT, type Account } from "../../runtime/account";
 import { accountService } from "../../state/account";
 import { matchQueue } from "../../state/network";
 import { createStore, useStore } from "../../state/store";
-import { AdminTag } from "../../ui/AdminTag";
 import { Modal } from "../../ui/Dialog";
 import { Hint } from "../../ui/Tooltip";
 import "../account/account.css";
@@ -194,7 +193,6 @@ function AccountMenu({ account, me }: { account: Account; me: Me }) {
           onClick={() => setOpen(!open)}
         >
           <span className="account-handle">{me.handle}</span>
-          {me.admin && <AdminTag compact />}
           <span aria-hidden="true">▾</span>
         </button>
       ) : (
